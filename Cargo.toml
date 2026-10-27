@@ -2,7 +2,8 @@
 resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 # Third-party code kept with local fixes (see vendor/README.md); not linted as ours.
-exclude = ["vendor"]
+# Reserved iPadOS directories have no Cargo manifests yet.
+exclude = ["vendor", "apps/solidcraft-ipados", "crates/ipados"]
 
 [workspace.package]
 version = "0.24.1"

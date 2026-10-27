@@ -2,6 +2,11 @@
 
 SolidCraft is a clean-room, pure-Rust parametric 3D CAD app (sketch solver, feature timeline, B-rep kernel, an egui UI that agents drive). This file is a router: the hard rules, then the skill to read for your task. Humans: CONTRIBUTING.md.
 
+## iPadOS fork
+For iPadOS work and upstream integration in `carlhampuswall/solidcraft-ipad`, first read
+[`docs/ipados/UPSTREAM.md`](docs/ipados/UPSTREAM.md) (permanent engineering rules) and
+[`docs/ipados/SETUP.md`](docs/ipados/SETUP.md) (layout and prerequisites).
+
 ## Start here
 Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelled `help wanted`, `good first issue`, `needs-triage`; architecture in `docs/architecture.md`. Act when the code, docs and rules settle a question; ask only when it changes what users see. Local `plan/` notes are optional.
 

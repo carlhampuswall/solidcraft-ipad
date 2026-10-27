@@ -1,0 +1,95 @@
+name: Upstream SolidCraft updates
+
+on:
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      create_pr:
+        description: "Create a draft integration PR if upstream has updates"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ipados-upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  upstream:
+    if: github.repository == 'carlhampuswall/solidcraft-ipad' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1; same pin as upstream CI
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+      - name: Detect updates and optionally prepare a draft PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          CREATE_PR: ${{ github.event_name == 'workflow_dispatch' && inputs.create_pr }}
+          HAS_SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/tangency-labs/solidcraft.git
+          git fetch --no-tags upstream main
+          base_sha=$(git rev-parse HEAD)
+          upstream_sha=$(git rev-parse upstream/main)
+          if git merge-base --is-ancestor "$upstream_sha" "$base_sha"; then
+            echo "Upstream main is already integrated ($upstream_sha)." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          count=$(git rev-list --count "$base_sha..$upstream_sha")
+          {
+            echo "Upstream has $count unintegrated commit(s)."
+            echo "Fork base: $base_sha"
+            echo "Upstream: $upstream_sha"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$CREATE_PR" != true ]; then
+            echo "Detection only. Dispatch with create_pr=true to request a draft PR." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          existing=$(gh pr list --repo "$GH_REPO" --base main --state open --limit 100 \
+            --json headRefName,url \
+            --jq '[.[] | select(.headRefName | startswith("integration/upstream-"))][0].url // empty')
+          if [ -n "$existing" ]; then
+            echo "Review the existing integration PR first: $existing" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          branch="integration/upstream-${upstream_sha:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch -c "$branch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git -c core.hooksPath=/dev/null merge --no-ff --no-edit "$upstream_sha"; then
+            git merge --abort
+            echo "Merge conflicts: nothing pushed. Follow docs/ipados/UPSTREAM.md to integrate manually." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if [ "$HAS_SYNC_TOKEN" != true ] && ! git diff --quiet "$base_sha" HEAD -- .github/workflows/; then
+            echo "Workflow files changed. Configure UPSTREAM_SYNC_TOKEN or integrate manually; nothing pushed." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+          body="$RUNNER_TEMP/upstream-pr.md"
+          cat > "$body" <<EOF
+          Integrates tangency-labs/solidcraft main at $upstream_sha into fork main at $base_sha.
+
+          Changes a default: requires review of the imported upstream changes.
+
+          Validation: merge conflict check only; CAD tests, desktop/web checks and iPad checks have not run.
+          Follow docs/ipados/UPSTREAM.md, review conflicts and compatibility, then run the required checks on this candidate before approval.
+          Preserve upstream ancestry with a merge commit. No automatic merge is enabled.
+          EOF
+          git push origin "HEAD:refs/heads/$branch"
+          url=$(gh pr create --repo "$GH_REPO" --base main --head "$branch" --draft \
+            --title "Integrate SolidCraft upstream ${upstream_sha:0:12}" --body-file "$body")
+          echo "Draft integration PR (validation pending): $url" >> "$GITHUB_STEP_SUMMARY"
