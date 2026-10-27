@@ -1,0 +1,18 @@
+PRODUCT_NAME = SolidCraft
+PRODUCT_BUNDLE_IDENTIFIER = com.solidcraft.ipados
+TARGETED_DEVICE_FAMILY = 2
+SUPPORTED_PLATFORMS = iphoneos iphonesimulator
+SUPPORTS_MACCATALYST = NO
+GENERATE_INFOPLIST_FILE = NO
+INFOPLIST_FILE = SolidCraft/Info.plist
+SWIFT_OBJC_BRIDGING_HEADER = SolidCraft/SolidCraft-Bridging-Header.h
+SWIFT_VERSION = 5.0
+SWIFT_STRICT_CONCURRENCY = targeted
+ENABLE_USER_SCRIPT_SANDBOXING = YES
+HEADER_SEARCH_PATHS = $(inherited) "$(SRCROOT)/../../crates/ipados/bridge/include"
+RUST_LIBRARY_DIR = $(SRCROOT)/../../target/aarch64-apple-ios/ci
+LIBRARY_SEARCH_PATHS = $(inherited) "$(RUST_LIBRARY_DIR)"
+OTHER_LDFLAGS = $(inherited) -lsolidcraft_ipados_bridge -lc++ -liconv -framework Metal -framework QuartzCore -framework UIKit -framework CoreGraphics -framework Security -framework SystemConfiguration -framework Foundation
+LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks
+CODE_SIGN_STYLE = Automatic
+// Signing team/account is intentionally supplied by the developer outside source control.

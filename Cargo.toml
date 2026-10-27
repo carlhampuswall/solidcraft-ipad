@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "apps/*", "xtask"]
+members = ["crates/*", "apps/*", "crates/ipados/session", "crates/ipados/bridge", "xtask"]
 # Third-party code kept with local fixes (see vendor/README.md); not linted as ours.
-# Reserved iPadOS directories have no Cargo manifests yet.
+# Native Xcode host and adapter namespace are not Cargo packages; nested packages are explicit.
 exclude = ["vendor", "apps/solidcraft-ipados", "crates/ipados"]
 
 [workspace.package]

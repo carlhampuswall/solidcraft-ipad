@@ -51,6 +51,8 @@ pub const TABLE: &[(&str, Class)] = &[
     ("ui-egui", Class::Layer(5)),
     ("gpu", Class::Layer(5)),
     ("mcp", Class::Layer(5)),
+    ("ipados-session", Class::Layer(5)),
+    ("ipados-bridge", Class::Layer(6)),
     ("testkit", Class::Testkit),
     // apps and tooling
     ("solidcraft", Class::Exempt),

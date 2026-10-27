@@ -4357,6 +4357,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "solidcraft-ipados-bridge"
+version = "0.24.1"
+dependencies = [
+ "pollster 0.4.0",
+ "serde",
+ "serde_json",
+ "solidcraft-gpu",
+ "solidcraft-ipados-session",
+ "solidcraft-render",
+ "wgpu",
+]
+
+[[package]]
+name = "solidcraft-ipados-session"
+version = "0.24.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "solidcraft-engine",
+ "solidcraft-render",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "solidcraft-kernel"
 version = "0.24.1"
 dependencies = [

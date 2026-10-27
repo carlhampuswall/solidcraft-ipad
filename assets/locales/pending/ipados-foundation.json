@@ -1,0 +1,8 @@
+{
+  "en": {
+    "ui.ipados.foundation_error": "Native foundation error",
+    "ui.ipados.foundation_input": "Input source",
+    "ui.ipados.foundation_loading": "Preparing native engine…",
+    "ui.ipados.foundation_ready": "Native engine and renderer ready"
+  }
+}

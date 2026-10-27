@@ -1,8 +1,10 @@
 # iPadOS development setup
 
 This fork prepares SolidCraft for a professional native iPadOS application while
-keeping future upstream updates practical. This preparation adds no UI, Apple
-project, Rust bridge, dependency or new CAD implementation.
+keeping future upstream updates practical. Step 1 preparation is complete;
+Step 2's native host and adapter are described in [ARCHITECTURE.md](ARCHITECTURE.md),
+with current build instructions in [BUILDING.md](BUILDING.md) and verification in
+[HANDOFF.md](HANDOFF.md). The preparation observations below are historical.
 
 ## Repository and branches
 
@@ -35,11 +37,10 @@ git remote -v
 | `apps/solidcraft`, `apps/solidcraft-web`, `apps/solidcraft-cli` | Existing desktop, web and CLI applications |
 | `.github/workflows/upstream-sync.yml` | Upstream detection and optional draft integration PR creation |
 
-The root workspace includes `apps/*` and `crates/*`. The two reserved directories
-are explicitly excluded so Cargo does not require placeholder manifests. Existing
-workspace membership and dependencies remain unchanged. Add exact member paths
-when real adapter crates exist, with target-specific dependencies and feature
-gates so desktop and web do not require Apple SDKs.
+The root workspace includes `apps/*` and `crates/*`. The native host and adapter
+namespace remain excluded; the actual `crates/ipados/session` and
+`crates/ipados/bridge` packages are explicit members. Target gates keep Apple SDK
+requirements at the native boundary.
 
 ## Prerequisites for implementation
 
