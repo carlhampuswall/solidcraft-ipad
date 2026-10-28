@@ -32,6 +32,18 @@ branches are not rewritten, deleted or pushed. No unrelated upstream update is
 imported, and the finalized B/P policy is retained rather than replaced by the
 older planning text at B.
 
+The completed working source is committed as
+`05e6fabd8c1f64d2b464e4b6eb528fcea138c41d`. The UI history merge reviewed 17
+overlapping hunks across six files. Xcode retains the canonical icon resources
+and both Project source registrations. Workspace components retain icon-first
+chrome plus mutable value-chip labels and exact entry. Controller/layout keep
+floating safe-area geometry alongside origin controls, project menus, push/pull,
+value-chip accessibility/cancellation and the bounded input mailbox. Handoff/UI
+text retains original evidence and the later project service and B/P policy.
+The merged source is byte-identical to the verified combined candidate; only
+this integration report is extended after that comparison. No blanket merge
+strategy, history rewrite or feature rollback is used.
+
 The six initially unpushed commits are `dc96ee14`, `fc58c334`, `c22acd12`,
 `380b43b2`, `10d35224` and `22d4308e`. The prior Step 8.5 inventory remains in
 [CONSOLIDATION-INVENTORY.md](CONSOLIDATION-INVENTORY.md).
@@ -124,6 +136,11 @@ PNG/native-design outputs remain in `target/develop-verification/`. The unsigned
 product is `target/ipados-xcode/Build/Products/Debug-iphoneos/SolidCraft.app`.
 No GitHub Actions run is claimed; the iPad workflow is PR/manual-triggered and
 the inherited engine suite is not triggered by a direct push to `develop`.
+Native file-coordination checks, Xcode resource compilation and the localhost
+browser harness require an unrestricted macOS runner. A restricted post-merge
+file-coordination retry could not open its synthetic STP fixture; that capability
+failure is not counted as a source failure or a passing check. The successful
+unrestricted run is retained in the verification log.
 
 The engine suite and full `cargo xtask ci` are intentionally not run at the
 user's request. No engine test, expectation, tolerance, golden or CI code is
