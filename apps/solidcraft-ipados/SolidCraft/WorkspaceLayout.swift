@@ -1,8 +1,8 @@
 import CoreGraphics
 import Foundation
 
-/// Native chrome geometry in safe-area display points. The actual Metal view is
-/// assigned `canvas`, so rendering and picking always share the same local bounds.
+/// Native chrome geometry in safe-area display points, placed into window space
+/// before assigning the actual Metal view. Rendering and picking share its bounds.
 struct WorkspaceLayout {
     let topBar: CGRect
     let status: CGRect
@@ -85,6 +85,23 @@ struct WorkspaceLayout {
 }
 
 extension WorkspaceLayout {
+    /// Keep controls safe while the floating viewport extends underneath system
+    /// indicators. A pinned browser still reserves only its horizontal region.
+    func placed(in chrome: CGRect, viewport: CGRect) -> WorkspaceLayout {
+        func offset(_ frame: CGRect) -> CGRect { frame.offsetBy(dx: chrome.minX, dy: chrome.minY) }
+        let insetCanvas = offset(canvas)
+        let left = floating && canvas.minX <= 0 ? viewport.minX : insetCanvas.minX
+        let right = floating && canvas.maxX >= chrome.width ? viewport.maxX : insetCanvas.maxX
+        let modelFrame = floating ? CGRect(x: left, y: viewport.minY, width: max(0, right - left), height: viewport.height) : insetCanvas
+        var result = WorkspaceLayout(topBar: offset(topBar), status: offset(status), rail: offset(rail),
+            canvas: modelFrame, browser: browser.map(offset), inspector: inspector.map(offset), compact: compact)
+        result.navigation = offset(navigation)
+        result.history = offset(history)
+        result.browserAccess = offset(browserAccess)
+        result.floating = floating
+        return result
+    }
+
     /// Floating controls consume only their visible bounds. Unpinned panels do
     /// not move the Metal view or change its rendering/picking coordinate space.
     private static func floatingLayout(size: CGSize, browser: Bool, inspector: Bool,

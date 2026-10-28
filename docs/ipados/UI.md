@@ -14,6 +14,13 @@ menu invokes the existing Save/Reopen local design operations. The separate
 top-left Model button opens the model browser. A full project/Files browser is
 not implemented by this UI branch; that integration belongs to workstream A.
 
+The floating viewport fills the entire app window, including the space behind
+the status and home indicators. Only the controls are inset to the safe area;
+there are no reserved black bands above or below the model. The workspace itself
+also fills the window, so the extended viewport remains a real native input
+surface. Pinned browsers retain their horizontal reservation. The keyboard still
+reduces the usable viewport height through the existing resize/cancellation path.
+
 The 52-point tool rail (56 for accessibility text) contains icon-first controls
 with at least 44-point interaction regions. Modelling groups expose the actual
 native-supported create, modify, pattern/mirror and assembly forms. Additional
@@ -47,7 +54,9 @@ Preview validation, Apply/Cancel and original feature/occurrence identity remain
 owned by the existing session and forms.
 
 `WorkspaceLayout.resolve` uses safe-area display points, window size, Dynamic
-Type, keyboard intersection and visible control counts. It shrinks or scrolls
+Type, keyboard intersection and visible control counts. `placed(in:viewport:)`
+translates chrome into window coordinates and extends the floating canvas to the
+window edges. It shrinks or scrolls
 chrome instead of introducing fixed screenshot dimensions. Actual canvas changes
 (pinning, keyboard, rotation) still run the original cancellation/drawable-metrics
 path. The Foundation harness retains the previous layout tests and additionally
@@ -137,7 +146,9 @@ Compatibility switching also has an opt-in DEBUG UIKit regression:
 launch with `--chrome-check` to cycle text/floating layouts in light/dark,
 then read `Documents/workspace-chrome-check.json` from the app container. It checks
 actual visible icon/touch frames after UIKit layout, including the reparented
-browser button and retained scroll offsets; it does not merely repeat the
+browser button and retained scroll offsets. It also checks that the actual
+canvas fills the top/bottom window edges, that edge hit tests reach the canvas,
+and that header/status controls stay safe. It does not merely repeat the
 Foundation policy calculation. Four physical cases pass. The optional
 `--chrome-check-restore-dark` restores compact/dark preferences after this check;
 without that flag it restores the preferences present at launch. This mode never

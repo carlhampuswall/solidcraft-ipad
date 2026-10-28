@@ -145,6 +145,38 @@ struct WorkspaceChecks {
                 try require(frame.width.isFinite && frame.height.isFinite && frame.width >= 0 && frame.height >= 0, "invalid floating drawable")
             }
         }
+        // The viewport fills space behind system indicators; controls retain
+        // their safe, keyboard-reduced bounds, including with a pinned browser.
+        for size in [CGSize(width: 1366, height: 1024), CGSize(width: 1194, height: 834), CGSize(width: 834, height: 1194),
+                     CGSize(width: 600, height: 420), CGSize(width: 390, height: 844)] {
+            for keyboard in [false, true] {
+                let viewport = CGRect(x: 0, y: 0, width: size.width, height: size.height - (keyboard ? 300 : 0))
+                let safe = CGRect(x: 12, y: 24, width: size.width - 24, height: size.height - 44)
+                let chrome = CGRect(x: safe.minX, y: safe.minY, width: safe.width,
+                                    height: max(0, min(safe.maxY, viewport.maxY) - safe.minY))
+                for railRight in [false, true] {
+                    for largeText in [false, true] {
+                        let closed = WorkspaceLayout.resolve(size: chrome.size, browser: false, inspector: false,
+                            railRight: railRight, largeText: largeText).placed(in: chrome, viewport: viewport)
+                        try require(closed.canvas == viewport, "safe area leaves unused viewport strips")
+                        for panel in [(false, false), (true, false), (true, true)] {
+                            let layout = WorkspaceLayout.resolve(size: chrome.size, browser: panel.0, inspector: true,
+                                railRight: railRight, largeText: largeText, pinnedBrowser: panel.1).placed(in: chrome, viewport: viewport)
+                            try require(layout.canvas.minY == viewport.minY && layout.canvas.maxY == viewport.maxY,
+                                        "panel leaves top or bottom viewport strips")
+                            try require(viewport.contains(layout.canvas), "placed viewport escaped window/keyboard bounds")
+                            for frame in [layout.topBar, layout.status, layout.rail, layout.navigation, layout.history, layout.browserAccess] + [layout.browser, layout.inspector].compactMap({ $0 }) {
+                                try require(chrome.contains(frame), "full-window layout moved controls under system indicators")
+                            }
+                            if panel.1, chrome.width >= (largeText ? 1180 : 1000), let browser = layout.browser {
+                                try require(!layout.canvas.intersects(browser), "full-window expansion covers pinned browser")
+                            } else { try require(layout.canvas == closed.canvas, "floating panel changes full-window picking bounds") }
+                            cases += 1
+                        }
+                    }
+                }
+            }
+        }
         let numericPanel = WorkspaceLayout.resolve(size: CGSize(width: 1194, height: 790), browser: false, inspector: true,
                                                    railRight: false, largeText: false, inspectorContentHeight: 500, navigationContentHeight: 146)
         try require(numericPanel.inspector?.height == 500, "simple numeric editor became a full-height inspector")

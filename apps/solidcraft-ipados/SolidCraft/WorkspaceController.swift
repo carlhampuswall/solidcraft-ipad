@@ -1688,10 +1688,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let safe = view.safeAreaLayoutGuide.layoutFrame
-        workspace.frame = CGRect(x: safe.minX, y: safe.minY, width: safe.width, height: max(0, min(safe.maxY, keyboardTop ?? safe.maxY) - safe.minY))
+        workspace.frame = view.bounds
+        let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
+        let keyboardY = keyboardTop.map { workspace.convert(CGPoint(x: 0, y: $0), from: view).y } ?? workspace.bounds.maxY
+        let viewport = CGRect(x: 0, y: 0, width: workspace.bounds.width, height: max(0, min(workspace.bounds.maxY, keyboardY)))
+        let chrome = CGRect(x: safe.minX, y: safe.minY, width: safe.width,
+                            height: max(0, min(safe.maxY, viewport.maxY) - safe.minY))
         let largeText = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
-        let compactWidth = workspace.bounds.width < (largeText ? 1120 : 1000)
+        let compactWidth = chrome.width < (largeText ? 1120 : 1000)
         let titleHeight = ceil(titleLabel.font.lineHeight) + 2
         let subtitleHeight = 2 * ceil(subtitle.font.lineHeight) + 2
         let actionsHeight = max(44, ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 20)
@@ -1701,11 +1705,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let navHeight = CGFloat(navigationActions.arrangedSubviews.filter { !$0.isHidden }.count) * 46 + 8
         let inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
             (modellingEditing ? min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84) : 640))
-        let resolved = WorkspaceLayout.resolve(size: workspace.bounds.size, browser: browserOpen, inspector: inspectorOpen,
+        let resolved = WorkspaceLayout.resolve(size: chrome.size, browser: browserOpen, inspector: inspectorOpen,
                                                railRight: railRight, largeText: largeText,
                                                minimumHeaderHeight: headingHeight, minimumStatusHeight: 2 * ceil(status.font.lineHeight) + 8,
                                                compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railHeight,
                                                inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight)
+            .placed(in: chrome, viewport: viewport)
         if canvas.frame != resolved.canvas { canvas.cancelInput() }
         layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
@@ -1825,6 +1830,22 @@ private extension FoundationController {
                 var issues: [String] = []
                 var frames: [String: [Double]] = [:]
                 if self.compactChrome {
+                    let bounds = self.workspace.bounds
+                    let canvas = self.canvas.frame
+                    frames["canvas"] = [canvas.minX, canvas.minY, canvas.width, canvas.height].map(Double.init)
+                    frames["workspace"] = [bounds.minX, bounds.minY, bounds.width, bounds.height].map(Double.init)
+                    if canvas.minY != bounds.minY || canvas.maxY != bounds.maxY {
+                        issues.append("viewport does not fill top/bottom system-indicator space")
+                    }
+                    let safe = self.workspace.convert(self.view.safeAreaLayoutGuide.layoutFrame, from: self.view)
+                    if !safe.contains(self.top.frame) || !safe.contains(self.status.frame) {
+                        issues.append("floating chrome escaped the safe area")
+                    }
+                    for y in [bounds.minY + 1, bounds.maxY - 1] {
+                        if self.workspace.hitTest(CGPoint(x: bounds.midX, y: y), with: nil) !== self.canvas {
+                            issues.append("viewport edge lost its native input surface")
+                        }
+                    }
                     for (name, button, host) in [("document", self.documentActionsButton, self.topScroll),
                                                   ("view", self.viewButton, self.navigationScroll),
                                                   ("fit", self.fitButton, self.navigationScroll),

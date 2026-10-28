@@ -20,6 +20,12 @@ floating panels preserve the Metal frame and consume only visible bounds. An
 optional pinned wide browser reserves space. Short numeric transactions use a
 compact editor; native feature/assembly forms retain real Preview/Apply/Cancel.
 
+Follow-up: remove the unused safe-area bands. The workspace now fills the window;
+chrome is placed within safe bounds and the floating Metal canvas extends behind
+the status/home indicators. Rendering and picking use that same enlarged native
+surface. Pinned-browser reservations and keyboard resizing are preserved. The
+text-layout compatibility preference keeps its original inset canvas policy.
+
 Canonical SolidCraft icons are generated as Xcode vector assets using the
 existing palette/alias resolver: 321 masters, 37 aliases and 481 discovered
 command-icon mappings. A bounded image cache handles theme and density. No SVG,
@@ -43,7 +49,7 @@ old policy. Rail-side and history gesture preferences remain unchanged.
 
 ## Verification and real evidence
 
-- PASS: `sh apps/solidcraft-ipados/scripts/check-workspace.sh`: 210 adaptive
+- PASS: `sh apps/solidcraft-ipados/scripts/check-workspace.sh`: 330 adaptive
   layout/focus/decoder cases, plus 41 actual tool icon mappings, vector theme
   assets, retired-output removal and unchanged canonical artwork/review data.
 - PASS: actual iPhoneOS arm64 Swift type checking with the C bridging header.
@@ -77,6 +83,18 @@ old policy. Rail-side and history gesture preferences remain unchanged.
   `13-final-verified-workspace.png` in the evidence directory. Device Hub's compact capture/coordinate path intermittently
   returned `noWindowsAvailable`; full-view screenshots and the native report are
   separate evidence, not repaired/fabricated screenshots.
+- PASS: edge-to-edge follow-up unsigned and signed builds:
+  `target/ui-edge-to-edge-{build,device-build}.log`. The restricted unsigned
+  attempt could not start Xcode's sandbox resource phase; the same established
+  build succeeded with required local tool access. No project setting changed.
+  Physical UIKit checks pass in light/dark across text/floating switches in both
+  orientations: actual canvas `[0,0,1194,834]` in landscape and
+  `[0,0,834,1194]` in portrait. Top/bottom native hit tests reach the canvas and
+  header/status controls remain inside the safe area. Reports:
+  `target/ui-edge-to-edge-chrome-{landscape,portrait}.json`.
+  Real screenshots: `target/ui-evidence/14-edge-to-edge-landscape.png` and
+  `15-edge-to-edge-portrait.png`. The physical viewer was restored to its original
+  landscape orientation. No engine suite or full CI was run for this follow-up.
 
 The automatic full repository run was stopped at the user's instruction on
 2026-10-28: **run the engine suite only when the user explicitly requests a full
