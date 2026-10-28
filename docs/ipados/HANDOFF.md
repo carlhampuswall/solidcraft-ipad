@@ -1,245 +1,600 @@
-# Step 3 handoff — interactive native CAD viewport
+# Step 8.5 resumed consolidation handoff
 
-Continue in this existing checkout on `feature/ipados`. Base: Step 2
-`dc96ee14`. Its three uncommitted physical-device documentation follow-ups were
-preserved below. No reset, upstream merge, dependency upgrade, toolchain default
-change or push was performed. The Step 3 commit is the commit containing this
-handoff; `git log -1 --format='%H %s'` gives its identity.
+**Development baseline pending fresh validation and commit.** On 2026-10-28
+the user resumed Step 8.5 and asked to leave the three already reported upstream
+engine failures unchanged, document them and check later. This accepts only the
+exact failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) for a
+development baseline; it does not make CI green or waive any new failure.
+Tests remain enabled and expectations unchanged. The earlier blocked decision
+in [CHECKPOINT.md](CHECKPOINT.md) is historical and superseded by this exception.
 
-## Start here
+All Steps 1–8 were found locally and assembled on `integration/ipados-foundation`.
+HEAD remains `fc58c334d997e7514f96d6b44b753f272dad9e91`, the Step 3 ancestor;
+it is **not** a consolidated baseline. Steps 4–8 and consolidation repairs remain
+uncommitted. No commit, push, main merge, source-branch deletion or future-task
+launch occurred. No upstream commits were imported. Provenance is in
+[CONSOLIDATION-INVENTORY.md](CONSOLIDATION-INVENTORY.md).
 
-- [IMPLEMENTATION.md](IMPLEMENTATION.md): feature scope; [ARCHITECTURE.md](ARCHITECTURE.md):
-  ownership, revision and upstream delta; [BUILDING.md](BUILDING.md): build/run.
-- `crates/ipados/session/src/lib.rs`: `SessionAdapter::{execute,selection,fixture,proof,snapshot}`;
-  the one mutable engine session and owned `Arc<SceneSnapshot>` publication data.
-- `crates/ipados/session/src/viewport.rs`: `Viewport::{begin_update,install,fail_update,
-  set_metrics,command,input,snapshot,selection,diagnostic}`; the single native
-  display camera, generation gating and independent guide/highlight scenes.
-- `crates/ipados/session/src/picking.rs`: `ViewportMetrics::{validate,pixel,pixels}`,
-  `PickFilter`, `PickScene::pick`; shared `MeshIndex`, topology IDs and clipped
-  world rays, screen-space tolerances and occlusion checks.
-- `crates/ipados/session/src/input.rs`: typed `InputEvent`, `InputSource`,
-  `InputPhase` and central basic contact routing. This is Step 4's extension point.
-- `crates/ipados/bridge/src/ffi.rs`, `include/solidcraft_ipados.h`: ABI **2**.
-  `sc_request`/`sc_response_*` are the serial engine lane; `sc_view_request`/
-  `sc_view_response_*` the interactive lane; `sc_surface_*` and
-  `sc_surface_response_*` the independently serialised GPU/lifecycle lane.
-  Rebuild Swift and Rust together. `renderer.rs` retains model GPU uploads by
-  document/geometry revision and uses separate guide/highlight slots.
-- `apps/solidcraft-ipados/SolidCraft/{Application,MetalCanvas,NativeSession}.swift`:
-  safe-area controls, typed UIKit events, engine/display workers and the render-only
-  lifecycle gate. The Xcode project extracts native messages on every build so
-  pending catalogue edits cannot leave stale message IDs in native controls.
-  The host also explicitly follows UIWindowScene coordinate-space updates and
-  refreshes point/pixel metrics when display scale changes at the same pixel size.
+## Preserved work added after the checkpoint
 
-## Repeatable workflow
+The user-requested “Add multitouch undo and redo” task
+(`01a183dd-c2f4-74a1-a93d-024ef30a9e7c`) added two-finger double-tap Undo and
+three-finger double-tap Redo using existing engine history. Its `MetalCanvas`,
+`WorkspaceController`, `INPUT.md` and pending history-gesture locale changes
+are preserved in the baseline candidate. The default is enabled; the Tools
+preference `SolidCraft.workspace.historyGestures` restores the previous behavior.
+Its unsigned build passed (`/tmp/solidcraft-history-gestures-build.log`) and the
+existing 186 layout cases passed. Physical gestures remain untested.
+The separate “Overhaul SolidCraft iPadOS CAD UI” task made no source changes.
 
-The fixture is generated through actual `solid.box`, `solid.cylinder`,
-`sketch.create`, `sketch.rectangle.two_point` and `sketch.finish` commands. It is a
-base, a separate raised post and a visible reference sketch. It is an ordinary
-parametric document; the generic adapter supports other engine designs.
+Fresh combined unsigned native compilation **passes** in
+`/tmp/solidcraft-step85-resume-native-build.log`; the native Foundation harness
+also **passes all 186 cases** in `/tmp/solidcraft-step85-resume-native-check.log`.
+The added history label brings the native English catalog to 373 keys; the
+372-key results below belong to the earlier candidate. Physical gesture testing
+remains unperformed. Fresh full CI is **pending**. Source baseline
+B and the policy-document commit are also pending; the known three failures
+alone no longer block the development baseline. Record the fresh run's actual
+exit status, all failures and immutable SHAs here before enabling task starts.
+Any failure beyond the accepted three, or a changed failure signature, requires
+review. No parallel task has been launched.
 
-One finger orbits; two pan/pinch. Pencil/pointer taps select. Pointer hover
-preselects; secondary drag orbits, middle or Shift-secondary drag pans, scroll
-zooms. Fit, seven standard views, projection, selection filter, Multiple and
-Clear are native controls. Diagnostic identity is body name plus face/edge index,
-or the engine's vertex point. “Change post” executes `timeline.edit`; Undo/Redo
-use existing history. All topology selection is conservatively cleared after
-geometry/visibility changes. There is no persistent topology promise.
+## Previous candidate verification — 2026-10-28
 
-Debug builds accept `--viewport-check` for an opt-in device workflow: navigation,
-standard views, body/face/edge/vertex selection, multi-select, clear, projection,
-post edit, undo and redo. It uses **synthetic** Pencil-labelled samples through
-the same input boundary; it does not establish hardware touch/Pencil behavior.
-The driver asserts each selected entity type and logs its identity. Add
-`--viewport-check-hold-face` to stop after a selected face for a stable screenshot.
-`view.project` is the read-only adapter projection helper used to target known
-world points in that workflow. Normal launch does not run it. For example:
+These results predate the preserved gesture work and resumed candidate. They
+used Rust `+1.95.0`, the locked `ci` profile and the established Xcode 27 beta
+device target; they are not a substitute for the pending fresh validation.
+Historical device evidence below is not new verification.
 
-```sh
-xcrun devicectl device process launch --device "$SOLIDCRAFT_DEVICE" \
-  --terminate-existing --console com.solidcraft.ipados --viewport-check
-```
-
-## Checks observed on 2026-10-27
-
-All Cargo invocations use `+1.95.0`, `--locked`, `--profile ci`, and local/offline
-dependencies. No external dependency versions changed. Xcode 27.0 beta/iPhoneOS
-27.0; deployment target remains 17.0.
-
-| Check | Result |
+| Check | Observed result |
 | --- | --- |
-| `cargo test -p solidcraft-ipados-session -p solidcraft-ipados-bridge --lib` | PASS: 19 safe adapter + 9 ABI tests. Real engine geometry/edit/undo/redo/deletion; snapshot lifetime; world transforms; known topology picks; occlusion/hidden geometry; scale/offset/aspect/projection; empty/tiny/large/off-origin scenes; close orthographic zoom; stale generations/presented revisions; typed input, consumed UI, pan/pinch, hover/multi-select; malformed input; independent suspension/response lanes; malformed-command recovery keeps a valid viewport usable; smooth-sphere body feedback reuses model GPU blocks, and camera movement retains face highlight geometry. |
-| Engine `cmd::view_navigation::tests::continuous_navigation_moves_the_camera_without_editing_the_design` | PASS: existing shared navigation test, 1 run, 2,619 filtered. |
-| Shared GPU `capture::tests` | PASS: both existing opacity/face-colour conversion tests. |
-| Affected adapter/bridge/GPU Clippy `--all-targets --no-deps -- -D warnings` | PASS. |
-| Device dependency guard | PASS: 13 shared crates, 177 resolved CAD packages; no platform/frontend leaks. |
-| Adapter, bridge and GPU `cargo check --target wasm32-unknown-unknown --lib` | PASS; three inherited engine dead-code warnings remain. |
-| Swift `-typecheck -D DEBUG` | PASS against arm64 iOS 17/iPhoneOS 27 SDK. |
-| `sh apps/solidcraft-ipados/scripts/build.sh` | PASS: Rust device archive and unsigned native app, `BUILD SUCCEEDED`. Xcode requires execution outside the outer Codex sandbox to run its own script sandbox. |
-| Signed Debug device build | PASS with existing team/profile/certificate and local overrides; `codesign --verify --deep --strict` passes outside the outer sandbox. No provisioning updates, account or checked-in signing changes. |
-| `cargo xtask web-offline-test` | PASS with existing Chrome after allowing its localhost server outside the outer sandbox. |
-| `cargo xtask ci` | BLOCKED by inherited `crates/geom/src/fill_general.rs:166`, `clippy::nonminimal_bool`. Before it: fmt, assets, icons (17 tests), licences, lists, skills, layers and UI containers pass. A diagnostic run past that expression also found six inherited kernel boolean lints. Geometry/kernel files remain unchanged. Full workspace tests/wasm/desktop smoke are not claimed passing. |
+| Session / ABI integration | **PASS:** 105 session and 24 bridge tests, including the new suspension/ordinary-command/cancelled-preview regression. Both focused and final workspace runs pass. |
+| Native presentation | **PASS:** 186 Foundation layout/focus/decoder cases; these are not UIKit hit tests. |
+| Repository / compiler gates | **PASS:** formatting, assets, icons (17 tests), licences, lists, skills, layers (19 crates), UI containers and full-workspace Clippy `-D warnings`. Seventeen equivalent lint repairs are documented in ARCHITECTURE. |
+| Portable compatibility | **PASS:** wasm check for 14 crates, doc-test job, iOS dependency guard (13 shared crates / 177 packages), web offline/update harness, and pending-format merge/fold test. |
+| Unsigned native compilation | **PASS:** arm64 Rust archive and UIKit app compile/link; `BUILD SUCCEEDED`. No signing or installation. |
+| Engine-backed GPU proofs | **PASS:** 5 sketch, 6 modelling and 11 assembly Mac Metal captures; 8 representative images inspected. Workflows exercise preview/commit/cancel, original identity, regeneration, undo/redo, analytical geometry and native persistence. These are not UIKit/iPad screenshots. |
+| Independent CLI reopen | **PASS:** the fresh assembly file evaluates to 4 closed solids, 5,056 mm³, original feature IDs 3/6/9/12, no timeline errors or rollback. |
+| Repaired desktop / localization tests | **PASS:** final workspace run has 87 desktop-app tests and 2,932 UI tests passing. This includes the test-only crash-frame fix and catalog isolation/raw native message validation. Focused localization runs also pass 78 UI and 3 xtask tests; all 372 native English messages survive extraction/folding. The optional standalone `xtask i18n` reporter was not run because it forces a separate cold release build; its coverage projection and raw-source preservation tests passed. |
+| Complete required gate | **FAILED, historical raw outcome:** first completed full run records 3 engine failures (2,631 engine tests pass, 6 ignored), plus the subsequently repaired crash/catalog failures. The repaired rerun passes 85 of 86 top-level checks: 83 test binaries plus wasm/doc jobs. Its remaining unchanged engine binary again reports the same 3 failed test names; that duplicate process was explicitly stopped with SIGTERM after the earlier checkpoint decision. The rerun exits 1 and is not a completed passing gate. Only the three documented failures are now accepted for development; the new full run remains pending. |
+| Physical iPad / simulators | **NOT RUN in Step 8.5.** No physical Pencil/VoiceOver, simulator, signing or installation check. Earlier Step 8 observations remain historical only. |
 
-Full CI remains a required upstream integration gate. A local review commit does
-not waive this baseline failure and is not merge approval. No check was disabled,
-no lint allow added and no toolchain/global setting changed to hide it.
+The three unresolved engine tests are:
 
-## Evidence and runtime verification
+- `cmd::features::prism_local_tests::a_ring_cut_round_a_counterbored_hole_in_a_chamfered_disc`:
+  removed volume 148.27973047857813 versus 148.44025288211773 mm³.
+- `tests::robustness_goldens::seed_36`: invalid cavity ownership, changed topology,
+  area and volume; expected successful geometry fails.
+- `tests::robustness_goldens::seed_71`: changed area and topology counts.
 
-- `render_proof` executes the real fixture, renders it, changes the post from
-  25 to 40 mm with `timeline.edit`, and renders the new revision. Apple M3 Pro,
-  shared Metal GPU, Rust `ci` profile: 988 → 1,108 triangles, both bodies drawn.
-  It also picks and captures body, face, edge and vertex feedback using the
-  native adapter's exact GPU block references. A separate selected smooth sphere
-  proves visible body tint without model edges or copied feedback triangles. These are
-  **macOS GPU images**, visually inspected, not device or frame-rate evidence.
-  Paths: `/tmp/solidcraft-step3-viewport{,-changed,-body,-face,-edge,-vertex,-sphere}.png`.
-  Physical selected-entity captures are `/tmp/solidcraft-step3-ipad-{body,face,edge,vertex}.png`;
-  redo is `/tmp/solidcraft-step3-ipad-redo.png`. Face feedback and revision/identity
-  readouts were visually inspected; complete manual hardware verification remains below.
-- Physical device: iPad Pro 11-inch (3rd generation), using the existing pairing
-  and development signing setup. Step 3 installs, launches and renders the real
-  fixture on its native Metal layer. Labels were visually rechecked after fixing
-  stale catalogue extraction. The asserted 23-stage synthetic workflow completed:
-  body `Base`, face/edge index 5 and vertex `[-20,-15,10]`, multi-selection, clear,
-  projection, edit, undo and redo; the final capture shows geometry revision 9.
-  CoreDevice changed physical-device orientation to portrait during the run;
-  the same four picks passed afterward, then the original landscapeLeft was restored.
-  This is software-injected device coverage, not physical input hardware coverage.
-  Captures during CoreDevice orientation changes can crop the client area, so
-  mathematical resize/picking coverage is stronger than visual rotation coverage.
-  The final host coordinate-space callback was subsequently compiled and installed;
-  its relaunch was blocked because the iPad had become locked. The final scene
-  layout, same-pixel-size display-scale and GPU body-tint/resource-reuse corrections
-  are build-verified (and the GPU tint Mac-verified) only; they need an unlocked
-  iPad recheck before hardware coverage can be claimed. The user explicitly
-  deferred further iPad checks and authorised simulator or other verification;
-  the final verification uses real-engine tests, Mac GPU captures and iOS builds.
-  No simulator was launched. This does not block starting Step 4 from this commit.
-  Final binaries are rebuilt, but no final locked-device launch is claimed.
-- Private device screenshots and logs live under `/tmp/solidcraft-step3-*` and
-  are not committed/published. Some captures contain unrelated device overlays.
-  Build products remain ignored in `target/ipados-{xcode,device}/`.
-- Actual Pencil taps/hover, physical simultaneous finger gestures, pointer
-  hardware, manual multitasking, memory pressure and complete lifecycle stress
-  coverage remain unverified. No simulator was booted or launched. No FPS or
-  device timing claim is made.
+All three reproduce identically in the preserved preconsolidation test binary.
+Its timestamp does not establish an exact source commit. Independent upstream
+reports [#6944](https://github.com/tangency-labs/solidcraft/issues/6944),
+[#2669](https://github.com/tangency-labs/solidcraft/issues/2669) and
+[#3583](https://github.com/tangency-labs/solidcraft/issues/3583) corroborate these
+platform problems. No causal integration change was identified. No expected
+values, tolerances or golden files were changed. The proposed upstream work is
+unmerged and not green at inspection; recording a platform failure does not
+repair geometry. The user's limited development exception and exact measurements
+are in KNOWN-UPSTREAM-FAILURES; CHECKPOINT preserves the previous decision.
 
-## Step 4 extension points and limits
+## Evidence and continuation
 
-Extend `InputEvent`/`Contacts` in `input.rs` for simultaneous source arbitration,
-palm rejection and cancellation/coalesced-event policy. UIKit source identity,
-pressure/altitude, timestamp, modifier/button and last-presented geometry stamp
-are retained. Pointer hover is wired; Pencil hover and double-tap need compatible
-hardware and explicit Step 4 work. Keep navigation on the existing shared path.
+Complete first gate: `/tmp/solidcraft-step85-ci-resumed.log`.
+Repaired rerun, explicitly interrupted engine: `/tmp/solidcraft-step85-ci-final.log`.
+Native build: `/tmp/solidcraft-step85-native-build.log`.
+Focused/proof logs: `/tmp/solidcraft-step85-{adapter,native-check,web-offline,format-pending,crash-workspace,gpu-sketch,gpu-modelling,gpu-assemblies,cli-compare}.log`.
+Older-binary reproductions: `/tmp/solidcraft-step85-{prism,seeds}-before-consolidation.log`.
+Copies and images are retained under `target/step8.5-verification/`.
+The original 47-file archive and complete history bundle remain under
+`target/step8.5-preservation/`; both original and candidate hashes verify.
+These are local recovery artifacts, not a remote backup.
 
-Keep the engine and display workers independent. Evaluation/tessellation/index
-construction run on the engine worker; no kernel preemption is available.
-Generation invalidation rejects results, retaining the last valid scene and
-reporting failure while current picking is disabled. Do not introduce another
-session owner, Swift camera controller or topology identity scheme.
+INTERFACES documents actual shared boundaries. PARALLEL-DEVELOPMENT and
+NEXT-TASKS contain ownership and four complete draft prompts, deliberately
+retaining `BASELINE_PENDING_VERIFICATION`. No valid task-start SHA exists yet.
+NativeSession, shared protocols, lifecycle wiring and Xcode/Cargo registration
+remain integrator-owned. Source workstreams can be separated after approval;
+heavy builds need isolated outputs and capacity coordination (about 11 GiB free
+at the earlier checkpoint). Finish fresh validation and record source baseline B
+before task starts. If only the exact three accepted engine failures remain and
+all other required checks pass, the user exception permits a development-baseline
+commit with CI failures disclosed. Recheck the exceptions after a relevant
+upstream fix, engine/kernel/toolchain change and before release; no automatic
+monitor was created. Never describe this exception as a fully green CI result.
 
-Shared source changes are the small stateless navigation export in
-`crates/engine/src/{lib.rs,cmd/mod.rs,cmd/view_navigation.rs}` and the additive
-`Capturer::rgba_viewport` verification seam in `crates/gpu/src/capture.rs`. Both
-are Apple-independent; existing navigation/capture contracts retain their defaults.
-The latter verifies native model-block feedback through the existing GPU/readback
-pipeline. Check those small signatures when updating upstream. No geometry,
-kernel, sketch, renderer pipeline, format, dependency or broad upstream merge. Section/analysis UI, mesh-only topology,
-image/decal interaction, document browser, sketch editing and polished UI remain
-outside this milestone.
+The records below are preserved historical Step 8/7/6 reports; their commit
+eligibility and verification statements describe those earlier candidates.
 
 ---
 
-## Preserved Step 2 handoff and physical-device follow-up
+# Step 8 handoff — assemblies and joints
 
-# Step 2 handoff
+Continue in this checkout on `feature/ipados`, preserving the uncommitted
+Steps 4–7. Step 8 extends the same native workspace, numeric editor, immutable
+preview scheduler and shared engine. No reset, upstream merge, dependency
+upgrade, native format change or simulator launch occurred. Nothing was pushed.
+The historical Step 7/6 records below describe those milestones at their dates;
+this section and [ASSEMBLIES.md](ASSEMBLIES.md) give the current assembly status.
 
-Branch: `feature/ipados` in the existing `carlhampuswall/solidcraft-ipad` checkout.
-Preparation/base commit: `0d548f65`. The Step 2 commit is the commit containing
-this handoff (`git log -1 --format='%H %s'`); its exact SHA is reported with the
-implementation handoff. No upstream merge, history reset or push is part of this
-work. The initial working tree was clean.
+## Working assembly workflows
+
+**8A:** Assembly offers native component creation, body ownership transfer,
+linked occurrences and independent Paste New. The existing browser displays
+component definitions, full occurrence hierarchy, owned bodies and joints.
+Choose Occurrence in Select to pick a whole placement, or select its exact path
+in the browser. Names are labels; repeated names do not select another instance.
+Activate a context explicitly and use Return to root before root authoring.
+Rename, native hide/show/isolate, grounding, world/parent-local translation and
+rotation about an explicit pivot are integrated. Pending placements are visible;
+Capture/Revert applies only to the selected native occurrence IDs. Shared nested
+placements retain the engine's sharing behavior and show a notice.
+
+**8B:** Rigid, revolute and slider creation, as-built creation, original-joint
+editing, origin/reference repair, limits, suppression and confirmed deletion use
+the native commands. Choose both occurrences and geometric/named/explicit-frame
+references; inspect their axes, flip, offsets and which part repositions. Preview
+uses scratch evaluation and Apply accepts one native transaction. The inspector
+shows actual solver values/reasons, including clamping and legitimate no-ops.
+Joint driving provides precise entry and touch sliders; Pencil handles change
+the same draft parameter and require explicit Apply. A grounded or jointed part
+cannot bypass the solver through the placement form.
+
+**8C:** Cylindrical, planar, pin-slot and ball joints use the same creation/edit/
+drive workflow. Native floating-chain drag and constrained reach are available
+with original occurrence/grab context, residuals and failure feedback. Real joint
+frames, native fixed/floating/DOF/conflict/error reports, reference validation,
+Undo/Redo and full native persistence are integrated. Existing loops, links,
+rigid groups, studies and unexposed assembly data are retained. Their advanced
+authoring editors, coupling and motion-study UI are not part of this milestone.
+
+The source sketch and feature timeline remain editable inside their active
+component. Shared geometry updates its native instances. Placement changes use
+native transforms, not changed body vertices. The renderer reuses source mesh
+triangle buffers across occurrence poses and picks/highlights the intended
+placement. Edge/sketch streams still upload; per-face/translucent materials use
+the existing fallback. No latency or throughput measurement is claimed.
+
+## Semantics and limits
+
+- The checked-out JointOrigin stores an occurrence ID, not a complete path. New
+  joints/rebindings reject ambiguous repeated nested endpoints instead of picking
+  a first instance. Use a supported independent parent/component copy when that
+  context must be independent. Existing native documents remain intact.
+- Involved pending placements must be captured/reverted before joint authoring or
+  solving. Unrelated pending branches remain untouched. Native sharing notices
+  and copy notices are displayed; a full path does not imply instance-local data.
+- Named/geometric references are validated using native identity/resolution.
+  Missing references do not select nearby replacement geometry. Explicit repair
+  updates the original joint ID. Legacy circular references with no endpoint
+  retain upstream nearest-end semantics; this is not a persistent-topology fix.
+- Limits and placement transforms are native numeric values. Parameter-backed
+  offsets, angles and initial joint values retain native expressions; driving a
+  DOF follows upstream's evaluated-value behavior. Native constant expression
+  spelling can normalize. No separate expression/transform store exists.
+- With no joint touching root/grounded geometry, native solving implicitly fixes
+  the first active joint's A side for that solve. This does not set grounded.
+  The UI reports the native diagnostics instead of inventing DOF counts.
+- Occurrence/component deletion, rigid-group creation, relation/coupling/cam and
+  motion-study editors are engine-supported but not exposed here. Joint deletion
+  warns about the actual removed links; native studies remain and may need repair.
+  Full Files/document browsing, coordinated access and recovery remain Step 9.
+
+## Verification — 2026-10-28
+
+Rust `+1.95.0`, locked `ci` profile; Xcode 27 beta / iPhoneOS 27 SDK,
+minimum deployment iPadOS 17. Deterministic analytic checks use the real engine
+and actual adapter/controller paths, never only screenshots.
+
+| Check | Observed result |
+| --- | --- |
+| Session + ABI | PASS:105 session tests (23 assembly cases) and23 bridge tests; all earlier sketch/input/modelling cases retained. |
+| Shared joint/occurrence regression | PASS:163 joint-filter tests and77 occurrence-filter tests, including both additive API patches. |
+| Affected Clippy | PASS:both adapter crates, all targets, `--no-deps -D warnings`. |
+| Native deterministic | PASS:186 adaptive layout/focus cases plus production assembly DTO, full-path, slider, refresh and preview-queue fixtures; not UIKit hit tests. |
+| Native unsigned build | PASS:arm64 Rust archive and UIKit app compile/link, no simulator. |
+| Desktop app compile | PASS:`cargo +1.95.0 check --locked --offline --profile ci -p solidcraft --all-targets`; `/tmp/solidcraft-step8-desktop-check.log`. Compile-only; desktop UI was not exercised. |
+| wasm / web offline | PASS:all14 checked crates and actual browser offline/update harness. Shared inherited warnings remain. |
+| Dependency guard | PASS:13 shared crates /177 CAD packages; no Apple/frontend leak. |
+| Mac GPU | PASS:11 actual model/feedback captures inspected on M3 Pro Metal; hinge, rigid attachment, slider, previews/cancel and native persistence. These are not UIKit screenshots. |
+| Native CLI compatibility | PASS:rebuilt shared CLI reads the same four-component/three-joint native file; component definitions, poses, joint frames/limits, feature identities, parameters and metadata match. Sharing and named-expression relationships are covered by the separate session fixtures. Total volume5056mm³. This is CLI validation, not desktop UI testing. |
+| Physical iPad | PASS:signed install/launch on physical iPad Pro11-inch(3rd generation), iPadOS27.2. Production UIKit form callbacks create revolute/slider joints, preview/cancel, Apply90°/30°, Undo/Redo, clamp75mm→50mm and save/reopen retaining joint IDs11/12. Matching Metal frames and live device-view screenshots inspected. Human occurrence selection and finger navigation pass per the user. Rotation preview flicker was reproduced and fixed, and the user confirms the updated Pencil preview and cancellation are stable. |
+| Full `cargo xtask ci` | BLOCKED:unchanged `crates/geom/src/fill_general.rs:166`, `clippy::nonminimal_bool`. Fmt/assets/icons/licences/lists/skills/layers/UI-containers pass first. No workspace tests run past the Clippy stop. |
+
+Acceptance A covers ownership/history/world-pose preservation, linked versus
+independent copies, shared sketch regeneration, repeated nested definitions and
+an analytically composed rotated/translated parent. B/C verify the +Z hinge
+marker at90° and30°, +X slider displacement20mm, grounded invariance and actual
+90°/50mm stops for120°/75mm requests. D covers rotated as-built pose preservation
+and native floating rigid-chain movement. E/F cover conflicts, lost references,
+original-ID repair, same names/rename, pending/cancel/superseded results,
+duplicate Apply, explicit native save/open and further drives. Additional native
+joint types each cover creation, edits, invalid inputs, history and roundtrip.
+
+**No commit was made because the mandatory full gate remains red.** No unrelated
+lint was edited or suppressed. An independent shared-engine all-target Clippy
+also reports inherited `component_clone.rs` collapsible-match and
+`sketch_modify.rs` nonminimal-bool lints. No push occurred.
+
+Logs: `/tmp/solidcraft-step8-{adapter,clippy,ci,native-build,native-check,wasm,
+web-offline,desktop-check,engine-joints,engine-occurrences,engine-clippy,dependencies,gpu}.log`.
+GPU fixture `/tmp/solidcraft-step8-assembly.solidcraft`; captures
+`/tmp/solidcraft-step8-assembly-*.png`; rebuilt CLI artifacts/logs use
+`/tmp/solidcraft-step8-cli-*`, with comparison in `cli-compare.log`.
+
+## Physical runtime evidence and reproduction
+
+The signed build reuses the existing Xcode-managed development identity/profile;
+no provisioning updates, account changes or simulator are involved. DEBUG launch
+`--assembly-check --assembly-check-pause` creates a dedicated disposable native
+fixture, prints READY only after a matching presented frame, and waits for
+SIGUSR1. It never synthesizes a physical Pencil event. Captured stages are hinge
+preview90, cancelled0, committed90, committed30, slider75→actual50 and native
+reopened history. `--assembly-check` without pause runs the same callback/frame
+barriers automatically and leaves the reopened assembly available for hand input.
+A 45-second watchdog is a failure deadline, not a sequencing delay.
+
+Evidence: `/tmp/solidcraft-step8-signed-build.log`,
+`/tmp/solidcraft-step8-device-check.log`, copied app log
+`/tmp/solidcraft-step8-device-native.log`, and native file
+`/tmp/solidcraft-step8-ipad-runtime.solidcraft`. The device saves its own unique
+Documents/Step8-Assembly-Runtime-UUID.solidcraft, never overwriting the existing
+local-design slot. The current shared CLI evaluates that copied physical file as
+four closed bodies,6280mm³; original feature IDs3/6/9/10 remain error-free, hinge30
+and slider50 world centroids match independent analytic poses within1e-7mm.
+`/tmp/solidcraft-step8-ipad-cli-{eval.json,compare.log}` records this independent
+check; the earlier four-component/three-joint Mac fixture remains separate.
+The physical file's CLI component/joint inspection also verifies definitions
+0/1/4/7, full root paths2/5/8, grounded base2, original revolute11/slider12,
+slider limits[0,50] and no unresolved/conflicting/floating or pending state.
+The final readable-control build repeats the whole driver successfully in
+`/tmp/solidcraft-step8-device-final.log`; the signed and unsigned final builds
+both succeed. Native label checks cover all34 tool/edit bindings and fallback.
+
+CoreDevice screenshot capture on this iPadOS/Xcode beta combination returns a
+wrongly oriented/cropped framebuffer, despite correct1194×834pt scene/window/view
+bounds. The user confirmed the real app fills the screen. Raw
+`/tmp/solidcraft-step8-ipad-*.png` captures record that service limitation; they
+are not evidence of app clipping or complete inspector visibility. All six
+actual states were separately captured/inspected in the live physical Device Hub
+view via computer use. CoreDevice screen recording reports unsupported on this
+device. No image was fabricated, rotated or reconstructed to mask the failure.
+The user physically verified occurrence selection and finger navigation, then
+reported flicker while rotating with Pencil. A deterministic held-worker test
+reproduced the cause: each actual move cleared the preview and flashed the
+committed pose. A single display-only last-good scene now remains while the
+new value is unvalidated; Apply stays disabled, stale source picks are blocked,
+and the latest result replaces it. Cancel/tool/document changes discard it.
+The numeric/slider preview path shares that display boundary, including failed
+validation, while source selection explicitly removes the retained preview.
+The additional test covers coalescing, stale/end-boundary completions, pending
+lift, no automatic Apply and history preservation. After installing the fix, the user repeated the ring drag with a physical
+Pencil and returned to Properties/Cancel, reporting that the preview is stable.
+This verifies the tested hand workflow; simultaneous palm contact, VoiceOver and
+device latency remain unmeasured. The final opt-in `--assembly-pencil-check`
+prepares the ordinary hinge preview without Apply and leaves its ring visible,
+using the same production callbacks and matching-frame barrier.
+`/tmp/solidcraft-step8-device-pencil.log` records the fixed-build controller
+sequence and ready pose; the hand outcome is the user report, not synthetic
+input.
+
+## Changed files and upgrade seams
+
+- Safe adapter: new `assembly.rs` and `assembly_references.rs`; existing
+  `lib.rs`, `modelling.rs`, `editing.rs`, `input.rs`, `viewport.rs`, `picking.rs`,
+  `workspace.rs`, and the area's existing `tests.rs`. Native records/references
+  remain authoritative; presentation caches are revision-aware.
+- Bridge/render evidence: existing `renderer.rs`, `ffi/tests.rs` and
+  `examples/render_proof.rs`. SharedTris/InstancedMesh use native source meshes
+  and complete effective poses; the bounded cache owns no placement semantics.
+  ABI3 symbols are unchanged; JSON presentation fields are additive. Rebuild
+  Rust and Swift together.
+- Native: existing workspace controller/components/layout/session, deterministic
+  harness, pending `ipados-assemblies.json`, and scoped host instructions. The
+  opt-in DEBUG `--assembly-check` drives production form callbacks and waits for
+  exact presented document/revision/preview frames. Device inspection prompted a
+  wider text rail, readable panel Close and existing-catalog command-label mapping;
+  the locale extractor includes only those13 existing legacy modelling labels.
+  `ipados-workspace.json` adds the short Close label with the full accessibility
+  label retained. No geometry or command behavior moved into the host.
+- Two minimal shared API changes: `cmd/component.rs` adds optional occurrence-ID
+  scoping to Capture Position (omission retains capture-all); `cmd/joints.rs`
+  adds optional A/B-origin rebinding to joint.edit, validating both before
+  mutation and retaining the joint ID. Adapter-only alternatives would capture
+  unrelated state or require delete/recreate. Existing area test files cover
+  both. No solver, kernel, document structure or format changes. Desktop/web
+  callers retain old behavior absent the new parameters; both changes could be
+  proposed upstream independently. See ASSEMBLIES and ARCHITECTURE delta ledgers.
+- Documentation: ASSEMBLIES, HANDOFF, IMPLEMENTATION, ARCHITECTURE, INPUT, UI,
+  BUILDING and native AGENTS. Prior uncommitted Step4–7 work remains intact.
+
+## Exact Step 9 integration points
+
+Reuse `NativeSession`'s serial CAD ownership and current native `file.save`,
+`file.save_as` and `doc.open` commands. The existing local slot is Application
+Support / SolidCraft / Modelling.solidcraft, storing the full native container.
+Replace only the platform access/presentation seam with Files/document services,
+security-scoped coordinated reads/writes, recovery and restoration. Do not invent
+another design serializer. Preserve unknown component/joint/link/study data and
+session visibility. Document replacement must invalidate numeric/model/handle
+contexts and late callbacks through the existing document/generation tokens.
+Expose pending-placement capture/revert decisions deliberately before saves;
+never capture unrelated movement as a side effect of file access. Keep preview
+frames separate from committed poses and autosave. Assembly references use
+native IDs/full paths; bookmarks and transient browser expansion belong in host
+state, not a native CAD format addition. No Step9 browser/recovery work started.
+
+---
+
+## Historical Step 7 record (superseded by Step 8 status above)
+
+# Step 7 handoff — parametric modelling and feature timeline
+
+Continue in this checkout on `feature/ipados`. The preceding uncommitted Steps
+4–6 are preserved. Step 7 adds native command-backed modelling forms, a real
+editable timeline, transactional previews and app-private native save/reopen.
+No branch reset, upstream merge, dependency upgrade, signing/account change or
+simulator launch occurred. Nothing was pushed. Commit eligibility and final
+verification are recorded below; the Step 6 record remains at the end as history.
+
+## Step 7 working workflows
+
+Choose **Model** outside an active sketch. Pick a classified sketch region,
+choose extent/direction, operation and explicit targets, then Preview and Apply.
+Pencil can adjust the extrusion distance handle; lift leaves a proposal for
+explicit confirmation. Fingers keep the shared navigation path. Tool-first
+selection can return to the viewport, then refresh the native input choices.
+Lists show their actual sources and support remove/reorder without restarting.
+
+7A is implemented: extrusion with new/join/cut/intersect, positive/negative/
+symmetric extents and Through All; fillet/chamfer; original feature editing;
+upstream sketch regeneration; expressions/parameters; Undo/Redo and native
+persistence. 7B adds revolve, shell, simple holes (blind/Through All), Boolean
+union/difference/intersection, body and feature rectangular/circular/path
+patterns and mirror. 7C adds basic sweep and ordered-section loft. All use the
+existing upstream constructors/evaluator; the exact options and limits are in
+[MODELLING.md](MODELLING.md).
+
+Model displays real feature order/IDs, type, suppression, failures/warnings and
+stale state. Select a feature for its original parameters, edit/rename/suppress,
+inspect dependencies or explicitly confirm native deletion consequences. A
+broken downstream feature can open against its real upstream source state and
+be repaired by explicit profile/edge/face reselection. Cancel preserves the
+failed native history and labels its display accordingly. No visual row-reorder
+or unsupported rollback-marker workflow is implied.
+
+Save local design writes the full native container to Application Support /
+SolidCraft / Modelling.solidcraft; Reopen local design explicitly confirms
+replacement. This intentionally has no Files browser, autosave or restoration.
+Unexposed native features and metadata remain in the document. Optional input
+names newly introduced by an edit may be allocated by the native reader's
+existing name_feature_inputs normalization; existing identities/expressions and
+feature order are retained.
+
+## Step 7 verification — 2026-10-28
+
+Explicit Rust `+1.95.0`, locked `ci` profile; Xcode 27 beta / iPhoneOS 27,
+minimum iPadOS 17. No physical iPad/Pencil runtime or UIKit screenshots are
+claimed. The last recorded device availability remains unavailable.
+
+- Session: **82/82 tests passed**, including 23 new Step 7 cases and all earlier
+  input/workspace/sketch regressions. The modelling name filter matches 25 cases
+  because two earlier cases already used that word.
+- Acceptance A: dimensioned 40 × 30 sketch → 10 mm extrusion, 12,000 mm³;
+  original depth edit15 → 18,000 mm³; original width edit60 → 27,000 mm³;
+  original sketch/extrusion IDs retained, bounds, Undo/Redo and native roundtrip.
+- Acceptance B: explicit top-plane circle and negative cut through15;
+  27,000 − 375π then radius edit3 → 27,000 − 135π mm³. Both original
+  extrusions remain editable. Native kernel-backed mass checks compare removed
+  volume within the repository's curved-geometry tolerance (relative5e-4), not
+  screenshot/tessellation appearance. Boxes use absolute1e-6 mm³.
+- C/D: independent fillet/chamfer/shell, revolve, hole, all Booleans, body/feature/
+  path patterns, mirror, sweep and loft cover creation, original-feature editing,
+  invalid inputs, result structure, Undo/Redo and native roundtrip. Analytic
+  checks include annular revolution, rectangular patterns and square frusta.
+- F: real source-aware synthetic Pencil handle replay includes navigation,
+  repeated drags, cancellation, resize, current-preview validation and explicit
+  confirmation. Deterministic completion tests reject older work, document
+  changes and duplicate confirmation. Mixed-body picks and empty targets during
+  an existing feature edit are rejected. Invalid references cannot silently
+  adopt a different edge/face/profile; explicit repair retains the same ID.
+- Native Foundation checks: **176 adaptive layout/focus cases** plus production
+  modelling-response decoding, exact UInt64 reference and nested-expression
+  preservation passed. These are not UIKit hit tests.
+- Mac GPU: actual native modelling controller preview10 → committed10 →
+  original depth15 → Undo/Redo and a named-radius cut captured and inspected, including the actual
+  extrusion handle. Native container saved for independent CLI validation.
+  These are model/feedback captures, not screenshots of the iPad interface.
+
+Final checks:
+
+| Check | Observed result |
+| --- | --- |
+| Session + ABI | PASS:82 session +19 bridge tests, including earlier milestones. |
+| Affected Clippy | PASS:both adapter crates, all targets, ci, --no-deps -D warnings. |
+| Full wasm | PASS:all14 checked crates, including the web frontend; inherited shared warnings remain. |
+| Web offline | PASS:actual existing offline/update browser harness. |
+| Dependency guard | PASS:13 shared crates /177 CAD packages, no platform/frontend leak. |
+| Native build | PASS:Rust arm64 archive plus unsigned UIKit app compile/link; no simulator or app launched. |
+| Native deterministic | PASS:176 adaptive cases plus production modelling DTO/exact-reference/expression fixtures. |
+| GPU | PASS:6 actual model/feedback captures inspected, including the cut; no UIKit screenshot claim. |
+| Native CLI compatibility | PASS:upstream CLI reopened the same four-feature native design, found one closed body, retained both sketches and dimensions, bore_radius and the radius expression bore_radius, all four stable IDs, no timeline error/warning. Volume17,575.9554388 mm³ versus analytic18,000−135π=17,575.8849918 (within curved tolerance); bounds40×30×15. This is CLI validation, not desktop UI testing. |
+| Full cargo xtask ci | BLOCKED:unchanged crates/geom/src/fill_general.rs:166, clippy::nonminimal_bool. Fmt/assets/icons(17 tool tests)/licences/lists/skills/layers/UI containers passed first. Workspace Rust tests do not run beyond this blocker; focused tests and full wasm were run independently. |
+
+**No commit was made because the mandatory full gate remains red.** No shared
+lint was suppressed or modified to make this platform milestone appear green.
+Nothing was pushed. The branch still includes the preserved uncommitted prior
+milestones. The final unsigned product is
+`target/ipados-xcode/Build/Products/Debug-iphoneos/SolidCraft.app`.
+
+Logs use `/tmp/solidcraft-step7-{adapter,bridge,clippy,ci,native-build,native-check,
+wasm,web-offline,gpu,cli}.log`. Captures:
+`/tmp/solidcraft-step7-model-{preview10,depth10,depth15,undo,redo,cut3}.png`.
+Native CLI fixture: `/tmp/solidcraft-step7-model.solidcraft`.
+
+## Step 7 changed-file map and upgrade seams
+
+- Safe adapter: new `crates/ipados/session/src/modelling.rs` and `references.rs`;
+  existing `lib.rs`, `editing.rs`, `input.rs`, `viewport.rs`, `workspace.rs` and
+  the existing `tests.rs`. Document/session ownership and history stay upstream.
+- ABI: existing `bridge/src/ffi.rs`, `ffi/tests.rs`, C header, and the existing
+  `examples/render_proof.rs`. ABI3 symbols remain; JSON `kind:model` adds typed
+  begin/inspect/preview/commit/cancel requests. Rebuild Rust and Swift together.
+- Native host: existing workspace controller/components/layout/session;
+  locale extractor, existing deterministic harness and pending
+  `assets/locales/pending/ipados-modelling.json`. App-private file services call
+  native `file.save`/`doc.open`; no CAD logic moved into Swift.
+- Documentation: MODELLING, IMPLEMENTATION, HANDOFF, ARCHITECTURE and BUILDING;
+  scoped native language exception explicitly includes Step7 presentation.
+- No Step7 shared engine/kernel/document/solver source, dependency or native
+  format patch was needed. Upstream maintenance checks are command parameter
+  shapes (not all schemas are complete), feature-definition shapes, strict
+  profile/naming APIs, scratch/ComputedCommands and the native writer/reader.
+  No copied upstream frontend module exists.
+
+## Remaining limits and Step 8 integration
+
+Richer extrusion To/From Object/Two Sides/draft controls, advanced fillet styles,
+specialised hole variants, sweep/loft rails/apex controls, arbitrary reference
+axis/plane creation and native timeline reorder/rollback controls remain
+unexposed. Existing representations are preserved. Actual kernel diagnostics
+limit individual operations; no new algorithm or mesh substitute fills a gap.
+No group is reduced to a static tool palette; supported basic workflows in
+7A/7B/7C have tested creation/editing/history/persistence paths.
+
+Physical UIKit/Pencil/touch/palm-rejection/keyboard/VoiceOver acceptance and
+screenshots remain outstanding. Validate the actual controls on the available
+physical iPad before describing hardware acceptance as complete. Performance
+latency has not been measured. Assemblies/joints and document browsing were not
+implemented here.
+
+Step8 should reuse the one Session owner, authoritative body/feature/occurrence
+identities, shared parameter editor, model draft tickets and immutable preview
+publication. Do not create a parallel assembly document/history. Read
+MODELLING.md, ARCHITECTURE.md and this handoff first.
+
+---
+
+## Historical Step 6 record (superseded by Step 7 status above)
+
+# Step 6 handoff — sketch editor
+
+Continue in this checkout on `feature/ipados` (two commits ahead of origin), with
+Steps 4–5 and Step 6 preserved as uncommitted work. No reset, branch switch,
+upstream merge, dependency upgrade or global toolchain/signing change occurred.
+No commit: the mandatory repository gate still fails on the inherited shared
+Clippy lint below. Nothing was pushed.
 
 ## Start here
 
-- Decision/patch ledger: [ARCHITECTURE.md](ARCHITECTURE.md).
-- Exact build path: [BUILDING.md](BUILDING.md).
-- Scope/Step 3 acceptance: [IMPLEMENTATION.md](IMPLEMENTATION.md).
-- `crates/ipados/session/src/lib.rs`: safe `SessionAdapter`, real commands,
-  structured errors, document/geometry/scene revisions and owned `RenderSnapshot`.
-- `crates/ipados/bridge/include/solidcraft_ipados.h`: ABI 1 ownership and buffer
-  contracts; `src/ffi.rs` is the only unsafe module. `src/renderer.rs` drives the
-  existing shared viewport renderer, not a replacement renderer.
-- `apps/solidcraft-ipados/SolidCraft/{Application,NativeSession,MetalCanvas}.swift`:
-  lifecycle, worker/render lock and typed native input. Xcode target/scheme:
-  `SolidCraft`; deployment iPadOS 17, iPad device family only.
-- `.github/workflows/ipados-build.yml`: scoped PR/manual macOS build checks;
-  no Blacksmith assumption. Workflow source is prepared; GitHub execution has
-  not been dispatched or observed.
+- [SKETCHING.md](SKETCHING.md): capability inventory, actual command bindings,
+  gestures, solver/dimension semantics, preview/history and acceptance coverage.
+- [IMPLEMENTATION.md](IMPLEMENTATION.md): completed scope and changed-file map.
+- [ARCHITECTURE.md](ARCHITECTURE.md), [INPUT.md](INPUT.md), [UI.md](UI.md): retained
+  engine ownership, camera/input, workspace and expression-editor contracts.
+- [BUILDING.md](BUILDING.md): build and deterministic check commands.
 
-## Commands and observed results (2026-10-27)
+## Working workflow
 
-All Cargo commands used `+1.95.0`; default Rust remains `esp`. Dependencies kept
-their locked external versions. Local SDK: Xcode 27.0 beta / iPhoneOS 27.0.
+Normal launch retains the real development fixture. Choose **Create sketch**,
+select a datum, existing construction plane or suitable selected planar face,
+inspect the plane preview, then confirm. The original native plane/attachment
+value is retained. Model → select a sketch → **Edit sketch** reopens its existing
+IDs and history. Finish works for open or under-constrained sketches.
 
-| Command/check | Observed result |
+The sketch palette offers Select, lines/chains, two-point rectangle, circle,
+three-point analytic arc, fit-point spline and Move/handles. Pencil places or
+drags; fingers pan/zoom in the active plane. Finish chain completes a spline or
+stops a line chain. Cancel discards only the current provisional operation.
+Properties supplies compatible constraints, selected/related constraint
+inspection/removal and actual native solver/profile state. Driving dimensions
+use the shared expression editor, explicit Preview/Apply/Cancel and retained
+parameter expressions. Pencil can place dimensions and move annotation text.
+
+Secondary native operations include Trim/Extend, construction conversion,
+Translate/Copy/Rotate/Rotate Copy and Mirror. Transform expression fields use
+upstream unit parsing and the same scratch proposal/acceptance path. Whole-sketch
+Delete is explicit and queries native dependents before confirmation.
+
+No new engine, solver, kernel, document format, history or topology model exists.
+`SceneSnapshot.sketch` carries the actual immutable native sketch/world plane;
+`ToolOperation::Sketch` extends the existing latest-work mailbox. Engine work
+runs without the viewport/render lock, including initial dimension preparation.
+Stale interaction/selection/lifecycle tokens are checked before publication or
+acceptance. Primitive previews evaluate through the scratch sketch; bounded
+native live drags defer downstream regeneration. Completed operations regenerate
+the original timeline. Error paths retain the previous valid document/preview.
+
+## Observed verification — 2026-10-28
+
+Explicit Rust `+1.95.0`, locked/offline profile `ci`; Xcode 27 beta / iPhoneOS 27,
+minimum iPadOS 17. This task did not boot or launch a simulator.
+
+| Check | Actual result |
 | --- | --- |
-| `rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy --target aarch64-apple-ios --target wasm32-unknown-unknown` | Installed successfully; global default unchanged. |
-| `xcode-select -p`, `xcodebuild -version`, `xcodebuild -showsdks` | Selected `/Applications/Xcode-beta.app/Contents/Developer`; 27A5228h; device and simulator SDKs present. No settings changed. |
-| `cargo test --locked --offline --profile ci -p solidcraft-ipados-session -p solidcraft-ipados-bridge --lib` | 8 adapter + 5 ABI tests pass. Real timeline rebuild, 12,000 mm³ body, engine tessellation, release/lifetime, bad commands/input, view revision and bounded copies. |
-| `cargo build --locked --offline --profile ci --target aarch64-apple-ios -p solidcraft-ipados-bridge` | Rust native device library compiled. |
-| `cargo check --locked --offline --profile ci --target wasm32-unknown-unknown -p solidcraft-ipados-session -p solidcraft-ipados-bridge --lib` | Both libraries pass; inherited wasm engine dead-code warnings remain. |
-| `cargo clippy --locked --offline --profile ci -p solidcraft-ipados-session -p solidcraft-ipados-bridge --all-targets --no-deps -- -D warnings` | Pass for both new packages. |
-| Same Clippy command without `--no-deps` | Fails in unchanged `crates/geom/src/fill_general.rs:166`, `clippy::nonminimal_bool`; platform lint success does not waive this failure. |
-| `cargo metadata --locked --offline --format-version 1 --filter-platform aarch64-apple-ios` piped to `python3 crates/ipados/check-dependencies.py` | Pass: 13 shared crates / 177 resolved CAD packages; no platform/frontend dependency leaks. |
-| `cargo fmt --all -- --check`, `git diff --check` | Pass. |
-| `cargo xtask layers`, `skills`, `lists`, `ui-containers` | Pass (19 registered crates; scoped exceptions keep router/skill size limits). |
-| `cargo check -p rfd --target aarch64-apple-ios --locked --offline` | Deliberate architecture spike fails: 12 missing native dialog backend implementations. Locked arboard iOS check passes but selects X11 backend. |
-| `sh apps/solidcraft-ipados/scripts/build.sh` | PASS: latest Rust device library rebuilt and unsigned native `SolidCraft.app` linked, `BUILD SUCCEEDED`. First sandboxed Xcode attempt could not run nested `sandbox-exec`; reran outside the Codex sandbox with Xcode's own script sandbox retained. |
-| `cargo run --locked --profile ci -p solidcraft-ipados-bridge --example render_proof -- /tmp/solidcraft-ipados-render-proof.png`, then direct execution of that binary outside the sandbox | Sandbox could not access a GPU. Host execution PASS: Apple M3 Pro Metal, 1 engine body, 12 triangles, 12,000 mm³, 12 drawn triangles. PNG visually inspected; it shows the real rectangular solid. This is macOS GPU evidence, not an iPad screenshot. |
-| `PATH="/opt/homebrew/bin:$PATH" cargo xtask ci` | FAIL (xtask exit 1; Clippy child exit 101) in existing `crates/geom/src/fill_general.rs:166`, `nonminimal_bool`. Before that: fmt, 843 attributed assets, icon checks (17 tests), licences, lists, skills, layers and containers pass. Earlier attempts exposed Python 3.9 and sandbox localhost restrictions; corrected invocation uses Python 3.14 and runs outside the sandbox. |
+| Session/ABI tests | PASS: 59 session + 15 bridge tests; includes the earlier Steps 3–5 regressions. |
+| Rectangle + native downstream | PASS: origin connection, native closed profile, 40 × 30 dimensions, reopen/change width60 while height30 remains; 10 mm prism 12,000 → 18,000 mm³ within 1e-6 mm³; undo/redo and native container round trip/edit. |
+| Constraints/failure | PASS: solver-aware drag retains relationships; genuine contradictory existing dimension versus fixed geometry is rejected with valid expression/document/history retained; recovery after unfix; duplicate/invalid selections and degenerate geometry. |
+| Curves/input | PASS: separate circle/arc/spline creation/handles/history/cancel; shared-endpoint chain/profile closure; Pencil dimension/text placement; stale results, predicted input, finger navigation, resizing and focus cancellation. |
+| Plane/compatibility | PASS: tilted plane and existing construction reference; exact certified face attachment follows source height change10→20 and survives reopening/container load; unexposed ellipse/IDs preserved. |
+| Secondary | PASS: native trim, extend to a real crossing, transform proposal/undo/cancel; native response-decoder fixtures cover transform completion and dependencies. |
+| Native deterministic | PASS: 176 adaptive layout/focus cases plus production command/preview response fixtures. These are not UIKit hit tests. |
+| Affected Clippy | PASS: both adapter crates, all targets, `--no-deps -D warnings`. |
+| Wasm adapters | PASS; three inherited shared-engine dead-code warnings. |
+| Device dependency guard | PASS: 13 shared crates / 177 resolved CAD packages; no frontend/platform leak. |
+| Final unsigned native build | PASS: Rust arm64 archive and UIKit app compile/link against iPhoneOS SDK. |
+| macOS GPU evidence | PASS: actual adapter Pencil rectangle → driving dimensions → reopen → width60 preview/commit → undo/redo, with native profile area1,800 mm². Before/after captures inspected; these are model/feedback captures, not UIKit screenshots. |
+| Web offline compatibility | PASS: actual upstream offline/update browser harness. |
+| Full `cargo xtask ci` | BLOCKED at unchanged `crates/geom/src/fill_general.rs:166`, `clippy::nonminimal_bool`. Fmt, assets, icons (17 tool tests), licences, lists, skills, layers and UI containers passed before Clippy. |
 
-Full workspace tests, complete workspace wasm, desktop smoke and web-offline
-validation were not reached after the Clippy failure. Trunk is not installed.
-This is **not** a passing complete repository gate or approval/merge-ready claim.
-No checks were disabled or marked passing to hide that failure. The focused iPad
-workflow lints the two new packages with `--no-deps`; it does not replace the
-existing full upstream gate.
+Logs: `/tmp/solidcraft-step6-{adapter,clippy,wasm,ci,native-build,native-check,web-offline}.log`.
+GPU proof: `/tmp/solidcraft-step6-gpu.log` and
+`/tmp/solidcraft-step6-sketch-{40x30,60x30-preview,60x30,undo,redo}.png`.
+Unsigned app: `target/ipados-xcode/Build/Products/Debug-iphoneos/SolidCraft.app`.
+The full workspace tests/wasm and desktop smoke did not run past the inherited
+full-gate blocker; adapter wasm and web-offline were checked separately. No shared
+lint was changed or suppressed to make this milestone appear green.
 
-Build logs live under `/tmp/solidcraft-ipados-*`; they and generated artifacts
-are not source-controlled. App output:
-`target/ipados-xcode/Build/Products/Debug-iphoneos/SolidCraft.app`.
-Evidence: `/tmp/solidcraft-ipados-render-proof.png`.
+## Device coverage and remaining limits
 
-## Verification limits and next work
+The user stated the physical iPad is currently unavailable. An intermediate
+signed build succeeded using the existing certificate/profile; installation and
+runtime verification were not completed. The install/launch attempt timed out in
+CoreDevice before verification, and device work stopped at that instruction.
+**No Step 6 UIKit screenshots, human UI taps, physical Pencil/touch/palm rejection,
+VoiceOver or latency measurement are claimed.** Build-only and deterministic
+coverage above must not be presented as complete physical acceptance.
 
-Source/configuration, Rust iOS compilation, native application linking and a
-physical iPad launch/render are proven. Pencil interaction, rotation, memory
-pressure and full foreground/background lifecycle tests remain unverified.
-No simulator has been launched.
+DEBUG `--sketch-check` is compiled but unrun. It waits for presented frames and
+completions, injects software Pencil events through the real native boundary,
+creates/dimensions a rectangle, finishes/reopens, edits width, undoes/redoes and
+checks native area1,800 mm²/expression. It leaves the actual dimension inspector
+visible for later screenshot review. It does not prove Pencil hardware. When the
+device returns, perform the A–E workflows through the actual controls, capture
+wide/compact/portrait screenshots and verify keyboard/VoiceOver and simultaneous
+Pencil/finger input. Do not silently substitute this driver for those checks.
 
-Physical-device follow-up (2026-10-27, user-authorized install):
+Additional native variants remain unexposed: centre arcs, control-point spline
+authoring/insertion, path trim, transform scale and richer automatic tangency.
+Control-point spline insertion is an actual upstream limitation. Other variants
+are native UI scope gaps. General solid modelling/timeline UI, assemblies, Files,
+autosave/restoration and the native document browser were not added.
 
-- Built the unchanged application from `dc96ee14` using local automatic-signing
-  overrides and an existing wildcard development profile/certificate. The earlier
-  restricted profile check had missed the available profile. No profile, account,
-  certificate, trust setting or checked-in signing configuration was changed.
-- Signed Xcode build passed; `codesign --verify --deep --strict` passed outside
-  the sandbox; `devicectl device install app` and `device process launch` passed.
-- Physical iPad Pro 11-inch (3rd generation), iPadOS 27.2, Developer Mode enabled.
-  Process remained running. Device screenshot visibly shows “Native engine and
-  renderer ready” and the real command-generated solid on the shared Metal renderer.
-- Signed app: `target/ipados-device/Build/Products/Debug-iphoneos/SolidCraft.app`.
-  Local logs: `/tmp/solidcraft-ipados-signed-build.log`, install/launch/process JSON
-  under `/tmp/solidcraft-ipados-*`. Screenshots remain private local evidence and
-  are not committed or published; they also contain unrelated device overlays.
+## Exact Step 7 integration points
 
-The current native app submits its only CAD operation before surface attachment.
-Before Step 3 adds expensive commands while rendering, split engine evaluation
-locking from synchronous render suspension. Preserve document/scene generations
-and typed input, and use the shared `view.navigate` camera command/path. File
-access/autosave/restoration and interactive selection/gestures remain unimplemented.
-Do not expand this foundation into a second command system or camera controller.
+- Reuse `SessionAdapter::execute`, upstream command schemas/history and the same
+  serial engine owner. General extrusion UI is not present; tests use native
+  `solid.extrude {sketch,distance}`. The rectangle fixture proves regeneration.
+- Read actual feature IDs/ownership from `workspace.rows`; extend presentation
+  around existing timeline inspection/edit/dependents APIs, preserving references.
+- Reuse native workspace panels, `NumericExpressionEditor`, focus policy and
+  production `EngineCommandEnvelope`. Keep expressions intact until confirmation.
+- Reuse `ToolWork`/scratch/ComputedCommands and latest-work/version tickets; do not
+  evaluate CAD while holding viewport/render locks or accept discarded work as a
+  successful commit. Keep commands/camera/cancelled previews in their own history
+  contracts. Retain native selection/entity types that lack controls.
+- Rebuild both Rust and Swift after protocol changes. ABI 3 C symbols remain;
+  JSON adds `sketch_plane`, `sketch_plane_cancel`, dimension numeric context,
+  sketch workspace/annotations and tool proposals. Header documents the boundary.
+- Resolve the inherited full-gate blocker in a separate reviewed change before a
+  commit. Preserve this dirty workspace and its preceding implementation.

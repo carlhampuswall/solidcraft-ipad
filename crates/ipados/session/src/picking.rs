@@ -61,6 +61,7 @@ impl ViewportMetrics {
 pub enum PickFilter {
     Auto,
     Body,
+    Occurrence,
     #[default]
     Face,
     Edge,
@@ -116,14 +117,14 @@ impl PickScene {
             let body = self.bodies.get(bi)?;
             let point = o + d * t;
             project(vp, point, [w, h])?;
-            if filter == PickFilter::Body {
+            if matches!(filter, PickFilter::Body | PickFilter::Occurrence) {
                 Some(Sel::Body { name: body.name.clone() })
             } else {
                 let index = *body.mesh.tri_face.get(ti)? as usize;
                 Some(Sel::Face { body: body.name.clone(), index, point })
             }
         });
-        if matches!(filter, PickFilter::Body | PickFilter::Face) {
+        if matches!(filter, PickFilter::Body | PickFilter::Occurrence | PickFilter::Face) {
             return face;
         }
         let tolerance = 8.0 * metrics.scale;

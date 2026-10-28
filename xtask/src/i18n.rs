@@ -48,10 +48,10 @@ impl Report {
 }
 
 pub fn run(root: &Path, args: &[&str]) -> Result<(), String> {
-    let english = read(root, "en")?;
+    let english = read_desktop(root, "en")?;
     let mut catalogs: Vec<(String, Map<String, Value>)> = Vec::new();
     for id in locales(root)? {
-        let messages = read(root, &id)?;
+        let messages = read_desktop(root, &id)?;
         catalogs.push((id, messages));
     }
 
@@ -134,6 +134,15 @@ fn read(root: &Path, locale: &str) -> Result<Map<String, Value>, String> {
         Ok(_) => Err(format!("{}: a catalog must be a JSON object", path.display())),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+/// Match the desktop/web embedded catalog domain. Native chrome is bundled by
+/// its host with English fallback. Keep `read` unfiltered for catalog writers:
+/// `--add-missing` must preserve native messages after pending files are folded.
+fn read_desktop(root: &Path, locale: &str) -> Result<Map<String, Value>, String> {
+    let mut messages = read(root, locale)?;
+    messages.retain(|id, _| !id.starts_with("ui.ipados."));
+    Ok(messages)
 }
 
 /// Command labels the English catalog cannot translate, mapped to the commands that use them.
@@ -223,6 +232,32 @@ fn print_report(report: &Report) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_messages_stay_in_source_catalogs_but_not_desktop_coverage_before_and_after_fold() {
+        let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!("solidcraft-i18n-domain-{}-{unique}", std::process::id()));
+        let dir = root.join(DIR);
+        std::fs::create_dir_all(dir.join("pending")).unwrap();
+        std::fs::write(dir.join("en.json"), r#"{"ui.shared":"Shared","ui.ipados.folded":"Native folded"}"#).unwrap();
+        std::fs::write(dir.join("ar.json"), "{}").unwrap();
+        std::fs::write(dir.join("pending/native.json"), r#"{"en":{"ui.ipados.pending":"Native pending"}}"#).unwrap();
+        let all = read(&root, "en").unwrap();
+        let desktop = read_desktop(&root, "en").unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(desktop.keys().map(String::as_str).collect::<Vec<_>>(), ["ui.shared"]);
+        let translated = read_desktop(&root, "ar").unwrap();
+        let report = Report {
+            missing: BTreeMap::from([("ar".into(), desktop.keys().filter(|id| !translated.contains_key(*id)).cloned().collect())]),
+            untranslated: BTreeMap::new(),
+        };
+        assert_eq!(report.problems(), 1, "an untranslated shared message still fails completeness");
+        // Only this disposable fixture is folded, never the checkout's pending files.
+        assert_eq!(crate::pending::fold_locales(&root).unwrap(), 1);
+        assert_eq!(read(&root, "en").unwrap(), all, "native source messages survive the fold for the native host and catalog writers");
+        assert_eq!(read_desktop(&root, "en").unwrap(), desktop);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn report_counts_both_kinds_of_gap() {

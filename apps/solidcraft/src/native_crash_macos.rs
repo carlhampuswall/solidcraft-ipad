@@ -760,6 +760,8 @@ mod tests {
     /// The child half: install crash reporting and the handler, then crash the way
     /// `SOLIDCRAFT_NATIVE_CRASH_FAULT` says.
     #[test]
+    // The frame-walk assertion needs a real caller frame in optimized CI builds.
+    #[inline(never)]
     fn child() {
         let Some(dir) = std::env::var_os("SOLIDCRAFT_NATIVE_CRASH_CHILD") else { return };
         let build = solidcraft_engine::crash::Build { version: "9.9.9", commit: "abc1234", built: "2026-10-25" };

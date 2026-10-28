@@ -1,6 +1,6 @@
 use super::*;
 use crate::picking::project;
-use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::{doc::FeatureKind, geom::Vec3};
 
 fn metrics(w: f64, h: f64, scale: f64) -> ViewportMetrics {
     ViewportMetrics { width_points: w, height_points: h, scale, origin_points: [0.0; 2] }
@@ -29,6 +29,13 @@ fn event(source: InputSource, phase: InputPhase, id: u64, p: [f64; 2], time: f64
         y_pixels: p[1] * 2.0,
         scale: 2.0,
         timestamp: time,
+        azimuth: None,
+        predicted: false,
+        display_preview: false,
+        sequence: 0,
+        viewport_epoch: None,
+        camera_epoch: None,
+        document_id: None,
         pressure: None,
         altitude: None,
         geometry_revision: Some(2),
@@ -454,4 +461,3394 @@ fn camera_motion_reuses_face_highlight_geometry_and_body_upload() {
     assert!(Arc::ptr_eq(&before.highlight, &after.highlight));
     assert_eq!(before.highlight_revision, after.highlight_revision);
     assert_ne!(before.scene_revision, after.scene_revision);
+}
+
+fn input_fixture() -> (SessionAdapter, Viewport) {
+    let mut engine = SessionAdapter::new();
+    let model = engine.fixture().unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    view.begin_update(1);
+    view.install(1, model);
+    view.command("view.top", &json!({})).unwrap();
+    view.command("tool.set", &json!({"tool":"post_radius"})).unwrap();
+    (engine, view)
+}
+fn sample(view: &Viewport, source: InputSource, phase: InputPhase, id: u64, p: [f64; 2], time: f64) -> InputEvent {
+    let mut e = event(source, phase, id, p, time);
+    e.scale = view.metrics.scale;
+    e.x_pixels = p[0] * e.scale;
+    e.y_pixels = p[1] * e.scale;
+    e.geometry_revision = view.model.as_ref().map(|m| m.geometry_revision);
+    e.document_id = view.model.as_ref().map(|m| m.document_id.clone());
+    e.viewport_epoch = Some(view.metrics_epoch);
+    e.camera_epoch = Some(view.camera_epoch);
+    e
+}
+fn feed(view: &mut Viewport, source: InputSource, phase: InputPhase, id: u64, p: [f64; 2], time: f64) -> Value {
+    view.input(sample(view, source, phase, id, p, time)).unwrap()
+}
+fn start_radius(view: &mut Viewport) -> [f64; 2] {
+    let h = view.handle().unwrap();
+    let p = point(view, h.point(h.radius));
+    feed(view, InputSource::Pencil, InputPhase::Began, 91, p, 1.0);
+    p
+}
+fn radius_move(view: &mut Viewport, radius: f64, time: f64) -> [f64; 2] {
+    let h = view.handle().unwrap();
+    let p = point(view, h.point(radius));
+    feed(view, InputSource::Pencil, InputPhase::Moved, 91, p, time);
+    p
+}
+fn run_tool(engine: &mut SessionAdapter, view: &mut Viewport) -> bool {
+    let Some(work) = view.take_tool_work() else { return false };
+    let prepared = engine.prepare_tool(work.clone()).unwrap();
+    assert!(view.tool_is_current(&work));
+    if work.commit {
+        let model = engine.accept_tool(prepared).unwrap();
+        assert!(view.complete_tool(&work, model));
+    } else {
+        if matches!(work.operation, ToolOperation::Modelling { .. }) {
+            view.publish_model_tool_details(&work, prepared.reply, prepared.feedback, prepared.handle);
+        }
+        assert!(view.publish_preview(&work, prepared.model));
+    }
+    work.commit
+}
+
+#[test]
+fn pencil_radius_drag_previews_real_geometry_and_commits_exactly_one_history_step() {
+    let (mut engine, mut view) = input_fixture();
+    let before = engine.session.doc.clone();
+    let undo = engine.session.undo.len();
+    let original = engine.snapshot().unwrap();
+    let camera = view.camera;
+    start_radius(&mut view);
+    assert_eq!(view.selection(), &[Sel::Body { name: "Post".into() }]);
+    let p = radius_move(&mut view, 10.0, 2.0);
+    assert!(!run_tool(&mut engine, &mut view));
+    assert!(Arc::ptr_eq(&before, &engine.session.doc));
+    assert_eq!(engine.session.undo.len(), undo);
+    let preview = view.snapshot().unwrap();
+    assert!(!Arc::ptr_eq(&preview.model, &original));
+    // Same engine tessellation pipeline: post volume scales with radius squared.
+    let base = 12000.0;
+    assert!(((preview.model.volume_mm3 - base) / (original.volume_mm3 - base) - 100.0 / 49.0).abs() < 0.02);
+    assert_eq!(preview.geometry_revision, original.geometry_revision, "preview is not an authoritative revision");
+    // Body feedback follows the evaluated preview, rather than leaving the old rim.
+    for p in preview.highlight.lines.iter().filter(|line| !line.on_top).flat_map(|line| &line.points) {
+        assert!(((p.x - 10.0).hypot(p.y - 4.0) - 10.0).abs() < 1e-6);
+    }
+    // Many updates replace one pending work item; they do not record history.
+    for r in [10.2, 10.5, 11.0, 12.0] {
+        radius_move(&mut view, r, 3.0);
+    }
+    let p2 = point(&view, view.handle().unwrap().point(12.0));
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, p2, 4.0);
+    assert!(run_tool(&mut engine, &mut view));
+    assert_eq!(engine.session.undo.len(), undo + 1);
+    let committed = engine.snapshot().unwrap();
+    assert_eq!(committed.radius_handle.as_ref().unwrap().radius, 12.0);
+    assert_eq!(camera, view.camera);
+    assert!(((committed.volume_mm3 - base) / (original.volume_mm3 - base) - 144.0 / 49.0).abs() < 0.02);
+    engine.execute("edit.undo", json!({})).unwrap();
+    assert!((engine.snapshot().unwrap().volume_mm3 - original.volume_mm3).abs() < 1e-6);
+    engine.execute("edit.redo", json!({})).unwrap();
+    assert!((engine.snapshot().unwrap().volume_mm3 - committed.volume_mm3).abs() < 1e-6);
+    assert_ne!(p, p2);
+}
+
+#[test]
+fn ui_ownership_and_contact_capture_are_stable_until_completion() {
+    let (_, mut view) = proof();
+    let camera = view.camera;
+    let mut e = sample(&view, InputSource::Finger, InputPhase::Began, 2, [400.0, 300.0], 1.0);
+    e.consumed = true;
+    view.input(e).unwrap();
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, [600.0, 400.0], 2.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Ended, 2, [600.0, 400.0], 3.0);
+    let mut e = sample(&view, InputSource::Pencil, InputPhase::Began, 3, [400.0, 300.0], 4.0);
+    e.consumed = true;
+    view.input(e).unwrap();
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 3, [400.0, 300.0], 5.0);
+    assert_eq!(camera, view.camera);
+    assert!(view.selection.is_empty());
+    assert_eq!(view.diagnostic()["input"]["contacts"], 0);
+    let (_, mut tool) = input_fixture();
+    start_radius(&mut tool);
+    radius_move(&mut tool, 10.0, 2.0);
+    feed(&mut tool, InputSource::Pencil, InputPhase::Moved, 91, [-1.0, 300.0], 3.0);
+    assert!(tool.take_tool_work().is_none());
+    assert!(tool.contacts.preview.is_none());
+}
+
+#[test]
+fn one_two_one_fingers_rebase_without_jumps_or_incidental_motion() {
+    let (engine, mut view) = proof();
+    let before = engine.session.doc.clone();
+    let camera = view.camera;
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 1, [300.0, 300.0], 1.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [301.0, 301.0], 2.0);
+    assert_eq!(camera, view.camera);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [330.0, 310.0], 3.0);
+    let camera = view.camera;
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 2, [500.0, 300.0], 4.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [330.0, 310.0], 5.0);
+    assert_eq!(camera, view.camera);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, [550.0, 330.0], 6.0);
+    let camera = view.camera;
+    feed(&mut view, InputSource::Finger, InputPhase::Ended, 2, [550.0, 330.0], 7.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [330.0, 310.0], 8.0);
+    assert_eq!(camera, view.camera);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [340.0, 315.0], 9.0);
+    assert!((view.camera.yaw - camera.yaw).abs() < 0.2);
+    assert!(Arc::ptr_eq(&before, &engine.session.doc));
+    assert!(view.selection.is_empty());
+}
+
+#[test]
+fn pencil_then_fingers_suspend_rebase_and_commit_only_actual_edit_motion() {
+    let (mut engine, mut view) = input_fixture();
+    let before = engine.session.doc.clone();
+    start_radius(&mut view);
+    radius_move(&mut view, 9.0, 2.0);
+    run_tool(&mut engine, &mut view);
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 1, [200.0, 300.0], 3.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 2, [500.0, 300.0], 3.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, [550.0, 330.0], 4.0);
+    let camera = view.camera;
+    let p = radius_move(&mut view, 20.0, 5.0);
+    assert!(view.take_tool_work().is_none());
+    assert!((view.diagnostic()["input"]["radius"].as_f64().unwrap() - 9.0).abs() < 1e-9);
+    for id in [2, 1] {
+        feed(&mut view, InputSource::Finger, InputPhase::Ended, id, [200.0, 300.0], 6.0);
+    }
+    // First sample after navigation only rebases, regardless of its world position.
+    feed(&mut view, InputSource::Pencil, InputPhase::Moved, 91, p, 7.0);
+    assert!(view.take_tool_work().is_none());
+    assert!((view.diagnostic()["input"]["radius"].as_f64().unwrap() - 9.0).abs() < 1e-9);
+    assert!(Arc::ptr_eq(&before, &engine.session.doc));
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, p, 8.0);
+    assert!(run_tool(&mut engine, &mut view));
+    assert!((engine.snapshot().unwrap().radius_handle.as_ref().unwrap().radius - 9.0).abs() < 1e-9);
+    assert_eq!(camera, view.camera);
+}
+
+#[test]
+fn fingers_then_pencil_and_lift_during_navigation_cancel_without_history() {
+    for pencil_first in [false, true] {
+        let (mut engine, mut view) = input_fixture();
+        let before = engine.session.doc.clone();
+        let undo = engine.session.undo.len();
+        if pencil_first {
+            start_radius(&mut view);
+            radius_move(&mut view, 10.0, 2.0);
+            run_tool(&mut engine, &mut view);
+        }
+        feed(&mut view, InputSource::Finger, InputPhase::Began, 1, [200.0, 200.0], 3.0);
+        feed(&mut view, InputSource::Finger, InputPhase::Began, 2, [500.0, 200.0], 3.0);
+        feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, [530.0, 230.0], 4.0);
+        if !pencil_first {
+            let h = view.handle().unwrap();
+            let p = point(&view, h.point(h.radius));
+            feed(&mut view, InputSource::Pencil, InputPhase::Began, 91, p, 5.0);
+        }
+        assert_eq!(view.diagnostic()["input"]["edit"], "suspended");
+        let p = point(&view, view.handle().unwrap().point(15.0));
+        feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, p, 6.0);
+        assert!(view.take_tool_work().is_none());
+        assert!(view.contacts.preview.is_none());
+        assert!(Arc::ptr_eq(&before, &engine.session.doc));
+        assert_eq!(undo, engine.session.undo.len());
+    }
+}
+
+#[test]
+fn cancellation_discards_inflight_preview_and_commit_without_undoing_other_work() {
+    for command in ["input.cancel", "tool.cancel", "tool.previous"] {
+        let (engine, mut view) = input_fixture();
+        let before = engine.session.doc.clone();
+        let p = start_radius(&mut view);
+        radius_move(&mut view, 10.0, 2.0);
+        feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, [p[0] + 30.0, p[1]], 3.0);
+        let work = view.take_tool_work().unwrap();
+        assert!(work.commit);
+        let prepared = engine.prepare_tool(work.clone()).unwrap();
+        view.command(command, &json!({})).unwrap();
+        assert!(!view.tool_is_current(&work));
+        drop(prepared);
+        assert!(Arc::ptr_eq(&before, &engine.session.doc));
+        assert!(view.contacts.preview.is_none());
+        assert_eq!(view.diagnostic()["input"]["contacts"], 0);
+    }
+}
+
+#[test]
+fn predictions_never_advance_taps_previews_or_commits_and_missing_pressure_is_pencil() {
+    let (mut engine, mut view) = input_fixture();
+    let before = engine.session.doc.clone();
+    let undo = engine.session.undo.len();
+    let p = start_radius(&mut view);
+    for phase in [InputPhase::Moved, InputPhase::Ended] {
+        let mut e = sample(&view, InputSource::Pencil, phase, 91, [p[0] + 100.0, p[1]], 2.0);
+        e.predicted = true;
+        e.pressure = None;
+        assert_eq!(view.input(e).unwrap()["handled"], false);
+    }
+    assert!(view.take_tool_work().is_none());
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, p, 3.0);
+    assert!(view.take_tool_work().is_none());
+    assert_eq!(undo, engine.session.undo.len());
+    assert!(Arc::ptr_eq(&before, &engine.session.doc));
+    start_radius(&mut view);
+    radius_move(&mut view, 10.0, 4.0);
+    assert!(!run_tool(&mut engine, &mut view));
+}
+
+#[test]
+fn stale_feature_document_resize_and_source_sequences_cannot_commit() {
+    let (mut engine, mut view) = input_fixture();
+    start_radius(&mut view);
+    let p = radius_move(&mut view, 10.0, 2.0);
+    let work = view.take_tool_work().unwrap();
+    engine.execute("timeline.delete", json!({"feature":"Viewport post"})).unwrap();
+    assert!(engine.prepare_tool(work.clone()).is_err());
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    assert!(!view.tool_is_current(&work));
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, p, 3.0);
+    assert!(view.take_tool_work().is_none());
+    let (_, mut view) = input_fixture();
+    start_radius(&mut view);
+    radius_move(&mut view, 10.0, 2.0);
+    let old = sample(&view, InputSource::Pencil, InputPhase::Ended, 91, p, 3.0);
+    view.set_metrics(ViewportMetrics { origin_points: [23.0, 81.0], ..metrics(600.0, 800.0, 3.0) }).unwrap();
+    assert_eq!(view.input(old).unwrap()["handled"], false);
+    assert!(view.take_tool_work().is_none());
+    let h = view.handle().unwrap();
+    let p = point(&view, h.point(h.radius));
+    let world = view.plane_point(p, h.plane).unwrap();
+    assert!(world.dist(h.point(h.radius)) < 1e-6);
+    let mut e = sample(&view, InputSource::Pencil, InputPhase::Began, 2, p, 4.0);
+    e.sequence = 10;
+    view.input(e.clone()).unwrap();
+    assert_eq!(view.input(e).unwrap()["handled"], false);
+    let mut reversed = sample(&view, InputSource::Pencil, InputPhase::Moved, 2, p, 3.0);
+    reversed.sequence = 11;
+    assert!(view.input(reversed).is_err());
+    assert_eq!(view.diagnostic()["input"]["contacts"], 0);
+}
+
+#[test]
+fn active_sketch_fingers_pan_in_plane_and_require_explicit_exit() {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"YZ"})).unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    assert!(view.planar);
+    let normal = view.model.as_ref().unwrap().sketch_plane.unwrap().normal();
+    assert!(view.camera.back().dot(normal) > 0.999);
+    let camera = view.camera;
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 1, [300.0, 300.0], 1.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [340.0, 320.0], 2.0);
+    assert_ne!(camera.target, view.camera.target);
+    assert_eq!(camera.back(), view.camera.back());
+    assert!((view.camera.target - camera.target).dot(normal).abs() < 1e-9);
+    assert!(view.command("view.isometric", &json!({})).is_err());
+    assert!(view.command("view.exit_planar", &json!({})).is_err());
+    engine.execute("sketch.finish", json!({})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    view.command("view.exit_planar", &json!({})).unwrap();
+    view.command("view.isometric", &json!({})).unwrap();
+    assert!(!view.planar);
+}
+
+#[test]
+fn incidental_palm_contact_and_lift_before_rebase_cannot_commit_stale_radius() {
+    let (mut engine, mut view) = input_fixture();
+    start_radius(&mut view);
+    radius_move(&mut view, 10.0, 2.0);
+    run_tool(&mut engine, &mut view);
+    let camera = view.camera;
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 1, [200.0, 200.0], 3.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [202.0, 201.0], 3.01);
+    feed(&mut view, InputSource::Finger, InputPhase::Ended, 1, [202.0, 201.0], 3.02);
+    assert_eq!(camera, view.camera);
+    assert_eq!(view.diagnostic()["input"]["edit"], "dragging");
+    // One finger has a conservative movement/time threshold while Pencil is down.
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 2, [200.0, 200.0], 4.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, [220.0, 210.0], 4.01);
+    assert_eq!(camera, view.camera);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, [240.0, 220.0], 4.2);
+    assert_ne!(camera, view.camera);
+    feed(&mut view, InputSource::Finger, InputPhase::Ended, 2, [240.0, 220.0], 5.0);
+    assert_eq!(view.diagnostic()["input"]["edit"], "rebase");
+    let p = point(&view, view.handle().unwrap().point(20.0));
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, p, 6.0);
+    assert!(view.take_tool_work().is_none());
+    assert!(view.contacts.preview.is_none());
+    assert_eq!(engine.snapshot().unwrap().radius_handle.as_ref().unwrap().radius, 7.0);
+}
+
+#[test]
+fn cancelled_preview_preserves_a_previous_commit_and_rejects_stale_publication() {
+    let (mut engine, mut view) = input_fixture();
+    start_radius(&mut view);
+    let p = radius_move(&mut view, 12.0, 2.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 91, p, 3.0);
+    run_tool(&mut engine, &mut view);
+    let committed = engine.session.doc.clone();
+    let undo = engine.session.undo.len();
+    start_radius(&mut view);
+    let p = radius_move(&mut view, 16.0, 4.0);
+    run_tool(&mut engine, &mut view);
+    radius_move(&mut view, 18.0, 5.0);
+    let work = view.take_tool_work().unwrap();
+    let stale = engine.prepare_tool(work.clone()).unwrap();
+    feed(&mut view, InputSource::Pencil, InputPhase::Cancelled, 91, p, 6.0);
+    assert!(!view.publish_preview(&work, stale.model));
+    assert!(Arc::ptr_eq(&committed, &engine.session.doc));
+    assert_eq!(undo, engine.session.undo.len());
+    assert_eq!(view.diagnostic()["input"]["contacts"], 0);
+    assert!(view.contacts.preview.is_none());
+}
+
+#[test]
+fn pencil_taps_keep_camera_and_navigation_invalidates_stationary_selection_candidates() {
+    let (_, mut view) = proof();
+    view.command("view.top", &json!({})).unwrap();
+    let p = point(&view, Vec3::new(20.0, 15.0, 10.0));
+    let camera = view.camera;
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, p, 1.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 1, p, 2.0);
+    assert_eq!(camera, view.camera);
+    assert_eq!(view.selection.len(), 1);
+    view.command("select.clear", &json!({})).unwrap();
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, p, 3.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 2, [200.0, 200.0], 4.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, [240.0, 220.0], 5.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Ended, 2, [240.0, 220.0], 6.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 1, p, 7.0);
+    assert!(view.selection.is_empty());
+}
+
+#[test]
+fn stale_presented_camera_cannot_begin_selection_or_commit_a_handle() {
+    let (_, mut view) = proof();
+    view.command("view.top", &json!({})).unwrap();
+    let p = point(&view, Vec3::new(20.0, 15.0, 10.0));
+    let mut begin = sample(&view, InputSource::Pencil, InputPhase::Began, 1, p, 1.0);
+    view.command("view.navigate", &json!({"motion":"pan","delta":[20,0],"viewport":[800,600]})).unwrap();
+    view.input(begin.clone()).unwrap();
+    begin.phase = InputPhase::Ended;
+    begin.timestamp = 2.0;
+    view.input(begin).unwrap();
+    assert!(view.selection.is_empty());
+    let (_, mut view) = input_fixture();
+    let p = start_radius(&mut view);
+    radius_move(&mut view, 12.0, 2.0);
+    let mut end = sample(&view, InputSource::Pencil, InputPhase::Ended, 91, p, 3.0);
+    end.camera_epoch = Some(0);
+    view.input(end).unwrap();
+    assert!(view.take_tool_work().is_none());
+    assert!(view.contacts.preview.is_none());
+}
+
+#[test]
+fn cancelled_preview_still_on_screen_cannot_start_a_new_pick_or_edit() {
+    let (mut engine, mut view) = input_fixture();
+    let p = start_radius(&mut view);
+    radius_move(&mut view, 12.0, 2.0);
+    run_tool(&mut engine, &mut view);
+    view.command("tool.cancel", &json!({})).unwrap();
+    view.command("select.clear", &json!({})).unwrap();
+    for source in [InputSource::Pencil, InputSource::Indirect] {
+        for phase in [InputPhase::Began, InputPhase::Moved, InputPhase::Ended] {
+            let mut e = sample(&view, source, phase, 9, p, 3.0);
+            e.display_preview = true;
+            view.input(e).unwrap();
+        }
+    }
+    assert!(view.selection.is_empty());
+    assert!(view.take_tool_work().is_none());
+}
+
+#[test]
+fn workspace_reads_real_hierarchy_stable_ids_and_contextual_tool_reasons() {
+    let (mut adapter, mut view) = input_fixture();
+    let first = adapter.workspace(view.selection(), view.radius_tool_active(), false);
+    assert_eq!(first["title"], adapter.session.doc.name);
+    assert_eq!(first["tools"][1]["enabled"], false);
+    assert_eq!(first["tools"][1]["reason"], "ui.ipados.workspace.select_post");
+    assert!(first["rows"].as_array().unwrap().iter().any(|r| r["kind"] == "sketch"));
+    assert_eq!(first["rows"].as_array().unwrap().iter().filter(|r| r["kind"] == "body").count(), 2);
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Post"}})).unwrap();
+    let selected = adapter.workspace(view.selection(), view.radius_tool_active(), false);
+    assert_eq!(selected["tools"][1]["enabled"], true);
+    assert_eq!(selected["radius"]["value"], 7.0);
+    let before_ids: Vec<_> = first["rows"].as_array().unwrap().iter().map(|r| r["id"].clone()).collect();
+    let after_ids: Vec<_> = selected["rows"].as_array().unwrap().iter().map(|r| r["id"].clone()).collect();
+    assert_eq!(before_ids, after_ids);
+    assert_eq!(selected["rows"].as_array().unwrap().iter().find(|r| r["id"] == "body:Post").unwrap()["selected"], true);
+}
+
+#[test]
+fn browser_selection_and_pencil_selection_share_the_same_model_and_multiselection() {
+    let (mut adapter, mut view) = input_fixture();
+    view.command("tool.set", &json!({"tool":"select"})).unwrap();
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Post"}})).unwrap();
+    assert_eq!(view.snapshot().unwrap().selected_bodies, ["Post"]);
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Base"},"additive":true})).unwrap();
+    assert_eq!(view.selection().len(), 2);
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Base"},"additive":true})).unwrap();
+    assert_eq!(view.selection().len(), 1);
+    view.command("select.filter", &json!({"filter":"face"})).unwrap();
+    let p = point(&view, Vec3::new(-8.0, 0.0, 10.0));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 200, p, 1.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 200, p, 2.0);
+    let workspace = adapter.workspace(view.selection(), false, false);
+    assert_eq!(workspace["rows"].as_array().unwrap().iter().find(|r| r["id"] == "body:Base").unwrap()["selected"], true);
+    assert_eq!(workspace["rows"].as_array().unwrap().iter().find(|r| r["id"] == "body:Post").unwrap()["selected"], false);
+    assert!(view.command("select.entity", &json!({"entity":{"type":"body","name":"Missing"}})).is_err());
+}
+
+#[test]
+fn numeric_expression_preview_commit_and_history_use_real_geometry_once() {
+    let (mut adapter, mut view) = input_fixture();
+    adapter.execute("parameters.add", json!({"name":"post_size","expression":"6 mm"})).unwrap();
+    view.begin_update(2);
+    view.install(2, adapter.snapshot().unwrap());
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Post"}})).unwrap();
+    let before = adapter.snapshot().unwrap();
+    let history = adapter.session.undo.len();
+    let edit = adapter.begin_numeric(10, view.selection()).unwrap();
+    view.begin_numeric(edit.clone()).unwrap();
+    let preview = adapter.prepare_numeric(&edit, "post_size * 2", false).unwrap();
+    view.publish_numeric(10, &preview).unwrap();
+    assert!(view.snapshot().unwrap().model.volume_mm3 > before.volume_mm3);
+    assert_eq!(adapter.session.undo.len(), history);
+    assert_eq!(adapter.snapshot().unwrap().volume_mm3, before.volume_mm3);
+    drop(preview);
+    let prepared = adapter.prepare_numeric(&edit, "post_size * 2", true).unwrap();
+    let model = adapter.accept_numeric(&edit, prepared).unwrap();
+    let volume = model.volume_mm3;
+    view.finish_numeric(10, Some(model)).unwrap();
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert!((adapter.radius_handle().unwrap().radius - 12.0).abs() < 1e-9);
+    let FeatureKind::Cylinder { radius, .. } =
+        &adapter.session.doc.features.iter().find(|f| f.id == adapter.radius_handle().unwrap().feature).unwrap().kind
+    else {
+        panic!("cylinder")
+    };
+    assert_eq!(radius.as_str(), "post_size * 2");
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((adapter.radius_handle().unwrap().radius - 7.0).abs() < 1e-9);
+    assert_eq!(adapter.snapshot().unwrap().volume_mm3, before.volume_mm3);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(adapter.snapshot().unwrap().volume_mm3, volume);
+}
+
+#[test]
+fn numeric_validation_preserves_preview_and_cancel_restores_original_without_history() {
+    let (mut adapter, mut view) = input_fixture();
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Post"}})).unwrap();
+    let before = adapter.snapshot().unwrap();
+    let history = adapter.session.undo.len();
+    let edit = adapter.begin_numeric(11, view.selection()).unwrap();
+    view.begin_numeric(edit.clone()).unwrap();
+    assert!((adapter.prepare_numeric(&edit, "1,5 mm", false).unwrap().value - 1.5).abs() < 1e-9);
+    assert_eq!(adapter.prepare_numeric(&edit, "max(8,9)", false).unwrap().value, 9.0);
+    let preview = adapter.prepare_numeric(&edit, "9", false).unwrap();
+    view.publish_numeric(11, &preview).unwrap();
+    let valid_volume = view.snapshot().unwrap().model.volume_mm3;
+    for expression in ["", "-", "2 +", "1,2,3", "not_a_parameter", "0", "51", "-3"] {
+        assert!(adapter.prepare_numeric(&edit, expression, false).is_err(), "{expression}");
+        assert_eq!(view.snapshot().unwrap().model.volume_mm3, valid_volume);
+        assert_eq!(adapter.session.undo.len(), history);
+    }
+    view.finish_numeric(11, None).unwrap();
+    assert_eq!(view.snapshot().unwrap().model.volume_mm3, before.volume_mm3);
+    assert_eq!(adapter.snapshot().unwrap().volume_mm3, before.volume_mm3);
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!(view.numeric_edit(11).is_err());
+}
+
+#[test]
+fn numeric_focus_locks_selection_and_tools_but_allows_finger_navigation_and_keyboard_resize() {
+    let (mut adapter, mut view) = input_fixture();
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Post"}})).unwrap();
+    let edit = adapter.begin_numeric(12, view.selection()).unwrap();
+    view.begin_numeric(edit.clone()).unwrap();
+    let before_selection = view.selection().to_vec();
+    assert!(view.command("select.clear", &json!({})).is_err());
+    assert!(view.command("tool.set", &json!({"tool":"select"})).is_err());
+    let workspace = adapter.workspace(view.selection(), true, true);
+    assert_eq!(workspace["can_undo"], false);
+    assert_eq!(workspace["tools"][0]["reason"], "ui.ipados.workspace.finish_edit");
+    let p = point(&view, Vec3::new(-8.0, 0.0, 10.0));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 201, p, 1.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 201, p, 2.0);
+    assert_eq!(view.selection(), before_selection);
+    let camera = view.camera;
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 202, [200.0, 200.0], 3.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 202, [250.0, 230.0], 4.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Ended, 202, [250.0, 230.0], 5.0);
+    assert_ne!(view.camera, camera);
+    view.set_metrics(metrics(420.0, 310.0, 2.0)).unwrap();
+    assert!(view.numeric_edit(12).is_ok());
+    assert_eq!(view.selection(), before_selection);
+    view.cancel_numeric();
+    assert!(view.numeric_edit(12).is_err());
+}
+
+#[test]
+fn stale_numeric_tickets_cannot_commit_over_document_or_selection_changes() {
+    let (mut adapter, mut view) = input_fixture();
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Post"}})).unwrap();
+    let edit = adapter.begin_numeric(13, view.selection()).unwrap();
+    view.begin_numeric(edit.clone()).unwrap();
+    let prepared = adapter.prepare_numeric(&edit, "10", true).unwrap();
+    view.cancel_numeric();
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Base"}})).unwrap();
+    assert!(view.numeric_edit(13).is_err());
+    drop(prepared);
+    adapter.execute("timeline.edit", json!({"feature":"Viewport post","set":{"height":"30"}})).unwrap();
+    assert!(adapter.prepare_numeric(&edit, "10", true).is_err());
+    assert_eq!(adapter.radius_handle().unwrap().radius, 7.0);
+}
+
+#[test]
+fn empty_workspace_and_invalidated_browser_selections_are_controlled() {
+    let mut adapter = SessionAdapter::new();
+    let mut view = Viewport::default();
+    let workspace = adapter.workspace(&[], false, false);
+    assert_eq!(workspace["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(workspace["can_undo"], false);
+    assert_eq!(workspace["can_redo"], false);
+    assert_eq!(workspace["tools"][1]["reason"], "ui.ipados.workspace.no_radius");
+    assert!(adapter.begin_numeric(1, &[]).is_err());
+    assert!(view.command("select.entity", &json!({"entity":{"type":"feature","id":1}})).is_err());
+}
+
+#[test]
+fn panel_aspect_changes_keep_fitted_handle_visible_and_reverse_without_geometry_or_history_changes() {
+    let (mut adapter, mut view) = input_fixture();
+    view.command("view.isometric", &json!({})).unwrap();
+    view.command("view.fit", &json!({})).unwrap();
+    let model = view.snapshot().unwrap().model;
+    let camera = view.camera;
+    let history = adapter.session.undo.len();
+    let document = adapter.session.doc.clone();
+    let handle = view.handle_point().unwrap();
+    for _ in 0..20 {
+        view.set_metrics(metrics(320.0, 900.0, 2.0)).unwrap();
+        let p = point(&view, handle);
+        assert!(view.metrics.pixel(p).is_some(), "fitted handle remains in narrow portrait canvas");
+        assert!(view.camera.half_height() > camera.half_height());
+        assert!(Arc::ptr_eq(&view.snapshot().unwrap().model, &model));
+        view.set_metrics(metrics(320.0, 360.0, 2.0)).unwrap();
+        assert!(view.metrics.pixel(point(&view, handle)).is_some(), "keyboard resize keeps the handle visible");
+        view.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+        assert!((view.camera.distance - camera.distance).abs() < 1e-9);
+        assert_eq!(view.camera.target, camera.target);
+        assert_eq!(view.camera.yaw, camera.yaw);
+        assert_eq!(view.camera.pitch, camera.pitch);
+    }
+    assert!(Arc::ptr_eq(&adapter.session.doc, &document));
+    assert_eq!(adapter.session.undo.len(), history);
+    assert_eq!(adapter.snapshot().unwrap().volume_mm3, model.volume_mm3);
+}
+
+fn sketch_commit(adapter: &mut SessionAdapter, commands: Vec<(String, Value)>) -> Arc<SceneSnapshot> {
+    let id = adapter.session.active_sketch.unwrap();
+    let work = ToolWork {
+        interaction: 100,
+        version: 1,
+        document_id: adapter.session.document_id.clone(),
+        geometry_revision: adapter.geometry_revision,
+        operation: ToolOperation::Sketch { sketch: id, commands },
+        commit: true,
+    };
+    let prepared = adapter.prepare_tool(work).unwrap();
+    adapter.accept_tool(prepared).unwrap()
+}
+fn numeric_apply(adapter: &mut SessionAdapter, selection: &[Sel], mode: Option<&str>, expression: &str) -> NumericEdit {
+    let edit = adapter.begin_numeric_for(100, selection, mode).unwrap();
+    let before = adapter.session.undo.len();
+    let prepared = adapter.prepare_numeric(&edit, expression, true).unwrap();
+    adapter.accept_numeric(&edit, prepared).unwrap();
+    assert_eq!(adapter.session.undo.len(), before + 1);
+    edit
+}
+fn curve_selection(sketch: u64, id: &str) -> Vec<Sel> {
+    vec![Sel::SketchCurve { id: id.into(), sketch: Some(sketch) }]
+}
+
+#[test]
+fn sketch_dimensioned_rectangle_reopens_roundtrips_and_regenerates_native_prism() {
+    let mut adapter = SessionAdapter::new();
+    let id = adapter.execute("sketch.create", json!({"plane":"XY","name":"Plate sketch"})).unwrap().value["sketch"].as_u64().unwrap();
+    let rectangle = adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]})).unwrap().value;
+    let bottom = rectangle["sides"]["bottom"].as_str().unwrap();
+    let right = rectangle["sides"]["right"].as_str().unwrap();
+    numeric_apply(&mut adapter, &curve_selection(id, bottom), Some("length"), "40 mm");
+    numeric_apply(&mut adapter, &curve_selection(id, right), Some("length"), "30 mm");
+    let sketch = adapter.sketch_snapshot().unwrap();
+    assert!(sketch.solved && sketch.dof == 0);
+    assert_eq!(sketch.profiles, 1);
+    assert!(sketch.sketch.points.iter().filter(|p| p.id != "origin").any(|p| p.pos.len() < 1e-7));
+    let width = sketch
+        .sketch
+        .constraints
+        .iter()
+        .find(|c| c.kind.is_dimension() && c.kind.indices().1.iter().any(|i| sketch.sketch.curves[*i].id == bottom))
+        .unwrap()
+        .id
+        .clone();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("solid.extrude", json!({"sketch":id,"distance":"10 mm","body_name":"Plate"})).unwrap();
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 12000.0).abs() < 1e-6);
+    adapter.execute("sketch.edit", json!({"sketch":id})).unwrap();
+    let selection = [Sel::SketchConstraint { id: width.clone() }];
+    let edit = numeric_apply(&mut adapter, &selection, None, "60 mm");
+    assert_eq!(edit.expression, "40 mm");
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 18000.0).abs() < 1e-6);
+    let sk = adapter.sketch_snapshot().unwrap();
+    let line = sk.sketch.curve_index(right).unwrap();
+    let pts = sk.sketch.curves[line].kind.point_ids();
+    assert!((sk.sketch.point(pts[0]).unwrap().dist(sk.sketch.point(pts[1]).unwrap()) - 30.0).abs() < 1e-7);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 12000.0).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 18000.0).abs() < 1e-6);
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    // The actual native container reader/writer, with no filesystem or platform browser.
+    let bytes = solidcraft_engine::io::write_design_container(&adapter.session.doc).unwrap();
+    let doc = solidcraft_engine::io::DesignContainerReader::new(std::io::Cursor::new(bytes)).unwrap().read_document().unwrap();
+    let mut loaded = SessionAdapter { session: solidcraft_engine::Session::new(doc), geometry_revision: 1, workspace_cache: None };
+    loaded.execute("sketch.edit", json!({"sketch":id})).unwrap();
+    let edit = loaded.begin_numeric(101, &selection).unwrap();
+    assert_eq!(edit.expression, "60 mm");
+    let p = loaded.prepare_numeric(&edit, "40 mm", true).unwrap();
+    loaded.accept_numeric(&edit, p).unwrap();
+    assert!((loaded.snapshot().unwrap().volume_mm3 - 12000.0).abs() < 1e-6);
+}
+
+#[test]
+fn sketch_constraints_drag_conflicts_and_previews_preserve_valid_document() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap();
+    let line =
+        adapter.execute("sketch.line", json!({"points":[[0,0],[20,0]],"infer":true})).unwrap().value["curves"][0].as_str().unwrap().to_string();
+    let before = adapter.session.undo.len();
+    sketch_commit(
+        &mut adapter,
+        vec![
+            ("sketch.drag".into(), json!({"entity":format!("{line}.end"),"from":[20,0],"to":[30,15],"live":true})),
+            ("sketch.drag_end".into(), json!({})),
+        ],
+    );
+    assert_eq!(adapter.session.undo.len(), before + 1);
+    let sk = adapter.sketch_snapshot().unwrap();
+    let i = sk.sketch.resolve_point(&format!("{line}.end")).unwrap();
+    assert!(sk.sketch.point(i).unwrap().y.abs() < 1e-6);
+    numeric_apply(&mut adapter, &curve_selection(sk.id, &line), Some("length"), "30 mm");
+    let doc = adapter.session.doc.clone();
+    let undo = adapter.session.undo.len();
+    let bad = ToolWork {
+        interaction: 101,
+        version: 1,
+        document_id: adapter.session.document_id.clone(),
+        geometry_revision: adapter.geometry_revision,
+        commit: true,
+        operation: ToolOperation::Sketch {
+            sketch: sk.id,
+            commands: vec![("sketch.dimension".into(), json!({"entities":[line],"type":"length","value":"40 mm"}))],
+        },
+    };
+    assert!(adapter.prepare_tool(bad).is_err());
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), undo);
+    // Duplicate relationships are rejected by the native command and cannot leave half an edit.
+    let duplicate = adapter.execute("sketch.constraint.horizontal_vertical", json!({"line":line,"mode":"horizontal","if_redundant":"refuse"}));
+    assert!(duplicate.is_err());
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    assert!(adapter.execute("sketch.line", json!({"points":[[1,1],[1,1]]})).is_err());
+    assert!(adapter.execute("sketch.constraint.equal", json!({"a":line,"b":"missing"})).is_err());
+    assert_eq!(adapter.session.undo.len(), undo);
+}
+
+#[test]
+fn sketch_native_circle_arc_and_spline_handles_preview_cancel_and_undo() {
+    for (command, params) in [
+        ("sketch.circle.center", json!({"center":[3,4],"radius":5})),
+        ("sketch.arc.three_point", json!({"start":[0,0],"end":[10,0],"through":[5,5]})),
+        ("sketch.spline.fit_point", json!({"points":[[0,0],[5,5],[10,0]]})),
+    ] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("sketch.create", json!({"plane":"XZ"})).unwrap();
+        let doc = adapter.session.doc.clone();
+        let undo = adapter.session.undo.len();
+        let sketch = adapter.session.active_sketch.unwrap();
+        let mut work = ToolWork {
+            interaction: 100,
+            version: 1,
+            document_id: adapter.session.document_id.clone(),
+            geometry_revision: adapter.geometry_revision,
+            commit: false,
+            operation: ToolOperation::Sketch { sketch, commands: vec![(command.into(), params)] },
+        };
+        let preview = adapter.prepare_tool(work.clone()).unwrap();
+        assert!(!preview.model.sketch.as_ref().unwrap().sketch.curves.is_empty());
+        drop(preview);
+        assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+        assert_eq!(adapter.session.undo.len(), undo);
+        work.commit = true;
+        let p = adapter.prepare_tool(work).unwrap();
+        adapter.accept_tool(p).unwrap();
+        let sk = adapter.sketch_snapshot().unwrap();
+        let c = sk.sketch.curves[0].id.clone();
+        let handle = sk.sketch.curves[0].kind.point_ids()[0];
+        let at = sk.sketch.point(handle).unwrap();
+        let point = sk.sketch.points[handle].id.clone();
+        sketch_commit(
+            &mut adapter,
+            vec![
+                ("sketch.drag".into(), json!({"entity":point,"from":at,"to":[at.x+2.0,at.y+3.0],"live":true})),
+                ("sketch.drag_end".into(), json!({})),
+            ],
+        );
+        let moved = adapter.sketch_snapshot().unwrap();
+        assert!(moved.sketch.point(handle).unwrap().dist(at) > 1.0);
+        if command == "sketch.circle.center" {
+            numeric_apply(&mut adapter, &curve_selection(sketch, &c), Some("radius"), "8 mm");
+        }
+        adapter.execute("edit.undo", json!({})).unwrap();
+        adapter.execute("edit.redo", json!({})).unwrap();
+        assert!(adapter.sketch_snapshot().unwrap().solved);
+    }
+}
+
+#[test]
+fn sketch_plane_preview_uses_upstream_transform_and_never_adds_history() {
+    let mut adapter = SessionAdapter::new();
+    let plane = json!({"origin":[5,6,7],"x_dir":[0,1,0],"y_dir":[0,0,1]});
+    let before = adapter.session.doc.clone();
+    let undo = adapter.session.undo.len();
+    let resolved = adapter.preview_sketch_plane(plane.clone()).unwrap();
+    assert_eq!(resolved.origin, Vec3::new(5., 6., 7.));
+    assert_eq!(resolved.x, Vec3::Y);
+    assert_eq!(resolved.y, Vec3::Z);
+    assert!(Arc::ptr_eq(&before, &adapter.session.doc));
+    assert_eq!(undo, adapter.session.undo.len());
+    adapter.execute("sketch.create", json!({"plane":plane})).unwrap();
+    adapter.execute("sketch.line", json!({"points":[[0,0],[10,0]]})).unwrap();
+    let sk = adapter.sketch_snapshot().unwrap();
+    assert_eq!(sk.plane.to_world(solidcraft_engine::geom::Vec2::new(10., 0.)), Vec3::new(5., 16., 7.));
+    let view = adapter.workspace(&[], false, false);
+    assert_eq!(view["sketch"]["curves"][0]["type"], "line");
+}
+
+fn sketch_input_fixture(plane: Value, tool: &str) -> (SessionAdapter, Viewport) {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":plane})).unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    view.command("tool.set", &json!({"tool":tool})).unwrap();
+    (engine, view)
+}
+fn sketch_tap(view: &mut Viewport, id: u64, xy: [f64; 2]) {
+    let plane = view.model.as_ref().unwrap().sketch.as_ref().unwrap().plane;
+    let screen = point(view, plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1])));
+    feed(view, InputSource::Pencil, InputPhase::Began, id, screen, id as f64);
+    feed(view, InputSource::Pencil, InputPhase::Ended, id, screen, id as f64 + 0.1);
+}
+#[test]
+fn sketch_pencil_rectangle_commits_once_and_cancel_never_removes_previous_geometry() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.rectangle.two_point");
+    let undo = engine.session.undo.len();
+    sketch_tap(&mut view, 1, [0.0, 0.0]);
+    assert!(view.take_tool_work().is_none());
+    sketch_tap(&mut view, 2, [40.0, 30.0]);
+    assert!(run_tool(&mut engine, &mut view));
+    assert_eq!(engine.session.undo.len(), undo + 1);
+    assert_eq!(engine.sketch_snapshot().unwrap().profiles, 1);
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 4);
+    sketch_tap(&mut view, 3, [10.0, 10.0]);
+    view.command("tool.cancel", &json!({})).unwrap();
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 4);
+    assert_eq!(engine.session.undo.len(), undo + 1);
+    view.command("tool.set", &json!({"tool":"sketch.line"})).unwrap();
+    sketch_tap(&mut view, 4, [10.0, 10.0]);
+    sketch_tap(&mut view, 5, [10.0, 10.0]);
+    assert!(view.take_tool_work().is_none(), "tap on anchor must not create a zero-length line");
+}
+#[test]
+fn sketch_pencil_chain_native_references_close_profile_and_segment_undo_is_independent() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
+    let undo = engine.session.undo.len();
+    sketch_tap(&mut view, 1, [0.0, 0.0]);
+    for (id, xy) in [(2, [20.0, 0.0]), (3, [20.0, 20.0]), (4, [0.0, 20.0]), (5, [0.0, 0.0])] {
+        sketch_tap(&mut view, id, xy);
+        assert!(run_tool(&mut engine, &mut view));
+    }
+    assert_eq!(engine.session.undo.len(), undo + 4);
+    let sk = engine.sketch_snapshot().unwrap();
+    assert_eq!(sk.profiles, 1);
+    assert_eq!(sk.sketch.points.len(), 4, "four shared corners, including origin");
+    view.command("tool.finish_chain", &json!({})).unwrap();
+    assert!(view.diagnostic()["input"]["sketch"]["points"].as_array().unwrap().is_empty());
+    engine.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 3);
+    engine.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(engine.sketch_snapshot().unwrap().profiles, 1);
+}
+#[test]
+fn sketch_pencil_curves_use_native_entities_and_stale_preview_is_rejected() {
+    for tool in ["sketch.circle.center", "sketch.arc.three_point", "sketch.spline.fit_point"] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XZ"), tool);
+        sketch_tap(&mut view, 1, [0.0, 0.0]);
+        sketch_tap(&mut view, 2, [20.0, 0.0]);
+        if tool != "sketch.circle.center" {
+            sketch_tap(&mut view, 3, [10.0, 10.0]);
+        }
+        if tool == "sketch.spline.fit_point" {
+            view.command("tool.finish_chain", &json!({})).unwrap();
+        }
+        assert!(run_tool(&mut engine, &mut view));
+        let kind = &engine.sketch_snapshot().unwrap().sketch.curves[0].kind;
+        assert!(matches!(
+            (tool, kind),
+            ("sketch.circle.center", solidcraft_engine::sketch::CurveKind::Circle { .. })
+                | ("sketch.arc.three_point", solidcraft_engine::sketch::CurveKind::Arc { .. })
+                | ("sketch.spline.fit_point", solidcraft_engine::sketch::CurveKind::Spline { .. })
+        ));
+    }
+    let (engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.circle.center");
+    let start = point(&view, Vec3::ZERO);
+    let end = point(&view, Vec3::new(20.0, 0.0, 0.0));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, start, 1.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Moved, 1, end, 2.0);
+    let work = view.take_tool_work().unwrap();
+    let preview = engine.prepare_tool(work.clone()).unwrap();
+    view.command("tool.cancel", &json!({})).unwrap();
+    assert!(!view.publish_preview(&work, preview.model));
+    assert!(engine.sketch_snapshot().unwrap().sketch.curves.is_empty());
+}
+#[test]
+fn sketch_plane_resize_and_fingers_cancel_only_provisional_pencil_work() {
+    let plane = json!({"origin":[5,6,7],"x_dir":[0,1,0],"y_dir":[0,0,1]});
+    let (mut engine, mut view) = sketch_input_fixture(plane, "sketch.line");
+    let basis = view.camera.basis();
+    assert!(basis.0.dot(Vec3::Y) > 0.999);
+    assert!(basis.1.dot(Vec3::Z) > 0.999);
+    sketch_tap(&mut view, 1, [0.0, 0.0]);
+    sketch_tap(&mut view, 2, [20.0, 0.0]);
+    run_tool(&mut engine, &mut view);
+    let count = engine.sketch_snapshot().unwrap().sketch.curves.len();
+    let start = point(&view, Vec3::new(5.0, 26.0, 7.0));
+    let end = point(&view, Vec3::new(5.0, 26.0, 27.0));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 3, start, 3.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Moved, 3, end, 3.1);
+    let work = view.take_tool_work().unwrap();
+    let prepared = engine.prepare_tool(work.clone()).unwrap();
+    let back = view.camera.back();
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 4, [200.0, 200.0], 4.0);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 4, [250.0, 230.0], 4.2);
+    assert_eq!(view.camera.back(), back);
+    assert!(!view.publish_preview(&work, prepared.model));
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 3, end, 5.0);
+    assert!(view.take_tool_work().is_none());
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), count);
+    view.set_metrics(metrics(500.0, 700.0, 3.0)).unwrap();
+    assert_eq!(view.camera.back(), back);
+}
+#[test]
+fn sketch_pencil_dimension_placement_and_annotation_drag_keep_driving_value() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
+    sketch_tap(&mut view, 1, [0.0, 0.0]);
+    sketch_tap(&mut view, 2, [40.0, 0.0]);
+    run_tool(&mut engine, &mut view);
+    let sk = engine.sketch_snapshot().unwrap();
+    let line = sk.sketch.curves[0].id.clone();
+    view.command("select.entity", &json!({"entity":Sel::SketchCurve{id:line,sketch:Some(sk.id)}})).unwrap();
+    view.command("tool.set", &json!({"tool":"sketch.dimension","dimension_type":"length"})).unwrap();
+    sketch_tap(&mut view, 3, [20.0, -10.0]);
+    assert!(run_tool(&mut engine, &mut view));
+    assert!(matches!(view.selection.as_slice(), [Sel::SketchConstraint { .. }]));
+    let sk = engine.sketch_snapshot().unwrap();
+    let dimension = sk.sketch.constraints.iter().find(|c| c.kind.is_dimension()).unwrap();
+    let before = solidcraft_engine::sketch::measure_dimension(&sk.sketch, &dimension.kind).unwrap();
+    let annotations = view.diagnostic()["annotations"].clone();
+    let xy = &annotations[0]["points"];
+    let screen = [xy[0].as_f64().unwrap(), xy[1].as_f64().unwrap()];
+    assert!(matches!(view.pick(screen, None), Some(Sel::SketchConstraint { .. })));
+    view.command("tool.set", &json!({"tool":"sketch.move"})).unwrap();
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 4, screen, 4.0);
+    let end = [screen[0] + 40.0, screen[1] - 30.0];
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 4, end, 4.2);
+    assert!(run_tool(&mut engine, &mut view));
+    let moved = engine.sketch_snapshot().unwrap();
+    let dimension = moved.sketch.constraints.iter().find(|c| c.kind.is_dimension()).unwrap();
+    assert!((solidcraft_engine::sketch::measure_dimension(&moved.sketch, &dimension.kind).unwrap() - before).abs() < 1e-8);
+}
+
+#[test]
+fn sketch_constraint_indicators_disclose_related_geometry_and_are_pickable() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
+    sketch_tap(&mut view, 1, [0.0, 0.0]);
+    sketch_tap(&mut view, 2, [30.0, 0.0]);
+    run_tool(&mut engine, &mut view);
+    assert!(view.diagnostic()["constraint_indicators"].as_array().unwrap().is_empty());
+    let sk = engine.sketch_snapshot().unwrap();
+    view.command("select.entity", &json!({"entity":Sel::SketchCurve{id:sk.sketch.curves[0].id.clone(),sketch:Some(sk.id)}})).unwrap();
+    let indicators = view.diagnostic()["constraint_indicators"].clone();
+    assert!(!indicators.as_array().unwrap().is_empty());
+    let xy = &indicators[0]["points"];
+    let screen = [xy[0].as_f64().unwrap(), xy[1].as_f64().unwrap()];
+    assert!(matches!(view.pick(screen, None), Some(Sel::SketchConstraint { .. })));
+}
+
+#[test]
+fn sketch_trim_extend_and_transform_proposals_use_native_commands_once() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[0,0],[40,0]],"ids":["target"],"infer":false,"connect":false})).unwrap();
+    for x in [10, 30] {
+        engine.execute("sketch.line", json!({"points":[[x,-10],[x,10]],"infer":false})).unwrap();
+    }
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let undo = engine.session.undo.len();
+    view.command("tool.set", &json!({"tool":"sketch.trim"})).unwrap();
+    sketch_tap(&mut view, 1, [20.0, 0.0]);
+    assert!(run_tool(&mut engine, &mut view));
+    assert_eq!(engine.session.undo.len(), undo + 1);
+    engine.execute("edit.undo", json!({})).unwrap();
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    view.command("tool.propose", &json!({"command":"sketch.move","params":{"entities":["target"],"translate":[0,5]},"commit":true})).unwrap();
+    let proposal = view.take_tool_work().unwrap();
+    let prepared = engine.prepare_tool(proposal.clone()).unwrap();
+    let model = engine.accept_tool(prepared).unwrap();
+    assert!(view.complete_tool(&proposal, model));
+    let sk = engine.sketch_snapshot().unwrap();
+    let end = sk.sketch.resolve_point("target.end").unwrap();
+    assert!((sk.sketch.point(end).unwrap().y - 5.0).abs() < 1e-8);
+    assert!(view.command("tool.propose", &json!({"command":"sketch.finish","params":{},"commit":true})).is_err());
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[0,0],[10,0]],"ids":["reach"],"infer":false})).unwrap();
+    engine.execute("sketch.line", json!({"points":[[20,-10],[20,10]],"infer":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let undo = engine.session.undo.len();
+    view.command("tool.set", &json!({"tool":"sketch.extend"})).unwrap();
+    sketch_tap(&mut view, 1, [9.5, 0.0]);
+    assert!(run_tool(&mut engine, &mut view));
+    let sk = engine.sketch_snapshot().unwrap();
+    let endpoint = sk.sketch.resolve_point("reach.end").unwrap();
+    assert!((sk.sketch.point(endpoint).unwrap().x - 20.0).abs() < 1e-8);
+    assert_eq!(engine.session.undo.len(), undo + 1);
+}
+
+#[test]
+fn sketch_previous_tool_and_plane_preview_preserve_camera_and_modelling_history() {
+    let (engine, mut view) = sketch_input_fixture(json!("YZ"), "sketch.circle.center");
+    view.command("tool.previous", &json!({})).unwrap();
+    assert_eq!(view.diagnostic()["input"]["tool"], "select");
+    view.command("tool.previous", &json!({})).unwrap();
+    assert_eq!(view.diagnostic()["input"]["tool"], "sketch.circle.center");
+    assert!(engine.sketch_snapshot().unwrap().sketch.curves.is_empty());
+    let (mut engine, mut view) = proof();
+    let camera = view.camera;
+    let undo = engine.session.undo.len();
+    let plane = solidcraft_engine::geom::Plane { origin: Vec3::new(5., 6., 7.), ..solidcraft_engine::geom::Plane::YZ };
+    view.command("view.sketch_plane", &json!({"plane":plane})).unwrap();
+    assert!(view.camera.back().dot(plane.normal()) > 0.999);
+    assert_eq!(engine.session.undo.len(), undo);
+    view.command("view.cancel_plane", &json!({})).unwrap();
+    assert_eq!(view.camera, camera);
+    engine.execute("sketch.create", json!({"plane":"XY"})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    view.command("tool.set", &json!({"tool":"sketch.line"})).unwrap();
+    engine.execute("sketch.finish", json!({})).unwrap();
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    assert_eq!(view.diagnostic()["input"]["tool"], "select");
+}
+
+#[test]
+fn sketch_dimension_editor_preserves_expression_units_focus_cancel_and_fixed_drag() {
+    let mut adapter = SessionAdapter::new();
+    let id = adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("parameters.add", json!({"name":"diameter","expression":"16 mm"})).unwrap();
+    let circle =
+        adapter.execute("sketch.circle.center", json!({"center":[0,0],"radius":8})).unwrap().value["curves"][0].as_str().unwrap().to_string();
+    numeric_apply(&mut adapter, &curve_selection(id, &circle), Some("radius"), "diameter / 2");
+    let snapshot = adapter.sketch_snapshot().unwrap();
+    let constraint = snapshot.sketch.constraints.iter().find(|c| c.kind.is_dimension()).unwrap().id.clone();
+    let selection = [Sel::SketchConstraint { id: constraint.clone() }];
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, adapter.snapshot().unwrap());
+    view.command("select.entity", &json!({"entity":selection[0]})).unwrap();
+    let edit = adapter.begin_numeric(41, &selection).unwrap();
+    assert_eq!(edit.expression, "diameter / 2");
+    assert_eq!(edit.units, "mm");
+    assert!((edit.value - 8.).abs() < 1e-8);
+    let doc = adapter.session.doc.clone();
+    let undo = adapter.session.undo.len();
+    view.begin_numeric(edit.clone()).unwrap();
+    for invalid in ["", "diameter /", "5 s", "0 mm", "-2 mm"] {
+        assert!(adapter.prepare_numeric(&edit, invalid, true).is_err(), "{invalid}");
+    }
+    let preview = adapter.prepare_numeric(&edit, "diameter", false).unwrap();
+    view.publish_numeric(41, &preview).unwrap();
+    view.cancel_numeric();
+    assert!(view.numeric_edit(41).is_err());
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), undo);
+    // At origin plus driving radius the entire circle is determined; a solver drag
+    // cannot move its centre or silently remove either native relationship.
+    let snapshot = adapter.sketch_snapshot().unwrap();
+    assert_eq!(snapshot.dof, 0);
+    let before = snapshot.sketch.clone();
+    let work = ToolWork {
+        interaction: 200,
+        version: 1,
+        document_id: adapter.session.document_id.clone(),
+        geometry_revision: adapter.geometry_revision,
+        commit: true,
+        operation: ToolOperation::Sketch {
+            sketch: id,
+            commands: vec![
+                ("sketch.drag".into(), json!({"entity":format!("{circle}.center"),"from":[0,0],"to":[10,10],"live":true})),
+                ("sketch.drag_end".into(), json!({})),
+            ],
+        },
+    };
+    assert_eq!(adapter.prepare_tool(work).err().unwrap().code, "fixed_geometry");
+    let after = adapter.sketch_snapshot().unwrap();
+    assert_eq!(before.constraints, after.sketch.constraints);
+    let center = after.sketch.center(after.sketch.curve_index(&circle).unwrap()).unwrap();
+    assert!(center.len() < 1e-8);
+}
+
+#[test]
+fn sketch_conflicting_existing_dimension_edit_preserves_fixed_geometry_expression_and_history() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap();
+    let line =
+        adapter.execute("sketch.line", json!({"points":[[0,0],[30,0]],"infer":true})).unwrap().value["curves"][0].as_str().unwrap().to_string();
+    let id = adapter.session.active_sketch.unwrap();
+    numeric_apply(&mut adapter, &curve_selection(id, &line), Some("length"), "30 mm");
+    adapter.execute("sketch.constraint.fix", json!({"entity":line,"fixed":true})).unwrap();
+    let sk = adapter.sketch_snapshot().unwrap();
+    let dimension = sk.sketch.constraints.iter().find(|c| c.kind.is_dimension()).unwrap();
+    let selection = [Sel::SketchConstraint { id: dimension.id.clone() }];
+    let edit = adapter.begin_numeric(84, &selection).unwrap();
+    let doc = adapter.session.doc.clone();
+    let undo = adapter.session.undo.len();
+    let error = adapter.prepare_numeric(&edit, "40 mm", true).err().unwrap();
+    assert!(!error.message.is_empty());
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    assert_eq!(undo, adapter.session.undo.len());
+    assert_eq!(adapter.begin_numeric(85, &selection).unwrap().expression, "30 mm");
+    let after = adapter.sketch_snapshot().unwrap();
+    assert!(after.solved);
+    assert_eq!(after.sketch, sk.sketch);
+    // A recovery action is native/history based, and the earlier valid width remains.
+    adapter.execute("sketch.constraint.fix", json!({"entity":line,"fixed":false})).unwrap();
+    numeric_apply(&mut adapter, &selection, None, "40 mm");
+    assert_eq!(adapter.begin_numeric(86, &selection).unwrap().expression, "40 mm");
+}
+
+#[test]
+fn sketch_edit_and_native_roundtrip_preserve_unexposed_ellipse() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap();
+    let ellipse = adapter.execute("sketch.ellipse", json!({"center":[100,20],"major":[110,20],"minor_radius":4,"construction":true})).unwrap().value
+        ["curves"][0]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let initial = adapter.sketch_snapshot().unwrap();
+    let index = initial.sketch.curve_index(&ellipse).unwrap();
+    let entity = initial.sketch.curves[index].clone();
+    let points: Vec<_> = entity.kind.point_ids().into_iter().map(|i| initial.sketch.points[i].clone()).collect();
+    let circle =
+        adapter.execute("sketch.circle.center", json!({"center":[0,0],"radius":5})).unwrap().value["curves"][0].as_str().unwrap().to_string();
+    numeric_apply(&mut adapter, &curve_selection(initial.id, &circle), Some("radius"), "7 mm");
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let bytes = solidcraft_engine::io::write_design_container(&adapter.session.doc).unwrap();
+    let doc = solidcraft_engine::io::DesignContainerReader::new(std::io::Cursor::new(bytes)).unwrap().read_document().unwrap();
+    let mut loaded = SessionAdapter { session: solidcraft_engine::Session::new(doc), geometry_revision: 1, workspace_cache: None };
+    loaded.execute("sketch.edit", json!({"sketch":initial.id})).unwrap();
+    let sk = loaded.sketch_snapshot().unwrap();
+    let e = &sk.sketch.curves[sk.sketch.curve_index(&ellipse).unwrap()];
+    assert_eq!(e, &entity);
+    let after: Vec<_> = e.kind.point_ids().into_iter().map(|i| sk.sketch.points[i].clone()).collect();
+    assert_eq!(after, points);
+}
+
+#[test]
+fn sketch_snapping_uses_saved_native_preference_and_failed_preview_can_recover() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.circle.center");
+    view.command("tool.snapping", &json!({"enabled":false})).unwrap();
+    assert!(run_tool(&mut engine, &mut view));
+    assert!(engine.sketch_snapshot().unwrap().sketch.view.no_snap);
+    assert_eq!(view.diagnostic()["input"]["sketch"]["snapping"], false);
+    view.command("tool.snapping", &json!({"enabled":true})).unwrap();
+    assert!(run_tool(&mut engine, &mut view));
+    assert!(!engine.sketch_snapshot().unwrap().sketch.view.no_snap);
+    let start = point(&view, Vec3::ZERO);
+    let end = point(&view, Vec3::new(20., 0., 0.));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, start, 1.);
+    feed(&mut view, InputSource::Pencil, InputPhase::Moved, 1, end, 2.);
+    let work = view.take_tool_work().unwrap();
+    let prepared = engine.prepare_tool(work.clone()).unwrap();
+    assert!(view.publish_preview(&work, prepared.model));
+    let old = view.contacts.preview.clone().unwrap();
+    view.fail_tool(&work);
+    assert!(Arc::ptr_eq(&old, view.contacts.preview.as_ref().unwrap()));
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 1, end, 3.);
+    assert!(run_tool(&mut engine, &mut view));
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 1);
+}
+
+#[test]
+fn sketch_exact_face_attachment_follows_source_height_and_survives_native_roundtrip() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":40,"width":30,"height":10,"name":"Host","body_name":"Host body"})).unwrap();
+    let faces = adapter.execute("model.faces", json!({"body":"Host body"})).unwrap().value;
+    let top = faces["faces"].as_array().unwrap().iter().find(|face| face["plane_normal"][2].as_f64().is_some_and(|n| n > 0.999)).unwrap();
+    let pick = json!({"face":top["point"],"body":"Host body","index":top["index"]});
+    let preview = adapter.preview_sketch_plane(pick.clone()).unwrap();
+    assert!((preview.origin.z - 10.0).abs() < 1e-8);
+    let reply = adapter.execute("sketch.create", json!({"plane":pick,"name":"Attached sketch","project_edges":false})).unwrap().value;
+    let sketch = reply["sketch"].as_u64().unwrap();
+    assert_eq!(reply["attachment"], "exact_face");
+    let feature = adapter.session.doc.feature(sketch).unwrap();
+    assert!(matches!(&feature.kind, FeatureKind::Sketch { plane: solidcraft_engine::doc::PlaneRef::Face { anchor: Some(_), .. }, .. }));
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[1,1],"p1":[3,3]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("timeline.edit", json!({"feature":"Host","set":{"height":"20 mm"}})).unwrap();
+    adapter.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+    assert!((adapter.sketch_snapshot().unwrap().plane.origin.z - 20.0).abs() < 1e-8);
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let bytes = solidcraft_engine::io::write_design_container(&adapter.session.doc).unwrap();
+    let doc = solidcraft_engine::io::DesignContainerReader::new(std::io::Cursor::new(bytes)).unwrap().read_document().unwrap();
+    let mut loaded = SessionAdapter { session: solidcraft_engine::Session::new(doc), geometry_revision: 1, workspace_cache: None };
+    loaded.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+    assert!((loaded.sketch_snapshot().unwrap().plane.origin.z - 20.0).abs() < 1e-8);
+    assert!(matches!(
+        &loaded.session.doc.feature(sketch).unwrap().kind,
+        FeatureKind::Sketch { plane: solidcraft_engine::doc::PlaneRef::Face { anchor: Some(_), .. }, .. }
+    ));
+}
+
+#[test]
+fn sketch_existing_construction_plane_stays_a_native_reference_when_reopened() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("construct.plane.at_angle", json!({"base":"XY","axis":"X","angle":"35 deg","name":"Tilted"})).unwrap();
+    let construction = adapter.session.doc.find_feature("Tilted").unwrap().id;
+    let preview = adapter.preview_sketch_plane(json!("Tilted")).unwrap();
+    assert!(preview.normal().dot(Vec3::Z).abs() < 0.9);
+    let sketch = adapter.execute("sketch.create", json!({"plane":"Tilted","name":"On construction"})).unwrap().value["sketch"].as_u64().unwrap();
+    assert!(
+        matches!(&adapter.session.doc.feature(sketch).unwrap().kind,FeatureKind::Sketch{plane:solidcraft_engine::doc::PlaneRef::Construction{feature},..} if *feature==construction)
+    );
+    adapter.execute("sketch.line", json!({"points":[[1,2],[11,2]]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+    assert_eq!(adapter.sketch_snapshot().unwrap().plane, preview);
+    assert!(adapter.workspace(&[], false, false)["planes"].as_array().unwrap().iter().any(|p| p["name"] == "Tilted"));
+}
+
+fn modelling_volume(adapter: &SessionAdapter) -> f64 {
+    assert!(adapter.session.model.results.iter().all(|result| result.error.is_none() && !result.stale));
+    adapter.session.world_state().bodies.iter().map(|body| body.measure().unwrap().volume).sum()
+}
+
+fn modelling_commit(adapter: &mut SessionAdapter, edit: &ModelEdit, params: Value) -> Arc<SceneSnapshot> {
+    let history = adapter.session.undo.len();
+    let prepared = adapter.prepare_model(edit, params, true).unwrap();
+    assert_eq!(adapter.session.undo.len(), history, "preparing a feature cannot alter authoritative history");
+    let model = adapter.accept_model(edit, prepared).unwrap();
+    assert_eq!(adapter.session.undo.len(), history + 1, "one completed feature is one native undo action");
+    model
+}
+
+fn modelling_plate(width: f64, depth: &str) -> (SessionAdapter, u64, String, u64) {
+    let mut adapter = SessionAdapter::new();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XY","name":"Parametric plate sketch"})).unwrap().value["sketch"].as_u64().unwrap();
+    let rectangle = adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[width,30]})).unwrap().value;
+    let bottom = rectangle["sides"]["bottom"].as_str().unwrap();
+    let right = rectangle["sides"]["right"].as_str().unwrap();
+    numeric_apply(&mut adapter, &curve_selection(sketch, bottom), Some("length"), &format!("{width} mm"));
+    numeric_apply(&mut adapter, &curve_selection(sketch, right), Some("length"), "30 mm");
+    let state = adapter.sketch_snapshot().unwrap();
+    assert!(state.solved && state.dof == 0);
+    let width_constraint = state
+        .sketch
+        .constraints
+        .iter()
+        .find(|constraint| constraint.kind.is_dimension() && constraint.kind.indices().1.iter().any(|index| state.sketch.curves[*index].id == bottom))
+        .unwrap()
+        .id
+        .clone();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let edit = adapter.begin_model(700, Some("solid.extrude"), None, &[Sel::Feature { id: sketch }]).unwrap();
+    let mut params = edit.params.clone();
+    params["distance"] = json!(depth);
+    params["operation"] = json!("new");
+    modelling_commit(&mut adapter, &edit, params);
+    let extrude = adapter.session.doc.features.last().unwrap().id;
+    (adapter, sketch, width_constraint, extrude)
+}
+
+fn modelling_roundtrip(adapter: &SessionAdapter) -> SessionAdapter {
+    let bytes = solidcraft_engine::io::write_design_container(&adapter.session.doc).unwrap();
+    let doc = solidcraft_engine::io::DesignContainerReader::new(std::io::Cursor::new(bytes)).unwrap().read_document().unwrap();
+    let mut loaded = SessionAdapter::new();
+    loaded.session = solidcraft_engine::Session::new(doc);
+    loaded
+}
+
+#[test]
+fn modelling_editable_extrusion_regenerates_same_feature_chain_and_native_container() {
+    let (mut adapter, sketch, width, extrude) = modelling_plate(40.0, "10 mm");
+    let ids: Vec<_> = adapter.session.doc.features.iter().map(|feature| feature.id).collect();
+    assert_eq!(ids, [sketch, extrude]);
+    assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+    let bounds = adapter.session.world_state().bodies[0].mesh().bounds();
+    assert!(bounds.min.dist(Vec3::ZERO) < 1e-7);
+    assert!(bounds.max.dist(Vec3::new(40.0, 30.0, 10.0)) < 1e-7);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.model.state().bodies.is_empty());
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+
+    let edit = adapter.begin_model(701, None, Some(extrude), &[]).unwrap();
+    assert_eq!(edit.params["extent"]["distance"], "10 mm");
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("15 mm");
+    modelling_commit(&mut adapter, &edit, params);
+    assert!((modelling_volume(&adapter) - 18_000.0).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 18_000.0).abs() < 1e-6);
+
+    adapter.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+    let selection = [Sel::SketchConstraint { id: width.clone() }];
+    numeric_apply(&mut adapter, &selection, None, "60 mm");
+    assert!((modelling_volume(&adapter) - 27_000.0).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 18_000.0).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 27_000.0).abs() < 1e-6);
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), ids);
+    let FeatureKind::Extrude { sketch: source, .. } = &adapter.session.doc.feature(extrude).unwrap().kind else { panic!("extrusion retained") };
+    assert_eq!(source.0, sketch);
+
+    let mut loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc, "native format retains all CAD history and metadata");
+    assert!((modelling_volume(&loaded) - 27_000.0).abs() < 1e-6);
+    let edit = loaded.begin_model(702, None, Some(extrude), &[]).unwrap();
+    assert_eq!(edit.params["extent"]["distance"], "15 mm");
+    loaded.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+    let edit = numeric_apply(&mut loaded, &selection, None, "40 mm");
+    assert_eq!(edit.expression, "60 mm");
+    assert!((modelling_volume(&loaded) - 18_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn modelling_explicit_target_cut_keeps_editable_circle_and_extrusion_after_regeneration() {
+    let (mut adapter, _, _, extrude) = modelling_plate(60.0, "15 mm");
+    let target = adapter.session.world_state().bodies[0].name.clone();
+    let circle_sketch =
+        adapter.execute("sketch.create", json!({"plane":"XY","offset":"15 mm","name":"Cut sketch"})).unwrap().value["sketch"].as_u64().unwrap();
+    let circle =
+        adapter.execute("sketch.circle.center", json!({"center":[30,15],"radius":5})).unwrap().value["curves"][0].as_str().unwrap().to_string();
+    numeric_apply(&mut adapter, &curve_selection(circle_sketch, &circle), Some("radius"), "5 mm");
+    let state = adapter.sketch_snapshot().unwrap();
+    assert!((state.plane.origin.z - 15.0).abs() < 1e-8);
+    let constraint = state.sketch.constraints.iter().find(|constraint| constraint.kind.is_dimension()).unwrap().id.clone();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let edit = adapter.begin_model(703, Some("solid.extrude"), None, &[Sel::Feature { id: circle_sketch }]).unwrap();
+    let mut params = edit.params.clone();
+    params["operation"] = json!("cut");
+    params["targets"] = json!([target]);
+    params["distance"] = json!("15 mm");
+    params["direction"] = json!("negative");
+    modelling_commit(&mut adapter, &edit, params);
+    let cut = adapter.session.doc.features.last().unwrap().id;
+    let ids: Vec<_> = adapter.session.doc.features.iter().map(|feature| feature.id).collect();
+    let removed = |adapter: &SessionAdapter| 27_000.0 - modelling_volume(adapter);
+    let expected = 375.0 * std::f64::consts::PI;
+    assert!((removed(&adapter) - expected).abs() / expected < 5e-4, "analytic through cut: {} versus {expected}", removed(&adapter));
+    assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 27_000.0).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((removed(&adapter) - expected).abs() / expected < 5e-4);
+
+    adapter.execute("sketch.edit", json!({"sketch":circle_sketch})).unwrap();
+    numeric_apply(&mut adapter, &[Sel::SketchConstraint { id: constraint.clone() }], None, "3 mm");
+    let smaller = 135.0 * std::f64::consts::PI;
+    assert!((removed(&adapter) - smaller).abs() / smaller < 5e-4, "edited radius: {} versus {smaller}", removed(&adapter));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((removed(&adapter) - expected).abs() / expected < 5e-4);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((removed(&adapter) - smaller).abs() / smaller < 5e-4);
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), ids);
+    for feature in [extrude, cut] {
+        let edit = adapter.begin_model(704, None, Some(feature), &[]).unwrap();
+        assert_eq!(edit.feature, Some(feature));
+        assert_eq!(edit.params["extent"]["distance"], "15 mm");
+    }
+    let mut loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc);
+    assert!((removed(&loaded) - smaller).abs() / smaller < 5e-4);
+    loaded.execute("sketch.edit", json!({"sketch":circle_sketch})).unwrap();
+    numeric_apply(&mut loaded, &[Sel::SketchConstraint { id: constraint }], None, "5 mm");
+    assert!((removed(&loaded) - expected).abs() / expected < 5e-4);
+}
+
+#[test]
+fn modelling_proposals_cancel_invalid_and_superseded_work_without_authoritative_mutation() {
+    let (mut adapter, sketch, _, extrude) = modelling_plate(40.0, "10 mm");
+    let edit = adapter.begin_model(705, None, Some(extrude), &[]).unwrap();
+    let original = adapter.session.doc.clone();
+    let history = adapter.session.undo.len();
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("2 +");
+    assert!(adapter.prepare_model(&edit, params, false).is_err());
+    assert!(Arc::ptr_eq(&original, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), history);
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("20 mm");
+    let preview = adapter.prepare_model(&edit, params.clone(), false).unwrap();
+    drop(preview); // Cancel is discarding the scratch result, never undoing the document.
+    assert!(Arc::ptr_eq(&original, &adapter.session.doc));
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+    assert_eq!(adapter.session.undo.len(), history);
+
+    let first = adapter.prepare_model(&edit, params.clone(), true).unwrap();
+    let duplicate = adapter.prepare_model(&edit, params, true).unwrap();
+    adapter.accept_model(&edit, first).unwrap();
+    assert!(adapter.accept_model(&edit, duplicate).is_err(), "double confirmation cannot commit twice");
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert_eq!(adapter.session.doc.features.len(), 2);
+    assert!((modelling_volume(&adapter) - 24_000.0).abs() < 1e-6);
+    let stale = adapter.begin_model(706, None, Some(extrude), &[]).unwrap();
+    let pending = adapter.prepare_model(&stale, stale.params.clone(), true).unwrap();
+    adapter.execute("timeline.rename", json!({"feature":sketch,"name":"Changed while pending"})).unwrap();
+    assert!(adapter.accept_model(&stale, pending).is_err());
+    assert_eq!(adapter.session.doc.feature(sketch).unwrap().name, "Changed while pending");
+    assert!((modelling_volume(&adapter) - 24_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn modelling_named_expressions_and_suppression_survive_unchanged_edit_and_native_roundtrip() {
+    let (mut adapter, _, _, extrude) = modelling_plate(40.0, "10 mm");
+    adapter.execute("parameters.add", json!({"name":"plate_depth","expression":"15 mm"})).unwrap();
+    let edit = adapter.begin_model(707, None, Some(extrude), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("plate_depth");
+    modelling_commit(&mut adapter, &edit, params);
+    assert!((modelling_volume(&adapter) - 18_000.0).abs() < 1e-6);
+    let edit = adapter.begin_model(708, None, Some(extrude), &[]).unwrap();
+    assert_eq!(edit.params["extent"]["distance"], "plate_depth");
+    modelling_commit(&mut adapter, &edit, edit.params.clone());
+    assert_eq!(adapter.begin_model(709, None, Some(extrude), &[]).unwrap().params["extent"]["distance"], "plate_depth");
+    let edit = adapter.begin_model(710, None, Some(extrude), &[]).unwrap();
+    for invalid in ["2 +", "5 deg", "missing_parameter"] {
+        let mut params = edit.params.clone();
+        params["extent"]["distance"] = json!(invalid);
+        assert!(adapter.prepare_model(&edit, params, false).is_err());
+        assert!((modelling_volume(&adapter) - 18_000.0).abs() < 1e-6);
+    }
+    adapter.execute("timeline.suppress", json!({"feature":extrude,"suppressed":true})).unwrap();
+    let mut loaded = modelling_roundtrip(&adapter);
+    assert!(loaded.session.doc.feature(extrude).unwrap().suppressed);
+    assert!(loaded.session.model.state().bodies.is_empty());
+    loaded.execute("timeline.suppress", json!({"feature":extrude,"suppressed":false})).unwrap();
+    assert!((modelling_volume(&loaded) - 18_000.0).abs() < 1e-6);
+    loaded.execute("parameters.change", json!({"name":"plate_depth","expression":"20 mm"})).unwrap();
+    assert!((modelling_volume(&loaded) - 24_000.0).abs() < 1e-6);
+}
+
+fn modelling_edge(adapter: &mut SessionAdapter, body: &str, midpoint: Vec3) -> Sel {
+    let edges = adapter.execute("model.edges", json!({"body":body})).unwrap().value;
+    let edge = edges["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|edge| serde_json::from_value::<Vec3>(edge["mid"].clone()).unwrap().dist(midpoint) < 1e-6)
+        .unwrap();
+    Sel::Edge { body: body.into(), index: edge["index"].as_u64().unwrap() as usize, point: midpoint }
+}
+
+#[test]
+fn modelling_fillet_and_chamfer_use_real_edges_edit_original_and_refuse_invalid_sizes() {
+    for (operation, field) in [("solid.fillet", "radius"), ("solid.chamfer", "distance")] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"name":"Blend base","body_name":"Blend body"})).unwrap();
+        let selection = [modelling_edge(&mut adapter, "Blend body", Vec3::new(20.0, 0.0, 10.0))];
+        let edit = adapter.begin_model(711, Some(operation), None, &selection).unwrap();
+        let mut viewport = Viewport::default();
+        viewport.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+        viewport.begin_update(1);
+        assert!(viewport.install(1, adapter.snapshot().unwrap()));
+        viewport.begin_model(edit.clone()).unwrap();
+        let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+        viewport.publish_model(edit.token, &preview).unwrap();
+        assert!(viewport.model_active());
+        viewport.cancel_model();
+        assert!(!viewport.model_active());
+        assert!(viewport.publish_model(edit.token, &preview).is_err(), "a cancelled interaction rejects late geometry");
+        drop(preview);
+        assert_eq!(adapter.session.doc.features.len(), 1);
+        assert!((modelling_volume(&adapter) - 8_000.0).abs() < 1e-6);
+        modelling_commit(&mut adapter, &edit, edit.params.clone());
+        let feature = adapter.session.doc.features.last().unwrap().id;
+        let removed = |radius: f64| {
+            if operation == "solid.fillet" { (1.0 - std::f64::consts::PI / 4.0) * radius * radius * 20.0 } else { radius * radius * 10.0 }
+        };
+        let check = |adapter: &SessionAdapter, size: f64| {
+            let actual = 8_000.0 - modelling_volume(adapter);
+            // Match the existing blend-edit tests' analytic absolute tolerance;
+            // native mass measurement uses an adaptive chord tessellation.
+            assert!((actual - removed(size)).abs() < 0.05, "{operation}: {actual} versus {}", removed(size));
+        };
+        check(&adapter, 1.0);
+        let edit = adapter.begin_model(712, None, Some(feature), &[]).unwrap();
+        let mut params = edit.params.clone();
+        params[field] = json!("2 mm");
+        modelling_commit(&mut adapter, &edit, params);
+        check(&adapter, 2.0);
+        assert_eq!(adapter.session.doc.features.last().unwrap().id, feature);
+        adapter.execute("edit.undo", json!({})).unwrap();
+        check(&adapter, 1.0);
+        adapter.execute("edit.redo", json!({})).unwrap();
+        check(&adapter, 2.0);
+        let edit = adapter.begin_model(713, None, Some(feature), &[]).unwrap();
+        let doc = adapter.session.doc.clone();
+        let history = adapter.session.undo.len();
+        let mut invalid = edit.params.clone();
+        invalid[field] = json!("100 mm");
+        assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+        assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+        assert_eq!(adapter.session.undo.len(), history);
+        check(&adapter, 2.0);
+        let loaded = modelling_roundtrip(&adapter);
+        check(&loaded, 2.0);
+        assert_eq!(*loaded.session.doc, *adapter.session.doc);
+        let stale = adapter.begin_model(714, Some(operation), None, &selection).unwrap();
+        adapter.execute("timeline.delete", json!({"feature":"Blend base"})).unwrap();
+        assert!(adapter.prepare_model(&stale, stale.params.clone(), false).is_err(), "invalidated edges cannot attach to another edge");
+    }
+}
+
+#[test]
+fn modelling_shell_removal_face_thickness_edit_cancel_failure_and_native_roundtrip() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":40,"width":30,"height":20,"body_name":"Shell body"})).unwrap();
+    let faces = adapter.execute("model.faces", json!({"body":"Shell body"})).unwrap().value;
+    let face = faces["faces"].as_array().unwrap().iter().find(|face| face["plane_normal"][2].as_f64().is_some_and(|n| n > 0.999)).unwrap();
+    let selection = [Sel::Face {
+        body: "Shell body".into(),
+        index: face["index"].as_u64().unwrap() as usize,
+        point: serde_json::from_value(face["point"].clone()).unwrap(),
+    }];
+    let edit = adapter.begin_model(715, Some("solid.shell"), None, &selection).unwrap();
+    let history = adapter.session.undo.len();
+    let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+    drop(preview);
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!((modelling_volume(&adapter) - 24_000.0).abs() < 1e-6);
+    modelling_commit(&mut adapter, &edit, edit.params.clone());
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let volume = |thickness: f64| 24_000.0 - (40.0 - 2.0 * thickness) * (30.0 - 2.0 * thickness) * (20.0 - thickness);
+    assert!((modelling_volume(&adapter) - volume(1.0)).abs() < 1e-6);
+    let edit = adapter.begin_model(716, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["thickness"] = json!("2 mm");
+    modelling_commit(&mut adapter, &edit, params);
+    assert!((modelling_volume(&adapter) - volume(2.0)).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - volume(1.0)).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - volume(2.0)).abs() < 1e-6);
+    let edit = adapter.begin_model(717, None, Some(feature), &[]).unwrap();
+    let mut invalid = edit.params.clone();
+    invalid["thickness"] = json!("30 mm");
+    let doc = adapter.session.doc.clone();
+    assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    let loaded = modelling_roundtrip(&adapter);
+    assert_eq!(loaded.session.doc.feature(feature).unwrap().id, feature);
+    assert!((modelling_volume(&loaded) - volume(2.0)).abs() < 1e-6);
+}
+
+fn modelling_check_edit(adapter: &mut SessionAdapter, feature: u64, params: Value, before: f64, after: f64, tolerance: f64) {
+    let check = |adapter: &SessionAdapter, expected: f64| {
+        assert!((modelling_volume(adapter) - expected).abs() < tolerance, "{} versus {expected}", modelling_volume(adapter));
+    };
+    check(adapter, before);
+    let edit = adapter.begin_model(720, None, Some(feature), &[]).unwrap();
+    modelling_commit(adapter, &edit, params);
+    assert_eq!(adapter.session.doc.features.last().unwrap().id, feature);
+    check(adapter, after);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    check(adapter, before);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    check(adapter, after);
+    let loaded = modelling_roundtrip(adapter);
+    // The native reader names newly introduced optional inputs (for example a
+    // hole's Depth after Through All). Its public naming API keeps existing names.
+    let mut expected = (*adapter.session.doc).clone();
+    expected.name_feature_inputs(feature);
+    assert_eq!(*loaded.session.doc, expected);
+    check(&loaded, after);
+}
+
+#[test]
+fn modelling_revolve_profile_axis_angle_edit_invalid_and_history() {
+    let mut adapter = SessionAdapter::new();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XZ"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[10,0],"p1":[15,5]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let edit = adapter.begin_model(721, Some("solid.revolve"), None, &[Sel::Feature { id: sketch }]).unwrap();
+    let mut params = edit.params.clone();
+    params["axis"] = json!("y");
+    modelling_commit(&mut adapter, &edit, params);
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let edit = adapter.begin_model(722, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["angle"] = json!("180 deg");
+    let full = std::f64::consts::PI * 125.0 * 5.0;
+    modelling_check_edit(&mut adapter, feature, params, full, full / 2.0, full * 5e-4);
+    assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    let edit = adapter.begin_model(723, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["angle"] = json!("0 deg");
+    assert!(adapter.prepare_model(&edit, params, false).is_err());
+}
+
+#[test]
+fn modelling_hole_uses_real_sketch_centres_explicit_targets_and_original_diameter_edit() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Drilled plate"})).unwrap();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XY","offset":"10 mm"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.circle.center", json!({"center":[20,15],"radius":1})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let edit = adapter.begin_model(724, Some("solid.hole"), None, &[Sel::Feature { id: sketch }]).unwrap();
+    let mut params = edit.params.clone();
+    assert!(adapter.prepare_model(&edit, params.clone(), false).is_err(), "target bodies are mandatory");
+    params["targets"] = json!(["Drilled plate"]);
+    modelling_commit(&mut adapter, &edit, params);
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let edit = adapter.begin_model(725, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["diameter"] = json!("6 mm");
+    let pi = std::f64::consts::PI;
+    modelling_check_edit(&mut adapter, feature, params, 12_000.0 - 62.5 * pi, 12_000.0 - 90.0 * pi, 0.05);
+    assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    let edit = adapter.begin_model(726, None, Some(feature), &[]).unwrap();
+    let mut invalid = edit.params.clone();
+    invalid["diameter"] = json!("-1 mm");
+    assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+}
+
+#[test]
+fn modelling_boolean_modes_distinguish_target_tools_and_retain_behavior_with_history() {
+    for (operation, expected) in [("join", 1500.0), ("cut", 500.0), ("intersect", 500.0)] {
+        let mut adapter = SessionAdapter::new();
+        for (name, x) in [("Target", 0), ("Tool", 5)] {
+            adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"corner":[x,0,0],"operation":"new","body_name":name})).unwrap();
+        }
+        let edit = adapter.begin_model(727, Some("solid.combine"), None, &[]).unwrap();
+        let mut params = edit.params.clone();
+        params["target"] = json!("Target");
+        params["tools"] = json!(["Tool"]);
+        params["operation"] = json!(operation);
+        params["keep_tools"] = json!(false);
+        modelling_commit(&mut adapter, &edit, params);
+        let feature = adapter.session.doc.features.last().unwrap().id;
+        assert_eq!(adapter.session.model.state().bodies.len(), 1);
+        let edit = adapter.begin_model(728, None, Some(feature), &[]).unwrap();
+        let mut params = edit.params.clone();
+        params["keep_tools"] = json!(true);
+        modelling_check_edit(&mut adapter, feature, params, expected, expected + 1000.0, 1e-6);
+        assert_eq!(adapter.session.model.state().bodies.len(), 2);
+        let edit = adapter.begin_model(729, None, Some(feature), &[]).unwrap();
+        let mut invalid = edit.params.clone();
+        invalid["tools"] = json!(["Missing tool"]);
+        assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+    }
+}
+
+#[test]
+fn modelling_body_patterns_keep_source_relationship_count_edits_and_roundtrip() {
+    for operation in ["solid.pattern.rectangular", "solid.pattern.circular"] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("solid.box", json!({"length":2,"width":2,"height":2,"corner":[10,0,0],"body_name":"Pattern source"})).unwrap();
+        let edit = adapter.begin_model(730, Some(operation), None, &[Sel::Body { name: "Pattern source".into() }]).unwrap();
+        modelling_commit(&mut adapter, &edit, edit.params.clone());
+        let feature = adapter.session.doc.features.last().unwrap().id;
+        let edit = adapter.begin_model(731, None, Some(feature), &[]).unwrap();
+        let mut params = edit.params.clone();
+        let (key, old_count, new_count) = if operation.ends_with("rectangular") { ("count1", 2, 3) } else { ("count", 3, 4) };
+        params["pattern"][key] = json!(new_count.to_string());
+        modelling_check_edit(&mut adapter, feature, params, 8.0 * f64::from(old_count), 8.0 * f64::from(new_count), 1e-6);
+        assert_eq!(adapter.session.model.state().bodies.len(), new_count as usize);
+        let edit = adapter.begin_model(732, None, Some(feature), &[]).unwrap();
+        let mut invalid = edit.params.clone();
+        invalid["pattern"][key] = json!("0");
+        assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+        let FeatureKind::Pattern { bodies, .. } = &adapter.session.doc.feature(feature).unwrap().kind else { panic!("native pattern") };
+        assert_eq!(bodies.iter().map(|name| name.0.as_str()).collect::<Vec<_>>(), ["Pattern source"]);
+    }
+}
+
+#[test]
+fn modelling_body_mirror_plane_edit_keeps_original_feature_and_native_history() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":2,"width":2,"height":2,"corner":[10,4,2],"body_name":"Mirror source"})).unwrap();
+    let edit = adapter.begin_model(733, Some("solid.mirror"), None, &[Sel::Body { name: "Mirror source".into() }]).unwrap();
+    modelling_commit(&mut adapter, &edit, edit.params.clone());
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let negative_x = |adapter: &SessionAdapter| adapter.session.world_state().bodies.iter().any(|body| body.mesh().bounds().max.x < 0.0);
+    let negative_y = |adapter: &SessionAdapter| adapter.session.world_state().bodies.iter().any(|body| body.mesh().bounds().max.y < 0.0);
+    assert!(negative_x(&adapter));
+    let edit = adapter.begin_model(734, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["plane"] = json!({"type":"origin","name":"XZ"});
+    modelling_check_edit(&mut adapter, feature, params, 16.0, 16.0, 1e-6);
+    assert!(!negative_x(&adapter) && negative_y(&adapter));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(negative_x(&adapter) && !negative_y(&adapter));
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!(!negative_x(&adapter) && negative_y(&adapter));
+    let loaded = modelling_roundtrip(&adapter);
+    assert!(!negative_x(&loaded) && negative_y(&loaded));
+    let edit = adapter.begin_model(735, None, Some(feature), &[]).unwrap();
+    let mut invalid = edit.params.clone();
+    invalid["bodies"] = json!(["Missing source"]);
+    assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+}
+
+#[test]
+fn modelling_sweep_uses_ordered_native_path_and_edits_original_end_scale() {
+    let mut adapter = SessionAdapter::new();
+    let profile = adapter.execute("sketch.create", json!({"plane":"XY","name":"Sweep profile"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[-5,-5],"p1":[5,5]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let path = adapter.execute("sketch.create", json!({"plane":"XZ","name":"Sweep path"})).unwrap().value["sketch"].as_u64().unwrap();
+    let curve = adapter.execute("sketch.line", json!({"points":[[0,0],[0,-40]]})).unwrap().value["curves"][0].as_str().unwrap().to_string();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let edit = adapter.begin_model(736, Some("solid.sweep"), None, &[Sel::Feature { id: profile }]).unwrap();
+    let mut params = edit.params.clone();
+    params["path_sketch"] = json!(path);
+    params["path_curves"] = json!([{"sketch":path,"curve":curve}]);
+    modelling_commit(&mut adapter, &edit, params);
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let edit = adapter.begin_model(737, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["scale"] = json!("0.5");
+    modelling_check_edit(&mut adapter, feature, params, 4_000.0, 100.0 * 40.0 * (1.0 + 0.5 + 0.25) / 3.0, 1e-5);
+    assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    let FeatureKind::Sweep { sketch, path_sketch, path: saved, .. } = &adapter.session.doc.feature(feature).unwrap().kind else {
+        panic!("native sweep")
+    };
+    assert_eq!((sketch.0, path_sketch.0), (profile, path));
+    assert_eq!(saved, &[curve]);
+    let edit = adapter.begin_model(738, None, Some(feature), &[]).unwrap();
+    let mut invalid = edit.params.clone();
+    invalid["scale"] = json!("0");
+    assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+}
+
+#[test]
+fn modelling_loft_ordered_sections_are_editable_without_replacing_original_history() {
+    let mut adapter = SessionAdapter::new();
+    let mut sketches = Vec::new();
+    for (name, z, side) in [("Loft base", 0, 10), ("Loft top", 20, 10), ("Loft wide top", 20, 20)] {
+        sketches.push(adapter.execute("sketch.create", json!({"plane":"XY","offset":z,"name":name})).unwrap().value["sketch"].as_u64().unwrap());
+        adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[side,side]})).unwrap();
+        adapter.execute("sketch.finish", json!({})).unwrap();
+    }
+    let edit = adapter.begin_model(739, Some("solid.loft"), None, &[]).unwrap();
+    let descriptor = adapter.model_descriptor(&edit);
+    let options = descriptor["fields"].as_array().unwrap().iter().find(|field| field["key"] == "sections").unwrap()["options"].as_array().unwrap();
+    let section = |sketch: u64| options.iter().find(|option| option["value"]["sketch"] == sketch).unwrap()["value"].clone();
+    let mut params = edit.params.clone();
+    params["sections"] = json!([section(sketches[0]), section(sketches[1])]);
+    modelling_commit(&mut adapter, &edit, params);
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    let edit = adapter.begin_model(740, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["sections"] = json!([section(sketches[0]), section(sketches[2])]);
+    modelling_check_edit(&mut adapter, feature, params, 2_000.0, 20.0 * (100.0 + 200.0 + 400.0) / 3.0, 1e-5);
+    let FeatureKind::Loft { sections, .. } = &adapter.session.doc.feature(feature).unwrap().kind else { panic!("native loft") };
+    assert_eq!(sections.iter().map(|section| section.sketch.0).collect::<Vec<_>>(), [sketches[0], sketches[2]]);
+    let edit = adapter.begin_model(741, None, Some(feature), &[]).unwrap();
+    let mut invalid = edit.params.clone();
+    invalid["sections"] = json!([section(sketches[0])]);
+    assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+}
+
+fn modelling_input_fixture() -> (SessionAdapter, Viewport, u64) {
+    let (mut adapter, _, _, extrude) = modelling_plate(40.0, "10 mm");
+    let model = adapter.snapshot().unwrap();
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    viewport.begin_update(1);
+    assert!(viewport.install(1, model));
+    let edit = adapter.begin_model(750, None, Some(extrude), &[]).unwrap();
+    assert!(edit.handle.is_some());
+    viewport.begin_model(edit).unwrap();
+    (adapter, viewport, extrude)
+}
+
+fn modelling_handle_position(viewport: &Viewport, depth: f64) -> [f64; 2] {
+    let handle = viewport.modelling.as_ref().unwrap().handle.as_ref().unwrap();
+    point(viewport, handle.origin + handle.normal * depth * handle.factor)
+}
+
+#[test]
+fn modelling_pencil_extrusion_handle_proposes_engine_geometry_and_lift_requires_explicit_apply() {
+    let (mut adapter, mut viewport, feature) = modelling_input_fixture();
+    let history = adapter.session.undo.len();
+    let camera = viewport.camera;
+    let start = modelling_handle_position(&viewport, 10.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Began, 91, start, 1.0);
+    let end = modelling_handle_position(&viewport, 15.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 91, end, 2.0);
+    let work = viewport.take_tool_work().unwrap();
+    assert!(!work.commit);
+    let prepared = adapter.prepare_tool(work.clone()).unwrap();
+    assert!(viewport.publish_preview(&work, prepared.model));
+    assert!((viewport.snapshot().unwrap().model.volume_mm3 - 18_000.0).abs() < 1e-5);
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+    assert_eq!(adapter.session.undo.len(), history);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Ended, 91, end, 3.0);
+    let work = viewport.take_tool_work().unwrap();
+    assert!(!work.commit, "Pencil lift finalises the draft, never commits the feature");
+    let prepared = adapter.prepare_tool(work.clone()).unwrap();
+    assert!(viewport.publish_preview(&work, prepared.model));
+    assert_eq!(adapter.session.undo.len(), history);
+    // Adjust the same provisional feature again after lifting the Pencil.
+    for (phase, depth, time) in [(InputPhase::Began, 15.0, 4.0), (InputPhase::Moved, 20.0, 5.0), (InputPhase::Ended, 20.0, 6.0)] {
+        let position = modelling_handle_position(&viewport, depth);
+        let mut event = sample(&viewport, InputSource::Pencil, phase, 92, position, time);
+        event.display_preview = true;
+        viewport.input(event).unwrap();
+    }
+    let work = viewport.take_tool_work().unwrap();
+    assert!(!work.commit);
+    let prepared = adapter.prepare_tool(work.clone()).unwrap();
+    assert!(viewport.publish_preview(&work, prepared.model));
+    assert!((viewport.snapshot().unwrap().model.volume_mm3 - 24_000.0).abs() < 1e-5);
+    let edit = viewport.model_edit(750).unwrap();
+    let prepared = adapter.prepare_model(&edit, edit.params.clone(), true).unwrap();
+    let model = adapter.accept_model(&edit, prepared).unwrap();
+    viewport.finish_model(750, Some(model)).unwrap();
+    assert!((modelling_volume(&adapter) - 24_000.0).abs() < 1e-5);
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert_eq!(adapter.session.doc.features.last().unwrap().id, feature);
+    assert_eq!(viewport.camera, camera);
+}
+
+#[test]
+fn modelling_form_previews_reject_old_completion_and_document_changes_deterministically() {
+    let (mut adapter, mut viewport, feature) = modelling_input_fixture();
+    let original = adapter.session.doc.clone();
+    let edit = viewport.model_edit(750).unwrap();
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("20 mm");
+    let older = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    viewport.update_model(older.clone()).unwrap();
+    let older_result = adapter.prepare_model(&older, older.params.clone(), false).unwrap();
+    let mut params = older.params.clone();
+    params["extent"]["distance"] = json!("30 mm");
+    let newer = adapter.refresh_model(&older, &[], Some(params)).unwrap();
+    viewport.update_model(newer.clone()).unwrap();
+    let newer_result = adapter.prepare_model(&newer, newer.params.clone(), false).unwrap();
+    viewport.publish_model(750, &newer_result).unwrap();
+    assert!(viewport.publish_model(750, &older_result).is_err());
+    assert!((viewport.snapshot().unwrap().model.volume_mm3 - 36_000.0).abs() < 1e-5);
+    assert!(Arc::ptr_eq(&original, &adapter.session.doc));
+
+    let mut invalid = newer.params.clone();
+    invalid["extent"]["distance"] = json!("2 +");
+    let invalid = adapter.refresh_model(&newer, &[], Some(invalid)).unwrap();
+    viewport.update_model(invalid.clone()).unwrap();
+    assert!(adapter.prepare_model(&invalid, invalid.params.clone(), false).is_err());
+    viewport.fail_model(750).unwrap();
+    assert_eq!(adapter.model_descriptor(&viewport.model_edit(750).unwrap())["valid"], false);
+    assert!((viewport.snapshot().unwrap().model.volume_mm3 - 12_000.0).abs() < 1e-6);
+    adapter.execute("timeline.rename", json!({"feature":feature,"name":"Document changed"})).unwrap();
+    viewport.begin_update(2);
+    assert!(viewport.install(2, adapter.snapshot().unwrap()));
+    assert!(viewport.publish_model(750, &newer_result).is_err());
+    assert!(viewport.selection().is_empty());
+}
+
+#[test]
+fn modelling_finger_navigation_suspends_pencil_and_cancel_resize_reject_pending_work() {
+    let (adapter, mut viewport, _) = modelling_input_fixture();
+    let history = adapter.session.undo.len();
+    let start = modelling_handle_position(&viewport, 10.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Began, 91, start, 1.0);
+    let moved = modelling_handle_position(&viewport, 14.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 91, moved, 2.0);
+    let work = viewport.take_tool_work().unwrap();
+    let prepared = adapter.prepare_tool(work.clone()).unwrap();
+    assert!(viewport.publish_preview(&work, prepared.model));
+    let camera = viewport.camera;
+    for (id, point) in [(1, [200.0, 300.0]), (2, [500.0, 300.0])] {
+        feed(&mut viewport, InputSource::Finger, InputPhase::Began, id, point, 3.0);
+    }
+    feed(&mut viewport, InputSource::Finger, InputPhase::Moved, 2, [550.0, 330.0], 4.0);
+    assert_ne!(viewport.camera, camera);
+    let far = modelling_handle_position(&viewport, 30.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 91, far, 5.0);
+    assert!(viewport.take_tool_work().is_none());
+    assert_eq!(viewport.diagnostic()["input"]["edit"], "suspended");
+    for id in [2, 1] {
+        feed(&mut viewport, InputSource::Finger, InputPhase::Ended, id, [200.0, 300.0], 6.0);
+    }
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 91, far, 7.0);
+    assert!(viewport.take_tool_work().is_none(), "first move after navigation only rebases");
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Cancelled, 91, far, 8.0);
+    assert!(viewport.take_tool_work().is_none());
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+    viewport.cancel_model();
+    assert!(viewport.model_edit(750).is_err());
+
+    let (adapter, mut viewport, _) = modelling_input_fixture();
+    let start = modelling_handle_position(&viewport, 10.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Began, 91, start, 1.0);
+    let moved = modelling_handle_position(&viewport, 15.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 91, moved, 2.0);
+    let work = viewport.take_tool_work().unwrap();
+    let prepared = adapter.prepare_tool(work.clone()).unwrap();
+    viewport.set_metrics(metrics(600.0, 800.0, 2.0)).unwrap();
+    assert!(!viewport.publish_preview(&work, prepared.model));
+    assert!(viewport.take_tool_work().is_none());
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn modelling_extrusion_uses_native_hole_classification_and_non_world_z_plane() {
+    let mut adapter = SessionAdapter::new();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XZ","name":"Ring plate"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]})).unwrap();
+    adapter.execute("sketch.circle.center", json!({"center":[20,15],"radius":3})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let edit = adapter.begin_model(751, Some("solid.extrude"), None, &[Sel::Feature { id: sketch }]).unwrap();
+    let descriptor = adapter.model_descriptor(&edit);
+    let profiles = descriptor["fields"].as_array().unwrap().iter().find(|field| field["key"] == "profile").unwrap()["options"].as_array().unwrap();
+    let outer = profiles.iter().find(|option| option["value"]["profiles"][0]["curves"].as_array().is_some_and(|curves| curves.len() == 4)).unwrap();
+    let mut params = edit.params.clone();
+    params["profile"] = outer["value"].clone();
+    params["distance"] = json!("5 mm");
+    modelling_commit(&mut adapter, &edit, params);
+    let expected = (1200.0 - 9.0 * std::f64::consts::PI) * 5.0;
+    assert!((modelling_volume(&adapter) - expected).abs() < 0.05);
+    let world = adapter.session.world_state();
+    assert_eq!(world.bodies.len(), 1);
+    let bounds = world.bodies[0].mesh().bounds();
+    assert!(bounds.min.dist(Vec3::new(0.0, 0.0, -30.0)) < 1e-6, "{bounds:?}");
+    assert!(bounds.max.dist(Vec3::new(40.0, 5.0, 0.0)) < 1e-6, "{bounds:?}");
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let edit = adapter.begin_model(752, None, Some(feature), &[]).unwrap();
+    assert!(edit.handle.as_ref().unwrap().normal.dist(Vec3::Y) < 1e-7);
+    let loaded = modelling_roundtrip(&adapter);
+    assert!((modelling_volume(&loaded) - expected).abs() < 0.05);
+}
+
+#[test]
+fn modelling_mixed_body_edge_and_removal_face_selections_are_rejected_explicitly() {
+    let mut adapter = SessionAdapter::new();
+    for (name, x) in [("First body", 0), ("Second body", 50)] {
+        adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"corner":[x,0,0],"body_name":name,"operation":"new"})).unwrap();
+    }
+    let edges = [
+        modelling_edge(&mut adapter, "First body", Vec3::new(20.0, 0.0, 10.0)),
+        modelling_edge(&mut adapter, "Second body", Vec3::new(70.0, 0.0, 10.0)),
+    ];
+    for operation in ["solid.fillet", "solid.chamfer"] {
+        let failure = match adapter.begin_model(753, Some(operation), None, &edges) {
+            Err(failure) => failure,
+            Ok(_) => panic!("{operation} cannot silently discard an edge on another body"),
+        };
+        assert!(failure.message.to_ascii_lowercase().contains("body"), "{}", failure.message);
+    }
+    let mut faces = Vec::new();
+    for body in ["First body", "Second body"] {
+        let result = adapter.execute("model.faces", json!({"body":body})).unwrap().value;
+        let face = result["faces"].as_array().unwrap().iter().find(|face| face["plane_normal"][2].as_f64().is_some_and(|n| n > 0.999)).unwrap();
+        faces.push(Sel::Face {
+            body: body.into(),
+            index: face["index"].as_u64().unwrap() as usize,
+            point: serde_json::from_value(face["point"].clone()).unwrap(),
+        });
+    }
+    let failure = match adapter.begin_model(754, Some("solid.shell"), None, &faces) {
+        Err(failure) => failure,
+        Ok(_) => panic!("shell cannot silently use another body's removal face"),
+    };
+    assert!(failure.message.to_ascii_lowercase().contains("body"), "{}", failure.message);
+    assert_eq!(adapter.session.doc.features.len(), 2);
+    assert!((modelling_volume(&adapter) - 16_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn modelling_original_new_body_edit_requires_explicit_targets_when_switched_to_cut() {
+    let (adapter, _, _, feature) = modelling_plate(40.0, "10 mm");
+    let edit = adapter.begin_model(755, None, Some(feature), &[]).unwrap();
+    let descriptor = adapter.model_descriptor(&edit);
+    assert!(
+        descriptor["fields"].as_array().unwrap().iter().any(|field| field["key"] == "targets"),
+        "an existing new-body feature must expose targets when its mode changes"
+    );
+    let mut params = edit.params.clone();
+    params["operation"] = json!("cut");
+    params["targets"] = json!([]);
+    let failure = match adapter.prepare_model(&edit, params, false) {
+        Err(failure) => failure,
+        Ok(_) => panic!("an edited extrusion cannot guess which bodies to cut"),
+    };
+    assert!(failure.message.to_ascii_lowercase().contains("target"), "{}", failure.message);
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn modelling_handle_result_is_rejected_after_a_newer_numeric_form_proposal() {
+    let (adapter, mut viewport, _) = modelling_input_fixture();
+    let start = modelling_handle_position(&viewport, 10.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Began, 91, start, 1.0);
+    let moved = modelling_handle_position(&viewport, 15.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 91, moved, 2.0);
+    let work = viewport.take_tool_work().unwrap();
+    let pending = adapter.prepare_tool(work.clone()).unwrap();
+    let edit = viewport.model_edit(750).unwrap();
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("20 mm");
+    let newer = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    viewport.update_model(newer.clone()).unwrap();
+    let current = adapter.prepare_model(&newer, newer.params.clone(), false).unwrap();
+    viewport.publish_model(750, &current).unwrap();
+    assert!(!viewport.publish_preview(&work, pending.model), "late handle geometry cannot overwrite a newer precise value");
+    assert!((viewport.snapshot().unwrap().model.volume_mm3 - 24_000.0).abs() < 1e-5);
+    assert_eq!(viewport.model_edit(750).unwrap().params["extent"]["distance"], "20 mm");
+    assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn modelling_failed_downstream_profile_can_reselect_original_feature_and_cancel_repair_safely() {
+    let mut adapter = SessionAdapter::new();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XY","name":"Repair sketch"})).unwrap().value["sketch"].as_u64().unwrap();
+    let first = adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[10,10]})).unwrap().value;
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[20,0],"p1":[30,10]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let feature = adapter
+        .execute("solid.extrude", json!({"sketch":sketch,"profiles":[{"curves":first["curves"]}],"distance":"10 mm","operation":"new"}))
+        .unwrap()
+        .value["feature"]
+        .as_u64()
+        .unwrap();
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    viewport.begin_update(1);
+    assert!(viewport.install(1, adapter.snapshot().unwrap()));
+    adapter.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+    adapter.execute("sketch.delete", json!({"entities":[first["sides"]["bottom"]]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    assert!(adapter.session.model.result(feature).unwrap().error.is_some());
+    assert!(adapter.snapshot().is_err(), "last-good geometry is not current regenerated geometry");
+    let failed_doc = adapter.session.doc.clone();
+    viewport.begin_update(2);
+    viewport.fail_update(2);
+    assert!(viewport.is_updating());
+    let edit = adapter.begin_model(756, None, Some(feature), &[]).unwrap();
+    viewport.begin_model(edit).unwrap();
+    assert!(!viewport.is_updating(), "repair uses an explicitly bounded upstream picking scene");
+    assert!(viewport.model_edit(756).is_ok());
+    viewport.cancel_model();
+    assert!(viewport.is_updating(), "cancel restores the failed-state display contract");
+    assert!(Arc::ptr_eq(&failed_doc, &adapter.session.doc));
+    assert!(adapter.session.model.result(feature).unwrap().error.is_some());
+    let edit = adapter.begin_model(757, None, Some(feature), &[]).unwrap();
+    let descriptor = adapter.model_descriptor(&edit);
+    let profile = descriptor["fields"].as_array().unwrap().iter().find(|field| field["key"] == "profile").unwrap()["options"][0]["value"].clone();
+    assert!(!profile.is_null(), "the surviving region is an explicit repair choice");
+    viewport.begin_model(edit.clone()).unwrap();
+    let mut params = edit.params.clone();
+    params["profile"] = profile;
+    let prepared = adapter.prepare_model(&edit, params, true).unwrap();
+    let model = adapter.accept_model(&edit, prepared).unwrap();
+    viewport.finish_model(757, Some(model)).unwrap();
+    assert!(!viewport.is_updating());
+    assert_eq!(adapter.session.doc.features.last().unwrap().id, feature);
+    assert!((modelling_volume(&adapter) - 1_000.0).abs() < 1e-6);
+    assert!((adapter.session.world_state().bodies[0].mesh().bounds().min.x - 20.0).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.model.result(feature).unwrap().error.is_some(), "undo retains the recoverable failed history");
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 1_000.0).abs() < 1e-6);
+    assert_eq!(*modelling_roundtrip(&adapter).session.doc, *adapter.session.doc);
+}
+
+#[test]
+fn modelling_feature_and_path_patterns_preserve_native_sources_and_regenerate_after_source_edit() {
+    for (operation, source_mode) in [
+        ("solid.pattern.rectangular", "features"),
+        ("solid.pattern.circular", "features"),
+        ("solid.pattern.path", "features"),
+        ("solid.pattern.path", "bodies"),
+    ] {
+        let mut adapter = SessionAdapter::new();
+        let seed = adapter
+            .execute("solid.box", json!({"length":2,"width":2,"height":2,"corner":[10,0,0],"name":"Pattern seed","body_name":"Pattern seed body"}))
+            .unwrap()
+            .value["feature"]
+            .as_u64()
+            .unwrap();
+        let path = if operation.ends_with("path") {
+            let sketch = adapter.execute("sketch.create", json!({"plane":"XY","name":"Pattern path"})).unwrap().value["sketch"].as_u64().unwrap();
+            let curve = adapter.execute("sketch.line", json!({"points":[[0,0],[80,0]]})).unwrap().value["curves"][0].as_str().unwrap().to_string();
+            adapter.execute("sketch.finish", json!({})).unwrap();
+            Some((sketch, curve))
+        } else {
+            None
+        };
+        let edit = adapter.begin_model(758, Some(operation), None, &[Sel::Body { name: "Pattern seed body".into() }]).unwrap();
+        let mut params = edit.params.clone();
+        params["source_mode"] = json!(source_mode);
+        params["features"] = json!(["Pattern seed"]);
+        params["bodies"] = json!(["Pattern seed body"]);
+        if let Some((sketch, curve)) = &path {
+            params["path_sketch"] = json!(sketch);
+            params["path_curves"] = json!([{"sketch":sketch,"curve":curve}]);
+        }
+        modelling_commit(&mut adapter, &edit, params);
+        let feature = adapter.session.doc.features.last().unwrap().id;
+        let edit = adapter.begin_model(759, None, Some(feature), &[]).unwrap();
+        assert_eq!(edit.params["source_mode"], source_mode);
+        let mut params = edit.params.clone();
+        let key = if operation.ends_with("rectangular") { "count1" } else { "count" };
+        let old_count = adapter.session.doc.eval(params["pattern"][key].as_str().unwrap(), solidcraft_engine::doc::expr::Kind::Unitless).unwrap();
+        params["pattern"][key] = json!("4");
+        modelling_check_edit(&mut adapter, feature, params, 8.0 * old_count, 32.0, 1e-6);
+        assert_eq!(adapter.session.model.state().bodies.len(), 4);
+        let FeatureKind::Pattern { features, bodies, .. } = &adapter.session.doc.feature(feature).unwrap().kind else { panic!("native pattern") };
+        if source_mode == "features" {
+            assert_eq!(features.iter().map(|feature| feature.0).collect::<Vec<_>>(), [seed]);
+            assert!(bodies.is_empty());
+        } else {
+            assert!(features.is_empty());
+            assert_eq!(bodies.iter().map(|body| body.0.as_str()).collect::<Vec<_>>(), ["Pattern seed body"]);
+        }
+        let edit = adapter.begin_model(760, None, Some(feature), &[]).unwrap();
+        let mut invalid = edit.params.clone();
+        invalid["pattern"][key] = json!("0");
+        assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+        adapter.execute("timeline.edit", json!({"feature":seed,"set":{"height":"3 mm"}})).unwrap();
+        assert!((modelling_volume(&adapter) - 48.0).abs() < 1e-6, "{operation} follows its source feature");
+        assert_eq!(adapter.session.doc.features.last().unwrap().id, feature);
+        assert!((modelling_volume(&modelling_roundtrip(&adapter)) - 48.0).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn modelling_through_all_extrusion_and_hole_can_edit_original_to_blind_depth() {
+    for operation in ["solid.extrude", "solid.hole"] {
+        let (mut adapter, _, _, _) = modelling_plate(60.0, "15 mm");
+        let target = adapter.session.world_state().bodies[0].name.clone();
+        let sketch = adapter.execute("sketch.create", json!({"plane":"XY","offset":"15 mm","name":"Through profile"})).unwrap().value["sketch"]
+            .as_u64()
+            .unwrap();
+        adapter.execute("sketch.circle.center", json!({"center":[30,15],"radius":3})).unwrap();
+        adapter.execute("sketch.finish", json!({})).unwrap();
+        let edit = adapter.begin_model(761, Some(operation), None, &[Sel::Feature { id: sketch }]).unwrap();
+        assert!(adapter.model_descriptor(&edit)["fields"].as_array().unwrap().iter().any(|field| field["key"] == "through_all"));
+        let mut params = edit.params.clone();
+        params["targets"] = json!([target]);
+        params["through_all"] = json!(true);
+        if operation == "solid.extrude" {
+            params["operation"] = json!("cut");
+            params["direction"] = json!("negative");
+        } else {
+            params["diameter"] = json!("6 mm");
+        }
+        modelling_commit(&mut adapter, &edit, params);
+        let feature = adapter.session.doc.features.last().unwrap().id;
+        let edit = adapter.begin_model(762, None, Some(feature), &[]).unwrap();
+        let mut params = edit.params.clone();
+        if operation == "solid.extrude" {
+            assert_eq!(params["extent"]["through_all"], true);
+            params["extent"]["through_all"] = json!(false);
+            params["extent"]["distance"] = json!("5 mm");
+        } else {
+            assert_eq!(params["through_all"], true);
+            params["through_all"] = json!(false);
+            params["depth"] = json!("5 mm");
+        }
+        let pi = std::f64::consts::PI;
+        // The same relative 5e-4 curved-volume allowance as the cut acceptance,
+        // bounded here by the smaller analytic blind-hole removal volume.
+        modelling_check_edit(&mut adapter, feature, params, 27_000.0 - 135.0 * pi, 27_000.0 - 45.0 * pi, 45.0 * pi * 5e-4);
+        assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    }
+}
+
+fn assembly_accept(adapter: &mut SessionAdapter, operation: &str, params: Value, selection: &[Sel]) -> Value {
+    let edit = adapter.begin_model(800, Some(operation), None, selection).unwrap();
+    let history = adapter.session.undo.len();
+    let document = adapter.session.doc.clone();
+    let prepared = adapter.prepare_model(&edit, params, true).unwrap();
+    let reply = prepared.reply.clone();
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc), "assembly preparation is provisional");
+    assert_eq!(adapter.session.undo.len(), history);
+    adapter.accept_model(&edit, prepared).unwrap();
+    assert_eq!(adapter.session.undo.len(), history + 1, "one assembly operation is one native undo action");
+    reply
+}
+
+fn assembly_marker(adapter: &SessionAdapter, path: &[u64], local: Vec3) -> Vec3 {
+    solidcraft_engine::doc::apply_point(&adapter.session.occurrence_placement(path).unwrap().world, local)
+}
+
+fn assembly_volume(adapter: &SessionAdapter, path: &[u64]) -> f64 {
+    let placement = adapter.session.occurrence_placement(path).unwrap();
+    let world = adapter.session.world_state();
+    placement.bodies.iter().map(|placed| world.body(&placed.world).unwrap().measure().unwrap().volume).sum()
+}
+
+fn assembly_create_component(adapter: &mut SessionAdapter, name: &str, grounded: bool) -> (u64, u64) {
+    let created = assembly_accept(adapter, "component.create", json!({"name":name,"parent":0,"activate":false,"grounded":grounded}), &[]);
+    (created["component"].as_u64().unwrap(), created["occurrence"].as_u64().unwrap())
+}
+
+#[test]
+fn assembly_component_transfer_instances_and_independent_copy_keep_native_history_and_geometry() {
+    let mut adapter = SessionAdapter::new();
+    let feature = adapter
+        .execute("solid.box", json!({"length":40,"width":30,"height":10,"name":"Shared plate source","body_name":"Shared plate"}))
+        .unwrap()
+        .value["feature"]
+        .as_u64()
+        .unwrap();
+    let original = adapter.snapshot().unwrap();
+    let (component, first) = assembly_create_component(&mut adapter, "Plate component", false);
+    assembly_accept(&mut adapter, "component.move_bodies", json!({"bodies":["Shared plate"],"component":component,"component_path":[first]}), &[]);
+    assert!(adapter.session.doc.features.iter().any(|feature| matches!(feature.kind, FeatureKind::BodyTransfer { .. })));
+    assert!((assembly_volume(&adapter, &[first]) - 12_000.0).abs() < 1e-6);
+    assert_eq!(adapter.snapshot().unwrap().bounds, original.bounds, "transfer preserves the actual world pose");
+    let copied = assembly_accept(
+        &mut adapter,
+        "occurrence.copy",
+        json!({"occurrence":first,"path":[first],"parent":0,"translate":[60,0,0]}),
+        &[Sel::Occurrence { path: vec![first] }],
+    );
+    let second = copied["occurrence"].as_u64().unwrap();
+    assert_eq!(adapter.session.doc.occurrences.iter().find(|occurrence| occurrence.id == second).unwrap().component, component);
+    assert_eq!(adapter.session.doc.components.len(), 1, "an instance shares its component definition");
+    assert!(assembly_marker(&adapter, &[second], Vec3::ZERO).dist(Vec3::new(60.0, 0.0, 0.0)) < 1e-9);
+    adapter.execute("timeline.edit", json!({"feature":feature,"set":{"length":"60 mm"}})).unwrap();
+    for occurrence in [first, second] {
+        assert!((assembly_volume(&adapter, &[occurrence]) - 18_000.0).abs() < 1e-6);
+    }
+    let independent = assembly_accept(
+        &mut adapter,
+        "component.paste_new",
+        json!({"component":component,"occurrence":first,"path":[first],"parent":0,"translate":[0,60,0]}),
+        &[Sel::Occurrence { path: vec![first] }],
+    );
+    let independent_component = independent["component"].as_u64().unwrap();
+    assert_ne!(independent_component, component);
+    let independent_occurrence = adapter.session.doc.occurrence_of(independent_component).unwrap().id;
+    assert!((assembly_volume(&adapter, &[independent_occurrence]) - 18_000.0).abs() < 1e-6);
+    adapter.execute("timeline.edit", json!({"feature":feature,"set":{"length":"80 mm"}})).unwrap();
+    assert!((assembly_volume(&adapter, &[first]) - 24_000.0).abs() < 1e-6);
+    assert!((assembly_volume(&adapter, &[second]) - 24_000.0).abs() < 1e-6);
+    assert!((assembly_volume(&adapter, &[independent_occurrence]) - 18_000.0).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((assembly_volume(&adapter, &[first]) - 18_000.0).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc);
+    assert!((assembly_volume(&loaded, &[second]) - 24_000.0).abs() < 1e-6);
+    assert!((assembly_volume(&loaded, &[independent_occurrence]) - 18_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn assembly_nested_exact_paths_use_world_axes_and_preserve_shared_definition_semantics() {
+    let mut adapter = SessionAdapter::new();
+    let (parent_component, parent) = assembly_create_component(&mut adapter, "Rotated parent", false);
+    assembly_accept(
+        &mut adapter,
+        "occurrence.move",
+        json!({"occurrence":parent,"path":[parent],"space":"world","translate":[20,30,0],"axis":[0,0,1],"angle":"90 deg","capture":true}),
+        &[Sel::Occurrence { path: vec![parent] }],
+    );
+    let created = assembly_accept(
+        &mut adapter,
+        "component.create",
+        json!({"name":"Nested leaf","parent":parent_component,"parent_path":[parent],"activate":false,"grounded":false}),
+        &[],
+    );
+    let child_component = created["component"].as_u64().unwrap();
+    let child = created["occurrence"].as_u64().unwrap();
+    adapter.execute("component.activate", json!({"component":child_component,"occurrence":child,"path":[parent,child]})).unwrap();
+    adapter.execute("solid.box", json!({"length":2,"width":2,"height":2,"body_name":"Nested marker body"})).unwrap();
+    adapter.execute("component.activate", json!({"component":0})).unwrap();
+    assembly_accept(
+        &mut adapter,
+        "occurrence.move",
+        json!({"occurrence":child,"path":[parent,child],"space":"world","translate":[5,0,0],"capture":true}),
+        &[Sel::Occurrence { path: vec![parent, child] }],
+    );
+    let marker = Vec3::new(10.0, 0.0, 0.0);
+    assert!(assembly_marker(&adapter, &[parent, child], marker).dist(Vec3::new(25.0, 40.0, 0.0)) < 1e-8);
+    let copied = assembly_accept(
+        &mut adapter,
+        "occurrence.copy",
+        json!({"occurrence":parent,"path":[parent],"parent":0,"translate":[100,0,0],"in_place":true}),
+        &[Sel::Occurrence { path: vec![parent] }],
+    );
+    let second_parent = copied["occurrence"].as_u64().unwrap();
+    assert!(assembly_marker(&adapter, &[second_parent, child], marker).dist(Vec3::new(125.0, 40.0, 0.0)) < 1e-8);
+    assembly_accept(
+        &mut adapter,
+        "occurrence.move",
+        json!({"occurrence":child,"path":[second_parent,child],"space":"world","translate":[0,10,0],"capture":true}),
+        &[Sel::Occurrence { path: vec![second_parent, child] }],
+    );
+    // The native child definition is shared by both repeated parents.
+    assert!(assembly_marker(&adapter, &[parent, child], marker).dist(Vec3::new(25.0, 50.0, 0.0)) < 1e-8);
+    assert!(assembly_marker(&adapter, &[second_parent, child], marker).dist(Vec3::new(125.0, 50.0, 0.0)) < 1e-8);
+    let edit = adapter.begin_model(801, Some("occurrence.move"), None, &[Sel::Occurrence { path: vec![second_parent, child] }]).unwrap();
+    let document = adapter.session.doc.clone();
+    assert!(
+        adapter.prepare_model(&edit, json!({"occurrence":child,"path":[child],"space":"world","translate":[10,0,0]}), false).is_err(),
+        "ambiguous leaf ids cannot replace a full path"
+    );
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[second_parent, child], marker).dist(Vec3::new(125.0, 40.0, 0.0)) < 1e-8);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let loaded = modelling_roundtrip(&adapter);
+    assert!(assembly_marker(&loaded, &[parent, child], marker).dist(Vec3::new(25.0, 50.0, 0.0)) < 1e-8);
+    assert!(assembly_marker(&loaded, &[second_parent, child], marker).dist(Vec3::new(125.0, 50.0, 0.0)) < 1e-8);
+}
+
+#[test]
+fn assembly_position_capture_preserves_unrelated_pending_moves_and_grounded_parts_refuse_movement() {
+    let mut adapter = SessionAdapter::new();
+    let (_, first) = assembly_create_component(&mut adapter, "First free", false);
+    let (_, second) = assembly_create_component(&mut adapter, "Second free", false);
+    for (occurrence, translation) in [(first, [10, 0, 0]), (second, [0, 20, 0])] {
+        adapter
+            .execute("occurrence.move", json!({"occurrence":occurrence,"path":[occurrence],"space":"world","translate":translation,"capture":false}))
+            .unwrap();
+    }
+    assembly_accept(&mut adapter, "component.capture_position", json!({"occurrences":[first]}), &[Sel::Occurrence { path: vec![first] }]);
+    assert!(!adapter.session.pending_moves.contains_key(&first));
+    assert!(adapter.session.pending_moves.contains_key(&second));
+    assert!(assembly_marker(&adapter, &[first], Vec3::ZERO).dist(Vec3::new(10.0, 0.0, 0.0)) < 1e-9);
+    assert!(assembly_marker(&adapter, &[second], Vec3::ZERO).dist(Vec3::new(0.0, 20.0, 0.0)) < 1e-9);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.pending_moves.contains_key(&first));
+    assert!(adapter.session.pending_moves.contains_key(&second));
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!(!adapter.session.pending_moves.contains_key(&first));
+    assert!(adapter.session.pending_moves.contains_key(&second));
+    assembly_accept(
+        &mut adapter,
+        "occurrence.ground",
+        json!({"occurrence":first,"path":[first],"grounded":true}),
+        &[Sel::Occurrence { path: vec![first] }],
+    );
+    let edit = adapter.begin_model(802, Some("occurrence.move"), None, &[Sel::Occurrence { path: vec![first] }]).unwrap();
+    let document = adapter.session.doc.clone();
+    let failure = match adapter.prepare_model(&edit, json!({"occurrence":first,"path":[first],"translate":[5,0,0]}), false) {
+        Err(failure) => failure,
+        Ok(_) => panic!("a grounded placement must not move"),
+    };
+    assert!(failure.message.to_ascii_lowercase().contains("grounded"));
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+}
+
+fn assembly_part(adapter: &mut SessionAdapter, name: &str, grounded: bool, shape: Value) -> (u64, u64) {
+    let (component, occurrence) = assembly_create_component(adapter, name, grounded);
+    adapter.execute("component.activate", json!({"component":component,"occurrence":occurrence,"path":[occurrence]})).unwrap();
+    adapter.execute("solid.box", shape).unwrap();
+    adapter.execute("component.activate", json!({"component":0})).unwrap();
+    (component, occurrence)
+}
+
+fn assembly_pair() -> (SessionAdapter, u64, u64) {
+    let mut adapter = SessionAdapter::new();
+    let (_, base) =
+        assembly_part(&mut adapter, "Grounded frame", true, json!({"length":10,"width":10,"height":10,"corner":[-5,-5,-5],"body_name":"Frame body"}));
+    let (_, arm) = assembly_part(&mut adapter, "Moving arm", false, json!({"length":100,"width":2,"height":2,"body_name":"Arm body"}));
+    (adapter, base, arm)
+}
+
+fn assembly_joint_origins(base: u64, arm: u64, axis: [f64; 3]) -> Value {
+    json!({"a":{"occurrence":base,"point":[0,0,0],"z":axis},"b":{"occurrence":arm,"point":[0,0,0],"z":axis},"flip":true})
+}
+
+fn assembly_pair_selection(base: u64, arm: u64) -> Vec<Sel> {
+    vec![Sel::Occurrence { path: vec![base] }, Sel::Occurrence { path: vec![arm] }]
+}
+
+#[test]
+fn assembly_grounded_hinge_preview_drive_edit_and_roundtrip_match_analytic_marker_poses() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let before = adapter.session.doc.occurrences.clone();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    params["name"] = json!("Analytic hinge");
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    assert_eq!(adapter.session.doc.occurrences, before, "matching origins with explicit flip preserve the initial pose");
+    let marker = Vec3::new(100.0, 0.0, 0.0);
+    let edit = adapter.begin_model(803, Some("joint.drive"), None, &[]).unwrap();
+    let document = adapter.session.doc.clone();
+    let history = adapter.session.undo.len();
+    let preview = adapter.prepare_model(&edit, json!({"joint":joint,"value":"90 deg"}), false).unwrap();
+    assert_eq!(preview.reply["moved"], true);
+    assert_eq!(preview.reply["values"][0]["unit"], "deg");
+    assert!((preview.reply["values"][0]["value"].as_f64().unwrap() - 90.0).abs() < 1e-9);
+    assert!((preview.model.bounds.max.y - 100.0).abs() < 1e-6, "preview uses the actual solved world geometry");
+    drop(preview);
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(marker) < 1e-8);
+    let drive = assembly_accept(&mut adapter, "joint.drive", json!({"joint":joint,"value":"90 deg"}), &[]);
+    assert_eq!(drive["moved"], true);
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(Vec3::new(0.0, 100.0, 0.0)) < 1e-6);
+    assembly_accept(&mut adapter, "joint.drive", json!({"joint":joint,"value":"30 deg"}), &[]);
+    let expected = Vec3::new(100.0 * 30_f64.to_radians().cos(), 50.0, 0.0);
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(expected) < 1e-6);
+    assert!(assembly_marker(&adapter, &[base], Vec3::ZERO).dist(Vec3::ZERO) < 1e-9);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(Vec3::new(0.0, 100.0, 0.0)) < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc);
+    assert_eq!(loaded.session.doc.assembly.joints[0].id, joint);
+    assert!(assembly_marker(&loaded, &[arm], marker).dist(expected) < 1e-6);
+    assembly_accept(&mut adapter, "joint.edit", json!({"joint":joint,"name":"Edited hinge","offset":"2 mm"}), &[]);
+    assert_eq!(adapter.session.doc.assembly.joints[0].id, joint);
+    assert_eq!(adapter.session.doc.assembly.joints[0].name, "Edited hinge");
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(expected + Vec3::new(0.0, 0.0, 2.0)) < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(expected) < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!(assembly_marker(&modelling_roundtrip(&adapter), &[arm], marker).dist(expected + Vec3::new(0.0, 0.0, 2.0)) < 1e-6);
+}
+
+#[test]
+fn assembly_slider_axis_limits_actual_value_and_history_are_engine_authoritative() {
+    let (mut adapter, base, slider) = assembly_pair();
+    let mut params = assembly_joint_origins(base, slider, [1.0, 0.0, 0.0]);
+    params["type"] = json!("slider");
+    params["name"] = json!("Analytic rail");
+    params["limits"] = json!([[0, 50]]);
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, slider))["joint"].as_u64().unwrap();
+    let drive = assembly_accept(&mut adapter, "joint.drive", json!({"joint":joint,"value":"20 mm"}), &[]);
+    assert_eq!(drive["moved"], true);
+    assert_eq!(drive["values"][0]["unit"], "mm");
+    assert!((drive["values"][0]["value"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+    assert!(assembly_marker(&adapter, &[slider], Vec3::ZERO).dist(Vec3::new(20.0, 0.0, 0.0)) < 1e-6);
+    let drive = assembly_accept(&mut adapter, "joint.drive", json!({"joint":joint,"value":"75 mm"}), &[]);
+    assert_eq!(drive["moved"], true);
+    assert_eq!(drive["values"][0]["limits"], json!([0.0, 50.0]));
+    assert!((drive["values"][0]["value"].as_f64().unwrap() - 50.0).abs() < 1e-9, "report the clamped actual position");
+    assert!(assembly_marker(&adapter, &[slider], Vec3::ZERO).dist(Vec3::new(50.0, 0.0, 0.0)) < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[slider], Vec3::ZERO).dist(Vec3::new(20.0, 0.0, 0.0)) < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assembly_accept(&mut adapter, "joint.limits", json!({"joint":joint,"min":"0 mm","max":"40 mm"}), &[]);
+    assert_eq!(adapter.session.doc.assembly.joints[0].id, joint);
+    assert!(assembly_marker(&adapter, &[slider], Vec3::ZERO).dist(Vec3::new(40.0, 0.0, 0.0)) < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[slider], Vec3::ZERO).dist(Vec3::new(50.0, 0.0, 0.0)) < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc);
+    assert!(assembly_marker(&loaded, &[slider], Vec3::ZERO).dist(Vec3::new(40.0, 0.0, 0.0)) < 1e-6);
+}
+
+#[test]
+fn assembly_as_built_joint_preserves_actual_transformed_poses_and_rigid_drive_is_refused() {
+    let (mut adapter, base, arm) = assembly_pair();
+    assembly_accept(
+        &mut adapter,
+        "occurrence.move",
+        json!({"occurrence":arm,"path":[arm],"space":"world","translate":[20,15,10],"axis":[0,0,1],"angle":"37 deg","capture":true}),
+        &[Sel::Occurrence { path: vec![arm] }],
+    );
+    let before = adapter.session.doc.occurrences.clone();
+    let marker = assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0));
+    let joint = assembly_accept(
+        &mut adapter,
+        "joint.as_built",
+        json!({"type":"rigid","a":base,"b":arm,"at":{"occurrence":base,"point":[0,0,0],"z":[0,0,1]},"name":"As built fixed"}),
+        &assembly_pair_selection(base, arm),
+    )["joint"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(adapter.session.doc.occurrences, before);
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(marker) < 1e-8);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.doc.assembly.joints.is_empty());
+    assert_eq!(adapter.session.doc.occurrences, before);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let edit = adapter.begin_model(804, Some("joint.drive"), None, &[]).unwrap();
+    let document = adapter.session.doc.clone();
+    let failure = match adapter.prepare_model(&edit, json!({"joint":joint,"value":90}), false) {
+        Err(failure) => failure,
+        Ok(_) => panic!("a fixed joint cannot report driven motion"),
+    };
+    assert!(failure.message.to_ascii_lowercase().contains("rigid"));
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    let loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc);
+    assert!(assembly_marker(&loaded, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(marker) < 1e-8);
+}
+
+#[test]
+fn assembly_floating_suppressed_and_unchanged_drives_report_actual_no_motion_reasons() {
+    let (mut adapter, grounded_base, grounded_arm) = assembly_pair();
+    let mut fixed_chain = assembly_joint_origins(grounded_base, grounded_arm, [0.0, 0.0, 1.0]);
+    fixed_chain["type"] = json!("revolute");
+    fixed_chain["name"] = json!("Grounded chain");
+    assembly_accept(&mut adapter, "joint.create", fixed_chain, &assembly_pair_selection(grounded_base, grounded_arm));
+    let (_, base) = assembly_part(&mut adapter, "Floating base", false, json!({"length":2,"width":2,"height":2,"body_name":"Floating base body"}));
+    let (_, arm) = assembly_part(&mut adapter, "Floating arm", false, json!({"length":100,"width":2,"height":2,"body_name":"Floating arm body"}));
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    params["name"] = json!("Floating hinge");
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    let marker = Vec3::new(100.0, 0.0, 0.0);
+    let initial = assembly_marker(&adapter, &[arm], marker);
+    let edit = adapter.begin_model(805, Some("joint.drive"), None, &[]).unwrap();
+    let prepared = adapter.prepare_model(&edit, json!({"joint":joint,"value":"45 deg"}), true).unwrap();
+    assert_eq!(prepared.reply["moved"], false);
+    assert!(prepared.reply["reason"].as_str().unwrap().contains("not connected to anything grounded"));
+    assert!(prepared.feedback.iter().any(|message| message.contains("not connected to anything grounded")));
+    assert!(
+        (prepared.reply["values"][0]["value"].as_f64().unwrap() - 45.0).abs() < 1e-9,
+        "native drive stores the value even when its floating chain cannot move"
+    );
+    adapter.accept_model(&edit, prepared).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(initial) < 1e-8);
+    let status = adapter.execute("joint.list", json!({})).unwrap().value;
+    assert!(!status["floating"].as_array().unwrap().is_empty());
+    assembly_accept(&mut adapter, "joint.edit", json!({"joint":joint,"suppressed":true}), &[]);
+    let edit = adapter.begin_model(806, Some("joint.drive"), None, &[]).unwrap();
+    let prepared = adapter.prepare_model(&edit, json!({"joint":joint,"value":"30 deg"}), true).unwrap();
+    assert_eq!(prepared.reply["moved"], false);
+    assert!(prepared.reply["reason"].as_str().unwrap().contains("suppressed"));
+    assert!(prepared.feedback.iter().any(|message| message.contains("suppressed")));
+    adapter.accept_model(&edit, prepared).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(initial) < 1e-8);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], marker).dist(initial) < 1e-8);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let loaded = modelling_roundtrip(&adapter);
+    assert!(loaded.session.doc.assembly.joints.iter().find(|candidate| candidate.id == joint).unwrap().suppressed);
+    assert!(assembly_marker(&loaded, &[arm], marker).dist(initial) < 1e-8);
+
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    let edit = adapter.begin_model(807, Some("joint.drive"), None, &[]).unwrap();
+    let prepared = adapter.prepare_model(&edit, json!({"joint":joint,"value":0}), false).unwrap();
+    assert_eq!(prepared.reply["moved"], false);
+    assert!(prepared.reply["reason"].is_null());
+    assert!(!prepared.feedback.is_empty(), "a no-op preview must explain that no placement moved");
+}
+
+#[test]
+fn assembly_cancel_stale_results_duplicate_confirmation_and_invalid_joint_inputs_preserve_work() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    params["name"] = json!("Single hinge");
+    let edit = adapter.begin_model(808, Some("joint.create"), None, &assembly_pair_selection(base, arm)).unwrap();
+    let history = adapter.session.undo.len();
+    let document = adapter.session.doc.clone();
+    let preview = adapter.prepare_model(&edit, params.clone(), false).unwrap();
+    drop(preview);
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), history);
+    for invalid in [
+        json!({"type":"revolute","a":{"occurrence":base,"point":[0,0,0]},"b":{"occurrence":base,"point":[0,0,0]}}),
+        json!({"type":"slider","a":{"occurrence":base,"point":[0,0,0]},"b":{"occurrence":999999,"point":[0,0,0]}}),
+        json!({"type":"unsupported_joint","a":{"occurrence":base,"point":[0,0,0]},"b":{"occurrence":arm,"point":[0,0,0]}}),
+    ] {
+        assert!(adapter.prepare_model(&edit, invalid, false).is_err());
+        assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    }
+    let first = adapter.prepare_model(&edit, params.clone(), true).unwrap();
+    let duplicate = adapter.prepare_model(&edit, params, true).unwrap();
+    let joint = first.reply["joint"].as_u64().unwrap();
+    adapter.accept_model(&edit, first).unwrap();
+    assert!(adapter.accept_model(&edit, duplicate).is_err());
+    assert_eq!(adapter.session.doc.assembly.joints.len(), 1);
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    let edit = adapter.begin_model(809, Some("joint.drive"), None, &[]).unwrap();
+    let pending = adapter.prepare_model(&edit, json!({"joint":joint,"value":"90 deg"}), true).unwrap();
+    let component = adapter.session.doc.occurrences.iter().find(|occurrence| occurrence.id == arm).unwrap().component;
+    adapter.execute("component.rename", json!({"component":component,"name":"Renamed while computing"})).unwrap();
+    assert!(adapter.accept_model(&edit, pending).is_err());
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(100.0, 0.0, 0.0)) < 1e-8);
+}
+
+#[test]
+fn assembly_lost_named_origin_never_attaches_to_replacement_face_and_repairs_same_joint_explicitly() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let arm_feature = adapter.session.doc.features.iter().find(|feature| feature.body_names.iter().any(|name| name == "Arm body")).unwrap().id;
+    let params = json!({"type":"revolute","name":"Repairable hinge","flip":true,
+        "a":{"occurrence":base,"point":[50,1,2],"z":[0,0,1]},
+        "b":{"occurrence":arm,"face":[50,1,2]}});
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    adapter.execute("timeline.delete", json!({"feature":arm_feature})).unwrap();
+    let inspect = adapter.execute("joint.inspect", json!({"joint":joint})).unwrap().value;
+    assert_eq!(inspect["joints"][0]["b"]["resolves"], false);
+    assert!(inspect["joints"][0]["b"]["error"].as_str().is_some_and(|message| !message.is_empty()));
+    let component = adapter.session.doc.occurrences.iter().find(|occurrence| occurrence.id == arm).unwrap().component;
+    adapter.execute("component.activate", json!({"component":component,"occurrence":arm,"path":[arm]})).unwrap();
+    adapter.execute("solid.box", json!({"length":100,"width":2,"height":2,"body_name":"Arm body"})).unwrap();
+    adapter.execute("component.activate", json!({"component":0})).unwrap();
+    let inspect = adapter.execute("joint.inspect", json!({"joint":joint})).unwrap().value;
+    assert_eq!(inspect["joints"][0]["b"]["resolves"], false, "a new nearby face with the same body label cannot replace lost native lineage");
+    let edit = adapter.begin_model(810, Some("joint.edit"), None, &[]).unwrap();
+    let document = adapter.session.doc.clone();
+    let params = json!({"joint":joint,"b":{"occurrence":arm,"face":[50,1,2]}});
+    let preview = adapter.prepare_model(&edit, params.clone(), false).unwrap();
+    drop(preview);
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc), "reselection remains provisional until explicit confirmation");
+    assembly_accept(&mut adapter, "joint.edit", params, &[]);
+    assert_eq!(adapter.session.doc.assembly.joints[0].id, joint);
+    let inspect = adapter.execute("joint.inspect", json!({"joint":joint})).unwrap().value;
+    assert_eq!(inspect["joints"][0]["b"]["resolves"], true);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(adapter.execute("joint.inspect", json!({"joint":joint})).unwrap().value["joints"][0]["b"]["resolves"], false);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let mut loaded = modelling_roundtrip(&adapter);
+    assert_eq!(loaded.execute("joint.inspect", json!({"joint":joint})).unwrap().value["joints"][0]["b"]["resolves"], true);
+    assert_eq!(loaded.session.doc.assembly.joints[0].id, joint);
+}
+
+#[test]
+fn assembly_joint_origins_refuse_ambiguous_nested_placements_and_pending_source_positions() {
+    let (mut adapter, base, arm) = assembly_pair();
+    adapter.execute("occurrence.move", json!({"occurrence":arm,"path":[arm],"space":"world","translate":[10,0,0],"capture":false})).unwrap();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    let prepared = adapter
+        .begin_model(811, Some("joint.create"), None, &assembly_pair_selection(base, arm))
+        .and_then(|edit| adapter.prepare_model(&edit, params, false));
+    let failure = match prepared {
+        Err(failure) => failure,
+        Ok(_) => panic!("joint origins cannot silently ignore pending occurrence positions"),
+    };
+    assert!(
+        failure.message.to_ascii_lowercase().contains("pending") || failure.message.to_ascii_lowercase().contains("capture"),
+        "{}",
+        failure.message
+    );
+    assert!(adapter.session.pending_moves.contains_key(&arm));
+    assert!(adapter.session.doc.assembly.joints.is_empty());
+    assembly_accept(&mut adapter, "component.capture_position", json!({"occurrences":[arm]}), &[Sel::Occurrence { path: vec![arm] }]);
+    let (parent_component, parent) = assembly_create_component(&mut adapter, "Shared parent", false);
+    let child = assembly_accept(
+        &mut adapter,
+        "component.create",
+        json!({"name":"Shared nested origin","parent":parent_component,"parent_path":[parent],"grounded":false,"activate":false}),
+        &[],
+    )["occurrence"]
+        .as_u64()
+        .unwrap();
+    let second = assembly_accept(
+        &mut adapter,
+        "occurrence.copy",
+        json!({"occurrence":parent,"path":[parent],"parent":0,"translate":[100,0,0]}),
+        &[Sel::Occurrence { path: vec![parent] }],
+    )["occurrence"]
+        .as_u64()
+        .unwrap();
+    let selected = [Sel::Occurrence { path: vec![base] }, Sel::Occurrence { path: vec![second, child] }];
+    let params = json!({"type":"revolute","flip":true,"a":{"occurrence":base,"point":[0,0,0],"z":[0,0,1]},"b":{"occurrence":child,"path":[second,child],"point":[100,0,0],"z":[0,0,1]}});
+    let document = adapter.session.doc.clone();
+    let prepared = adapter.begin_model(812, Some("joint.create"), None, &selected).and_then(|edit| adapter.prepare_model(&edit, params, false));
+    let failure = match prepared {
+        Err(failure) => failure,
+        Ok(_) => panic!("native joint storage cannot independently address a repeated-parent leaf placement"),
+    };
+    let explanation = failure.message.to_ascii_lowercase();
+    assert!(["placement", "repeated", "shared", "ambiguous"].iter().any(|term| explanation.contains(term)), "{}", failure.message);
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    assert!(adapter.session.doc.assembly.joints.is_empty());
+}
+
+#[test]
+fn assembly_pencil_and_browser_select_exact_occurrences_while_fingers_and_controls_keep_ownership() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    viewport.begin_update(1);
+    assert!(viewport.install(1, adapter.snapshot().unwrap()));
+    viewport.command("view.top", &json!({})).unwrap();
+    viewport.command("select.filter", &json!({"filter":"occurrence"})).unwrap();
+    let point_on_arm = point(&viewport, Vec3::new(50.0, 1.0, 2.0));
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Began, 91, point_on_arm, 1.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Ended, 91, point_on_arm, 2.0);
+    assert_eq!(viewport.selection(), &[Sel::Occurrence { path: vec![arm] }]);
+    let workspace = adapter.workspace(viewport.selection(), false, false);
+    assert!(
+        workspace["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["entity"] == json!(Sel::Occurrence { path: vec![arm] }) && row["selected"] == true)
+    );
+    viewport.command("select.entities", &json!({"items":assembly_pair_selection(base,arm)})).unwrap();
+    assert_eq!(viewport.selection(), assembly_pair_selection(base, arm));
+    let before = viewport.selection().to_vec();
+    let camera = viewport.camera;
+    let mut consumed = sample(&viewport, InputSource::Pencil, InputPhase::Began, 92, point_on_arm, 3.0);
+    consumed.consumed = true;
+    viewport.input(consumed).unwrap();
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Ended, 92, point_on_arm, 4.0);
+    assert_eq!(viewport.selection(), before);
+    assert_eq!(viewport.camera, camera);
+    feed(&mut viewport, InputSource::Finger, InputPhase::Began, 1, [200.0, 300.0], 5.0);
+    feed(&mut viewport, InputSource::Finger, InputPhase::Moved, 1, [260.0, 330.0], 6.0);
+    feed(&mut viewport, InputSource::Finger, InputPhase::Ended, 1, [260.0, 330.0], 7.0);
+    assert_ne!(viewport.camera, camera);
+    assert_eq!(viewport.selection(), before, "navigation cannot change assembly endpoints");
+    assert!(viewport.take_tool_work().is_none());
+    let stale = sample(&viewport, InputSource::Pencil, InputPhase::Began, 93, [400.0, 300.0], 8.0);
+    viewport.set_metrics(metrics(600.0, 800.0, 2.0)).unwrap();
+    viewport.input(stale).unwrap();
+    assert_eq!(viewport.selection(), before);
+}
+
+#[test]
+fn assembly_preview_completion_order_cancel_and_document_revision_keep_authoritative_pose() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    let document = adapter.session.doc.clone();
+    let history = adapter.session.undo.len();
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    viewport.begin_update(1);
+    assert!(viewport.install(1, adapter.snapshot().unwrap()));
+    let edit = adapter.begin_model(813, Some("joint.drive"), None, &[]).unwrap();
+    viewport.begin_model(edit.clone()).unwrap();
+    let older = adapter.refresh_model(&edit, &[], Some(json!({"joint":joint,"value":"30 deg"}))).unwrap();
+    viewport.update_model(older.clone()).unwrap();
+    let older_result = adapter.prepare_model(&older, older.params.clone(), false).unwrap();
+    let newer = adapter.refresh_model(&older, &[], Some(json!({"joint":joint,"value":"90 deg"}))).unwrap();
+    viewport.update_model(newer.clone()).unwrap();
+    let newer_result = adapter.prepare_model(&newer, newer.params.clone(), false).unwrap();
+    viewport.publish_model(813, &newer_result).unwrap();
+    assert!(viewport.publish_model(813, &older_result).is_err());
+    assert!((viewport.snapshot().unwrap().model.bounds.max.y - 100.0).abs() < 1e-6);
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), history);
+    let camera = viewport.camera;
+    feed(&mut viewport, InputSource::Finger, InputPhase::Began, 1, [200.0, 300.0], 1.0);
+    feed(&mut viewport, InputSource::Finger, InputPhase::Moved, 1, [250.0, 330.0], 2.0);
+    feed(&mut viewport, InputSource::Finger, InputPhase::Ended, 1, [250.0, 330.0], 3.0);
+    assert_ne!(viewport.camera, camera);
+    viewport.cancel_model();
+    assert!(viewport.publish_model(813, &newer_result).is_err());
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(100.0, 0.0, 0.0)) < 1e-8);
+    assert_eq!(adapter.session.undo.len(), history);
+    let edit = adapter.begin_model(814, Some("joint.drive"), None, &[]).unwrap();
+    viewport.begin_model(edit.clone()).unwrap();
+    let pending = adapter.prepare_model(&edit, json!({"joint":joint,"value":"45 deg"}), false).unwrap();
+    adapter.execute("joint.edit", json!({"joint":joint,"name":"Renamed during preview"})).unwrap();
+    viewport.begin_update(2);
+    assert!(viewport.install(2, adapter.snapshot().unwrap()));
+    assert!(viewport.publish_model(814, &pending).is_err());
+    assert!(viewport.selection().is_empty());
+    assert_eq!(adapter.session.doc.assembly.joints[0].name, "Renamed during preview");
+}
+
+#[test]
+fn assembly_strict_reference_checks_reject_lost_faces_ends_edges_and_x_references() {
+    use solidcraft_engine::doc::joints::{Snap, XRef};
+    for kind in ["face", "circle", "edge"] {
+        let mut adapter = SessionAdapter::new();
+        let base = adapter.execute("component.create", json!({"name":"Base","grounded":true})).unwrap().value["occurrence"].as_u64().unwrap();
+        adapter.execute("solid.box", json!({"length":20,"width":20,"height":5})).unwrap();
+        adapter.execute("component.activate", json!({"component":0})).unwrap();
+        let moving = adapter.execute("component.create", json!({"name":"Moving","grounded":false})).unwrap().value["occurrence"].as_u64().unwrap();
+        adapter.execute("solid.cylinder", json!({"radius":2,"height":5,"base":[30,10,0]})).unwrap();
+        let a = if kind == "face" {
+            json!({"occurrence":base,"face":[10,10,5],"x":{"face":[20,10,2.5]}})
+        } else if kind == "edge" {
+            json!({"occurrence":base,"edge":[10,0,5],"corner":[0,0,5]})
+        } else {
+            json!({"occurrence":base,"point":[0,0,0],"z":[0,0,1]})
+        };
+        let b = if kind == "circle" {
+            json!({"occurrence":moving,"circle":[32,10,0]})
+        } else {
+            json!({"occurrence":moving,"frame":{"origin":[30,10,0],"z":[0,0,1],"x":[1,0,0]}})
+        };
+        let result = adapter.execute("joint.create", json!({"name":"Referenced joint","type":"rigid","a":a,"b":b,"flip":true})).unwrap().value;
+        assert_eq!(result["errors"], json!([]), "{kind}: {result}");
+        assert_eq!(result["conflicts"], json!([]), "{kind}: {result}");
+        adapter.validate_joint_references().unwrap_or_else(|failure| panic!("{kind}: {failure}"));
+        let original = adapter.session.doc.clone();
+        let history = adapter.session.undo.len();
+        let corruptions: &[&str] = match kind {
+            "face" => &["face", "x"],
+            "circle" => &["face", "end"],
+            _ => &["edge", "face", "corner"],
+        };
+        for role in corruptions {
+            let joint = &mut Arc::make_mut(&mut adapter.session.doc).assembly.joints[0];
+            let snap = if kind == "circle" { &mut joint.b.snap } else { &mut joint.a.snap };
+            match (snap, *role) {
+                (Snap::FaceCenter { face, .. } | Snap::CircleCenter { face, .. }, "face") => *face = Some("missing native face".into()),
+                (Snap::FaceCenter { x, .. }, "x") => {
+                    assert!(matches!(x, Some(XRef::Face { .. })));
+                    *x = Some(XRef::Face { face: "missing x face".into(), pick: None });
+                }
+                (Snap::CircleCenter { end, .. }, "end") => *end = Some("missing cylinder end".into()),
+                (Snap::Edge { edge, .. }, "edge") => *edge = Some("missing native edge".into()),
+                (Snap::Edge { face, .. }, "face") => *face = Some("missing edge support".into()),
+                (Snap::Edge { corner, .. }, "corner") => *corner = Some("missing corner edge".into()),
+                _ => panic!("unexpected native {kind} snap"),
+            }
+            let failed = adapter.session.doc.clone();
+            let error = adapter.validate_joint_references().unwrap_err();
+            assert_eq!(error.code, "joint_reference");
+            assert!(error.message.contains("Referenced joint"), "{}", error.message);
+            assert!(Arc::ptr_eq(&failed, &adapter.session.doc), "validation must not repair or retarget a reference");
+            assert_eq!(adapter.session.undo.len(), history);
+            adapter.session.doc = original.clone();
+        }
+    }
+}
+
+fn assembly_handle_view(adapter: &mut SessionAdapter, edit: ModelEdit) -> Viewport {
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800.0, 600.0, 2.0)).unwrap();
+    viewport.begin_update(1);
+    assert!(viewport.install(1, adapter.snapshot().unwrap()));
+    viewport.command("view.top", &json!({})).unwrap();
+    viewport.command("view.navigate", &json!({"motion":"zoom","factor":2.5})).unwrap();
+    assert!(edit.handle.is_some(), "the operation exposes a real parameter handle");
+    viewport.begin_model(edit).unwrap();
+    viewport
+}
+
+fn assembly_handle_position(viewport: &Viewport, value: f64) -> [f64; 2] {
+    let mut handle = viewport.modelling.as_ref().unwrap().handle.as_ref().unwrap().clone();
+    handle.distance = value;
+    point(viewport, handle.point())
+}
+
+fn assembly_pencil_proposal(adapter: &mut SessionAdapter, viewport: &mut Viewport, contact: u64, value: f64, time: f64) {
+    let handle = viewport.modelling.as_ref().unwrap().handle.as_ref().unwrap();
+    let start = point(viewport, handle.point());
+    let target = assembly_handle_position(viewport, value);
+    assert!(
+        viewport.metrics.pixel(start).is_some() && viewport.metrics.pixel(target).is_some(),
+        "handle {start:?} to {target:?} must be inside the actual viewport"
+    );
+    feed(viewport, InputSource::Pencil, InputPhase::Began, contact, start, time);
+    feed(viewport, InputSource::Pencil, InputPhase::Moved, contact, target, time + 1.0);
+    assert!(!run_tool(adapter, viewport));
+    feed(viewport, InputSource::Pencil, InputPhase::Ended, contact, target, time + 2.0);
+    assert!(!run_tool(adapter, viewport));
+}
+
+#[test]
+fn assembly_pencil_joint_drive_uses_native_angular_and_linear_values_limits_and_explicit_apply() {
+    for (kind, axis, requested, actual, expected) in
+        [("revolute", [0.0, 0.0, 1.0], 90.0, 90.0, Vec3::new(0.0, 100.0, 0.0)), ("slider", [1.0, 0.0, 0.0], 75.0, 50.0, Vec3::new(150.0, 0.0, 0.0))]
+    {
+        let (mut adapter, base, arm) = assembly_pair();
+        let mut params = assembly_joint_origins(base, arm, axis);
+        params["type"] = json!(kind);
+        if kind == "slider" {
+            params["limits"] = json!([[0, 50]]);
+        }
+        let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+        let edit = adapter.begin_model(850, Some("joint.drive"), None, &[]).unwrap();
+        let mut params = edit.params.clone();
+        params["joint"] = json!(joint);
+        let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+        let mut viewport = assembly_handle_view(&mut adapter, edit);
+        let history = adapter.session.undo.len();
+        assembly_pencil_proposal(&mut adapter, &mut viewport, 91, requested, 1.0);
+        let edit = viewport.model_edit(850).unwrap();
+        assert_eq!(edit.reply["moved"], true);
+        assert!((edit.reply["values"][0]["value"].as_f64().unwrap() - actual).abs() < 1e-6);
+        assert!((edit.handle.as_ref().unwrap().distance - actual).abs() < 1e-6, "handle follows the solved/clamped value");
+        assert!(!edit.feedback.is_empty());
+        assert_eq!(adapter.session.undo.len(), history, "Pencil lift keeps a provisional drive");
+        assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(100.0, 0.0, 0.0)) < 1e-8);
+        if kind == "revolute" {
+            assembly_pencil_proposal(&mut adapter, &mut viewport, 92, 30.0, 5.0);
+            assert!((viewport.model_edit(850).unwrap().reply["values"][0]["value"].as_f64().unwrap() - 30.0).abs() < 1e-6);
+            viewport.cancel_model();
+            assert_eq!(adapter.session.undo.len(), history);
+            let edit = adapter.begin_model(851, Some("joint.drive"), None, &[]).unwrap();
+            let mut params = edit.params.clone();
+            params["joint"] = json!(joint);
+            let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+            viewport.begin_model(edit).unwrap();
+            assembly_pencil_proposal(&mut adapter, &mut viewport, 93, requested, 10.0);
+        }
+        let token = viewport.diagnostic()["model_token"].as_u64().unwrap();
+        let edit = viewport.model_edit(token).unwrap();
+        let prepared = adapter.prepare_model(&edit, edit.params.clone(), true).unwrap();
+        let model = adapter.accept_model(&edit, prepared).unwrap();
+        viewport.finish_model(token, Some(model)).unwrap();
+        assert_eq!(adapter.session.undo.len(), history + 1);
+        assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(expected) < 1e-6);
+        adapter.execute("edit.undo", json!({})).unwrap();
+        assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(100.0, 0.0, 0.0)) < 1e-6);
+        adapter.execute("edit.redo", json!({})).unwrap();
+        assert!(assembly_marker(&modelling_roundtrip(&adapter), &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(expected) < 1e-6);
+    }
+}
+
+#[test]
+fn assembly_pencil_pending_preview_keeps_last_good_scene_until_latest_result_without_auto_apply() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    let edit = adapter.begin_model(859, Some("joint.drive"), None, &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["joint"] = json!(joint);
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    let mut viewport = assembly_handle_view(&mut adapter, edit);
+    let source = viewport.model.as_ref().unwrap().clone();
+    let history = adapter.session.undo.len();
+    assembly_pencil_proposal(&mut adapter, &mut viewport, 95, 90.0, 1.0);
+    let last_good = viewport.display_model().unwrap().clone();
+    assert!(!Arc::ptr_eq(&last_good, &source));
+    assert!((viewport.model_edit(859).unwrap().reply["values"][0]["value"].as_f64().unwrap() - 90.0).abs() < 1e-8);
+
+    let start = point(&viewport, viewport.modelling.as_ref().unwrap().handle.as_ref().unwrap().point());
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Began, 96, start, 5.0);
+    let target = assembly_handle_position(&viewport, 30.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 96, target, 6.0);
+    let edit = viewport.model_edit(859).unwrap();
+    assert_eq!(adapter.model_descriptor(&edit)["valid"], false, "pending parameters cannot enable Apply");
+    assert!(
+        Arc::ptr_eq(viewport.display_model().unwrap(), &last_good),
+        "with the worker withheld, an actual Pencil sample must keep the last valid90 scene rather than flash the committed0 scene"
+    );
+    assert_eq!(viewport.diagnostic()["preview"], true, "the retained scene must remain labelled provisional for source-aware input");
+    assert_eq!(viewport.diagnostic()["preview_stale"], true, "retained geometry must be visibly distinguished from current validation");
+    let older = viewport.take_tool_work().unwrap();
+    let old_result = adapter.prepare_tool(older.clone()).unwrap();
+
+    for (value, time) in [(40.0, 6.1), (60.0, 6.2)] {
+        let target = assembly_handle_position(&viewport, value);
+        feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 96, target, time);
+        assert!(Arc::ptr_eq(viewport.display_model().unwrap(), &last_good));
+        assert_eq!(adapter.model_descriptor(&viewport.model_edit(859).unwrap())["valid"], false);
+    }
+    assert!(!viewport.publish_preview(&older, old_result.model), "superseded geometry cannot replace the retained last-good scene");
+    let newer = viewport.take_tool_work().unwrap();
+    assert!(viewport.take_tool_work().is_none(), "coalesced intermediate moves occupy one replaceable pending slot");
+    let newer_result = adapter.prepare_tool(newer.clone()).unwrap();
+    let target = assembly_handle_position(&viewport, 60.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Ended, 96, target, 7.0);
+    assert!(Arc::ptr_eq(viewport.display_model().unwrap(), &last_good), "lifting while work is pending must not flash the committed source");
+    assert!(!viewport.publish_preview(&newer, newer_result.model), "the final actual end sample supersedes the in-flight move result");
+    let final_work = viewport.take_tool_work().unwrap();
+    assert!(!final_work.commit, "Pencil lift must never become Apply");
+    let final_result = adapter.prepare_tool(final_work.clone()).unwrap();
+    viewport.publish_model_tool_details(&final_work, final_result.reply, final_result.feedback, final_result.handle);
+    assert!(viewport.publish_preview(&final_work, final_result.model));
+    let edit = viewport.model_edit(859).unwrap();
+    assert_eq!(adapter.model_descriptor(&edit)["valid"], true);
+    assert_eq!(viewport.diagnostic()["preview_stale"], false);
+    assert!((edit.reply["values"][0]["value"].as_f64().unwrap() - 60.0).abs() < 1e-8);
+    assert!(!Arc::ptr_eq(viewport.display_model().unwrap(), &last_good), "the latest validated scene replaces the retained scene");
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(100.0, 0.0, 0.0)) < 1e-8);
+    let latest = viewport.display_model().unwrap().clone();
+    viewport.pend_model(859).unwrap();
+    let retained_count = Arc::strong_count(&latest);
+    for _ in 0..3 {
+        viewport.pend_model(859).unwrap();
+        assert!(Arc::ptr_eq(viewport.display_model().unwrap(), &latest), "numeric/slider evaluation must retain the actual last valid60 scene");
+        assert_eq!(adapter.model_descriptor(&viewport.model_edit(859).unwrap())["valid"], false);
+        assert_eq!(viewport.diagnostic()["preview_stale"], true);
+        assert_eq!(Arc::strong_count(&latest), retained_count, "repeated pending proposals keep one display reference");
+    }
+    viewport.fail_model(859).unwrap();
+    assert!(
+        Arc::ptr_eq(viewport.display_model().unwrap(), &source),
+        "explicit source selection reveals authoritative geometry instead of a retained preview"
+    );
+    assert_eq!(viewport.diagnostic()["preview_stale"], false);
+    assert_eq!(viewport.diagnostic()["preview"], false);
+    assert_eq!(adapter.model_descriptor(&viewport.model_edit(859).unwrap())["valid"], false);
+    viewport.cancel_model();
+    assert!(Arc::ptr_eq(viewport.display_model().unwrap(), &source), "Cancel removes provisional geometry and restores the authoritative scene");
+    assert_eq!(viewport.diagnostic()["preview_stale"], false);
+    assert_eq!(adapter.session.undo.len(), history);
+}
+
+#[test]
+fn assembly_pencil_occurrence_translation_and_rotation_keep_navigation_cancel_and_history() {
+    let (mut adapter, _, arm) = assembly_pair();
+    let selection = [Sel::Occurrence { path: vec![arm] }];
+    let edit = adapter.begin_model(852, Some("occurrence.move"), None, &selection).unwrap();
+    let mut viewport = assembly_handle_view(&mut adapter, edit);
+    let history = adapter.session.undo.len();
+    assembly_pencil_proposal(&mut adapter, &mut viewport, 91, 20.0, 1.0);
+    assert!((viewport.snapshot().unwrap().model.bounds.max.x - 120.0).abs() < 1e-6);
+    let start = assembly_handle_position(&viewport, 20.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Began, 92, start, 5.0);
+    let target = assembly_handle_position(&viewport, 25.0);
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Moved, 92, target, 6.0);
+    run_tool(&mut adapter, &mut viewport);
+    let camera = viewport.camera;
+    feed(&mut viewport, InputSource::Finger, InputPhase::Began, 1, [200.0, 300.0], 7.0);
+    feed(&mut viewport, InputSource::Finger, InputPhase::Began, 2, [500.0, 300.0], 7.0);
+    feed(&mut viewport, InputSource::Finger, InputPhase::Moved, 2, [550.0, 330.0], 8.0);
+    assert_ne!(viewport.camera, camera);
+    assert_eq!(viewport.diagnostic()["input"]["edit"], "suspended");
+    feed(&mut viewport, InputSource::Pencil, InputPhase::Cancelled, 92, target, 9.0);
+    assert!(viewport.take_tool_work().is_none());
+    viewport.cancel_model();
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!(assembly_marker(&adapter, &[arm], Vec3::ZERO).dist(Vec3::ZERO) < 1e-8);
+    let edit = adapter.begin_model(853, Some("occurrence.move"), None, &selection).unwrap();
+    let mut viewport = assembly_handle_view(&mut adapter, edit);
+    assembly_pencil_proposal(&mut adapter, &mut viewport, 93, 20.0, 12.0);
+    let edit = viewport.model_edit(853).unwrap();
+    let prepared = adapter.prepare_model(&edit, edit.params.clone(), true).unwrap();
+    let model = adapter.accept_model(&edit, prepared).unwrap();
+    viewport.finish_model(853, Some(model)).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], Vec3::ZERO).dist(Vec3::new(20.0, 0.0, 0.0)) < 1e-6);
+    let edit = adapter.begin_model(854, Some("occurrence.move"), None, &selection).unwrap();
+    let mut params = edit.params.clone();
+    params["motion"] = json!("rotation");
+    params["axis"] = json!([0, 0, 1]);
+    let edit = adapter.refresh_model(&edit, &selection, Some(params)).unwrap();
+    let mut viewport = assembly_handle_view(&mut adapter, edit);
+    assembly_pencil_proposal(&mut adapter, &mut viewport, 94, 90.0, 16.0);
+    let edit = viewport.model_edit(854).unwrap();
+    let prepared = adapter.prepare_model(&edit, edit.params.clone(), true).unwrap();
+    let model = adapter.accept_model(&edit, prepared).unwrap();
+    viewport.finish_model(854, Some(model)).unwrap();
+    assert_eq!(adapter.session.undo.len(), history + 2);
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(0.0, 120.0, 0.0)) < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(120.0, 0.0, 0.0)) < 1e-6);
+}
+
+#[test]
+fn assembly_pencil_constrained_reach_shows_native_residuals_and_never_moves_geometry_freely() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm));
+    let selection = [Sel::Occurrence { path: vec![arm] }];
+    let edit = adapter.begin_model(855, Some("joint.reach"), None, &selection).unwrap();
+    let mut params = edit.params.clone();
+    for (key, value) in [("at_x", "100 mm"), ("at_y", "0 mm"), ("at_z", "0 mm"), ("point_x", "100 mm"), ("point_y", "0 mm"), ("point_z", "0 mm")] {
+        params[key] = json!(value);
+    }
+    params["handle_axis"] = json!([0, 1, 0]);
+    let edit = adapter.refresh_model(&edit, &selection, Some(params)).unwrap();
+    let no_op = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+    assert_eq!(no_op.reply["reached"], true);
+    assert_eq!(no_op.reply["moved"], false);
+    assert!(!no_op.feedback.is_empty());
+    drop(no_op);
+    let mut viewport = assembly_handle_view(&mut adapter, edit);
+    let history = adapter.session.undo.len();
+    assembly_pencil_proposal(&mut adapter, &mut viewport, 91, 100.0, 1.0);
+    let edit = viewport.model_edit(855).unwrap();
+    assert_eq!(edit.reply["reached"], false);
+    assert!(edit.reply["error_mm"].as_f64().unwrap() > 40.0);
+    assert!(!edit.feedback.is_empty());
+    let reached: Vec3 = serde_json::from_value(edit.reply["point"].clone()).unwrap();
+    assert!((reached.len() - 100.0).abs() < 1e-6, "the hinge keeps its exact100mm radius for an unreachable target");
+    let mut params = edit.params.clone();
+    params["handle_axis"] = json!([1, 0, 0]);
+    let edit = adapter.refresh_model(&edit, &selection, Some(params)).unwrap();
+    viewport.update_model(edit).unwrap();
+    assembly_pencil_proposal(&mut adapter, &mut viewport, 92, 0.0, 5.0);
+    let edit = viewport.model_edit(855).unwrap();
+    assert_eq!(edit.reply["reached"], true);
+    assert!(edit.reply["error_mm"].as_f64().unwrap() < 1e-6);
+    let reached: Vec3 = serde_json::from_value(edit.reply["point"].clone()).unwrap();
+    assert!(reached.dist(Vec3::new(0.0, 100.0, 0.0)) < 1e-6);
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(100.0, 0.0, 0.0)) < 1e-8);
+    let prepared = adapter.prepare_model(&edit, edit.params.clone(), true).unwrap();
+    let model = adapter.accept_model(&edit, prepared).unwrap();
+    viewport.finish_model(855, Some(model)).unwrap();
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(0.0, 100.0, 0.0)) < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(Vec3::new(100.0, 0.0, 0.0)) < 1e-6);
+}
+
+#[test]
+fn assembly_additional_joint_types_preserve_typed_values_edits_and_native_roundtrip() {
+    let turn = 30_f64.to_radians();
+    for (kind, values, expected) in [
+        ("cylindrical", json!(["30 deg", "5 mm"]), Vec3::new(100.0 * turn.cos(), 50.0, 5.0)),
+        ("pin_slot", json!(["30 deg", "5 mm"]), Vec3::new(100.0 * turn.cos() + 5.0, 50.0, 0.0)),
+        ("planar", json!(["10 mm", "20 mm", "90 deg"]), Vec3::new(10.0, 120.0, 0.0)),
+        ("ball", json!(["30 deg", "0 deg", "0 deg"]), Vec3::new(100.0 * turn.cos(), 50.0, 0.0)),
+    ] {
+        let (mut adapter, base, arm) = assembly_pair();
+        let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+        params["type"] = json!(kind);
+        params["a"]["x"] = json!([1, 0, 0]);
+        params["b"]["x"] = json!([1, 0, 0]);
+        let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+        let reply = assembly_accept(&mut adapter, "joint.drive", json!({"joint":joint,"values":values}), &[]);
+        assert_eq!(reply["values"].as_array().unwrap().len(), values.as_array().unwrap().len());
+        assert_eq!(reply["moved"], true);
+        assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(expected) < 1e-6, "{kind}");
+        assembly_accept(&mut adapter, "joint.edit", json!({"joint":joint,"name":format!("Edited {kind}"),"offset":"2 mm"}), &[]);
+        assert_eq!(adapter.session.doc.assembly.joints[0].id, joint);
+        assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(expected + Vec3::new(0.0, 0.0, 2.0)) < 1e-6);
+        adapter.execute("edit.undo", json!({})).unwrap();
+        assert!(assembly_marker(&adapter, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(expected) < 1e-6);
+        adapter.execute("edit.redo", json!({})).unwrap();
+        let loaded = modelling_roundtrip(&adapter);
+        assert_eq!(*loaded.session.doc, *adapter.session.doc);
+        assert!(assembly_marker(&loaded, &[arm], Vec3::new(100.0, 0.0, 0.0)).dist(expected + Vec3::new(0.0, 0.0, 2.0)) < 1e-6);
+    }
+}
+
+#[test]
+fn assembly_joint_limits_compare_mixed_angle_units_and_reject_reversed_or_incompatible_values() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    assembly_accept(&mut adapter, "joint.limits", json!({"joint":joint,"min":90,"max":"2 rad"}), &[]);
+    let limits = adapter.session.doc.assembly.joints[0].limits[0].unwrap();
+    assert!((limits.0 - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    assert!((limits.1 - 2.0).abs() < 1e-9);
+    let edit = adapter.begin_model(856, Some("joint.limits"), None, &[]).unwrap();
+    let document = adapter.session.doc.clone();
+    for (min, max) in [("2 rad", "90 deg"), ("90 mm", "2 rad")] {
+        assert!(adapter.prepare_model(&edit, json!({"joint":joint,"min":min,"max":max}), false).is_err());
+        assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    }
+    assert_eq!(*modelling_roundtrip(&adapter).session.doc, *adapter.session.doc);
+}
+
+#[test]
+fn assembly_pending_guard_tracks_connected_mechanism_and_preserves_unrelated_branch_positions() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    let joint = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    let (_, unrelated) = assembly_create_component(&mut adapter, "Unrelated pending branch", false);
+    adapter.execute("occurrence.move", json!({"occurrence":unrelated,"path":[unrelated],"translate":[0,20,0],"capture":false})).unwrap();
+    assembly_accept(&mut adapter, "joint.drive", json!({"joint":joint,"value":"45 deg"}), &[]);
+    assert!(adapter.session.pending_moves.contains_key(&unrelated));
+    assert!(assembly_marker(&adapter, &[unrelated], Vec3::ZERO).dist(Vec3::new(0.0, 20.0, 0.0)) < 1e-9);
+    adapter.execute("occurrence.move", json!({"occurrence":arm,"path":[arm],"translate":[10,0,0],"capture":false})).unwrap();
+    let edit = adapter.begin_model(857, Some("joint.drive"), None, &[]).unwrap();
+    let document = adapter.session.doc.clone();
+    let failure = match adapter.prepare_model(&edit, json!({"joint":joint,"value":"90 deg"}), false) {
+        Err(failure) => failure,
+        Ok(_) => panic!("a pending occurrence in the connected mechanism must be captured before driving"),
+    };
+    assert!(failure.message.to_ascii_lowercase().contains("pending") || failure.message.to_ascii_lowercase().contains("capture"));
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    assert!(adapter.session.pending_moves.contains_key(&unrelated) && adapter.session.pending_moves.contains_key(&arm));
+}
+
+#[test]
+fn assembly_form_context_switch_refreshes_drive_units_actual_values_and_limit_index() {
+    let (mut adapter, base, arm) = assembly_pair();
+    let mut params = assembly_joint_origins(base, arm, [0.0, 0.0, 1.0]);
+    params["type"] = json!("revolute");
+    params["limits"] = json!([[-90, 120]]);
+    let hinge = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, arm))["joint"].as_u64().unwrap();
+    let (_, slide) = assembly_part(
+        &mut adapter,
+        "Context slider",
+        false,
+        json!({"length":2,"width":2,"height":2,"corner":[0,20,0],"body_name":"Context slide body"}),
+    );
+    let mut params = assembly_joint_origins(base, slide, [1.0, 0.0, 0.0]);
+    params["type"] = json!("slider");
+    params["limits"] = json!([[0, 50]]);
+    let slider = assembly_accept(&mut adapter, "joint.create", params, &assembly_pair_selection(base, slide))["joint"].as_u64().unwrap();
+    assembly_accept(&mut adapter, "joint.drive", json!({"joint":hinge,"value":"30 deg"}), &[]);
+    assembly_accept(&mut adapter, "joint.drive", json!({"joint":slider,"value":"20 mm"}), &[]);
+    let edit = adapter.begin_model(858, Some("joint.drive"), None, &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["joint"] = json!(hinge);
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    let descriptor = adapter.model_descriptor(&edit);
+    let field = descriptor["fields"].as_array().unwrap().iter().find(|field| field["key"] == "value").unwrap();
+    assert_eq!(field["units"], "deg");
+    assert!((field["value"].as_f64().unwrap() - 30.0).abs() < 1e-9);
+    let mut params = edit.params.clone();
+    params["joint"] = json!(slider);
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    let descriptor = adapter.model_descriptor(&edit);
+    let field = descriptor["fields"].as_array().unwrap().iter().find(|field| field["key"] == "value").unwrap();
+    assert_eq!(field["units"], "mm");
+    assert!((field["value"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+    assert_eq!(field["min"], 0.0);
+    assert_eq!(field["max"], 50.0);
+    assert!(
+        (adapter.session.doc.eval(edit.params["value"].as_str().unwrap(), solidcraft_engine::doc::expr::Kind::Length).unwrap() - 20.0).abs() < 1e-9
+    );
+    assembly_accept(&mut adapter, "joint.edit", json!({"joint":hinge,"type":"cylindrical"}), &[]);
+    assembly_accept(&mut adapter, "joint.limits", json!({"joint":hinge,"index":1,"min":"5 mm","max":"25 mm"}), &[]);
+    let edit = adapter.begin_model(859, Some("joint.limits"), None, &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["joint"] = json!(hinge);
+    params["index"] = json!(0);
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    assert!(
+        (adapter.session.doc.eval(edit.params["min"].as_str().unwrap(), solidcraft_engine::doc::expr::Kind::Angle).unwrap()
+            + std::f64::consts::FRAC_PI_2)
+            .abs()
+            < 1e-9
+    );
+    let mut params = edit.params.clone();
+    params["index"] = json!(1);
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    assert!((adapter.session.doc.eval(edit.params["min"].as_str().unwrap(), solidcraft_engine::doc::expr::Kind::Length).unwrap() - 5.0).abs() < 1e-9);
+    assert!(
+        (adapter.session.doc.eval(edit.params["max"].as_str().unwrap(), solidcraft_engine::doc::expr::Kind::Length).unwrap() - 25.0).abs() < 1e-9
+    );
+}
+
+fn assembly_occurrence_row_action(adapter: &mut SessionAdapter, path: &[u64], label: &str) -> Value {
+    let workspace = adapter.workspace(&[], false, false);
+    let row = workspace["rows"].as_array().unwrap().iter().find(|row| row["entity"] == json!(Sel::Occurrence { path: path.to_vec() })).unwrap();
+    row["assembly"]["actions"].as_array().unwrap().iter().find(|action| action["label"] == format!("ui.ipados.assembly.{label}")).unwrap().clone()
+}
+
+fn assembly_run_browser_command(adapter: &mut SessionAdapter, action: Value) -> Value {
+    adapter.execute(action["command"].as_str().unwrap(), action["params"].clone()).unwrap().value
+}
+
+#[test]
+fn assembly_browser_visibility_isolation_activation_duplicate_labels_and_native_file_roundtrip() {
+    let mut adapter = SessionAdapter::new();
+    let (parent_component, parent) = assembly_create_component(&mut adapter, "Repeated assembly", false);
+    let child = assembly_accept(
+        &mut adapter,
+        "component.create",
+        json!({"name":"Parameter leaf","parent":parent_component,"parent_path":[parent],"activate":false,"grounded":false}),
+        &[],
+    );
+    let child_component = child["component"].as_u64().unwrap();
+    let leaf = child["occurrence"].as_u64().unwrap();
+    adapter.execute("parameters.add", json!({"name":"leaf_length","expression":"10 mm"})).unwrap();
+    let activate = assembly_occurrence_row_action(&mut adapter, &[parent, leaf], "activate");
+    assembly_run_browser_command(&mut adapter, activate);
+    assert_eq!(adapter.session.active_component, child_component);
+    assert_eq!(adapter.session.active_occurrence_path, Some(vec![parent, leaf]));
+    let source = adapter
+        .execute("solid.box", json!({"length":"leaf_length","width":3,"height":4,"name":"Leaf parametric box","body_name":"Leaf body"}))
+        .unwrap()
+        .value["feature"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(adapter.session.doc.feature(source).unwrap().component, child_component);
+    let workspace = adapter.workspace(&[], false, false);
+    let root =
+        workspace["assembly"]["actions"].as_array().unwrap().iter().find(|action| action["label"] == "ui.ipados.assembly.root").unwrap().clone();
+    assembly_run_browser_command(&mut adapter, root);
+    assert_eq!(adapter.session.active_component, 0);
+    assert!(adapter.session.active_occurrence_path.is_none());
+    let root_feature = adapter
+        .execute("solid.box", json!({"length":1,"width":1,"height":1,"corner":[-30,0,0],"name":"Root context box","body_name":"Root context body"}))
+        .unwrap()
+        .value["feature"]
+        .as_u64()
+        .unwrap();
+    assert_eq!(adapter.session.doc.feature(root_feature).unwrap().component, 0);
+    let second = assembly_accept(
+        &mut adapter,
+        "occurrence.copy",
+        json!({"occurrence":parent,"path":[parent],"parent":0,"translate":[30,0,0]}),
+        &[Sel::Occurrence { path: vec![parent] }],
+    )["occurrence"]
+        .as_u64()
+        .unwrap();
+    let (other_component, other) = assembly_part(
+        &mut adapter,
+        "Unrelated definition",
+        false,
+        json!({"length":3,"width":3,"height":3,"corner":[0,30,0],"body_name":"Unrelated body"}),
+    );
+    let first_path = vec![parent, leaf];
+    let second_path = vec![second, leaf];
+    let hide = assembly_occurrence_row_action(&mut adapter, &first_path, "visibility");
+    assert_eq!(hide["params"]["paths"], json!([first_path]));
+    assert_eq!(hide["params"]["visible"], false);
+    let history = adapter.session.undo.len();
+    assembly_run_browser_command(&mut adapter, hide);
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert!(!adapter.session.occurrence_visible(&first_path));
+    assert!(adapter.session.occurrence_visible(&second_path) && adapter.session.occurrence_visible(&[other]));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.occurrence_visible(&first_path));
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!(!adapter.session.occurrence_visible(&first_path));
+    let show = assembly_occurrence_row_action(&mut adapter, &first_path, "visibility");
+    assert_eq!(show["params"]["visible"], true);
+    assembly_run_browser_command(&mut adapter, show);
+    let isolate = assembly_occurrence_row_action(&mut adapter, &second_path, "isolate");
+    assembly_run_browser_command(&mut adapter, isolate);
+    assert!(!adapter.session.occurrence_visible(&first_path));
+    assert!(adapter.session.occurrence_visible(&second_path));
+    assert!(!adapter.session.occurrence_visible(&[other]));
+    assert!(!adapter.session.body_visible("Root context body"));
+    assert_eq!(adapter.snapshot().unwrap().body_count, 1);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.occurrence_visible(&first_path) && adapter.session.occurrence_visible(&[other]));
+    assert!(adapter.session.body_visible("Root context body"));
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(adapter.snapshot().unwrap().body_count, 1);
+    let workspace = adapter.workspace(&[], false, false);
+    let row = workspace["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "component" && row["assembly"]["component"] == other_component)
+        .unwrap();
+    let rename = row["assembly"]["actions"].as_array().unwrap().iter().find(|action| action["label"] == "ui.ipados.assembly.rename").unwrap();
+    let mut params = rename["params"].clone();
+    params["name"] = json!("Repeated assembly");
+    assembly_accept(&mut adapter, rename["operation"].as_str().unwrap(), params, &[]);
+    let workspace = adapter.workspace(&[], false, false);
+    assert!(
+        workspace["rows"].as_array().unwrap().iter().filter(|row| row["kind"] == "occurrence" && row["label"] == "Repeated assembly:1").count() >= 2
+    );
+    for path in [&first_path, &second_path] {
+        assert!(workspace["rows"].as_array().unwrap().iter().any(|row| row["entity"] == json!(Sel::Occurrence { path: path.to_vec() })));
+    }
+    assert!(!adapter.session.occurrence_visible(&first_path));
+    assert!(adapter.session.occurrence_visible(&second_path) && !adapter.session.occurrence_visible(&[other]));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.occurrence_visible(&second_path) && !adapter.session.occurrence_visible(&[other]));
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let visibility = adapter.session.visibility.clone();
+    let ids: Vec<_> = adapter.session.doc.features.iter().map(|feature| feature.id).collect();
+    let path = std::env::temp_dir().join(format!("solidcraft-ipados-assembly-visibility-{}.solidcraft", std::process::id()));
+    adapter.execute("file.save_as", json!({"path":path})).unwrap();
+    let mut loaded = SessionAdapter::new();
+    loaded.execute("doc.open", json!({"path":path})).unwrap();
+    assert_eq!(loaded.session.visibility, visibility);
+    assert_eq!(loaded.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), ids);
+    assert!(!loaded.session.occurrence_visible(&first_path));
+    assert!(loaded.session.occurrence_visible(&second_path) && !loaded.session.occurrence_visible(&[other]));
+    assert_eq!(loaded.snapshot().unwrap().body_count, 1);
+    assert_eq!(loaded.session.doc.feature(source).unwrap().component, child_component);
+    loaded.execute("parameters.change", json!({"name":"leaf_length","expression":"20 mm"})).unwrap();
+    assert!((assembly_volume(&loaded, &first_path) - 240.0).abs() < 1e-6);
+    assert!((assembly_volume(&loaded, &second_path) - 240.0).abs() < 1e-6);
+    assert!((assembly_volume(&loaded, &[other]) - 27.0).abs() < 1e-6);
+    assert_eq!(loaded.snapshot().unwrap().body_count, 1);
+    std::fs::remove_file(&path).unwrap();
+    let backup = std::path::PathBuf::from(format!("{}.bak", path.display()));
+    if backup.exists() {
+        std::fs::remove_file(backup).unwrap();
+    }
+}
+
+#[test]
+fn assembly_dragging_floating_rigid_chain_moves_both_placements_and_preserves_relative_frame() {
+    let mut adapter = SessionAdapter::new();
+    let (_, first) = assembly_part(&mut adapter, "Free rigid A", false, json!({"length":2,"width":3,"height":4,"body_name":"Free A body"}));
+    let (_, second) = assembly_part(&mut adapter, "Free rigid B", false, json!({"length":5,"width":5,"height":5,"body_name":"Free B body"}));
+    for (occurrence, translation, angle) in [(first, [10, 0, 0], "37 deg"), (second, [30, 5, 2], "-12 deg")] {
+        assembly_accept(
+            &mut adapter,
+            "occurrence.move",
+            json!({"occurrence":occurrence,"path":[occurrence],"space":"world","translate":translation,"axis":[0,0,1],"angle":angle,"capture":true}),
+            &[Sel::Occurrence { path: vec![occurrence] }],
+        );
+    }
+    assembly_accept(
+        &mut adapter,
+        "joint.as_built",
+        json!({"type":"rigid","a":first,"b":second,"name":"Floating fixed relationship"}),
+        &assembly_pair_selection(first, second),
+    );
+    let first_marker = assembly_marker(&adapter, &[first], Vec3::new(1.0, 1.0, 1.0));
+    let second_marker = assembly_marker(&adapter, &[second], Vec3::new(2.0, 2.0, 2.0));
+    let relative = |adapter: &SessionAdapter| {
+        let first = adapter.session.occurrence_placement(&[first]).unwrap().world;
+        let second = adapter.session.occurrence_placement(&[second]).unwrap().world;
+        solidcraft_engine::doc::mat_mul(&solidcraft_engine::doc::mat_inverse(&first).unwrap(), &second)
+    };
+    let initial_relative = relative(&adapter);
+    let ids: Vec<_> = adapter.session.doc.features.iter().map(|feature| feature.id).collect();
+    let delta = Vec3::new(20.0, -10.0, 5.0);
+    let target = first_marker + delta;
+    let reply = assembly_accept(
+        &mut adapter,
+        "occurrence.drag",
+        json!({"occurrence":first,"path":[first],"at":[first_marker.x,first_marker.y,first_marker.z],"point":[target.x,target.y,target.z]}),
+        &[Sel::Occurrence { path: vec![first] }],
+    );
+    assert_eq!(reply["moved"].as_array().unwrap().len(), 2);
+    assert!(assembly_marker(&adapter, &[first], Vec3::new(1.0, 1.0, 1.0)).dist(first_marker + delta) < 1e-8);
+    assert!(assembly_marker(&adapter, &[second], Vec3::new(2.0, 2.0, 2.0)).dist(second_marker + delta) < 1e-8);
+    assert!(relative(&adapter).iter().flatten().zip(initial_relative.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-9));
+    assert!((assembly_volume(&adapter, &[first]) - 24.0).abs() < 1e-6);
+    assert!((assembly_volume(&adapter, &[second]) - 125.0).abs() < 1e-6);
+    assert_eq!(adapter.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), ids);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(assembly_marker(&adapter, &[first], Vec3::new(1.0, 1.0, 1.0)).dist(first_marker) < 1e-8);
+    assert!(assembly_marker(&adapter, &[second], Vec3::new(2.0, 2.0, 2.0)).dist(second_marker) < 1e-8);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc);
+    assert!(assembly_marker(&loaded, &[first], Vec3::new(1.0, 1.0, 1.0)).dist(first_marker + delta) < 1e-8);
+    assert!(assembly_marker(&loaded, &[second], Vec3::new(2.0, 2.0, 2.0)).dist(second_marker + delta) < 1e-8);
 }

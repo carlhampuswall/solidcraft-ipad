@@ -22,7 +22,7 @@ was open during inspection, describing touch-selection/navigation limitations.
 This is a fork foundation, not a competing upstream claim; no code was imported
 from that draft. Reassess shared frontend viability when integrating its outcome.
 
-## Ownership and contracts (Step 3)
+## Ownership and contracts (Steps 3–4)
 
 - `crates/ipados/session`: `SessionAdapter` exclusively owns the authoritative
   `engine::Session`. Existing IDs/JSON reach `Session::execute`; selection needed
@@ -40,7 +40,7 @@ from that draft. Reassess shared frontend viability when integrating its outcome
   `SolidCraft.viewport`. UIKit layout stays on main. They exchange immutable
   owned scene Arcs, never borrowed vertex storage. A camera/selection operation
   never evaluates the engine or uploads the complete model again.
-- `crates/ipados/bridge`: ABI **2**, checked integer handles (maximum 8), bounded
+- `crates/ipados/bridge`: ABI **3**, checked integer handles (maximum 8), bounded
   JSON copies and independently locked engine, viewport and renderer state.
   Registry access only clones an entry Arc. The three response lanes (engine,
   viewport and surface) cannot overwrite one another. Each lane is serialised
@@ -60,14 +60,17 @@ from that draft. Reassess shared frontend viability when integrating its outcome
   mesh outlines are excluded from edge/vertex selection. World transforms and
   visibility come from `Session::world_state` and `view::scene_with_guides`.
 - `RenderSnapshot` retains the scene and the display camera/projection, guides
-  and highlight scenes. The GPU model upload is keyed by document ID and
-  geometry revision. Body tint references its existing GPU block; independent
+  and highlight scenes. The GPU model upload is keyed by the retained immutable
+  display scene Arc, changing only for geometry/preview publication. Body tint references its existing GPU block; independent
   guide/highlight keys change only when their actual geometry changes.
   Clipping uses shared `Camera::view_proj_bounds`; the shared renderer handles
   forward/reversed GPU depth conversion. No idle render timer is installed;
   input, resize, command completion and bounded drawable retries request frames.
 - Publication has a request generation, document identity and geometry revision.
-  Old generations and callbacks after close are discarded. The previous scene
+  Superseded publications and callbacks after close are discarded. Suspension
+  cancels provisional edits; an already-dispatched ordinary document command may
+  finish and publish its immutable scene for foreground reuse, with GPU submission
+  still disabled. See INTERFACES.md and the bridge suspension regression. The previous scene
   stays visible during computation/failure; picking is disabled until a current
   scene publishes, and errors are visible. Kernel calls have no safe preemptive
   cancellation facility: queued work can be invalidated, not forcibly interrupted.
@@ -79,15 +82,25 @@ from that draft. Reassess shared frontend viability when integrating its outcome
   display cannot select a new mesh. Auto priority is vertex, edge, face; explicit
   body/face/edge/vertex filters resolve ambiguity. Edge/vertex tolerance is eight
   display points; candidate-position raycasts reject occluded geometry.
-- `InputEvent` preserves `pencil`, `finger`, `indirect` or `unknown`, touch ID,
-  phase, time, points/pixels/scale, pressure/altitude, button/modifier and consumed
-  state. UIKit provides canvas-local points (origin zero); `ViewportMetrics`
-  supports an explicit origin for other embeddings. The safe-area canvas and
-  toolbar are separate hit-test hierarchies. Basic contact arbitration lives in
-  `input.rs`; Step 4 can extend it without camera logic in Swift. Pointer hover
-  is wired; Pencil hover, palm rejection and advanced simultaneous tools are not.
-- Native document/file browser, coordinated security-scoped access, persistence,
-  restoration and autosave remain future work. The generic command adapter is not
+- Step 4 extends that same `InputEvent`/`Viewport` boundary with per-contact
+  ownership, actual/predicted status, ordering and presented viewport/camera epochs.
+  The separate Pencil tool lifecycle supports suspended navigation and safe rebasing.
+  See [INPUT.md](INPUT.md) for the exact mapping, state and cancellation contract.
+- `editing.rs` evaluates preview commands on upstream scratch sessions, builds
+  scenes with the existing pipeline, and prepares `ComputedCommands` for one atomic
+  `Session::accept_commands`. No provisional document is ever installed into the
+  authoritative session. The viewport owns only immutable preview scenes and a
+  latest-work mailbox; the engine lane consumes one work item at a time. Acceptance
+  rechecks the interaction ticket while holding the viewport lock, after evaluation.
+  Native input buffers are bounded; no touch object crosses a queue.
+- Preview frames retain the authoritative document/geometry input stamp while the
+  renderer keys uploads by the actual immutable display scene Arc. Body feedback
+  and handle rendering follow the evaluated preview. Camera input remains usable
+  during evaluation. Lifecycle suspension cancels tools even without an attached
+  surface and rejects late publications.
+- Native document/file browser, coordinated security-scoped access,
+  restoration and autosave remain future work. Step7 adds app-private full native
+  save/reopen through the existing command APIs. The generic command adapter is not
   restricted to the development fixture, and native-format engine commands are
   retained. No new native file format is introduced.
 
@@ -135,3 +148,205 @@ No geometry, kernel, sketch, desktop/web frontend or dependency version changes.
 After successful upstream integration, engine improvements
 flow through these live dependencies. New operations may still need iPad UI and
 input work; this does not promise automatic frontend parity.
+
+Step 4 changes only the native host/adapters, a pending locale file and iPad
+documentation. No further shared-source or dependency delta is required. Its
+maintenance surface is the existing public scratch/transaction, timeline-edit,
+scene, camera and selection APIs; optional UIKit APIs remain entirely in the host.
+
+Step 5 adds thin UIKit workspace components inside that same host boundary and
+`session/src/workspace.rs`: revision-cached document presentation and a numeric
+transaction adapter over the same upstream APIs. Browser selection calls the
+existing viewport selection path. Numeric and Pencil previews share immutable
+scene publication and GPU blocks; history remains authoritative in `Session`.
+Native preferences stay in UserDefaults. Aspect correction delegates to shared
+camera navigation. No shared source, dependency, file format, solver, renderer or
+egui rule changes. See [UI.md](UI.md).
+
+Step 6 extends that same boundary with `sketching.rs` (actual world sketch and
+inspection/glyph presentation) and `sketch_input.rs` (native tool state and
+command proposals). `ToolOperation::Sketch` shares the radius tool's revisioned
+mailbox, scratch evaluation and atomic acceptance. Driving dimensions generalise
+the existing numeric transaction; expressions remain upstream parameters.
+Plane preview resolves `sketch.create` on scratch and keeps the original attachment
+value for confirmation. No shared-source, dependency or format delta is added.
+Upstream update seams are the existing public sketch types/shape/dimension layout
+helpers, inspection schemas, solver diagnostics and command contracts listed in
+[SKETCHING.md](SKETCHING.md). No large frontend module is copied.
+
+
+Step 7 adds `modelling.rs` presentation forms and `references.rs` strict native
+reference checks at the same platform boundary. The one Session evaluates on
+scratch, and ComputedCommands/accept_commands adopt a prepared operation after
+interaction/version/document validation. The authoritative history marker never
+moves merely to open a form; failed-feature repair displays a scratch upstream
+source state and updates the original feature. Handle work shares the existing
+bounded mailbox, with exact parameter/version checks and explicit confirmation.
+Native file services save/reopen the existing full container in one app-private
+slot. No engine/kernel/document source, format or dependency delta is added.
+See MODELLING.md for command mappings and HANDOFF.md for observed verification.
+
+## Step 8 assembly boundary and shared deltas
+
+`assembly.rs` presents the existing component/occurrence/joint commands through
+the same ModelEdit forms. `assembly_references.rs` checks the actual native
+reference/resolve APIs before preview or Apply. It owns no geometry or topology
+matching. Joint/frame IDs and full occurrence paths remain native; ambiguous
+repeated nested endpoints are refused because upstream JointOrigin stores only
+an occurrence ID. Revision-cached browser/diagnostic data is presentation, not a
+second assembly graph or solver. Legacy circular endpoints without an explicit
+end retain upstream semantics; this step does not solve persistent naming.
+
+Placement, joint creation/edit/drive/reach and Pencil handle proposals evaluate
+on native scratch sessions and accept through the existing ComputedCommands
+contract. Actual native results (values, moved/reasons, clamps, residuals and
+conflicts) determine validity. The viewport never owns mutable component poses.
+Pending placement capture/revert is explicitly scoped and does not cancel
+unrelated pending branches. One completed Apply is one native history action.
+Handle, numeric and slider proposals retain one display-only last-good scene
+while the newest job is pending. It does not validate the current parameters: `preview_stale` labels
+that display and disables confirmation until the current result arrives. This
+avoids flashing back to the committed pose between input samples. Cancellation
+or a changed context discards the provisional display; no pose is saved by it.
+
+Immutable scene snapshots carry public native `mesh_in_place` source meshes and
+complete effective transforms. The native renderer's bounded 256-entry source
+Arc/SharedTris cache feeds existing InstancedMesh APIs; placement-only revisions
+reuse triangle data. Selection/hover identifies a world occurrence instance.
+World edge/sketch streams still upload, and per-face/translucent appearances use
+the existing geometry fallback. The cache owns no CAD transform state, and its
+Arc retention plus monotonic keys prevents pointer-reuse aliasing. No shared GPU
+implementation or frontend is copied. No upload/latency benchmark is claimed.
+
+| Shared file | Why adapter alone was insufficient; minimal change | Compatibility and maintenance |
+| --- | --- | --- |
+| `crates/engine/src/cmd/component.rs` | Capture Position previously captured every pending occurrence. A zero-move workaround could refuse grounded/rigid chains. Add optional `occurrences` IDs, validate all before mutation, then capture only them. | Omission preserves capture-all, empty list captures none. No format change. Existing occurrence tests cover atomic validation/history and unrelated pending preservation. Independently upstream-suitable; maintain the optional command argument during future merges. |
+| `crates/engine/src/cmd/joints.rs` | Joint edit lacked an origin rebind path; the adapter would need direct mutation or deletion/recreation. Add optional A/B origin parameters through the existing parser, resolve both before mutation, retain identity and use the existing solver. | Existing callers are unchanged without A/B. No JointOrigin/format/solver change. Existing joint tests cover edit/invalid side/history/native roundtrip. Independently upstream-suitable; maintain the additive parser fields with future command changes. |
+
+All other Step8 changes stay in the platform host/adapters, pending messages,
+existing area tests, render proof and documentation. Native file services retain
+the full document container, including assembly data the UI cannot edit. See
+[ASSEMBLIES.md](ASSEMBLIES.md) for capability limits and [HANDOFF.md](HANDOFF.md)
+for exact verification and native file/recovery integration seams.
+
+
+## Step 8.5 consolidation review
+
+All Steps 1–8 were found in the original checkout. The three existing commits
+remain ancestors of `integration/ipados-foundation`; later milestones were
+already layered in one uncommitted workspace, so no merge/cherry-pick or invented
+per-step history was needed. [CONSOLIDATION-INVENTORY.md](CONSOLIDATION-INVENTORY.md)
+records source provenance and preservation. [INTERFACES.md](INTERFACES.md) is the
+reviewed map of actual types, ownership, threads, revisions, coordinates, errors
+and cancellation. [PARALLEL-DEVELOPMENT.md](PARALLEL-DEVELOPMENT.md) controls future
+file ownership and launch eligibility.
+
+The audit found no duplicate authoritative document, CAD command registry,
+geometry kernel, sketch solver, undo stack or camera controller. Native form
+state and cached workspace/scene data are presentation/provisional state. They
+never replace the authoritative session. Native feature and joint edits retain
+original IDs; regeneration invalidates topology selection conservatively.
+Input uses view-local display points and presented-state stamps, while evaluated
+occurrences and picking use the same native world transforms.
+
+Suspension has two distinct contracts: provisional interaction tickets are
+cancelled; ordinary commands already dispatched may complete and retain their
+authoritative scene while rendering is inactive. The bridge regression
+`suspension_retains_dispatched_command_results_but_rejects_cancelled_preview_commits`
+checks this using a held engine lock, real command dispatch, scene publication,
+stale-preview rejection and undo/redo. No extra cancellation/command adapter or
+scene-refresh workaround was introduced.
+
+### Compiler compatibility delta
+
+The pinned Rust 1.95 full gate exposed inherited lints successively through the
+workspace. Consolidation makes only equivalent condition/match rewrites in the
+following shared files; no lint is suppressed, algorithm replaced, dependency
+upgraded, format changed or default changed:
+
+| Shared files | Maintenance implication |
+| --- | --- |
+| `crates/geom/src/fill_general.rs` | Equivalent positive finite-tolerance guard. |
+| `crates/kernel/src/coplanar.rs`, `curveblend.rs`, `ops.rs`, `step_in/brep.rs`, `tess/grid.rs`, `tess/seam.rs` | Boolean algebra only; original short-circuit/NaN guards and sampling conditions retained. No kernel feature work. |
+| `crates/doc/src/expr.rs`, `crates/io/src/design.rs` | Equivalent absent-value/object-shape guards; native format unchanged. |
+| `crates/engine/src/cmd/component_clone.rs`, `sketch_modify.rs` | Equivalent match guards and finite arc validation; external-reference notices unchanged. |
+| `crates/ui-egui/src/agent_chat/paste.rs`, `browser.rs`, `canvas.rs`, `dialogs.rs`, `dialogs_dense.rs`, `sketch_tools.rs` | Equivalent UI predicates; explicit match fallbacks preserve existing positive/NaN span and hidden-row behavior. |
+
+These are independently upstream-suitable compiler cleanups. Reconcile/drop them
+when upstream supplies the same fixes; do not retain competing implementations.
+The optimized macOS crash-report test also needs its `child` helper marked
+`#[inline(never)]` in `apps/solidcraft/src/native_crash_macos.rs`: its assertion
+requires that caller frame to exist. All crash assertions and production handler
+code remain unchanged. The 12 focused crash tests pass with this test-only fix;
+reconcile it with upstream changes to the frame-walk fixture.
+The Step 8 command extensions and earlier navigation/capture seams remain the
+only behavioral shared API changes described above. No new external dependency
+or new shared API is added by Step 8.5.
+
+### Native catalog isolation
+
+The complete desktop translation gate exposed 372 UIKit-only `ui.ipados.*`
+messages entering the desktop/web catalog. `crates/ui-egui/build.rs` now excludes
+that namespace after validating the source catalogs and duplicate IDs. The
+existing completeness assertion remains unchanged; tests in `src/i18n.rs` check
+native exclusion and preservation of every shared source message. This also keeps
+native captions out of desktop legacy label lookup.
+
+`xtask/src/i18n.rs` uses the same domain for coverage reporting, while its raw
+catalog reader/writer preserves all native entries. Its fixture checks both
+pending and folded catalogs and still detects missing shared translations. The
+native locale generator continues reading the original source/pending catalogs
+with offline English fallback. No generated catalog or translation was replaced.
+These three small shared-file changes are fork-specific catalog integration;
+reconcile the namespace boundary when upstream adds its own platform catalog
+domains, keeping native extraction and shared completeness intact.
+
+### Remaining constraints
+
+NativeSession and the workspace controller are concentrated modules. Parallel
+work must respect the ownership matrix rather than giving every task unrestricted
+access. Full Files/security-scoped access/recovery is absent and belongs to Task A;
+measured rendering performance to Task B; physical accessibility acceptance to
+Task C. Shared protocol and lifecycle wiring remains the integration owner's work.
+Native repeated-nested joint-origin ambiguity and unexposed tool variants retain
+the limits documented in ASSEMBLIES.md and MODELLING.md. Historical physical
+Step 8 evidence does not certify all sketch/modelling or simultaneous hand-input
+workflows. Current verification is recorded only in HANDOFF.md.
+
+
+### Development baseline exception and preserved checkpoint
+
+On 2026-10-28 the user resumed consolidation and accepted the three already
+reported upstream macOS engine failures for the development baseline only. The
+exact ring-volume and seed 36/71 observations, evidence and follow-up conditions
+are in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md). Tests remain
+enabled and expectations/tolerances unchanged; full CI must still report its
+actual failure. A new failure or changed signature blocks approval. Seed 36's
+invalid geometry remains a real limitation, not an accepted correctness result.
+
+[CHECKPOINT.md](CHECKPOINT.md) preserves the earlier blocked decision and
+interrupted duplicate run as historical records, explicitly superseded by this
+limited user exception. Fresh validation and source baseline B are pending;
+the three documented failures alone no longer block creating that development
+baseline. Recheck after a relevant upstream fix, affected engine/kernel/toolchain
+changes and before release. No automatic monitor was created.
+
+### Preserved user-requested history gestures
+
+After the checkpoint, the separate “Add multitouch undo and redo” task added
+two-finger double-tap Undo and three-finger double-tap Redo in `MetalCanvas.swift`
+and `WorkspaceController.swift`, with `INPUT.md` and pending
+`ipados-history-gestures.json`. This authorized work is included in the candidate.
+The native recognizers observe direct-touch taps without synthesizing CAD
+contacts or delaying navigation; callbacks use the existing engine history and
+controller eligibility rules. They add no history stack or camera controller.
+
+The user-requested default is enabled. Tools exposes
+`SolidCraft.workspace.historyGestures` to restore the earlier behavior; UIKit
+text fields retain their editing gestures. The separate task's unsigned build
+and 186 existing layout cases passed, while physical gesture testing remains
+unperformed. The combined candidate's fresh unsigned native build and all 186
+Foundation cases pass; full CI and source baseline B remain pending. The added
+label brings the native English catalog to 373 keys; the earlier 372-key
+isolation proof remains historical. The separate UI overhaul task made no source
+changes and is waiting for the baseline.

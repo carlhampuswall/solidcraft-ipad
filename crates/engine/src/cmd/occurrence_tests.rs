@@ -1383,3 +1383,52 @@ fn a_body_seen_in_another_placement_copies_from_there() {
     let state = s.model.state();
     assert_eq!(s.doc.model_body_component(state.body("Cube (2)").unwrap()), 0);
 }
+
+#[test]
+fn scoped_capture_keeps_unrelated_pending_positions_and_is_one_undo_step() {
+    let mut s = Session::default();
+    let (_, first) = created(&mut s, "First");
+    run(&mut s, "solid.box", json!({"length":2,"width":2,"height":2}));
+    run(&mut s, "component.activate", json!({"component":0}));
+    let (_, second) = created(&mut s, "Second");
+    run(&mut s, "solid.box", json!({"length":2,"width":2,"height":2}));
+    for (occurrence, x) in [(first, 10), (second, 20)] {
+        run(&mut s, "occurrence.move", json!({"occurrence":occurrence,"translate":[x,0,0],"capture":false}));
+    }
+    // Capturing a position is permitted even when its occurrence cannot be moved.
+    run(&mut s, "occurrence.ground", json!({"occurrence":first,"grounded":true}));
+    let before = s.doc.clone();
+    let pending = s.pending_moves.clone();
+    let undo = s.undo.len();
+    let captured = run(&mut s, "component.capture_position", json!({"occurrences":[first]}));
+    assert_eq!(captured["captured"], 1);
+    assert_eq!(s.undo.len(), undo + 1);
+    assert!(!s.pending_moves.contains_key(&first));
+    assert_eq!(s.pending_moves.get(&second), pending.get(&second));
+    assert_eq!(s.doc.occurrences.iter().find(|occurrence| occurrence.id == first).unwrap().transform, pending[&first]);
+    assert_eq!(s.doc.occurrences.iter().find(|occurrence| occurrence.id == second).unwrap().transform, solidcraft_doc::IDENTITY);
+    let after = s.doc.clone();
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(*s.doc, *before);
+    assert_eq!(s.pending_moves, pending);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(*s.doc, *after);
+    assert_eq!(s.pending_moves.len(), 1);
+    assert_eq!(run(&mut s, "component.capture_position", json!({"occurrences":[]}))["captured"], 0);
+    assert_eq!(*s.doc, *after);
+    assert_eq!(s.pending_moves.len(), 1);
+    for invalid in [json!([first, u64::MAX]), json!(["First:1"]), Value::Null] {
+        assert!(s.execute("component.capture_position", &json!({"occurrences":invalid})).is_err());
+        assert_eq!(*s.doc, *after);
+        assert_eq!(s.pending_moves.get(&second), pending.get(&second));
+    }
+    // Omission retains the historical capture-all behaviour.
+    assert_eq!(run(&mut s, "component.capture_position", json!({}))["captured"], 1);
+    assert!(s.pending_moves.is_empty());
+    assert_eq!(s.doc.occurrences.iter().find(|occurrence| occurrence.id == second).unwrap().transform, pending[&second]);
+    let loaded = solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap();
+    assert_eq!(loaded.occurrences, s.doc.occurrences);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(*s.doc, *after);
+    assert_eq!(s.pending_moves.get(&second), pending.get(&second));
+}

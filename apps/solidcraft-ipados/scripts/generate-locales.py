@@ -6,6 +6,15 @@ import pathlib
 import sys
 
 
+# Existing canonical UI labels used by older modelling commands, whose labels
+# predate the cmd.<registry_id_with_underscores> convention.
+MODELLING_LABELS = {
+    "ui.chamfer", "ui.circular_pattern", "ui.combine", "ui.extrude", "ui.fillet",
+    "ui.hole", "ui.loft", "ui.mirror", "ui.pattern_on_path", "ui.rectangular_pattern",
+    "ui.revolve", "ui.shell", "ui.sweep",
+}
+
+
 def extract(repository: pathlib.Path) -> dict[str, dict[str, str]]:
     directory = repository / "assets" / "locales"
     catalogues = {
@@ -16,7 +25,7 @@ def extract(repository: pathlib.Path) -> dict[str, dict[str, str]]:
         for locale, messages in json.loads(source.read_text(encoding="utf-8")).items():
             catalogues.setdefault(locale, {}).update(messages)
     return {
-        locale: {key: value for key, value in messages.items() if key.startswith("ui.ipados.")}
+        locale: {key: value for key, value in messages.items() if key.startswith(("ui.ipados.", "cmd.")) or key in MODELLING_LABELS}
         for locale, messages in catalogues.items()
         if any(key.startswith("ui.ipados.") for key in messages)
     }

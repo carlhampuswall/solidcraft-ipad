@@ -90,7 +90,12 @@ fn merged_locales() -> Result<(), String> {
     }
     let out = std::path::Path::new(&std::env::var("OUT_DIR").map_err(|e| e.to_string())?).join("locales");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    for (id, catalog) in catalogs {
+    for (id, mut catalog) in catalogs {
+        // UIKit owns this namespace and bundles it with its own English fallback.
+        // Keep native-only captions out of desktop/web translation coverage and
+        // legacy label matching, both before and after pending files are folded.
+        // Validate all source catalogs and duplicate IDs above before filtering.
+        catalog.retain(|key, _| !key.starts_with("ui.ipados."));
         let text = serde_json::to_string(&catalog).map_err(|e| e.to_string())?;
         std::fs::write(out.join(format!("{id}.json")), text).map_err(|e| e.to_string())?;
     }

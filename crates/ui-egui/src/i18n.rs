@@ -326,9 +326,45 @@ mod tests {
             let pending: BTreeMap<String, Messages> = serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
             for (locale, messages) in pending {
                 for (id, text) in messages {
+                    if id.starts_with("ui.ipados.") {
+                        assert_eq!(Locale::for_language(&locale).text(&id), id, "native-only message leaked into the desktop catalog: {id}");
+                        continue;
+                    }
                     // The catalogs hand right-to-left text out in display order (`crate::bidi`);
                     // pending files hold it in reading order, as the catalogs do (#7527).
                     assert_eq!(Locale::for_language(&locale).text(&id), crate::bidi::visual_template(&text), "{locale}: {id}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn native_chrome_does_not_enter_desktop_catalogs_or_label_lookup() {
+        let raw = |locale: &str| -> Messages {
+            let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales");
+            let mut source: Messages = serde_json::from_str(&std::fs::read_to_string(dir.join(format!("{locale}.json"))).unwrap()).unwrap();
+            for entry in
+                std::fs::read_dir(dir.join("pending")).unwrap().filter_map(Result::ok).filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+            {
+                let mut pending: BTreeMap<String, Messages> = serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+                source.extend(pending.remove(locale).unwrap_or_default());
+            }
+            source
+        };
+        let english = raw("en");
+        assert!(english.contains_key("ui.ipados.foundation_ready"), "native English fallback remains in its source catalog");
+        for catalog in LOCALES {
+            assert!(catalog.messages().keys().all(|id| !id.starts_with("ui.ipados.")), "{} embeds UIKit-only messages", catalog.id);
+            // Every shared source message still reaches its embedded catalog. This
+            // covers canonical catalogs after the normal pending-file fold too.
+            // Native translations may be absent, but supplied messages retain the
+            // same known-ID and placeholder checks as desktop messages.
+            for (id, text) in raw(catalog.id) {
+                if id.starts_with("ui.ipados.") {
+                    let original = english.get(&id).expect("unknown native message ID");
+                    assert_eq!(placeholders(&text), placeholders(original), "{}: {id}", catalog.id);
+                } else {
+                    assert_eq!(catalog.messages().get(&id), Some(&text), "{}: {id}", catalog.id);
                 }
             }
         }

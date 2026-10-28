@@ -1,0 +1,9 @@
+{
+  "en": {
+    "ui.ipados.cancel_input": "Cancel interaction",
+    "ui.ipados.exit_planar": "Exit sketch view",
+    "ui.ipados.input_help": "Fingers navigate · Pencil selects · Post radius: drag the cross on the rim · Cancel / Undo / Redo",
+    "ui.ipados.radius_tool": "Post radius",
+    "ui.ipados.select_tool": "Select"
+  }
+}

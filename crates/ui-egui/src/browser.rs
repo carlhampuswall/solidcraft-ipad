@@ -273,7 +273,7 @@ fn offer_bodies(app: &mut SolveApp, names: &[String], take: Take) -> bool {
     }
     let Some(mut d) = app.dialog.take() else { return false };
     for body in picked {
-        if !d.active_input().is_some_and(|i| i.accept & crate::selection::BODIES != 0) {
+        if d.active_input().is_none_or(|i| i.accept & crate::selection::BODIES == 0) {
             break;
         }
         if matches!(take, Take::Add) && d.active_input().is_some_and(|i| i.items.contains(&body)) {
@@ -2408,7 +2408,7 @@ fn entry_row(
     let pattern_key = e.patterns.as_deref();
     let patterns_open = pattern_key.is_some_and(|key| is_open(app, key, true));
     let rect = row_rect(ui);
-    if !ui.is_rect_visible(rect) && !patterns_open && !(folder == "bodies" && app.tree.reveal.as_deref() == Some(e.key.as_str())) {
+    if !(ui.is_rect_visible(rect) || patterns_open || folder == "bodies" && app.tree.reveal.as_deref() == Some(e.key.as_str())) {
         ui.allocate_space(rect.size());
         return;
     }

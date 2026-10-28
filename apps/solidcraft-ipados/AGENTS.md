@@ -1,10 +1,12 @@
 # Native Apple host scope
 
 Read `../../docs/ipados/ARCHITECTURE.md` and `../../docs/ipados/UPSTREAM.md` first.
-The Step 2 platform exception permits Swift/UIKit only in this directory for
-application lifecycle, a native Metal layer, typed input and native file services.
-All modelling, document evaluation, command semantics, geometry and rendering
-remain in the existing Rust crates through `crates/ipados/` adapters.
+The Step 2 platform exception and Steps 5–8 workspace/sketch/modelling/assembly
+requests permit Swift/UIKit only in this directory for application lifecycle,
+native workspace presentation, a native Metal layer, typed input and native file
+services. All modelling, assembly placement/solving, document evaluation, command
+semantics, geometry and rendering remain in the existing Rust crates through
+`crates/ipados/` adapters.
 
 - Keep this directory excluded from Cargo workspace membership: it is an Xcode
   project, not a Rust package.

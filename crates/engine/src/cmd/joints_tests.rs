@@ -2208,3 +2208,58 @@ fn a_parameter_change_solves_the_joints_once() {
     assert!(super::solve_counts::take().0 > 0);
     assert!(near(place(&s, "Bracket", Vec3::new(110.0, 210.0, 0.0)), Vec3::new(180.0, 50.0, 1.0)));
 }
+
+#[test]
+fn editing_joint_origins_rebinds_the_original_joint_atomically_and_roundtrips() {
+    let mut s = Session::default();
+    run(&mut s, "parameters.add", json!({"name":"stand_off","expression":"1 mm"}));
+    for (name, x, grounded) in [("Base", 0, true), ("First", 10, false), ("Second", 20, false)] {
+        run(&mut s, "component.activate", json!({"component":"root"}));
+        run(&mut s, "component.create", json!({"name":name,"grounded":grounded}));
+        run(&mut s, "solid.box", json!({"length":2,"width":2,"height":2,"corner":[x,0,0]}));
+    }
+    let joint = run(
+        &mut s,
+        "joint.create",
+        json!({"name":"Mount","type":"rigid","flip":true,"offset":"stand_off",
+        "a":{"occurrence":"Base","point":[0,0,0],"z":[0,0,1]},
+        "b":{"occurrence":"First","point":[10,0,0],"z":[0,0,1]}}),
+    )["joint"]
+        .as_u64()
+        .unwrap();
+    let before = s.doc.clone();
+    let undo = s.undo.len();
+    let reply = run(
+        &mut s,
+        "joint.edit",
+        json!({"joint":joint,
+        "a":{"occurrence":0,"frame":{"origin":[5,0,0],"z":[0,0,1],"x":[1,0,0]}},
+        "b":{"occurrence":"Second","point":[20,0,0],"z":[0,0,1],"x":[1,0,0]}}),
+    );
+    assert_eq!(reply["errors"], json!([]));
+    assert_eq!(reply["conflicts"], json!([]));
+    assert_eq!(s.undo.len(), undo + 1);
+    assert_eq!(s.doc.assembly.joints.len(), 1);
+    let edited = &s.doc.assembly.joints[0];
+    assert_eq!(edited.id, joint);
+    assert_eq!(edited.name, "Mount");
+    assert_eq!(edited.b.occurrence, occ(&s, "Second"));
+    assert_eq!(edited.exprs.offset.as_deref(), Some("stand_off"));
+    assert!(near(place(&s, "Second", Vec3::new(20.0, 0.0, 0.0)), Vec3::new(5.0, 0.0, 1.0)));
+    let after = s.doc.clone();
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(*s.doc, *before);
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(*s.doc, *after);
+    for invalid in [
+        json!({"joint":joint,"a":{"occurrence":"Second","point":[0,0,0]}}),
+        json!({"joint":joint,"b":{"occurrence":"Second","frame":{"origin":[0,0,0],"z":[0,0,0]}}}),
+    ] {
+        assert!(s.execute("joint.edit", &invalid).is_err());
+        assert_eq!(*s.doc, *after);
+        assert_eq!(s.undo.len(), undo + 1);
+    }
+    let reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert_eq!(*reopened.doc, *after);
+    assert!(near(place(&reopened, "Second", Vec3::new(20.0, 0.0, 0.0)), Vec3::new(5.0, 0.0, 1.0)));
+}

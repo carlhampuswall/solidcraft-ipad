@@ -1,6 +1,8 @@
 # Building the native iPadOS viewport
 
-Use the existing fork on `feature/ipados`. Run from the repository root.
+Use the existing fork on `integration/ipados-foundation` for consolidation,
+or an approved task worktree at the exact common baseline in
+[PARALLEL-DEVELOPMENT.md](PARALLEL-DEVELOPMENT.md). Run from that checkout root.
 No simulator launch or device signing is part of the unsigned check.
 
 ## Prerequisites
@@ -115,7 +117,7 @@ and selected entity identities. No Files UI is added.
 `/tmp/solidcraft-ipados-render-proof-changed.png`. These are macOS GPU pictures,
 not iPad screenshots or performance measurements.
 
-ABI 2 requires rebuilding both the Rust archive and the bundled Swift host.
+ABI 3 requires rebuilding both the Rust archive and the bundled Swift host.
 Do not mix the Step 2 binary with the new header: engine, viewport and surface
 responses now have separate copy functions to permit concurrent evaluation and
 navigation. See `crates/ipados/bridge/include/solidcraft_ipados.h`.
@@ -129,3 +131,176 @@ points/drawable pixels for a known world point through the shared camera.
 The native locale extraction phase intentionally runs on every Xcode build:
 canonical and pending locale subfiles can change without their parent directory
 mtime changing, so directory-only dependency analysis was insufficient.
+
+## Step 4 input workflow
+
+Select **Post radius** and drag the top-rim cross with Pencil. Fingers navigate;
+Cancel interaction discards the preview. Undo/Redo use the real engine history.
+The mapping, ownership and manual hardware checklist are in [INPUT.md](INPUT.md).
+
+The same unsigned build script compiles all input and optional Pencil APIs against
+an iPhoneOS SDK, targeting iPadOS 17; it neither signs nor launches an application.
+The source-aware ABI and both bundled binaries must be rebuilt together.
+
+For local engine/GPU evidence without an iPad:
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-step4-input.png --input
+```
+
+This writes before/preview/committed/undo/redo/cancelled PNGs and checks their
+real engine geometry. It requires an accessible Mac GPU. Input is synthetic;
+these are not iPad screenshots or physical Pencil results.
+
+On a separately available, authorised physical iPad, a Debug launch argument
+`--input-check` runs the synthetic edit/suspend/rebase/commit/history/cancel
+sequence through the bridge and logs assertions. It does not run on normal
+launch. Do not cite this driver as physical Pencil or palm-rejection verification.
+
+## Step 5 workspace checks
+
+```sh
+sh apps/solidcraft-ipados/scripts/check-workspace.sh
+cargo +1.95.0 test --locked --offline --profile ci -p solidcraft-ipados-session -p solidcraft-ipados-bridge --lib
+cargo +1.95.0 clippy --locked --offline --profile ci -p solidcraft-ipados-session -p solidcraft-ipados-bridge --all-targets --no-deps -- -D warnings
+sh apps/solidcraft-ipados/scripts/build.sh
+```
+
+The native check compiles/runs only Foundation/CoreGraphics layout/focus policy on
+macOS; it does not boot a simulator or launch UIKit. On a separately authorised
+physical iPad, Debug `--workspace-check` exercises the new bridge workflow with
+synthetic calls and logs assertions. Actual interface taps, keyboard, Pencil,
+VoiceOver and screenshot inspection remain the manual checklist in [UI.md](UI.md).
+Rebuild both Rust and Swift after adapter protocol changes; ABI 3 symbols remain
+unchanged. Current observed results and the inherited full-CI blocker are in HANDOFF.
+
+## Step 6 sketch checks
+
+The same adapter tests, native layout/focus harness, unsigned build and wasm
+checks now include sketch commands, constraints and dimensions. Exact coverage
+and the current device availability are in [HANDOFF.md](HANDOFF.md); gesture and
+command contracts are in [SKETCHING.md](SKETCHING.md).
+
+DEBUG `--sketch-check` is an opt-in synthetic native-boundary smoke sequence. It
+draws/dimensions/reopens a rectangle, changes its width, undoes/redoes and checks
+native profile area. It is compiled but has not been run on a device. It neither
+launches automatically nor substitutes for human UI/Pencil verification.
+
+For reproducible Mac GPU model/feedback evidence (no UIKit or device):
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-step6-sketch.png --sketch
+```
+
+This exercises actual synthetic Pencil rectangle creation, driving dimensions,
+reopening, width preview/commit and undo/redo, checks native area and writes five
+PNG captures. Native UILabel dimension text and workspace chrome require UIKit;
+they are not part of these offscreen model captures.
+
+
+## Step 7 modelling checks
+
+The existing adapter tests now include analytic modelling, native timeline edits,
+reference repair, persistence and deterministic handle/preview races. Run the
+same explicit Rust1.95 ci profile and unsigned build; no simulator is required.
+The focused filter is `modelling_`. The existing native workspace harness also
+checks production modelling response decoding and exact reference/expression
+preservation. Final observed counts/gates are in HANDOFF.md.
+
+Mac GPU model evidence (does not launch UIKit or a device):
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-step7-model.png --modelling
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-cli -- \
+  eval /tmp/solidcraft-step7-model.solidcraft
+```
+
+The proof saves the actual native design for separate upstream CLI validation.
+Use PATH=/opt/homebrew/bin:$PATH for xtask on this machine, retaining its
+project-scoped Python3.11+ and Node tools; do not alter global toolchain defaults.
+
+## Step 8 assembly checks
+
+Use the same adapter/native checks above. Assembly acceptance lives in the area's
+existing `session/src/tests.rs`; the name filter is `assembly_`. The bridge tests
+also verify native source-mesh instance selection and bounded triangle-cache
+reuse across changed occurrence transforms. For the two additive shared APIs:
+
+```sh
+cargo +1.95.0 test --locked --offline --profile ci -p solidcraft-engine --lib joints -- --test-threads=1
+cargo +1.95.0 test --locked --offline --profile ci -p solidcraft-engine --lib occurrence -- --test-threads=1
+cargo +1.95.0 check --locked --offline --profile ci -p solidcraft --all-targets
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-step8-assembly.png --assemblies
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-cli -- \
+  eval /tmp/solidcraft-step8-assembly.solidcraft
+```
+
+The GPU proof uses actual parametric components and native rigid/revolute/slider
+commands, analytic world-pose checks, scratch previews/cancel and native
+save/reopen. The deterministic adapter tests separately verify Undo/Redo. It
+writes11 model/feedback captures for inspection. These are Mac
+GPU images, not UIKit/device screenshots. The separately rebuilt shared CLI can
+read the same native file; CLI validation is not desktop UI testing.
+
+No simulator is required or authorised. Current physical-device verification,
+exact counts/logs, shared compatibility changes and mandatory CI blockers are in
+[HANDOFF.md](HANDOFF.md). [ASSEMBLIES.md](ASSEMBLIES.md) documents workflow and
+reference/units conventions.
+
+The opt-in DEBUG physical driver uses the production UIKit modelling form
+callbacks and native session on the connected hardware:
+
+```sh
+xcrun devicectl device process launch --device "$SOLIDCRAFT_DEVICE" \
+  --terminate-existing --console com.solidcraft.ipados --assembly-check --assembly-check-pause
+# After each logged READY stage and actual capture:
+xcrun devicectl device process signal --device "$SOLIDCRAFT_DEVICE" \
+  --pid "$SOLIDCRAFT_PID" --signal SIGUSR1
+xcrun devicectl device copy from --device "$SOLIDCRAFT_DEVICE" \
+  --domain-type appDataContainer --domain-identifier com.solidcraft.ipados \
+  --source Documents/step8-assembly-check.log --destination /tmp/solidcraft-step8-device-native.log
+```
+
+Without `--assembly-check-pause`, the same command/frame barriers advance
+automatically. The flag replaces only the disposable launch fixture and saves a
+unique Documents/Step8-Assembly-Runtime-UUID.solidcraft; normal launch never runs
+the driver. Matching frame callbacks, native replies and watchdog failures drive
+the sequence. It does not simulate physical Pencil contact. Human input must be
+checked separately. The final observed physical build/launch, CLI evaluation of
+the device-written file and beta CoreDevice screenshot limitation are documented
+in HANDOFF; no screenshot is repaired to conceal a capture-service failure.
+Adding `--assembly-pencil-check` opens the production hinge drive at its current
+30-degree value after verification, evaluates without Apply and leaves both
+panels closed with the ring visible for a human Pencil check. It adds no saved
+CAD or input-simulation behavior.
+
+
+## Step 8.5 verification environment
+
+Use Rust `+1.95.0` explicitly. On this Mac, `/usr/bin/python3` is older than
+the repository's Python 3.11 requirement; `/opt/homebrew/bin/python3` is available
+and supports `tomllib`. Select it per command with
+`PATH=/opt/homebrew/bin:$PATH`, without changing global Python/Rust/Xcode settings.
+Use the equivalent installed Python 3.11+ path on other hosts.
+
+The icon review and web offline checks bind localhost HTTP servers; a restricted
+runner must grant those local capabilities. A sandbox permission failure is not
+a test assertion failure, and neither counts as a pass.
+
+```sh
+PATH=/opt/homebrew/bin:$PATH CARGO_BUILD_JOBS=3 SOLIDCRAFT_TEST_JOBS=3 \
+  RUST_TEST_THREADS=3 cargo +1.95.0 xtask ci
+sh apps/solidcraft-ipados/scripts/check-workspace.sh
+sh apps/solidcraft-ipados/scripts/build.sh
+```
+
+The initial full test build was deliberately stopped when free space fell below
+1 GiB. No source/build files were cleaned. The user then freed space; recheck
+`df -h .` before resuming. Preserve `target/step8.5-preservation/`, which contains
+the pre-consolidation recovery archive and Git bundle. Separate task worktrees
+must use separate target/derived-data directories; four simultaneous clean
+native builds need substantially more capacity than one warm checkout.

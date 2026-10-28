@@ -3,16 +3,186 @@ import QuartzCore
 
 struct BridgeError: Error, CustomStringConvertible {
     let code: String
-    let message: String
+    private let sourceMessage: String
+    init(code: String, message: String) { self.code = code; sourceMessage = message }
+    var message: String { sourceMessage.hasPrefix("ui.ipados.") ? NativeText.value(sourceMessage) : sourceMessage }
     var description: String { "\(code): \(message)" }
+}
+
+/// Read-only presentation data from the authoritative Rust session. These values
+/// never become a second document model or a source of modelling semantics.
+struct WorkspaceState: Decodable {
+    let title: String
+    let document_id: String
+    let revision: UInt64
+    let geometry_revision: UInt64
+    let can_undo: Bool
+    let can_redo: Bool
+    let dirty: Bool?
+    let rows: [WorkspaceRow]
+    let tools: [WorkspaceTool]
+    let active_tool: String
+    let selection: [WorkspaceEntity]
+    let radius: WorkspaceRadius?
+    let sketch: WorkspaceSketch?
+    let planes: [WorkspacePlane]?
+    let modelling: ModellingPresentation?
+    let assembly: AssemblyPresentation?
+}
+
+struct WorkspacePlane: Decodable { let name: String }
+
+/// Presentation-only projection of the native sketch inspection/selection APIs.
+struct WorkspaceSketch: Decodable {
+    let id: UInt64
+    let name: String
+    let status: String
+    let solved: Bool
+    let dof: Int
+    let fully_constrained: Bool
+    let failing: [String]
+    let constraints: [WorkspaceConstraint]
+    let eligible_constraints: [WorkspaceConstraintAction]?
+    let eligible_dimensions: [String]?
+    let profiles: [WorkspaceProfile]
+    let curves: [WorkspaceSketchCurve]
+    let report: Report?
+    struct Report: Decodable { let folded: [String]; let oversized: Int? }
+}
+struct WorkspaceSketchCurve: Decodable { let id: String; let type: String }
+struct WorkspaceProfile: Decodable { let index: Int; let area_mm2: Double }
+struct WorkspaceConstraint: Decodable {
+    let id: String
+    let name: String
+    let dimension: Bool
+    let driven: Bool
+    let param: String?
+    let expression: String?
+    let entities: [String]
+}
+struct WorkspaceConstraintAction: Decodable {
+    let command: String
+    let params: [String: PresentationJSON]
+    var dictionary: [String: Any] { params.mapValues(\.value) }
+}
+typealias ModellingState = ModellingResponse<WorkspaceState>
+
+struct SketchInputPresentation: Decodable, Equatable {
+    struct Snap: Decodable, Equatable { let kind: String; let at: [Double]; let persistent: Bool }
+    struct Feedback: Decodable, Equatable { let width: Double; let height: Double; let radius: Double }
+    let prompt: String
+    let snap: Snap?
+    let snapping: Bool
+    let auto_constraints: Bool
+    let tool: String?
+    let feedback: Feedback?
+}
+struct SketchAnnotationPresentation: Decodable {
+    let id: String
+    let points: [Double]
+    let value: Double
+    let units: String
+    let driven: Bool
+    let selected: Bool
+}
+struct SketchConstraintIndicator: Decodable { let id: String; let name: String; let points: [Double]; let selected: Bool }
+struct SketchDependents: Decodable { let deleted_with_it: [String]; let would_fail: [String] }
+
+struct WorkspaceRow: Decodable {
+    let id: String
+    let parent_id: String?
+    let label: String
+    let kind: String
+    let entity: WorkspaceEntity?
+    let selected: Bool
+    let assembly: AssemblyRowPresentation?
+}
+
+struct WorkspaceTool: Decodable {
+    let id: String
+    let enabled: Bool
+    let reason: String?
+}
+
+struct WorkspaceRadius: Decodable {
+    let feature: UInt64
+    let expression: String
+    let value: Double
+    let units: String
+}
+
+struct NumericState: Decodable {
+    let token: UInt64?
+    let expression: String?
+    let value: Double?
+    let units: String
+    let preview: Bool
+    let committed: Bool
+    let workspace: WorkspaceState
+    let viewport: NumericViewport?
+}
+
+struct NumericViewport: Decodable {
+    struct Handle: Decodable { let radius: Double }
+    let volume_mm3: Double?
+    let preview_volume_mm3: Double?
+    let handle: Handle?
+}
+
+/// The existing engine selection schema, retained only for rendering and sending
+/// a browser row back through the viewport's single selection path.
+struct WorkspaceEntity: Decodable, Equatable {
+    enum Identifier: Decodable, Equatable {
+        case number(UInt64)
+        case text(String)
+        init(from decoder: Decoder) throws {
+            let value = try decoder.singleValueContainer()
+            if let number = try? value.decode(UInt64.self) { self = .number(number) }
+            else { self = .text(try value.decode(String.self)) }
+        }
+        var value: Any {
+            switch self { case .number(let value): return value; case .text(let value): return value }
+        }
+        var readout: String {
+            switch self { case .number(let value): return String(value); case .text(let value): return value }
+        }
+    }
+    let type: String
+    let name: String?
+    let body: String?
+    let index: Int?
+    let point: [Double]?
+    let id: Identifier?
+    let path: [UInt64]?
+    let sketch: UInt64?
+    var dictionary: [String: Any] {
+        var value: [String: Any] = ["type": type]
+        if let name { value["name"] = name }
+        if let body { value["body"] = body }
+        if let index { value["index"] = index }
+        if let point { value["point"] = point }
+        if let id { value["id"] = id.value }
+        if let path { value["path"] = path }
+        if let sketch { value["sketch"] = sketch }
+        return value
+    }
+    var readout: String {
+        let identity = index.map(String.init) ?? id?.readout ?? name ?? path?.map(String.init).joined(separator: "/") ?? ""
+        return [type, body ?? name ?? "", identity].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
 }
 
 /// Immutable handle, one CAD worker, one input/render worker. Only surface calls enter
 /// LifecycleGate; the main-thread background suspension cannot wait for CAD evaluation.
 final class NativeSession {
     var onFailure: ((BridgeError) -> Void)?
-    var onFrame: ((Bool, UInt64?, String) -> Void)?
+    var onFrame: ((Bool, UInt64?, UInt64?, UInt64?, String?, [Double]?, Bool, Bool, String) -> Void)?
     var onStatus: ((String) -> Void)?
+    var onWorkspace: ((WorkspaceState) -> Void)?
+    var onSketchInput: ((SketchInputPresentation?) -> Void)?
+    var onSketchAnnotations: (([SketchAnnotationPresentation]) -> Void)?
+    var onConstraintIndicators: (([SketchConstraintIndicator]) -> Void)?
+    var onToolWorkCompleted: (() -> Void)?
     private let engine = DispatchQueue(label: "SolidCraft.engine", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private let display = DispatchQueue(label: "SolidCraft.viewport", qos: .userInteractive, autoreleaseFrequency: .workItem)
     private let state = BridgeState()
@@ -25,30 +195,354 @@ final class NativeSession {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.alive else { return }
                 completion(result.map { String(decoding: $0, as: UTF8.self) })
+                self.refreshWorkspace()
                 self.redraw()
             }
         }
     }
 
-    func command(_ command: String, params: [String: Any] = [:]) {
+    func command(_ command: String, params: [String: Any] = [:],
+                 completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
         guard alive else { return }
-        let isView = command.hasPrefix("view.") || command.hasPrefix("select.")
+        let isView = command.hasPrefix("view.") || command.hasPrefix("select.") || command.hasPrefix("tool.") || command == "input.cancel"
         let lane: BridgeState.Lane = isView ? .viewport : .engine
         let queue = isView ? display : engine
+        let activity = isView ? nil : UUID()
         do {
             let data = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": command, "params": params])
-            if !isView { onStatus?(NativeText.value("ui.ipados.updating")) }
+            if let activity { commandActivities.insert(activity); publishActivityStatus() }
             queue.async { [weak self, state] in
                 do {
                     _ = try state.request(data, lane: lane)
+                    // Some viewport controls (Finish spline and saved snapping)
+                    // enqueue real CAD work without another Pencil sample.
+                    if isView && command.hasPrefix("tool.") { self?.drainToolWork() }
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.alive else { return }
-                        self.onStatus?("")
+                        if let activity { self.commandActivities.remove(activity); self.publishActivityStatus() }
+                        if !command.hasPrefix("view.") { self.refreshWorkspace() }
+                        completion?(.success(()))
                         self.redraw()
                     }
-                } catch { self?.failure(error) }
+                } catch {
+                    let failure = BridgeState.error(error)
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.alive else { return }
+                        if let activity { self.commandActivities.remove(activity); self.publishActivityStatus() }
+                        self.onFailure?(failure)
+                        completion?(.failure(failure))
+                    }
+                }
             }
-        } catch { onFailure?(BridgeState.error(error)) }
+        } catch {
+            let failure = BridgeState.error(error)
+            onFailure?(failure)
+            completion?(.failure(failure))
+        }
+    }
+
+    // Main-thread presentation only. One delayed reveal avoids flashing status
+    // during a fast Pencil preview; no progress callback requests a render frame.
+    private var commandActivities: Set<UUID> = []
+    private var toolActivityTicket: UInt64?
+    private var toolActivityToken: UUID?
+    private var toolActivityVisible = false
+    private var publishedActivityStatus = ""
+
+    private func publishActivityStatus() {
+        let busy = lifecycle.ticket != nil && (!commandActivities.isEmpty || toolActivityVisible)
+        let message = busy ? NativeText.value("ui.ipados.updating") : ""
+        guard message != publishedActivityStatus else { return }
+        publishedActivityStatus = message
+        onStatus?(message)
+    }
+
+    private func beginToolActivity(ticket: UInt64) {
+        guard alive, lifecycle.accepts(ticket), toolActivityTicket != ticket else { return }
+        toolActivityTicket = ticket
+        let token = UUID()
+        toolActivityToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            guard let self, self.alive, self.lifecycle.accepts(ticket), self.toolActivityToken == token else { return }
+            self.toolActivityVisible = true
+            self.publishActivityStatus()
+        }
+    }
+
+    private func endToolActivity(ticket: UInt64) {
+        guard toolActivityTicket == ticket else { return }
+        toolActivityTicket = nil
+        toolActivityToken = nil
+        toolActivityVisible = false
+        publishActivityStatus()
+    }
+
+    /// Main-thread request coalescing bounds presentation reads. Rust derives the
+    /// tree only when document geometry changes; ordinary navigation never requests it.
+    private var workspacePending = false
+    private var workspaceAgain = false
+    private var numericGeneration: UInt64 = 0 // main; invalidate old editor callbacks on begin/cancel/suspend
+    private var modellingGeneration: UInt64 = 0
+    private var lastWorkspaceDocument: String?
+    private var lastWorkspaceRevision: UInt64?
+    private var lastWorkspaceSelection: [WorkspaceEntity]?
+    private var lastWorkspaceTool: String?
+
+    func refreshWorkspace() {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        if workspacePending { workspaceAgain = true; return }
+        workspacePending = true
+        let expected = numericGeneration
+        engine.async { [weak self, state, lifecycle] in
+            guard lifecycle.accepts(ticket) else {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive else { return }
+                    self.workspacePending = false
+                    if self.workspaceAgain { self.workspaceAgain = false; self.refreshWorkspace() }
+                }
+                return
+            }
+            let result = Result { () throws -> WorkspaceState in
+                let data = try state.request(Data("{\"kind\":\"workspace\"}".utf8), lane: .engine)
+                return try JSONDecoder().decode(WorkspaceEnvelope.self, from: data).result
+            }.mapError(BridgeState.error)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.alive else { return }
+                self.workspacePending = false
+                if lifecycle.accepts(ticket), self.numericGeneration == expected {
+                    switch result {
+                    case .success(let workspace): self.onWorkspace?(workspace)
+                    case .failure(let failure): self.onFailure?(failure)
+                    }
+                }
+                if self.workspaceAgain { self.workspaceAgain = false; self.refreshWorkspace() }
+            }
+        }
+    }
+
+    private struct WorkspaceEnvelope: Decodable { let result: WorkspaceState }
+    private struct NumericEnvelope: Decodable { let result: NumericState }
+    private struct ModellingEnvelope: Decodable { let result: ModellingState }
+
+    /// One app-private native document slot; file bytes remain owned by the
+    /// shared engine writer/reader. Files browsing and security scopes are Step 9.
+    func localModellingDocument(reopen: Bool, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        let activity = UUID(); commandActivities.insert(activity); publishActivityStatus()
+        engine.async { [weak self, state, lifecycle] in
+            let result = Result { () throws -> Void in
+                guard lifecycle.accepts(ticket) else { throw BridgeError(code: "stale_edit", message: "ui.ipados.workspace.invalidated") }
+                let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let directory = support.appendingPathComponent("SolidCraft", isDirectory: true)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                let path = directory.appendingPathComponent("Modelling.solidcraft", isDirectory: false).path
+                let request: [String: Any] = ["kind": "command", "command": reopen ? "doc.open" : "file.save", "params": ["path": path]]
+                _ = try state.request(JSONSerialization.data(withJSONObject: request), lane: .engine)
+            }.mapError(BridgeState.error)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.alive else { return }
+                self.commandActivities.remove(activity); self.publishActivityStatus()
+                guard lifecycle.accepts(ticket) else { return }
+                completion(result); self.refreshWorkspace(); self.redraw()
+            }
+        }
+    }
+
+    func requestModelling(action: String, token: UInt64? = nil, operation: String? = nil, feature: UInt64? = nil,
+                          params: [String: PresentationJSON]? = nil,
+                          completion: @escaping (Result<ModellingState, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        if action == "begin" || action == "cancel" { modellingGeneration &+= 1 }
+        let expected = modellingGeneration
+        var request: [String: Any] = ["kind": "model", "action": action]
+        if let token { request["token"] = token }
+        if let operation { request["operation"] = operation }
+        if let feature { request["feature"] = feature }
+        if let params { request["params"] = params.mapValues(\.value) }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: request)
+            engine.async { [weak self, state, lifecycle] in
+                guard lifecycle.accepts(ticket) else { return }
+                let result = Result { () throws -> ModellingState in
+                    let reply = try state.request(data, lane: .engine)
+                    return try JSONDecoder().decode(ModellingEnvelope.self, from: reply).result
+                }.mapError(BridgeState.error)
+                guard lifecycle.accepts(ticket) else {
+                    if action == "begin", case .success(let model) = result, let lateToken = model.token {
+                        do {
+                            let cancel = try JSONSerialization.data(withJSONObject: ["kind": "model", "action": "cancel", "token": lateToken])
+                            _ = try state.request(cancel, lane: .engine)
+                        } catch { NSLog("%@", BridgeState.error(error).description) }
+                    }
+                    return
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive, lifecycle.accepts(ticket), self.modellingGeneration == expected else { return }
+                    completion(result)
+                    guard lifecycle.accepts(ticket), self.modellingGeneration == expected else { return }
+                    if case .success(let model) = result { self.onWorkspace?(model.workspace) }
+                    self.redraw()
+                }
+            }
+        } catch { completion(.failure(BridgeState.error(error))) }
+    }
+
+    private func observeWorkspaceContext(_ viewport: BridgeState.ViewportReport) {
+        onSketchInput?(viewport.input?.sketch)
+        let changed = lastWorkspaceDocument != viewport.document_id
+            || lastWorkspaceRevision != viewport.geometry_revision
+            || lastWorkspaceSelection != viewport.selection
+            || lastWorkspaceTool != viewport.input?.tool
+        guard changed else { return }
+        lastWorkspaceDocument = viewport.document_id
+        lastWorkspaceRevision = viewport.geometry_revision
+        lastWorkspaceSelection = viewport.selection
+        lastWorkspaceTool = viewport.input?.tool
+        refreshWorkspace()
+    }
+
+    func selectEntity(_ entity: [String: Any], additive: Bool,
+                      completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
+        command("select.entity", params: ["entity": entity, "additive": additive], completion: completion)
+    }
+
+    /// Preview and commit are explicit user actions. The Rust session owns tokens,
+    /// expression parsing, units, stale-selection checks and the single history action.
+    /// Validation failure is returned to the field, without replacing its draft.
+    func requestNumeric(action: String, token: UInt64? = nil, expression: String? = nil, dimension: String? = nil,
+                        completion: @escaping (Result<NumericState, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        if action == "begin" || action == "cancel" { numericGeneration &+= 1 }
+        let expected = numericGeneration
+        var request: [String: Any] = ["kind": "numeric", "action": action]
+        if let token { request["token"] = token }
+        if let expression { request["expression"] = expression }
+        if let dimension { request["dimension"] = dimension }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: request)
+            engine.async { [weak self, state, lifecycle] in
+                // A queued begin must not recreate an editor after resign-active
+                // has synchronously cancelled Rust's current numeric transaction.
+                guard lifecycle.accepts(ticket) else { return }
+                let result = Result { () throws -> NumericState in
+                    let reply = try state.request(data, lane: .engine)
+                    return try JSONDecoder().decode(NumericEnvelope.self, from: reply).result
+                }.mapError(BridgeState.error)
+                guard lifecycle.accepts(ticket) else {
+                    if action == "begin", case .success(let numeric) = result, let lateToken = numeric.token {
+                        // No lifecycle/render lock is held during this engine call.
+                        // A stale token means suspension already performed cleanup.
+                        do {
+                            let cancel = try JSONSerialization.data(withJSONObject: ["kind": "numeric", "action": "cancel", "token": lateToken])
+                            _ = try state.request(cancel, lane: .engine)
+                        } catch {
+                            let failure = BridgeState.error(error)
+                            if failure.code != "stale_edit" { NSLog("%@", failure.description) }
+                        }
+                    }
+                    return
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive, lifecycle.accepts(ticket), self.numericGeneration == expected else { return }
+                    completion(result)
+                    // The completion can synchronously cancel or start another edit.
+                    guard lifecycle.accepts(ticket), self.numericGeneration == expected else { return }
+                    if case .success(let numeric) = result { self.onWorkspace?(numeric.workspace) }
+                    self.redraw()
+                }
+            }
+        } catch { completion(.failure(BridgeState.error(error))) }
+    }
+
+    func previewSketchPlane(_ plane: Any, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["kind": "sketch_plane", "plane": plane])
+            engine.async { [weak self, state, lifecycle] in
+                guard lifecycle.accepts(ticket) else { return }
+                let result = Result { _ = try state.request(data, lane: .engine) }.mapError(BridgeState.error)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive, lifecycle.accepts(ticket) else { return }
+                    completion(result); self.redraw()
+                }
+            }
+        } catch { completion(.failure(BridgeState.error(error))) }
+    }
+
+    func cancelSketchPlane() {
+        guard alive else { return }
+        engine.async { [weak self, state] in
+            do { _ = try state.request(Data("{\"kind\":\"sketch_plane_cancel\"}".utf8), lane: .engine) }
+            catch { self?.failure(error) }
+            DispatchQueue.main.async { [weak self] in self?.redraw() }
+        }
+    }
+
+    func sketchDependents(_ id: Any, completion: @escaping (Result<SketchDependents, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": "timeline.dependents", "params": ["feature": id]])
+            engine.async { [weak self, state, lifecycle] in
+                guard lifecycle.accepts(ticket) else { return }
+                let result = Result { try JSONDecoder().decode(EngineCommandEnvelope<SketchDependents>.self, from: state.request(data, lane: .engine)).result.command.value }.mapError(BridgeState.error)
+                DispatchQueue.main.async { [weak self] in guard let self, self.alive, lifecycle.accepts(ticket) else { return }; completion(result) }
+            }
+        } catch { completion(.failure(BridgeState.error(error))) }
+    }
+
+    func evaluateTransformExpressions(_ fields: [(name: String, expression: String, kind: String)],
+                                      completion: @escaping (Result<[String: Double], BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        engine.async { [weak self, state, lifecycle] in
+            let result = Result { () throws -> [String: Double] in
+                var values: [String: Double] = [:]
+                for field in fields {
+                    guard lifecycle.accepts(ticket) else { throw BridgeError(code: "stale_edit", message: "ui.ipados.workspace.invalidated") }
+                    let data = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": "expr.evaluate", "params": ["expression": field.expression, "kind": field.kind]])
+                    let evaluated = try JSONDecoder().decode(EngineCommandEnvelope<ExpressionReply>.self, from: state.request(data, lane: .engine)).result.command.value
+                    guard evaluated.ok, let value = evaluated.value, value.isFinite else {
+                        throw BridgeError(code: "numeric_validation", message: evaluated.error ?? "ui.ipados.workspace.numeric_required")
+                    }
+                    values[field.name] = value
+                }
+                return values
+            }.mapError(BridgeState.error)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.alive, lifecycle.accepts(ticket) else { return }; completion(result)
+            }
+        }
+    }
+    private struct ExpressionReply: Decodable { let ok: Bool; let value: Double?; let error: String? }
+
+    func proposeSketchTransform(command: String, params: [String: Any], commit: Bool,
+                                completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        do {
+            let data = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": "tool.propose", "params": ["command": command, "params": params, "commit": commit]])
+            display.async { [weak self, state, lifecycle] in
+                guard lifecycle.accepts(ticket) else { return }
+                do {
+                    _ = try state.request(data, lane: .viewport)
+                    self?.engine.async { [weak self, state, lifecycle] in
+                        guard lifecycle.accepts(ticket) else { return }
+                        let result = Result { () throws -> Void in
+                            let data = try state.request(Data("{\"kind\":\"tool_work\"}".utf8), lane: .engine)
+                            let work = try JSONDecoder().decode(SketchToolWorkEnvelope.self, from: data).result
+                            guard work.accepts(commit: commit) else {
+                                throw BridgeError(code: "stale_edit", message: "ui.ipados.workspace.invalidated")
+                            }
+                        }.mapError(BridgeState.error)
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self, self.alive, lifecycle.accepts(ticket) else { return }
+                            completion(result); if commit { self.refreshWorkspace() }; self.redraw()
+                        }
+                    }
+                } catch {
+                    let failure = BridgeState.error(error)
+                    DispatchQueue.main.async { completion(.failure(failure)) }
+                }
+            }
+        } catch { completion(.failure(BridgeState.error(error))) }
     }
 
     func present(layer: CAMetalLayer, width: UInt32, height: UInt32, scale: Double) {
@@ -67,24 +561,89 @@ final class NativeSession {
         }
     }
 
+    private let input = InputMailbox()
+    private var toolBusy = false // display queue; at most one queued/running CAD job
+
     func record(_ sample: InputSample) {
         guard alive, let ticket = lifecycle.ticket else { return }
-        display.async { [weak self, state, lifecycle] in
+        guard let inputToken = input.append(sample) else { return }
+        display.async { [weak self, state, lifecycle, input] in
+            guard let batch = input.take(token: inputToken) else { return }
             guard lifecycle.accepts(ticket) else { return }
             do {
-                let event = try JSONEncoder().encode(sample)
-                let payload = Data("{\"kind\":\"input\",\"event\":".utf8) + event + Data("}".utf8)
-                _ = try state.request(payload, lane: .viewport)
+                if batch.cancelled { _ = try state.request(Data("{\"kind\":\"command\",\"command\":\"input.cancel\",\"params\":{}}".utf8), lane: .viewport) }
+                let events = try JSONEncoder().encode(batch.samples)
+                _ = try state.request(Data("{\"kind\":\"input_batch\",\"events\":".utf8) + events + Data("}".utf8), lane: .viewport)
+                self?.drainToolWork()
                 DispatchQueue.main.async { [weak self] in self?.redraw() }
-            } catch { self?.failure(error) }
+            } catch { self?.cancelInput(); self?.failure(error) }
         }
     }
 
-    func activate() { lifecycle.activate() }
+    /// Runs on display. The Rust mailbox replaces pending previews, while this gate
+    /// bounds work on the engine queue. Cancellation invalidates in-flight tickets.
+    private func drainToolWork() {
+        guard !toolBusy, let ticket = lifecycle.ticket else { return }
+        do {
+            let data = try state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)
+            guard try JSONDecoder().decode(ToolPending.self, from: data).result.tool_pending else { return }
+            toolBusy = true
+            DispatchQueue.main.async { [weak self] in self?.beginToolActivity(ticket: ticket) }
+            engine.async { [weak self, state, lifecycle] in
+                var failure: BridgeError?
+                if lifecycle.accepts(ticket) {
+                    do { _ = try state.request(Data("{\"kind\":\"tool_work\"}".utf8), lane: .engine) }
+                    catch { failure = BridgeState.error(error) }
+                }
+                let completedFailure = failure
+                self?.display.async { [weak self] in
+                    guard let self else { return }
+                    self.toolBusy = false
+                    self.drainToolWork()
+                    let stillBusy = self.toolBusy
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.alive, lifecycle.accepts(ticket) else { return }
+                        if !stillBusy { self.endToolActivity(ticket: ticket) }
+                        if let completedFailure { self.onFailure?(completedFailure) }
+                        self.onToolWorkCompleted?()
+                        self.redraw()
+                    }
+                }
+            }
+        } catch { failure(error) }
+    }
+
+    private struct ToolPending: Decodable {
+        struct Pending: Decodable { let tool_pending: Bool }
+        let result: Pending
+    }
+
+    func cancelInput() {
+        input.clear()
+        display.async { [weak self, state] in
+            do { _ = try state.request(Data("{\"kind\":\"command\",\"command\":\"input.cancel\",\"params\":{}}".utf8), lane: .viewport) }
+            catch { self?.failure(error) }
+            DispatchQueue.main.async { [weak self] in self?.redraw() }
+        }
+    }
+
+    func activate() { lifecycle.activate(); publishActivityStatus() }
 
     func suspend() {
-        do { try lifecycle.suspend { try state.suspend() } }
-        catch { if alive { onFailure?(BridgeState.error(error)) } }
+        input.clear()
+        numericGeneration &+= 1
+        modellingGeneration &+= 1
+        workspaceAgain = false
+        lastWorkspaceDocument = nil
+        lastWorkspaceRevision = nil
+        lastWorkspaceSelection = nil
+        lastWorkspaceTool = nil
+        toolActivityTicket = nil
+        toolActivityToken = nil
+        toolActivityVisible = false
+        let result = Result { try lifecycle.suspend { try state.suspend() } }
+        publishActivityStatus()
+        if case .failure(let error) = result, alive { onFailure?(BridgeState.error(error)) }
     }
 
     func stop() {
@@ -94,6 +653,8 @@ final class NativeSession {
         onFailure = nil
         onFrame = nil
         onStatus = nil
+        onWorkspace = nil
+        onSketchInput = nil; onSketchAnnotations = nil; onConstraintIndicators = nil
         // Engine work finishes before the display queue releases the retained layer/handle.
         engine.async { [state, lifecycle, display] in
             display.async { lifecycle.exclusive { state.close() } }
@@ -113,7 +674,19 @@ final class NativeSession {
                     guard let self, self.alive else { return }
                     self.redrawPending = false
                     guard self.lifecycle.accepts(ticket), let frame, let frame else { return }
-                    self.onFrame?(frame.presented == true, frame.geometry_revision, frame.viewport?.readout ?? "")
+                    if let viewport = frame.viewport {
+                        self.observeWorkspaceContext(viewport)
+                    }
+                    self.onFrame?(frame.presented == true, frame.geometry_revision, frame.viewport?.viewport_epoch, frame.viewport?.camera_epoch, frame.viewport?.document_id, frame.viewport?.metrics.map { [$0.width_points, $0.height_points, $0.scale] }, frame.viewport?.preview == true, frame.viewport?.preview_stale == true, frame.viewport?.readout ?? "")
+                    if frame.presented == true {
+                        self.onSketchAnnotations?(frame.viewport?.annotations ?? [])
+                        self.onConstraintIndicators?(frame.viewport?.constraint_indicators ?? [])
+                    }
+                    #if DEBUG
+                    if frame.presented == true, let next = self.sketchCheckAfterFrame {
+                        self.sketchCheckAfterFrame = nil; next()
+                    }
+                    #endif
                     if self.redrawAgain { self.redrawAgain = false; self.redraw() }
                     if frame.presented != true, retries > 0 {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in self?.redraw(retries: retries - 1) }
@@ -134,6 +707,307 @@ final class NativeSession {
     }
 
     #if DEBUG
+    private var sketchCheckAfterFrame: (() -> Void)?
+    private var sketchCheckToken: UInt64?
+    private var sketchCheckDimension: WorkspaceConstraint?
+    private var sketchCheckCompletion: ((WorkspaceState) -> Void)?
+
+    /// Opt-in device smoke: real engine, synthetic Pencil samples and native
+    /// numeric APIs. It never claims physical touch, Pencil or UI tap coverage.
+    func developmentSketchCheck(completion: @escaping (WorkspaceState) -> Void) {
+        sketchCheckCompletion = completion
+        developmentSketchStep(0)
+    }
+
+    private func developmentSketchStep(_ index: Int) {
+        guard alive else { return }
+        let advance: () -> Void = { [weak self] in
+            guard let self else { return }
+            NSLog("SolidCraft Step 6 synthetic sketch check %d", index)
+            self.sketchCheckAfterFrame = { [weak self] in self?.developmentSketchStep(index + 1) }
+            self.redraw()
+        }
+        let done: (Result<Void, BridgeError>) -> Void = { [weak self] result in
+            switch result { case .success: advance(); case .failure(let error): self?.failure(error) }
+        }
+        switch index {
+        case 0: command("sketch.create", params: ["plane": "XY", "name": "Step 6 rectangle"], completion: done)
+        case 1: command("tool.set", params: ["tool": "sketch.rectangle.two_point"], completion: done)
+        case 2: developmentSketchTap([0, 0, 0], completion: done)
+        case 3: developmentSketchTap([40, 30, 0], completion: done)
+        case 4: command("tool.set", params: ["tool": "select"], completion: done)
+        case 5, 8: selectEntity(["type": "sketch_curve", "id": index == 5 ? "l1" : "l2"], additive: false, completion: done)
+        case 6, 9, 15:
+            requestNumeric(action: "begin", dimension: index == 15 ? nil : "length") { [weak self] result in
+                guard let self else { return }
+                do {
+                    let numeric = try result.get()
+                    guard let token = numeric.token else { throw BridgeError(code: "sketch_check", message: "Numeric editor returned no token") }
+                    self.sketchCheckToken = token; advance()
+                } catch { self.failure(error) }
+            }
+        case 7, 10, 16:
+            let expression = index == 7 ? "40 mm" : (index == 10 ? "30 mm" : "60 mm")
+            requestNumeric(action: "commit", token: sketchCheckToken, expression: expression) { [weak self] result in
+                guard let self else { return }
+                do {
+                    let numeric = try result.get()
+                    guard numeric.committed else { throw BridgeError(code: "sketch_check", message: "Numeric dimension did not commit") }
+                    self.sketchCheckToken = nil
+                    if index == 7 { self.sketchCheckDimension = numeric.workspace.sketch?.constraints.first(where: { $0.dimension && !$0.driven }) }
+                    advance()
+                } catch { self.failure(error) }
+            }
+        case 11: command("sketch.finish", completion: done)
+        case 12: command("sketch.edit", params: ["sketch": "Step 6 rectangle"], completion: done)
+        case 13: command("tool.cancel", completion: done)
+        case 14:
+            guard let dimension = sketchCheckDimension else { failure(BridgeError(code: "sketch_check", message: "Width dimension missing")); return }
+            selectEntity(["type": "sketch_constraint", "id": dimension.id], additive: false, completion: done)
+        case 17: command("edit.undo", completion: done)
+        case 18: command("edit.redo", completion: done)
+        case 19:
+            guard let dimension = sketchCheckDimension else { failure(BridgeError(code: "sketch_check", message: "Width dimension missing")); return }
+            selectEntity(["type": "sketch_constraint", "id": dimension.id], additive: false, completion: done)
+        default:
+            engine.async { [weak self, state] in
+                do {
+                    let data = try state.request(Data("{\"kind\":\"workspace\"}".utf8), lane: .engine)
+                    let workspace = try JSONDecoder().decode(WorkspaceEnvelope.self, from: data).result
+                    guard let sketch = workspace.sketch, sketch.status.lowercased() == "solved", sketch.profiles.count == 1,
+                          let area = sketch.profiles.first?.area_mm2, abs(area - 1800) < 0.001,
+                          sketch.constraints.contains(where: { $0.id == self?.sketchCheckDimension?.id && $0.expression == "60 mm" }) else {
+                        throw BridgeError(code: "sketch_check", message: "Reopened 60 × 30 profile or retained width expression failed")
+                    }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.alive else { return }
+                        self.onWorkspace?(workspace); self.sketchCheckCompletion?(workspace); self.sketchCheckCompletion = nil
+                        NSLog("SolidCraft Step 6 sketch check PASS (real engine; synthetic Pencil input and numeric editor APIs; hardware unverified)")
+                    }
+                } catch { self?.failure(error) }
+            }
+        }
+    }
+
+    private func developmentSketchTap(_ world: [Double], completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        display.async { [weak self, state] in
+            do {
+                let project = try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": "view.project", "params": ["point": world]]), lane: .viewport)
+                let p = try JSONDecoder().decode(DevelopmentProjection.self, from: project).result
+                let report = try JSONDecoder().decode(DevelopmentViewport.self, from: state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)).result
+                guard p.points.count == 2 else { throw BridgeError(code: "sketch_check", message: "Missing viewport projection") }
+                for phase in [InputSample.Phase.began, .ended] {
+                    var sample = InputSample(source: .pencil, phase: phase, id: 6000,
+                        x_points: p.points[0], y_points: p.points[1], x_pixels: p.points[0] * p.scale, y_pixels: p.points[1] * p.scale,
+                        scale: p.scale, timestamp: ProcessInfo.processInfo.systemUptime, pressure: nil, altitude: nil,
+                        geometry_revision: p.geometry_revision, consumed: false, shift: false, button: 0, scroll: 0)
+                    sample.viewport_epoch = report.viewport_epoch; sample.camera_epoch = report.camera_epoch; sample.document_id = report.document_id
+                    sample.display_preview = report.preview ?? false
+                    let payload = Data("{\"kind\":\"input\",\"event\":".utf8) + (try JSONEncoder().encode(sample)) + Data("}".utf8)
+                    _ = try state.request(payload, lane: .viewport)
+                }
+                self?.engine.async { [weak self, state] in
+                    let result = Result { _ = try state.request(Data("{\"kind\":\"tool_work\"}".utf8), lane: .engine) }.mapError(BridgeState.error)
+                    DispatchQueue.main.async { [weak self] in guard self?.alive == true else { return }; completion(result) }
+                }
+            } catch {
+                let failure = BridgeState.error(error)
+                DispatchQueue.main.async { completion(.failure(failure)) }
+            }
+        }
+    }
+
+    private var workspaceCheckToken: UInt64?
+    private var workspaceCheckVolume: Double = 0
+    private var workspaceCheckCommittedVolume: Double = 0
+
+    /// Opt-in, software-injected bridge workflow. This exercises real commands,
+    /// numeric preview and history; it does not represent UI taps or Pencil hardware.
+    func developmentWorkspaceCheck() { developmentWorkspaceStep(0) }
+
+    private func developmentWorkspaceStep(_ index: Int) {
+        guard alive else { return }
+        let advance: () -> Void = { [weak self] in
+            NSLog("SolidCraft Step 5 synthetic workspace check %d", index)
+            self?.developmentWorkspaceStep(index + 1)
+        }
+        let commandDone: (Result<Void, BridgeError>) -> Void = { [weak self] result in
+            switch result { case .success: advance(); case .failure(let error): self?.failure(error) }
+        }
+        switch index {
+        case 0, 8, 11:
+            selectEntity(["type": "body", "name": "Post"], additive: false, completion: commandDone)
+        case 1:
+            command("tool.set", params: ["tool": "post_radius"], completion: commandDone)
+        case 2, 9, 12:
+            engine.async { [weak self, state] in
+                let result = Result { () throws -> WorkspaceState in
+                    let data = try state.request(Data("{\"kind\":\"workspace\"}".utf8), lane: .engine)
+                    return try JSONDecoder().decode(WorkspaceEnvelope.self, from: data).result
+                }.mapError(BridgeState.error)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive else { return }
+                    do {
+                        let workspace = try result.get()
+                        let expected = index == 12 ? 12.0 : 7.0
+                        guard let radius = workspace.radius, abs(radius.value - expected) < 0.001,
+                              workspace.rows.contains(where: { $0.kind == "body" && $0.label == "Post" && $0.selected }) else {
+                            throw BridgeError(code: "workspace_check", message: "Browser/inspector selection or history radius mismatch")
+                        }
+                        self.onWorkspace?(workspace)
+                        advance()
+                    } catch { self.failure(error) }
+                }
+            }
+        case 3, 13:
+            requestNumeric(action: "begin") { [weak self] result in
+                guard let self, self.alive else { return }
+                do {
+                    let numeric = try result.get()
+                    guard let token = numeric.token, let volume = numeric.viewport?.volume_mm3,
+                          numeric.workspace.can_undo == false else {
+                        throw BridgeError(code: "workspace_check", message: "Numeric begin or history isolation failed")
+                    }
+                    self.workspaceCheckToken = token
+                    if index == 3 { self.workspaceCheckVolume = volume }
+                    advance()
+                } catch { self.failure(error) }
+            }
+        case 4:
+            requestNumeric(action: "preview", token: workspaceCheckToken, expression: "12 +") { [weak self] result in
+                switch result {
+                case .failure(let error) where error.code == "numeric_validation": advance()
+                case .failure(let error): self?.failure(error)
+                case .success: self?.failure(BridgeError(code: "workspace_check", message: "Incomplete expression was accepted"))
+                }
+            }
+        case 5, 6, 14, 15:
+            let action = index == 6 ? "commit" : (index == 15 ? "cancel" : "preview")
+            let expression: String? = index == 15 ? nil : (index == 14 ? "14 mm" : "12 mm")
+            requestNumeric(action: action, token: workspaceCheckToken, expression: expression) { [weak self] result in
+                guard let self, self.alive else { return }
+                do {
+                    let numeric = try result.get()
+                    if index == 5 || index == 14 {
+                        guard numeric.preview, let preview = numeric.viewport?.preview_volume_mm3,
+                              let committed = numeric.viewport?.volume_mm3, preview > committed else {
+                            throw BridgeError(code: "workspace_check", message: "Real numeric geometry preview did not grow")
+                        }
+                    }
+                    if index == 6 {
+                        guard numeric.committed, !numeric.preview, numeric.token == nil,
+                              let volume = numeric.viewport?.volume_mm3, volume > self.workspaceCheckVolume,
+                              let radius = numeric.viewport?.handle?.radius, abs(radius - 12) < 0.001 else {
+                            throw BridgeError(code: "workspace_check", message: "Numeric confirmation did not commit geometry")
+                        }
+                        self.workspaceCheckCommittedVolume = volume
+                    }
+                    if index == 15 {
+                        guard !numeric.preview, numeric.token == nil,
+                              let volume = numeric.viewport?.volume_mm3,
+                              abs(volume - self.workspaceCheckCommittedVolume) < 0.001,
+                              let radius = numeric.viewport?.handle?.radius, abs(radius - 12) < 0.001 else {
+                            throw BridgeError(code: "workspace_check", message: "Cancellation changed committed geometry")
+                        }
+                    }
+                    advance()
+                } catch { self.failure(error) }
+            }
+        case 7: command("edit.undo", completion: commandDone)
+        case 10: command("edit.redo", completion: commandDone)
+        default:
+            workspaceCheckToken = nil
+            NSLog("SolidCraft Step 5 workspace check PASS (synthetic bridge input; UI and hardware unverified)")
+        }
+    }
+
+    /// Step 4 software-injected device workflow. Never describes physical Pencil
+    /// verification. It exercises the same typed boundary, real preview and history.
+    func developmentInputCheck() {
+        let steps: [(String, [String: Any])] = [
+            ("view.isometric", [:]), ("tool.set", ["tool": "post_radius"]),
+            ("sample.pencil.began", ["id": 2000, "point": [17,4,35]]),
+            ("sample.pencil.moved", ["id": 2000, "point": [22,4,35]]),
+            ("work.preview", [:]),
+            ("sample.finger.began", ["id": 2001, "point": [-10,0,10]]),
+            ("sample.finger.began", ["id": 2002, "point": [30,0,10]]),
+            ("sample.finger.moved", ["id": 2002, "point": [34,3,10]]),
+            ("sample.pencil.moved", ["id": 2000, "point": [30,4,35]]),
+            ("check.suspended", [:]),
+            ("sample.finger.ended", ["id": 2001, "point": [-10,0,10]]),
+            ("sample.finger.ended", ["id": 2002, "point": [34,3,10]]),
+            ("sample.pencil.moved", ["id": 2000, "point": [22,4,35]]),
+            ("sample.pencil.ended", ["id": 2000, "point": [22,4,35]]),
+            ("work.commit", [:]), ("edit.undo", [:]), ("check.undo", [:]),
+            ("edit.redo", [:]), ("check.redo", [:]),
+            ("sample.pencil.began", ["id": 2000, "point": [22,4,35]]),
+            ("sample.pencil.moved", ["id": 2000, "point": [26,4,35]]),
+            ("work.preview", [:]), ("input.cancel", [:]), ("check.cancelled", [:])
+        ]
+        developmentInputStep(steps, index: 0)
+    }
+    private func developmentInputStep(_ steps: [(String, [String: Any])], index: Int) {
+        guard alive, steps.indices.contains(index) else {
+            NSLog("SolidCraft Step 4 input check PASS (synthetic input; hardware unverified)")
+            return
+        }
+        let (command, params) = steps[index]
+        engine.async { [weak self, state] in
+            do {
+                var payload: Data
+                if command.hasPrefix("sample.") {
+                    let parts = command.split(separator: ".")
+                    let project = try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": "view.project", "params": ["point": params["point"] ?? []]]), lane: .engine)
+                    let p = try JSONDecoder().decode(DevelopmentProjection.self, from: project).result
+                    guard p.points.count == 2 else { throw BridgeError(code: "input_check", message: "missing projection") }
+                    let sample = InputSample(source: parts[1] == "pencil" ? .pencil : .finger,
+                        phase: parts[2] == "began" ? .began : (parts[2] == "ended" ? .ended : .moved),
+                        id: (params["id"] as? UInt64) ?? UInt64(params["id"] as? Int ?? 0),
+                        x_points: p.points[0], y_points: p.points[1], x_pixels: p.points[0] * p.scale, y_pixels: p.points[1] * p.scale,
+                        scale: p.scale, timestamp: ProcessInfo.processInfo.systemUptime, pressure: nil, altitude: nil,
+                        geometry_revision: p.geometry_revision, consumed: false, shift: false, button: 0, scroll: 0)
+                    payload = Data("{\"kind\":\"input\",\"event\":".utf8) + (try JSONEncoder().encode(sample)) + Data("}".utf8)
+                } else if command.hasPrefix("work.") {
+                    payload = Data("{\"kind\":\"tool_work\"}".utf8)
+                } else if command.hasPrefix("check.") {
+                    // Snapshot on the viewport lane is read-only, including during edits.
+                    payload = Data("{\"kind\":\"snapshot\"}".utf8)
+                } else {
+                    payload = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": command, "params": params])
+                }
+                let lane: BridgeState.Lane = command.hasPrefix("check.") ? .viewport : .engine
+                // Checks use the display queue so the viewport response lane remains serial.
+                let reply: Data
+                if lane == .viewport { reply = try self?.display.sync { try state.request(payload, lane: .viewport) } ?? Data() }
+                else { reply = try state.request(payload, lane: .engine) }
+                if command.hasPrefix("check.") || command.hasPrefix("work.") {
+                    let envelope = try JSONSerialization.jsonObject(with: reply) as? [String: Any]
+                    let result = envelope?["result"] as? [String: Any] ?? [:]
+                    let report = (result["viewport"] as? [String: Any]) ?? result
+                    let input = report["input"] as? [String: Any] ?? [:]
+                    let handle = report["handle"] as? [String: Any] ?? [:]
+                    let radius = handle["radius"] as? Double ?? 0
+                    let volume = report["volume_mm3"] as? Double ?? 0
+                    let preview = report["preview_volume_mm3"] as? Double
+                    var valid = true
+                    if command == "work.preview" { valid = preview.map { $0 > volume } ?? false }
+                    if command == "work.commit" { valid = result["committed"] as? Bool == true && abs(radius - 12) < 0.001 }
+                    if command == "check.suspended" { valid = input["edit"] as? String == "suspended" && abs((input["radius"] as? Double ?? 0) - 12) < 0.001 }
+                    if command == "check.undo" { valid = abs(radius - 7) < 0.001 }
+                    if command == "check.redo" || command == "check.cancelled" { valid = abs(radius - 12) < 0.001 && preview == nil }
+                    guard valid else { throw BridgeError(code: "input_check", message: command + " assertion failed") }
+                    NSLog("SolidCraft Step 4 %@: radius=%.6f committed=%.6f mm3 preview=%@", command, radius, volume, String(describing: preview))
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive else { return }
+                    self.redraw()
+                    NSLog("SolidCraft Step 4 check %d: %@", index, command)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in self?.developmentInputStep(steps, index: index + 1) }
+                }
+            } catch { self?.failure(error) }
+        }
+    }
+
     /// Opt-in repeatable device smoke workflow. Samples are synthetic: this verifies the
     /// native boundary and renderer, never actual finger/Pencil hardware or hover support.
     func developmentCheck() {
@@ -162,7 +1036,7 @@ final class NativeSession {
         }
         let (command, params) = steps[index]
         let isTap = command.hasPrefix("tap.")
-        let isDisplay = isTap || command.hasPrefix("view.") || command.hasPrefix("select.")
+        let isDisplay = isTap || command.hasPrefix("view.") || command.hasPrefix("select.") || command.hasPrefix("tool.") || command == "input.cancel"
         let queue = isDisplay ? display : engine
         queue.async { [weak self, state] in
             do {
@@ -206,6 +1080,7 @@ final class NativeSession {
         struct Point: Decodable { let points: [Double]; let scale: Double; let geometry_revision: UInt64 }
         let result: Point
     }
+    private struct DevelopmentViewport: Decodable { let result: BridgeState.ViewportReport }
     #endif
 
     private func failure(_ error: Error) {
@@ -234,7 +1109,7 @@ private final class LifecycleGate {
     func suspend(_ operation: () throws -> Void) throws {
         lock.lock(); defer { lock.unlock() }
         active = false; generation &+= 1
-        if hasRenderer { try operation() }
+        try operation()
     }
     func rendering<T>(ticket: UInt64, state: BridgeState, _ operation: () throws -> T) rethrows -> T? {
         lock.lock(); defer { hasRenderer = state.hasSurface; lock.unlock() }
@@ -274,7 +1149,7 @@ private final class BridgeState {
         } catch { attached = false; throw error }
     }
     func suspend() throws {
-        guard handle != 0, attached else { return }
+        guard handle != 0 else { return }
         try check(sc_surface_suspend(handle), lane: .surface)
         attached = false
     }
@@ -335,25 +1210,56 @@ private final class BridgeState {
         let viewport: ViewportReport?
     }
     struct ViewportReport: Decodable {
-        struct Entity: Decodable {
-            let type: String
-            let name: String?
-            let body: String?
-            let index: Int?
-            let point: [Double]?
-            var readout: String {
-                let id = index.map(String.init) ?? point.map { $0.map { String(format: "%.3g", $0) }.joined(separator: ",") } ?? name ?? ""
-                return "\(type) · \(body ?? name ?? "") · \(id)"
-            }
-        }
+        typealias Entity = WorkspaceEntity
+        struct Input: Decodable { let tool: String; let edit: String?; let sketch: SketchInputPresentation? }
+        let input: Input?
+        let annotations: [SketchAnnotationPresentation]?
+        let constraint_indicators: [SketchConstraintIndicator]?
         let selection: [Entity]
         let hover: Entity?
         let geometry_revision: UInt64?
         let updating: Bool
+        struct Metrics: Decodable { let width_points: Double; let height_points: Double; let scale: Double }
+        let metrics: Metrics?
+        let preview: Bool?
+        let preview_stale: Bool?
+        let camera_epoch: UInt64?
+        let viewport_epoch: UInt64?
+        let document_id: String?
         var readout: String {
             let picks = selection.isEmpty ? NativeText.value("ui.ipados.no_selection") : selection.prefix(4).map(\.readout).joined(separator: " | ")
             let preselect = hover.map { " · \(NativeText.value("ui.ipados.hover")): \($0.readout)" } ?? ""
             return "r\(geometry_revision ?? 0) · \(picks)\(preselect)" + (updating ? " · \(NativeText.value("ui.ipados.updating"))" : "")
         }
+    }
+}
+
+/// No UIKit objects cross a queue. Under overload discard the uncertain interaction
+/// as a whole. Begin/end/cancel are preserved during normal batching/coalescing.
+private final class InputMailbox {
+    private let lock = NSLock()
+    private var samples: [InputSample] = []
+    private var scheduled = false
+    private var cancelled = false
+    private var epoch: UInt64 = 0
+    func append(_ sample: InputSample) -> UInt64? {
+        lock.lock(); defer { lock.unlock() }
+        if samples.count >= 128 { samples.removeAll(keepingCapacity: true); cancelled = true }
+        samples.append(sample)
+        if scheduled { return nil }
+        scheduled = true
+        return epoch
+    }
+    func take(token: UInt64) -> (samples: [InputSample], cancelled: Bool)? {
+        lock.lock(); defer { lock.unlock() }
+        guard token == epoch else { return nil }
+        let result = (samples, cancelled)
+        samples.removeAll(keepingCapacity: true); cancelled = false; scheduled = false
+        return result
+    }
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        samples.removeAll(keepingCapacity: true); cancelled = true
+        epoch &+= 1; scheduled = false
     }
 }

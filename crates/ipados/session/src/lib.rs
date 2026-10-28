@@ -2,14 +2,26 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod assembly;
+mod assembly_references;
+mod editing;
 mod input;
+mod modelling;
 mod picking;
+mod references;
+mod sketch_input;
+mod sketching;
 mod viewport;
+mod workspace;
 
+pub use editing::{PreparedTool, RadiusHandle, ToolEvent, ToolOperation, ToolPhase, ToolWork};
 pub use input::{InputEvent, InputPhase, InputSource};
+pub use modelling::{ModelEdit, PreparedModel};
 pub use picking::{PickFilter, PickScene, ViewportMetrics};
+pub use sketching::SketchSnapshot;
 pub use solidcraft_engine::geom::Vec3 as WorldPoint;
 pub use viewport::{RenderSnapshot, Viewport};
+pub use workspace::{NumericEdit, PreparedNumeric};
 
 use std::sync::Arc;
 
@@ -53,6 +65,13 @@ pub struct CommandReply {
 
 /// Scene and picking index are built together on the evaluation worker, from the same
 /// visible world state. No engine borrow or mutable geometry crosses to the renderer.
+#[derive(Clone)]
+pub struct NativeMeshInstance {
+    pub body: String,
+    pub mesh: Arc<solidcraft_engine::geom::Mesh>,
+    pub transform: solidcraft_engine::doc::Mat,
+}
+
 pub struct SceneSnapshot {
     pub scene: Arc<Scene>,
     pub picks: PickScene,
@@ -63,6 +82,14 @@ pub struct SceneSnapshot {
     pub body_count: usize,
     pub triangle_count: usize,
     pub volume_mm3: f64,
+    pub radius_handle: Option<RadiusHandle>,
+    pub feature_ids: Vec<u64>,
+    pub sketch: Option<SketchSnapshot>,
+    pub sketch_plane: Option<solidcraft_engine::geom::Plane>,
+    pub occurrence_paths: std::collections::BTreeMap<String, Vec<u64>>,
+    pub occurrences: Vec<Vec<u64>>,
+    pub joint_frames: Vec<solidcraft_engine::doc::Mat>,
+    pub instances: Vec<NativeMeshInstance>,
 }
 
 /// The only mutable CAD document/session owner. Camera/input live in `Viewport` so
@@ -70,6 +97,7 @@ pub struct SceneSnapshot {
 pub struct SessionAdapter {
     session: Session,
     geometry_revision: u64,
+    workspace_cache: Option<workspace::WorkspaceCache>,
 }
 
 impl Default for SessionAdapter {
@@ -80,7 +108,7 @@ impl Default for SessionAdapter {
 
 impl SessionAdapter {
     pub fn new() -> Self {
-        Self { session: Session::new(Document::new("SolidCraft")), geometry_revision: 1 }
+        Self { session: Session::new(Document::new("SolidCraft")), geometry_revision: 1, workspace_cache: None }
     }
 
     pub fn execute(&mut self, id: &str, params: Value) -> Result<CommandReply, AdapterError> {
@@ -144,8 +172,18 @@ impl SessionAdapter {
     }
 
     pub fn snapshot(&mut self) -> Result<Arc<SceneSnapshot>, AdapterError> {
-        if let Some(failure) = self.session.model.results.iter().find_map(|result| result.error.as_ref()) {
-            return Err(error("evaluation", failure.clone()));
+        if let Some(result) = self.session.model.results.iter().find(|result| result.error.is_some()) {
+            return Err(error("evaluation", format!("{}: {}", result.name, result.error.as_deref().unwrap_or_default())));
+        }
+        if self.session.active_sketch.is_none() {
+            if let Some(result) = self.session.model.results.iter().find(|result| !result.skipped && result.stale) {
+                return Err(error("stale_evaluation", format!("{} has not been regenerated for the current document.", result.name)));
+            }
+            if let Some(result) =
+                self.session.model.results.iter().find(|result| result.warning.as_deref().is_some_and(references::risky_reference_warning))
+            {
+                return Err(error("unresolved_reference", format!("{}: {}", result.name, result.warning.as_deref().unwrap_or_default())));
+            }
         }
         // No camera-dependent guides or selection tint in the stable model upload.
         let selection = std::mem::take(&mut self.session.selection);
@@ -165,6 +203,31 @@ impl SessionAdapter {
             return Err(error("invalid_geometry", "non-finite scene volume"));
         }
         Ok(Arc::new(SceneSnapshot {
+            instances: world
+                .bodies
+                .iter()
+                .filter(|b| self.session.body_visible(&b.name))
+                .map(|b| {
+                    let (mesh, transform) = b.mesh_in_place();
+                    NativeMeshInstance { body: b.name.clone(), mesh, transform }
+                })
+                .collect(),
+            occurrence_paths: self.assembly_body_paths()?,
+            occurrences: self.assembly_placements()?.into_iter().map(|p| p.path).collect(),
+            joint_frames: self
+                .session
+                .doc
+                .assembly
+                .joints
+                .iter()
+                .filter(|j| !j.suppressed && self.session.joint_visible(j.id))
+                .flat_map(|j| [&j.a, &j.b])
+                .filter_map(|origin| self.session.doc.origin_world(&self.session.model.state(), origin).ok())
+                .collect(),
+            radius_handle: self.radius_handle(),
+            feature_ids: self.session.doc.features.iter().map(|f| f.id).collect(),
+            sketch: self.sketch_snapshot(),
+            sketch_plane: view::open_sketch_plane(&self.session),
             body_count: scene.meshes.len(),
             scene: Arc::new(scene),
             picks,

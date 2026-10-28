@@ -77,7 +77,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.limits", "Joint Limits", limits).icon("joint").params("joint; index?: value index (default 0); min?, max? (omit both to clear)"),
     CommandSpec::new("joint.edit", "Edit Joint", edit)
         .icon("edit")
-        .params("joint; type?, flip?, offset?, angle? (a number, or an expression the joint then follows), suppressed?, name?"),
+        .params("joint; a?, b?: replacement joint origins, in the same forms as joint.create (the original joint id is retained); type?, flip?, offset?, angle? (a number, or an expression the joint then follows), suppressed?, name?"),
     CommandSpec::new("joint.delete", "Delete Joint", delete).icon("delete").params("joint: id|name (or origin: name, link: index)"),
     CommandSpec::new("joint.list", "List Joints", list).icon("list").noundo().params(
         "→ joints (type, occurrences, values, limits; expressions: {offset?, angle?, values?} when they were typed as expressions), origins, links, degrees of freedom, conflicts, floating: [{occurrences, joints}] \
@@ -1337,8 +1337,24 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         Some(v) => Some(value(s, v, true, cmd)?),
         None => None,
     };
+    // Origins use the same native frame, named-face and snap validation as
+    // creation. Resolve both before changing the original joint definition.
+    let a = p.get("a").map(|value| origin_param(s, Some(value), cmd)).transpose()?;
+    let b = p.get("b").map(|value| origin_param(s, Some(value), cmd)).transpose()?;
+    let original = s.doc.assembly.joints.iter().find(|joint| joint.id == id).ok_or_else(|| bad(cmd, "joint"))?;
+    let a_occurrence = a.as_ref().unwrap_or(&original.a).occurrence;
+    let b_occurrence = b.as_ref().unwrap_or(&original.b).occurrence;
+    if (a.is_some() || b.is_some()) && a_occurrence == b_occurrence {
+        return Err(bad(cmd, "a joint needs two different occurrences; choose an origin on each part"));
+    }
     let doc = s.doc_mut();
     let Some(j) = doc.assembly.joints.iter_mut().find(|j| j.id == id) else { return Err(bad(cmd, "joint")) };
+    if let Some(a) = a {
+        j.a = a;
+    }
+    if let Some(b) = b {
+        j.b = b;
+    }
     if let Some(k) = kind {
         let was = j.kind;
         j.kind = k;
@@ -1371,7 +1387,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         j.name = n.to_string();
     }
     // A relation whose type, offset, tilt or flip changes starts again from where its parts are.
-    let reseat = kind.is_some() || offset.is_some() || angle.is_some() || p.get("flip").is_some();
+    let reseat = kind.is_some() || offset.is_some() || angle.is_some() || p.get("flip").is_some() || p.get("a").is_some() || p.get("b").is_some();
     if reseat {
         let edited = s.doc.assembly.joints.iter().find(|j| j.id == id).cloned();
         if let Some(q) = edited.and_then(|j| joints::relation_values(&s.doc, &s.model.state(), &j))

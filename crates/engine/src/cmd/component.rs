@@ -87,7 +87,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          placement to place it by (default: its only one, else the active one; every instance of the parent gets it). The placement \
          keeps its world position; a move that would break a feature is refused",
     ),
-    CommandSpec::new("component.capture_position", "Capture Position", capture).at("SOLID", "POSITION").icon("capture").params("keeps pending occurrence moves"),
+    CommandSpec::new("component.capture_position", "Capture Position", capture).at("SOLID", "POSITION").icon("capture").params("occurrences?: [ids] (omit: keeps every pending occurrence move; []: keeps none). Explicit ids keep only their pending positions; unrelated positions remain pending"),
     CommandSpec::new("component.revert_position", "Revert Position", revert).at("SOLID", "POSITION").icon("revert").noundo().params("occurrences?: [ids] (default all); drops selected pending occurrence moves"),
 ];
 
@@ -620,8 +620,27 @@ fn ground(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(json!({"occurrence": id, "grounded": g}))
 }
 
-fn capture(s: &mut Session, _p: &Value) -> Result<Value> {
-    let moves = std::mem::take(&mut s.pending_moves);
+fn capture(s: &mut Session, p: &Value) -> Result<Value> {
+    let ids = match p.get("occurrences") {
+        None => None,
+        Some(value) => {
+            let ids = value
+                .as_array()
+                .filter(|ids| ids.len() <= 10_000)
+                .and_then(|ids| ids.iter().map(Value::as_u64).collect::<Option<std::collections::BTreeSet<_>>>())
+                .ok_or_else(|| bad("component.capture_position", "occurrences must list at most 10000 occurrence ids"))?;
+            if ids.iter().any(|id| !s.doc.occurrences.iter().any(|occurrence| occurrence.id == *id)) {
+                return Err(bad("component.capture_position", "no occurrence"));
+            }
+            Some(ids)
+        }
+    };
+    // Selecting capture scope must not become a zero-distance movement command:
+    // fixed/grounded occurrences can have pending positions that still need saving.
+    let moves = match ids {
+        None => std::mem::take(&mut s.pending_moves),
+        Some(ids) => ids.into_iter().filter_map(|id| s.pending_moves.remove(&id).map(|position| (id, position))).collect(),
+    };
     let n = moves.len();
     for (id, m) in moves {
         if let Some(o) = s.doc_mut().occurrences.iter_mut().find(|o| o.id == id) {

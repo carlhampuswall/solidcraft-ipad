@@ -85,6 +85,13 @@ enum Request {
     Command { command: String, params: Value },
     Snapshot,
     Input { event: InputEvent },
+    InputBatch { events: Vec<InputEvent> },
+    ToolWork,
+    Workspace,
+    Numeric { action: String, token: Option<u64>, expression: Option<String>, dimension: Option<String> },
+    Model { action: String, token: Option<u64>, operation: Option<String>, feature: Option<u64>, params: Option<Value> },
+    SketchPlane { plane: Value },
+    SketchPlaneCancel,
     Viewport { metrics: ViewportMetrics },
 }
 
@@ -93,6 +100,17 @@ impl Entry {
         let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
         match request {
             Request::Input { event } => viewport.input(event),
+            Request::InputBatch { events } => {
+                if events.len() > 128 {
+                    viewport.cancel_interactions();
+                    return Err(error("input_limit", "at most 128 input samples per batch"));
+                }
+                let mut reply = viewport.diagnostic();
+                for event in events {
+                    reply = viewport.input(event)?;
+                }
+                Ok(reply)
+            }
             Request::Viewport { metrics } => {
                 viewport.set_metrics(metrics)?;
                 Ok(viewport.diagnostic())
@@ -103,11 +121,294 @@ impl Entry {
         }
     }
 
+    /// One executing job plus one replaceable latest sample in Viewport. CAD work
+    /// never holds the viewport/render lock. Acceptance checks the interaction again
+    /// under that lock, so cancellation/backgrounding wins over in-flight work.
+    fn tool_work(&self) -> Result<Value, AdapterError> {
+        let work = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.take_tool_work();
+        let Some(work) = work else {
+            return Ok(json!({"worked":false}));
+        };
+        let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
+        if !self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.tool_is_current(&work) {
+            return Ok(json!({"discarded":true}));
+        }
+        let prepared = adapter.prepare_tool(work.clone());
+        let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+        if self.closed.load(Ordering::Acquire) || !viewport.tool_is_current(&work) {
+            return Ok(json!({"discarded":true}));
+        }
+        let result = match prepared {
+            Ok(prepared) if work.commit => adapter.accept_tool(prepared).map(|model| {
+                viewport.complete_tool(&work, model);
+            }),
+            Ok(prepared) => {
+                viewport.publish_model_tool_details(&work, prepared.reply, prepared.feedback, prepared.handle);
+                viewport.publish_preview(&work, prepared.model);
+                Ok(())
+            }
+            Err(failure) => Err(failure),
+        };
+        if let Err(failure) = result {
+            viewport.fail_tool(&work);
+            return Err(failure);
+        }
+        Ok(json!({"worked":true,"committed":work.commit,"viewport":viewport.diagnostic()}))
+    }
+
+    fn workspace(&self) -> Result<Value, AdapterError> {
+        let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
+        let (selection, radius, numeric, input) = {
+            let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            // Publication can briefly lag the engine worker; never apply old
+            // selection identities to a document whose update is still pending.
+            let selection = if viewport.is_updating() { Vec::new() } else { viewport.selection().to_vec() };
+            (selection, viewport.radius_tool_active(), viewport.numeric_active() || viewport.model_active(), viewport.diagnostic()["input"].clone())
+        };
+        let mut workspace = adapter.workspace(&selection, radius, numeric);
+        workspace["active_tool"] = input["tool"].clone();
+        workspace["input"] = input;
+        Ok(workspace)
+    }
+
+    fn numeric(&self, action: &str, token: Option<u64>, expression: Option<String>, dimension: Option<String>) -> Result<Value, AdapterError> {
+        // Like Pencil work, CAD evaluation never holds the viewport mutex. The
+        // same token is checked immediately before publishing or accepting history.
+        let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
+        if action == "begin" {
+            let (selection, token) = {
+                let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+                if viewport.is_updating() || viewport.numeric_active() || viewport.model_active() {
+                    return Err(error("disabled", "ui.ipados.workspace.finish_edit"));
+                }
+                let token = self
+                    .generation
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                    .map_err(|_| error("revision_limit", "numeric token exhausted"))?
+                    + 1;
+                (viewport.selection().to_vec(), token)
+            };
+            // Creating a dimension on scratch can solve/evaluate. Keep the display
+            // lane free, then validate lifecycle and selection before installing it.
+            let edit = adapter.begin_numeric_for(token, &selection, dimension.as_deref())?;
+            let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            if self.closed.load(Ordering::Acquire) || self.generation.load(Ordering::Acquire) != token || viewport.selection() != selection {
+                return Err(error("stale_edit", "The numeric edit was cancelled or the selection changed."));
+            }
+            viewport.begin_numeric(edit)?;
+        } else {
+            let token = token.ok_or_else(|| error("bad_params", "A numeric edit token is required."))?;
+            let edit = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.numeric_edit(token)?;
+            match action {
+                "cancel" => self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.finish_numeric(token, None)?,
+                "preview" | "commit" => {
+                    let expression = expression.ok_or_else(|| error("bad_params", "An expression is required."))?;
+                    let prepared = adapter.prepare_numeric(&edit, &expression, action == "commit")?;
+                    let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+                    viewport.numeric_edit(token)?;
+                    if self.closed.load(Ordering::Acquire) {
+                        return Err(error("closed", "session closed"));
+                    }
+                    if action == "commit" {
+                        let model = adapter.accept_numeric(&edit, prepared)?;
+                        viewport.finish_numeric(token, Some(model))?;
+                    } else {
+                        viewport.publish_numeric(token, &prepared)?;
+                    }
+                }
+                _ => return Err(error("bad_params", "Unsupported numeric action.")),
+            }
+        }
+        let (diagnostic, edit, selection, radius, numeric) = {
+            let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            let diagnostic = viewport.diagnostic();
+            let edit = diagnostic["numeric_token"].as_u64().and_then(|t| viewport.numeric_edit(t).ok());
+            (diagnostic, edit, viewport.selection().to_vec(), viewport.radius_tool_active(), viewport.numeric_active())
+        };
+        let active_token = edit.as_ref().map(|e| e.token);
+        // Derived display rows are formatted on the engine worker without
+        // blocking the independent display/input lane behind a viewport lock.
+        let mut workspace = adapter.workspace(&selection, radius, numeric);
+        workspace["active_tool"] = diagnostic["input"]["tool"].clone();
+        workspace["input"] = diagnostic["input"].clone();
+        Ok(
+            json!({"token":active_token,"expression":edit.as_ref().map(|e| &e.expression),"value":edit.as_ref().map(|e|e.value),"units":edit.as_ref().map(|e|e.units.as_str()).unwrap_or("mm"),
+            "preview":diagnostic["preview"],"committed":action=="commit","workspace":workspace,"viewport":diagnostic}),
+        )
+    }
+
+    /// Native modelling drafts use the same engine ownership and short acceptance
+    /// lock as numeric editing. No speculative geometry enters the live session.
+    fn model(
+        &self,
+        action: &str,
+        token: Option<u64>,
+        operation: Option<String>,
+        feature: Option<u64>,
+        params: Option<Value>,
+    ) -> Result<Value, AdapterError> {
+        let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
+        let mut valid = false;
+        // Completion consumes the draft. Retain native solve/drive diagnostics
+        // explicitly so a successful handoff cannot erase clamping or conflicts.
+        let mut completed: Option<(Value, Vec<String>)> = None;
+        if action == "cancel" && token.is_none() {
+            let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            if viewport.model_active() {
+                if let Some(token) = viewport.diagnostic()["model_token"].as_u64()
+                    && let Ok(edit) = viewport.model_edit(token)
+                {
+                    completed = Some((edit.reply.clone(), edit.feedback.clone()));
+                }
+                viewport.cancel_model();
+            }
+        } else if action == "begin" {
+            let (selection, token) = {
+                let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+                if (viewport.is_updating() && feature.is_none()) || viewport.numeric_active() || viewport.model_active() {
+                    return Err(error("disabled", "ui.ipados.workspace.finish_edit"));
+                }
+                let token = self
+                    .generation
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                    .map_err(|_| error("revision_limit", "modelling token exhausted"))?
+                    + 1;
+                (viewport.selection().to_vec(), token)
+            };
+            let mut edit = adapter.begin_model(token, operation.as_deref(), feature, &selection)?;
+            if let Some(params) = params {
+                let initial = params.as_object().ok_or_else(|| error("bad_params", "Initial modelling parameters must be an object."))?;
+                let mut merged = edit.params.clone();
+                let merged_fields = merged.as_object_mut().ok_or_else(|| error("bad_params", "Invalid initial modelling form."))?;
+                merged_fields.extend(initial.clone());
+                edit = adapter.refresh_model(&edit, &selection, Some(merged))?;
+            }
+            let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            if self.closed.load(Ordering::Acquire)
+                || self.generation.load(Ordering::Acquire) != token
+                || viewport.selection() != selection
+                || (viewport.is_updating() && feature.is_none())
+            {
+                return Err(error("stale_edit", "The modelling edit was cancelled or its inputs changed."));
+            }
+            viewport.begin_model(edit)?;
+        } else {
+            let token = token.ok_or_else(|| error("bad_params", "A modelling edit token is required."))?;
+            let edit = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.model_edit(token)?;
+            match action {
+                "selection" => self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.fail_model(token)?,
+                "inspect" => {
+                    let selection = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.selection().to_vec();
+                    let updated = adapter.refresh_model(&edit, &selection, params)?;
+                    let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+                    let current = viewport.model_edit(token)?;
+                    if current.version != edit.version {
+                        return Err(error("stale_preview", "A newer modelling proposal replaced this result."));
+                    }
+                    if self.closed.load(Ordering::Acquire) || viewport.selection() != selection {
+                        return Err(error("stale_edit", "The modelling interaction or its selection changed."));
+                    }
+                    viewport.update_model(updated)?;
+                }
+                "cancel" => {
+                    completed = Some((edit.reply.clone(), edit.feedback.clone()));
+                    self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.finish_model(token, None)?;
+                }
+                "preview" | "commit" => {
+                    // The previous result ceases to validate this proposal before
+                    // evaluation starts, including malformed or missing parameters.
+                    self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.pend_model(token)?;
+                    let params = params.ok_or_else(|| error("bad_params", "Modelling parameters are required."))?;
+                    let prepared = adapter.prepare_model(&edit, params, action == "commit");
+                    let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+                    let current = viewport.model_edit(token)?;
+                    if current.version != edit.version {
+                        return Err(error("stale_preview", "A newer modelling proposal replaced this result."));
+                    }
+                    if self.closed.load(Ordering::Acquire) {
+                        return Err(error("closed", "session closed"));
+                    }
+                    let prepared = match prepared {
+                        Ok(prepared) => prepared,
+                        Err(failure) => {
+                            viewport.pend_model(token)?;
+                            return Err(failure);
+                        }
+                    };
+                    if action == "commit" {
+                        completed = Some((prepared.reply.clone(), prepared.feedback.clone()));
+                        let model = adapter.accept_model(&edit, prepared)?;
+                        viewport.finish_model(token, Some(model))?;
+                    } else {
+                        viewport.publish_model(token, &prepared)?;
+                    }
+                    valid = true;
+                }
+                _ => return Err(error("bad_params", "Unsupported modelling action.")),
+            }
+        }
+        let (diagnostic, edit, selection, radius, numeric) = {
+            let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            let diagnostic = viewport.diagnostic();
+            let edit = diagnostic["model_token"].as_u64().and_then(|t| viewport.model_edit(t).ok());
+            (diagnostic, edit, viewport.selection().to_vec(), viewport.radius_tool_active(), viewport.numeric_active() || viewport.model_active())
+        };
+        let mut result = edit.as_ref().map(|edit| adapter.model_descriptor(edit)).unwrap_or_else(|| json!({"token":null}));
+        if let Some((reply, feedback)) = completed {
+            result["reply"] = reply;
+            result["feedback"] = json!(feedback);
+        }
+        if action == "inspect" {
+            valid = result["valid"] == true;
+        }
+        let mut workspace = adapter.workspace(&selection, radius, numeric);
+        workspace["active_tool"] = diagnostic["input"]["tool"].clone();
+        workspace["input"] = diagnostic["input"].clone();
+        result["valid"] = json!(valid);
+        result["committed"] = json!(action == "commit");
+        result["workspace"] = workspace;
+        result["viewport"] = diagnostic;
+        Ok(result)
+    }
+
     fn evaluate(&self, request: Request) -> Result<Value, AdapterError> {
-        if matches!(&request, Request::Input { .. } | Request::Viewport { .. })
-            || matches!(&request, Request::Command { command, .. } if command.starts_with("view.") || command.starts_with("select."))
+        if matches!(&request, Request::Workspace) {
+            return self.workspace();
+        }
+        if let Request::Numeric { action, token, expression, dimension } = request {
+            return self.numeric(&action, token, expression, dimension);
+        }
+        if let Request::Model { action, token, operation, feature, params } = request {
+            return self.model(&action, token, operation, feature, params);
+        }
+        if let Request::SketchPlane { plane } = request {
+            let scene = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.diagnostic()["scene_revision"].clone();
+            let adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
+            let plane = adapter.preview_sketch_plane(plane)?;
+            let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            if self.closed.load(Ordering::Acquire) || viewport.diagnostic()["scene_revision"] != scene {
+                return Err(error("stale_result", "The plane preview was cancelled or the view changed."));
+            }
+            return viewport.command("view.sketch_plane", &json!({"plane":plane}));
+        }
+        if matches!(&request, Request::SketchPlaneCancel) {
+            return self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.command("view.cancel_plane", &json!({}));
+        }
+
+        if matches!(&request, Request::ToolWork) {
+            return self.tool_work();
+        }
+        if matches!(&request, Request::Input { .. } | Request::InputBatch { .. } | Request::Viewport { .. })
+            || matches!(&request, Request::Command { command, .. } if command.starts_with("view.") || command.starts_with("select.") || command.starts_with("tool.") || command=="input.cancel")
         {
             return self.display_request(request);
+        }
+        let editing = {
+            let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            viewport.numeric_active() || viewport.model_active()
+        };
+        if editing {
+            return Err(error("disabled", "ui.ipados.workspace.finish_edit"));
         }
         let generation = self
             .generation
@@ -206,6 +507,9 @@ pub extern "C" fn sc_session_destroy(id: u64) -> i32 {
         };
         let Some(entry) = entry else { return -2 };
         entry.closed.store(true, Ordering::Release);
+        if let Ok(mut viewport) = entry.viewport.lock() {
+            viewport.cancel_interactions();
+        }
         if let Ok(mut renderer) = entry.renderer.lock() {
             renderer.take();
         }
@@ -221,7 +525,14 @@ unsafe fn request(id: u64, bytes: *const u8, length: usize, lane: usize) -> i32 
         }
         // SAFETY: pointer/length bounded here; readable allocation retained by the host.
         let bytes = unsafe { std::slice::from_raw_parts(bytes, length) };
-        let request: Request = serde_json::from_slice(bytes).map_err(|e| error("request", e.to_string()))?;
+        let request: Request = serde_json::from_slice(bytes).map_err(|e| {
+            if lane == 1
+                && let Ok(mut viewport) = entry.viewport.lock()
+            {
+                viewport.cancel_interactions();
+            }
+            error("request", e.to_string())
+        })?;
         if lane == 1 { entry.display_request(request) } else { entry.evaluate(request) }
     })
 }
@@ -340,6 +651,21 @@ pub extern "C" fn sc_surface_draw(id: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn sc_surface_suspend(id: u64) -> i32 {
     with_entry(id, 2, true, |entry| {
+        {
+            let mut viewport = entry.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            // Invalidate interaction setup and cancel provisional edits. An ordinary
+            // command already dispatched may still finish and publish its immutable
+            // scene: the inactive renderer submits no work, and foregrounding must
+            // display that completed authoritative state rather than an old scene.
+            // Its separate viewport publication generation is deliberately retained.
+            entry
+                .generation
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                .map_err(|_| error("revision_limit", "request generation exhausted"))?;
+            viewport.command("view.cancel_plane", &json!({}))?;
+            viewport.cancel_numeric();
+            viewport.cancel_model();
+        }
         if let Some(renderer) = entry.renderer.lock().map_err(|_| error("lock", "renderer lock poisoned"))?.as_mut() {
             renderer.set_active(false).map_err(|e| error("renderer", e))?;
         }
