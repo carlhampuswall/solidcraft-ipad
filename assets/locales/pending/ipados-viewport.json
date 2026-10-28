@@ -1,0 +1,28 @@
+{
+  "en": {
+    "ui.ipados.auto": "Auto",
+    "ui.ipados.back": "Back",
+    "ui.ipados.body": "Body",
+    "ui.ipados.bottom": "Bottom",
+    "ui.ipados.change": "Change post",
+    "ui.ipados.clear": "Clear",
+    "ui.ipados.edge": "Edge",
+    "ui.ipados.face": "Face",
+    "ui.ipados.fit": "Fit",
+    "ui.ipados.front": "Front",
+    "ui.ipados.hover": "Hover",
+    "ui.ipados.isometric": "Isometric",
+    "ui.ipados.left": "Left",
+    "ui.ipados.multiple": "Multiple",
+    "ui.ipados.no_selection": "No selection",
+    "ui.ipados.perspective": "Perspective",
+    "ui.ipados.redo": "Redo",
+    "ui.ipados.right": "Right",
+    "ui.ipados.top": "Top",
+    "ui.ipados.undo": "Undo",
+    "ui.ipados.updating": "Recomputing…",
+    "ui.ipados.vertex": "Vertex",
+    "ui.ipados.viewport_help": "1 finger: orbit · 2 fingers: pan/pinch · Pencil or pointer: select · X red / Y green / Z blue",
+    "ui.ipados.views": "Views"
+  }
+}

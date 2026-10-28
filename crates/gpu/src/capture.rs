@@ -176,6 +176,32 @@ impl Capturer {
     /// [`Capturer::rgba`] with `highlight` drawn as the viewport draws its highlight scene
     /// (selection and hover feedback), over the model scene.
     pub fn rgba_highlighted(&self, scene: &Scene, highlight: Option<GpuScene>, cam: &Camera, width: u32, height: u32) -> Result<Vec<u8>> {
+        self.rgba_prepared(scene, cam, [width, height], None, highlight, ([0.0; 3], [0.0; 3]))
+    }
+
+    /// Capture host-prepared viewport geometry and feedback, including references to
+    /// model blocks. The normal capture API and the device-loss/readback path are unchanged.
+    pub fn rgba_viewport(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        size: [u32; 2],
+        model: GpuScene,
+        highlight: GpuScene,
+        tints: ([f32; 3], [f32; 3]),
+    ) -> Result<Vec<u8>> {
+        self.rgba_prepared(scene, cam, size, Some(model), Some(highlight), tints)
+    }
+
+    fn rgba_prepared(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        [width, height]: [u32; 2],
+        model: Option<GpuScene>,
+        highlight: Option<GpuScene>,
+        (hover_tint, selection_tint): ([f32; 3], [f32; 3]),
+    ) -> Result<Vec<u8>> {
         if !(1..=self.max_side).contains(&width) || !(1..=self.max_side).contains(&height) {
             return Err(GpuError::Render(format!("a picture is 1 to {} pixels a side, not {width} × {height}", self.max_side)));
         }
@@ -193,7 +219,9 @@ impl Capturer {
             }
             _ => None,
         };
-        let mut frame = frame(scene, cam, [width, height], state.key, access);
+        let mut frame = frame(scene, cam, [width, height], state.key, access, model);
+        frame.hover_tint = hover_tint;
+        frame.selection_tint = selection_tint;
         // Always a highlight scene of the picture's own, empty without one: the renderer keeps
         // its last highlight scene while the slot is empty (as the viewport does until the next
         // is built), so the previous picture's highlight would show in this one.
@@ -371,7 +399,7 @@ pub fn headless_rgba(scene: &Scene, cam: &Camera, width: u32, height: u32) -> st
 
 /// The frame parameters of a picture: the scene's own geometry as the model scene (key `key`),
 /// the camera, the section, the analysis, and the silhouette outlines of the default visual style.
-fn frame(scene: &Scene, cam: &Camera, [width, height]: [u32; 2], key: u64, access: Option<AccessMap>) -> Frame {
+fn frame(scene: &Scene, cam: &Camera, [width, height]: [u32; 2], key: u64, access: Option<AccessMap>, model: Option<GpuScene>) -> Frame {
     let empty = || Arc::new(Mutex::new(None));
     let eye = cam.eye().to_f32();
     let cap = scene.cap.unwrap_or(SECTION_CAP);
@@ -379,7 +407,7 @@ fn frame(scene: &Scene, cam: &Camera, [width, height]: [u32; 2], key: u64, acces
     Frame {
         product: false,
         key,
-        slot: Arc::new(Mutex::new(Some(scene_geometry(scene)))),
+        slot: Arc::new(Mutex::new(Some(model.unwrap_or_else(|| scene_geometry(scene))))),
         sketch_key: 0,
         sketch_slot: empty(),
         hl_key: 0,

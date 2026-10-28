@@ -1,4 +1,4 @@
-# Building the native foundation
+# Building the native iPadOS viewport
 
 Use the existing fork on `feature/ipados`. Run from the repository root.
 No simulator launch or device signing is part of the unsigned check.
@@ -72,10 +72,60 @@ For installation, supply your own bundle ID/team and provisioning profile in
 local Xcode settings, select a registered physical iPad, and enable its developer
 mode as required. No team, credential, profile or signing secret is checked in.
 The unsigned `.app` cannot establish successful launch or input behavior.
-At inspection a physical iPad and development identities existed, but no installed
-profile matched `com.solidcraft.ipados` or a wildcard application identifier.
-No profile/account/identity was created or changed.
+Physical-device follow-up (2026-10-27): the app was signed, installed and launched
+on the connected iPad Pro. The unrestricted signing check found an existing
+Xcode-managed wildcard development profile covering the device; the earlier
+restricted check had missed it. Automatic signing reused that profile and an
+existing certificate without provisioning updates or account/identity changes.
+
+After the Rust library is built, a signed local build can use command-line
+overrides (supply your own existing team and device identifiers locally):
+
+```sh
+xcodebuild -project apps/solidcraft-ipados/SolidCraft.xcodeproj -scheme SolidCraft \
+  -configuration Debug -sdk iphoneos -destination "id=$SOLIDCRAFT_DEVICE" \
+  -derivedDataPath target/ipados-device CODE_SIGN_STYLE=Automatic \
+  DEVELOPMENT_TEAM="$SOLIDCRAFT_DEVELOPMENT_TEAM" CODE_SIGNING_ALLOWED=YES \
+  CODE_SIGNING_REQUIRED=YES build
+xcrun devicectl device install app --device "$SOLIDCRAFT_DEVICE" \
+  target/ipados-device/Build/Products/Debug-iphoneos/SolidCraft.app
+xcrun devicectl device process launch --device "$SOLIDCRAFT_DEVICE" com.solidcraft.ipados
+```
+
+Xcode-managed profiles require automatic signing. Keep signing overrides local;
+the checked-in build script remains the reproducible unsigned CI path.
 
 Coverage levels are separate: source/configuration prepared; Rust iOS target
 compiled; native application linked; application launched; physical iPad verified.
 Current measured coverage and blockers are in [HANDOFF.md](HANDOFF.md).
+
+## Step 3 development workflow
+
+The existing build script and Xcode scheme are unchanged. Launch now generates
+`SessionAdapter::fixture()` using real engine commands: a base, a separate post
+and a visible reference sketch. Use Fit/Views/Projection, select a filter, tap
+with Pencil or pointer, toggle Multiple and Clear. Finger drags orbit; two fingers
+pan/pinch. Pointer secondary drag orbits, middle (or Shift-secondary) drag pans,
+scroll zooms, and hover preselects. “Change post” edits the real post feature;
+Undo and Redo use existing engine history. Status shows current geometry revision
+and selected entity identities. No Files UI is added.
+
+`render_proof` now captures the fixture and a taller post after `timeline.edit`:
+`/tmp/solidcraft-ipados-render-proof.png` and
+`/tmp/solidcraft-ipados-render-proof-changed.png`. These are macOS GPU pictures,
+not iPad screenshots or performance measurements.
+
+ABI 2 requires rebuilding both the Rust archive and the bundled Swift host.
+Do not mix the Step 2 binary with the new header: engine, viewport and surface
+responses now have separate copy functions to permit concurrent evaluation and
+navigation. See `crates/ipados/bridge/include/solidcraft_ipados.h`.
+
+For the opt-in Debug device sequence, launch with `--viewport-check` as shown in
+[HANDOFF.md](HANDOFF.md). The native Debug configuration explicitly defines
+`DEBUG`; release builds exclude that driver. It uses synthetic events and must
+not be cited as actual Pencil verification. `view.project` returns view-local
+points/drawable pixels for a known world point through the shared camera.
+
+The native locale extraction phase intentionally runs on every Xcode build:
+canonical and pending locale subfiles can change without their parent directory
+mtime changing, so directory-only dependency analysis was insufficient.

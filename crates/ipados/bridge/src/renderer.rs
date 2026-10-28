@@ -4,10 +4,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use solidcraft_gpu::view::{DrawStats, Frame, GpuTarget, Renderer, SceneSlot};
+use solidcraft_gpu::view::{BlockBytes, BlockTris, BodySpan, DrawStats, Frame, GpuScene, GpuTarget, Renderer, SceneBlock, SceneSlot, TRI_SIZE};
 use solidcraft_ipados_session::RenderSnapshot;
 
-/// All calls are serialized on the host's render/evaluation worker. UIKit creates
+/// Surface calls are serialized on the host's display worker/render lock. UIKit creates
 /// and retains the CAMetalLayer on the main thread; this boundary uses the layer
 /// directly, never a UIView. The host retains it until the surface is destroyed.
 pub struct NativeRenderer {
@@ -24,6 +24,12 @@ pub struct NativeRenderer {
     uploaded: Option<(String, u64)>,
     scene_key: u64,
     scene: SceneSlot,
+    guides: SceneSlot,
+    highlight: SceneSlot,
+    empty: SceneSlot,
+    overlay_revision: u64,
+    highlight_revision: u64,
+    bodies: Vec<(String, BlockTris)>,
 }
 
 /// A skipped frame (inactive, occluded, zero size or transient drawable failure)
@@ -80,6 +86,12 @@ impl NativeRenderer {
             uploaded: None,
             scene_key: 0,
             scene: Arc::new(Mutex::new(None)),
+            guides: Arc::new(Mutex::new(None)),
+            highlight: Arc::new(Mutex::new(None)),
+            empty: Arc::new(Mutex::new(None)),
+            overlay_revision: 0,
+            highlight_revision: 0,
+            bodies: Vec::new(),
         };
         state.resize(width, height)?;
         Ok(state)
@@ -117,6 +129,9 @@ impl NativeRenderer {
     /// UIKit resign-active arrives before backgrounding. No further GPU commands
     /// are submitted until become-active, when the drawable is configured again.
     pub fn set_active(&mut self, active: bool) -> Result<(), String> {
+        if self.active == active {
+            return self.check_device();
+        }
         self.active = active;
         if !active {
             self.device
@@ -147,19 +162,28 @@ impl NativeRenderer {
             wgpu::CurrentSurfaceTexture::Lost => return Err("Metal surface lost; recreate the renderer while retaining the CAD session".into()),
             wgpu::CurrentSurfaceTexture::Validation => return Err("Metal drawable acquisition failed validation".into()),
         };
-        let key = (snapshot.document_id.clone(), snapshot.scene_revision);
-        if self.uploaded.as_ref() != Some(&key) {
+        if self.uploaded.as_ref().is_none_or(|(id, revision)| id != &snapshot.model.document_id || *revision != snapshot.geometry_revision) {
             self.scene_key = self.scene_key.checked_add(1).ok_or("render scene revision exhausted")?;
-            *self.scene.lock().map_err(|_| "render scene lock is poisoned")? = Some(solidcraft_gpu::capture::scene_geometry(&snapshot.scene));
-            self.uploaded = Some(key);
+            let (model, bodies) = model_geometry(snapshot, self.scene_key)?;
+            *self.scene.lock().map_err(|_| "render scene lock is poisoned")? = Some(model);
+            self.bodies = bodies;
+            self.uploaded = Some((snapshot.model.document_id.clone(), snapshot.geometry_revision));
         }
-        let frame = frame(snapshot, self.size, self.scene_key, self.scene.clone());
+        if self.overlay_revision != snapshot.guide_revision {
+            *self.guides.lock().map_err(|_| "guide scene lock poisoned")? = Some(solidcraft_gpu::capture::scene_geometry(&snapshot.guides));
+            self.overlay_revision = snapshot.guide_revision;
+        }
+        if self.highlight_revision != snapshot.highlight_revision {
+            *self.highlight.lock().map_err(|_| "highlight scene lock poisoned")? = Some(highlight_geometry(snapshot, &self.bodies));
+            self.highlight_revision = snapshot.highlight_revision;
+        }
+        let frame = self.frame(snapshot);
         let view = output.texture.create_view(&Default::default());
         let depth = self.depth.as_ref().ok_or("viewport depth texture is unavailable")?.create_view(&Default::default());
         let scopes = scopes(&self.device);
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("SolidCraft iPadOS frame") });
         self.renderer.prepare(&self.device, &self.queue, &mut encoder, &frame);
-        let background = snapshot.scene.background.map_or(wgpu::Color::TRANSPARENT, |(top, _)| {
+        let background = snapshot.model.scene.background.map_or(wgpu::Color::TRANSPARENT, |(top, _)| {
             let [r, g, b] =
                 if self.config.format.is_srgb() { [top.0, top.1, top.2].map(solidcraft_render::surface::srgb8_to_linear) } else { top.f() };
             wgpu::Color { r, g, b, a: 1.0 }
@@ -197,6 +221,38 @@ impl NativeRenderer {
         Ok(DrawOutcome { presented: true, stats })
     }
 
+    fn frame(&self, snapshot: &RenderSnapshot) -> Frame {
+        let camera = &snapshot.camera;
+        let eye = camera.eye().to_f32();
+        Frame {
+            product: false,
+            key: self.scene_key,
+            slot: self.scene.clone(),
+            sketch_key: snapshot.guide_revision,
+            sketch_slot: self.guides.clone(),
+            hl_key: snapshot.highlight_revision,
+            hl_slot: self.highlight.clone(),
+            pv_key: 0,
+            pv_slot: self.empty.clone(),
+            pv_hide: false,
+            view_proj: snapshot.view_proj.to_f32(),
+            back: camera.back().to_f32(),
+            size_px: [self.size[0] as f32, self.size[1] as f32],
+            clip: [0.0; 4],
+            cap: [0.0; 4],
+            images: Vec::new(),
+            analysis: [0.0; 8],
+            analysis_colors: [0.0; 36],
+            access: None,
+            outline: true,
+            eye: [eye[0], eye[1], eye[2], if camera.fov > 0.0 { 1.0 } else { 0.0 }],
+            ao_radius: 0.0,
+            ssaa: 1.0,
+            hover_tint: snapshot.hover_tint,
+            selection_tint: snapshot.selection_tint,
+        }
+    }
+
     fn check_device(&self) -> Result<(), String> {
         if self.lost.load(Ordering::Acquire) {
             return Err("Metal device lost; recreate the renderer while retaining the CAD session".into());
@@ -222,37 +278,62 @@ fn finish_scopes(scopes: [wgpu::ErrorScopeGuard; 3]) -> Result<(), String> {
     message.map_or(Ok(()), Err)
 }
 
-/// The small native foundation enables only the shared model scene and camera.
-/// Sketch, hover, preview, analysis and gesture behavior are subsequent work.
-fn frame(snapshot: &RenderSnapshot, [width, height]: [u32; 2], key: u64, scene: SceneSlot) -> Frame {
-    let camera = &snapshot.camera;
-    let empty = || Arc::new(Mutex::new(None));
-    let eye = camera.eye().to_f32();
-    Frame {
-        product: false,
-        key,
-        slot: scene,
-        sketch_key: 0,
-        sketch_slot: empty(),
-        hl_key: 0,
-        hl_slot: empty(),
-        pv_key: 0,
-        pv_slot: empty(),
-        pv_hide: false,
-        view_proj: camera.view_proj(f64::from(width) / f64::from(height.max(1)), snapshot.scene.radius.max(1.0)).to_f32(),
-        back: camera.back().to_f32(),
-        size_px: [width as f32, height as f32],
-        clip: [0.0; 4],
-        cap: [0.0; 4],
-        images: Vec::new(),
-        analysis: [0.0; 8],
-        analysis_colors: [0.0; 36],
-        access: None,
-        outline: true,
-        eye: [eye[0], eye[1], eye[2], if camera.fov > 0.0 { 1.0 } else { 0.0 }],
-        ao_radius: 0.0,
-        ssaa: 1.0,
-        hover_tint: [0.0; 3],
-        selection_tint: [0.0; 3],
+/// Retain the shared converter's vertices in a shared-renderer block. Whole-body
+/// feedback can then reference the model's GPU buffer, including an edgeless sphere.
+/// No triangle is regenerated or uploaded just to change body hover/selection.
+pub(crate) fn model_geometry(snapshot: &RenderSnapshot, key: u64) -> Result<(GpuScene, Vec<(String, BlockTris)>), String> {
+    let mut scene = solidcraft_gpu::capture::scene_geometry(&snapshot.model.scene);
+    let opaque = u32::try_from(scene.tris.len() / TRI_SIZE).map_err(|_| "model exceeds GPU vertex range")?;
+    let glass = u32::try_from(scene.glass.len() / TRI_SIZE).map_err(|_| "model exceeds GPU vertex range")?;
+    let total = opaque.checked_add(glass).ok_or("model exceeds GPU vertex range")?;
+    let mut bytes = std::mem::take(&mut scene.tris);
+    bytes.append(&mut scene.glass);
+    let (mut solid_at, mut glass_at) = (0u32, opaque);
+    let mut spans = Vec::new();
+    let mut bodies = Vec::new();
+    for (mesh, body) in snapshot.model.scene.meshes.iter().zip(&snapshot.model.picks.body_names()) {
+        let triangles = mesh.mesh.triangles.iter().filter(|t| mesh.mesh.tri(t).is_some()).count();
+        let vertices = u32::try_from(triangles).ok().and_then(|n| n.checked_mul(3)).ok_or("body exceeds GPU vertex range")?;
+        let at = if mesh.glass() { &mut glass_at } else { &mut solid_at };
+        let end = at.checked_add(vertices).ok_or("body exceeds GPU vertex range")?;
+        let range = *at..end;
+        let bounds = mesh.mesh.bounds();
+        if !range.is_empty() {
+            spans.push(BodySpan { vertices: range.clone(), bounds: [bounds.min.to_f32(), bounds.max.to_f32()] });
+        }
+        bodies.push((body.clone(), BlockTris { block: key, tris: vec![range.clone()], vertices: range }));
+        *at = end;
     }
+    if solid_at != opaque || glass_at != total {
+        return Err("body ranges do not match the shared renderer's vertices".into());
+    }
+    spans.sort_by_key(|span| span.vertices.start);
+    scene.blocks.push(SceneBlock {
+        key,
+        bytes: Arc::new(BlockBytes {
+            vertices: Arc::new(bytes),
+            bodies: Arc::new(spans),
+            opaque: Arc::new((opaque > 0).then_some(0..opaque).into_iter().collect()),
+            glass: Arc::new((glass > 0).then_some(opaque..total).into_iter().collect()),
+            ..Default::default()
+        }),
+    });
+    Ok((scene, bodies))
+}
+
+pub(crate) fn highlight_geometry(snapshot: &RenderSnapshot, bodies: &[(String, BlockTris)]) -> GpuScene {
+    let mut highlight = solidcraft_gpu::capture::scene_geometry(&snapshot.highlight);
+    highlight.selected_blocks = bodies.iter().filter(|(name, _)| snapshot.selected_bodies.contains(name)).map(|(_, tris)| tris.clone()).collect();
+    highlight.hover_blocks = bodies.iter().filter(|(name, _)| snapshot.hovered_bodies.contains(name)).map(|(_, tris)| tris.clone()).collect();
+    highlight
+}
+
+/// Offscreen proof of this adapter's exact model-block and highlight references,
+/// using the shared viewport/capture pipelines; no native surface or fallback mesh.
+pub fn capture_feedback(snapshot: &RenderSnapshot, capturer: &solidcraft_gpu::capture::Capturer, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let (model, bodies) = model_geometry(snapshot, 1)?;
+    let highlight = highlight_geometry(snapshot, &bodies);
+    capturer
+        .rgba_viewport(&snapshot.model.scene, &snapshot.camera, [width, height], model, highlight, (snapshot.hover_tint, snapshot.selection_tint))
+        .map_err(|e| e.to_string())
 }

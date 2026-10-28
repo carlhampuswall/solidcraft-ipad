@@ -9,7 +9,7 @@ remain in the existing Rust crates through `crates/ipados/` adapters.
 - Keep this directory excluded from Cargo workspace membership: it is an Xcode
   project, not a Rust package.
 - Never add a second camera controller. Input retains Pencil/finger identity;
-  Step 3 must connect navigation to the authoritative shared Rust camera path.
+  Viewport navigation uses the shared Rust camera path; keep that single path.
 - UIKit objects and layer geometry are managed on the main thread. One serial
   queue owns CAD session calls. Renderer attach/resize/draw/destroy calls share a
   render-only lock with synchronous main-thread resign-active suspension. Never

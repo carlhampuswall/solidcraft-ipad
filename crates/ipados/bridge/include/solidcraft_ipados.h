@@ -3,7 +3,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* ABI 1. All calls for a session are serialized by the host. Handles are opaque
+/* ABI 2. Three independent lanes: engine request/response, viewport request/response,
+ * surface calls/response. Calls within each lane are serialized through len/copy;
+ * separate lanes may run concurrently. Suspend never locks engine evaluation.
+ * Handles are opaque
  * integers; zero is invalid. No Rust pointers or allocations cross the ABI.
  * Return 0 = success, -1 = failure (read JSON response), -2 = invalid handle.
  * Create returns zero on failure. Destroy releases renderer before engine.
@@ -11,13 +14,23 @@
  * stated length until the call returns. Requests are UTF-8 JSON, <= 1 MiB.
  * Response bytes remain Rust-owned and are copied, without a NUL terminator.
  * Copy returns -1 if capacity is too small and writes nothing in that case.
- * A handle's response is replaced by its next operation; len/copy are serialized.
+ * A lane's response is replaced by its next operation; len/copy are serialized.
+ * Destroy must follow host worker completion; it invalidates pending publications.
  */
 uint64_t sc_session_create(void);
 int32_t sc_session_destroy(uint64_t session);
 int32_t sc_request(uint64_t session, const uint8_t *json, size_t length);
 size_t sc_response_len(uint64_t session);
 int32_t sc_response_copy(uint64_t session, uint8_t *output, size_t capacity);
+
+/* Display requests: input, viewport metrics, view/selection commands, snapshot.
+ * They never evaluate or tessellate CAD and use a separate worker from sc_request.
+ */
+int32_t sc_view_request(uint64_t session, const uint8_t *json, size_t length);
+size_t sc_view_response_len(uint64_t session);
+int32_t sc_view_response_copy(uint64_t session, uint8_t *output, size_t capacity);
+size_t sc_surface_response_len(uint64_t session);
+int32_t sc_surface_response_copy(uint64_t session, uint8_t *output, size_t capacity);
 
 /* layer must be a live CAMetalLayer created on the main thread. The host retains
  * it until destroy or another successful attach has returned. UIKit changes its

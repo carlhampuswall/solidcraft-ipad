@@ -238,6 +238,12 @@ fn history_layout(_s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn navigate(_s: &mut Session, p: &Value) -> Result<Value> {
+    navigate_camera(p)
+}
+
+/// Stateless navigation used by the command and native view adapters.
+/// Takes the same validated JSON contract as `view.navigate`; never evaluates a document.
+pub fn navigate_camera(p: &Value) -> Result<Value> {
     let cmd = "view.navigate";
     let mut cam: Camera =
         serde_json::from_value(p.get("camera").cloned().ok_or_else(|| bad(cmd, "camera is required"))?).map_err(|_| bad(cmd, "invalid camera"))?;
