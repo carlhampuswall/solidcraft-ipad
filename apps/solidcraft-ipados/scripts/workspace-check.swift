@@ -18,7 +18,7 @@ struct WorkspaceChecks {
                 for railRight in [false, true] {
                     for panels in [(false, false), (true, false), (false, true), (true, true)] {
                         let layout = WorkspaceLayout.resolve(size: size, browser: panels.0, inspector: panels.1,
-                                                             railRight: railRight, largeText: largeText)
+                                                             railRight: railRight, largeText: largeText, compactChrome: false)
                         let bounds = CGRect(origin: .zero, size: size)
                         for frame in [layout.topBar, layout.status, layout.rail, layout.canvas] + [layout.browser, layout.inspector].compactMap({ $0 }) {
                             try require(frame.width >= 0 && frame.height >= 0, "negative frame")
@@ -36,7 +36,7 @@ struct WorkspaceChecks {
                             if let frame = layout.inspector { try require(!layout.canvas.intersects(frame), "docked inspector overlaps picking") }
                         }
                         let mirror = WorkspaceLayout.resolve(size: size, browser: panels.0, inspector: panels.1,
-                                                             railRight: !railRight, largeText: largeText)
+                                                             railRight: !railRight, largeText: largeText, compactChrome: false)
                         try require(layout.canvas.width == mirror.canvas.width, "handedness changes usable viewport width")
                         try require(layout.rail.minX == size.width - mirror.rail.maxX, "rail placement does not mirror")
                         cases += 1
@@ -45,7 +45,7 @@ struct WorkspaceChecks {
             }
         }
         for invalid in [CGSize.zero, CGSize(width: -10, height: -20), CGSize(width: CGFloat.nan, height: CGFloat.infinity)] {
-            let layout = WorkspaceLayout.resolve(size: invalid, browser: true, inspector: true, railRight: false, largeText: true)
+            let layout = WorkspaceLayout.resolve(size: invalid, browser: true, inspector: true, railRight: false, largeText: true, compactChrome: false)
             try require(layout.canvas.width.isFinite && layout.canvas.height.isFinite, "invalid dimensions escaped")
             try require(layout.canvas.width >= 0 && layout.canvas.height >= 0, "invalid dimensions became negative")
         }
@@ -55,7 +55,7 @@ struct WorkspaceChecks {
         for largeText in [false, true] {
             for width in [CGFloat(834), 1000, 1024, 1120, 1194] {
                 let layout = WorkspaceLayout.resolve(size: CGSize(width: width, height: 790), browser: true, inspector: true,
-                                                     railRight: false, largeText: largeText)
+                                                     railRight: false, largeText: largeText, compactChrome: false)
                 try require(layout.rail.width == (largeText ? 160 : 112), "tool rail compresses text-labelled controls")
                 if !layout.compact { try require(layout.canvas.width >= 360, "wider tool labels squeezed the docked canvas") }
                 cases += 1
@@ -68,7 +68,7 @@ struct WorkspaceChecks {
                 for railRight in [false, true] {
                     let size = CGSize(width: width, height: height)
                     let layout = WorkspaceLayout.resolve(size: size, browser: true, inspector: true,
-                                                         railRight: railRight, largeText: true)
+                                                         railRight: railRight, largeText: true, compactChrome: false)
                     for frame in [layout.topBar, layout.status, layout.rail, layout.canvas] + [layout.browser, layout.inspector].compactMap({ $0 }) {
                         try require(frame.width.isFinite && frame.height.isFinite, "transient size created invalid drawable")
                         try require(frame.width >= 0 && frame.height >= 0, "transient size created negative drawable")
@@ -91,7 +91,7 @@ struct WorkspaceChecks {
                 let (size, header, status) = item
                 let layout = WorkspaceLayout.resolve(size: size, browser: true, inspector: true,
                                                      railRight: railRight, largeText: true,
-                                                     minimumHeaderHeight: header, minimumStatusHeight: status)
+                                                     minimumHeaderHeight: header, minimumStatusHeight: status, compactChrome: false)
                 for frame in [layout.topBar, layout.status, layout.rail, layout.canvas] + [layout.browser, layout.inspector].compactMap({ $0 }) {
                     try require(frame.origin.x.isFinite && frame.origin.y.isFinite && frame.width.isFinite && frame.height.isFinite,
                                 "scaled type created nonfinite geometry")
@@ -111,6 +111,44 @@ struct WorkspaceChecks {
                 cases += 1
             }
         }
+        // Floating panels must not resize the viewport. Only an explicitly
+        // pinned wide browser consumes content width; closing it restores it.
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 1024, height: 700),
+                     CGSize(width: 834, height: 1140), CGSize(width: 600, height: 420),
+                     CGSize(width: 390, height: 760), CGSize(width: 320, height: 340)] {
+            for largeText in [false, true] {
+                for railRight in [false, true] {
+                    let closed = WorkspaceLayout.resolve(size: size, browser: false, inspector: false, railRight: railRight, largeText: largeText)
+                    try require(closed.canvas == CGRect(origin: .zero, size: size), "closed chrome consumes model space")
+                    try require(closed.canvas.width >= size.width * 0.8, "floating workspace misses viewport width target")
+                    try require(closed.rail.width >= 44 && closed.rail.width <= 56, "icon rail loses touch width")
+                    try require(closed.topBar.width < size.width && closed.topBar.height < 100, "floating header became a full-width banner")
+                    for panels in [(true, false), (false, true)] {
+                        let opened = WorkspaceLayout.resolve(size: size, browser: panels.0, inspector: panels.1, railRight: railRight, largeText: largeText)
+                        try require(opened.canvas == closed.canvas, "floating panel rebases rendering or picking")
+                        try require(!opened.compact, "floating panel incorrectly owns a full-screen modal scrim")
+                        for frame in [opened.topBar, opened.status, opened.rail, opened.navigation, opened.history, opened.browserAccess] + [opened.browser, opened.inspector].compactMap({ $0 }) {
+                            try require(CGRect(origin: .zero, size: size).contains(frame), "floating chrome escaped a resized window")
+                        }
+                    }
+                    let pinned = WorkspaceLayout.resolve(size: size, browser: true, inspector: false, railRight: railRight, largeText: largeText, pinnedBrowser: true)
+                    if size.width >= (largeText ? 1180 : 1000), let browser = pinned.browser {
+                        try require(pinned.canvas.width >= 360 && !pinned.canvas.intersects(browser), "pinning covers the remaining viewport")
+                    } else { try require(pinned.canvas == closed.canvas, "narrow pin preference consumes viewport") }
+                    cases += 1
+                }
+            }
+        }
+        for size in [CGSize.zero, CGSize(width: 1, height: 1), CGSize(width: 44, height: 55), CGSize(width: -10, height: CGFloat.infinity)] {
+            let layout = WorkspaceLayout.resolve(size: size, browser: true, inspector: true, railRight: true, largeText: true)
+            for frame in [layout.topBar, layout.status, layout.rail, layout.canvas, layout.navigation, layout.history] {
+                try require(frame.width.isFinite && frame.height.isFinite && frame.width >= 0 && frame.height >= 0, "invalid floating drawable")
+            }
+        }
+        let numericPanel = WorkspaceLayout.resolve(size: CGSize(width: 1194, height: 790), browser: false, inspector: true,
+                                                   railRight: false, largeText: false, inspectorContentHeight: 500, navigationContentHeight: 146)
+        try require(numericPanel.inspector?.height == 500, "simple numeric editor became a full-height inspector")
+        try require(numericPanel.navigation.height == 146, "navigation surface retains unused permanent space")
         try require(WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: false, numericEditActive: false), "document shortcuts unavailable at rest")
         try require(!WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: true, numericEditActive: false), "text undo routes to document")
         try require(!WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: false, numericEditActive: true), "numeric draft permits unrelated history action")

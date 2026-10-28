@@ -11,10 +11,22 @@ struct WorkspaceLayout {
     let browser: CGRect?
     let inspector: CGRect?
     let compact: Bool
+    var navigation: CGRect = .zero
+    var history: CGRect = .zero
+    var browserAccess: CGRect = .zero
+    var floating = false
 
     static func resolve(size: CGSize, browser: Bool, inspector: Bool,
                         railRight: Bool, largeText: Bool,
-                        minimumHeaderHeight: CGFloat = 0, minimumStatusHeight: CGFloat = 0) -> WorkspaceLayout {
+                        minimumHeaderHeight: CGFloat = 0, minimumStatusHeight: CGFloat = 0,
+                        compactChrome: Bool = true, pinnedBrowser: Bool = false, railContentHeight: CGFloat = 460,
+                        inspectorContentHeight: CGFloat = 640, navigationContentHeight: CGFloat = 192) -> WorkspaceLayout {
+        if compactChrome {
+            return floatingLayout(size: size, browser: browser, inspector: inspector, railRight: railRight,
+                                  largeText: largeText, header: minimumHeaderHeight, status: minimumStatusHeight,
+                                  pinnedBrowser: pinnedBrowser, railContentHeight: railContentHeight, inspectorContentHeight: inspectorContentHeight,
+                                  navigationContentHeight: navigationContentHeight)
+        }
         let width = size.width.isFinite ? max(0, size.width) : 0
         let height = size.height.isFinite ? max(0, size.height) : 0
         let compact = width < (largeText ? 1120 : 1000)
@@ -69,6 +81,61 @@ struct WorkspaceLayout {
             canvas: CGRect(x: left, y: contentY, width: max(0, right - left), height: contentHeight),
             browser: browserFrame, inspector: inspectorFrame, compact: compact
         )
+    }
+}
+
+extension WorkspaceLayout {
+    /// Floating controls consume only their visible bounds. Unpinned panels do
+    /// not move the Metal view or change its rendering/picking coordinate space.
+    private static func floatingLayout(size: CGSize, browser: Bool, inspector: Bool,
+                                       railRight: Bool, largeText: Bool, header: CGFloat, status: CGFloat,
+                                       pinnedBrowser: Bool, railContentHeight: CGFloat, inspectorContentHeight: CGFloat,
+                                       navigationContentHeight: CGFloat) -> WorkspaceLayout {
+        let w = size.width.isFinite ? max(0, size.width) : 0
+        let h = size.height.isFinite ? max(0, size.height) : 0
+        let gap = min(8, w / 8, h / 8)
+        let railWidth = min(largeText ? 56 : 52, max(0, w - 2 * gap))
+        let headerHeight = min(max(0, h - 2 * gap), max(largeText ? 76 : 52, header))
+        let headerWidth = min(largeText ? 420 : 340, max(0, w - 2 * (railWidth + 2 * gap)))
+        let top = CGRect(x: (w - headerWidth) / 2, y: gap, width: headerWidth, height: headerHeight)
+        let bottomHeight = min(max(0, h - top.maxY - 2 * gap), max(48, status))
+        let controlsY = min(h, top.maxY + gap)
+        let controlsHeight = max(0, h - bottomHeight - 2 * gap - controlsY)
+        let railX = railRight ? max(gap, w - gap - railWidth) : gap
+        let navX = railRight ? gap : max(gap, w - gap - railWidth)
+        let rail = CGRect(x: railX, y: controlsY, width: railWidth,
+                          height: min(controlsHeight, max(0, railContentHeight)))
+        let nav = CGRect(x: navX, y: controlsY, width: railWidth, height: min(controlsHeight, max(0, navigationContentHeight)))
+        var canvas = CGRect(x: 0, y: 0, width: w, height: h)
+        var browserFrame: CGRect?
+        var inspectorFrame: CGRect?
+        let panelHeight = max(0, min(largeText ? 760 : 640, h - controlsY - bottomHeight - gap))
+        let panelWidth = min(largeText ? 380 : 320, max(0, w - 2 * (railWidth + 2 * gap)))
+        let dock = pinnedBrowser && browser && w >= (largeText ? 1180 : 1000)
+        if browser {
+            let x = railRight ? max(0, w - 2 * gap - railWidth - panelWidth) : min(w, railWidth + 2 * gap)
+            browserFrame = CGRect(x: x, y: controlsY, width: panelWidth, height: panelHeight)
+            if dock {
+                let inset = panelWidth + railWidth + 3 * gap
+                canvas = CGRect(x: railRight ? 0 : inset, y: 0, width: max(0, w - inset), height: h)
+            }
+        }
+        if inspector {
+            let x = railRight ? min(w, railWidth + 2 * gap) : max(0, w - 2 * gap - railWidth - panelWidth)
+            inspectorFrame = CGRect(x: x, y: controlsY, width: panelWidth,
+                                    height: min(panelHeight, max(180, inspectorContentHeight)))
+        }
+        let historyWidth = min(100, max(0, w - 2 * gap))
+        let statusX = min(w, historyWidth + 2 * gap)
+        let statusWidth = max(0, min(560, w - statusX - railWidth - 2 * gap))
+        var result = WorkspaceLayout(topBar: top,
+            status: CGRect(x: statusX, y: max(0, h - bottomHeight - gap), width: statusWidth, height: bottomHeight),
+            rail: rail, canvas: canvas, browser: browserFrame, inspector: inspectorFrame, compact: false)
+        result.navigation = nav
+        result.history = CGRect(x: gap, y: max(0, h - bottomHeight - gap), width: historyWidth, height: bottomHeight)
+        result.browserAccess = CGRect(x: railX, y: gap, width: railWidth, height: min(headerHeight, 52))
+        result.floating = true
+        return result
     }
 }
 

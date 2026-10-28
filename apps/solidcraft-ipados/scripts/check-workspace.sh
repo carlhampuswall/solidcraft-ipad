@@ -10,3 +10,6 @@ xcrun --sdk macosx swiftc \
   "$script_dir/workspace-check.swift" \
   -o "$check_dir/workspace-check"
 "$check_dir/workspace-check"
+# Use an installed Python 3.11+ for the canonical TOML icon palette, scoped to
+# this command. No global Python setting or runtime dependency is changed.
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" python3 -B "$script_dir/generate-icons.py" --check "$script_dir/../../.."

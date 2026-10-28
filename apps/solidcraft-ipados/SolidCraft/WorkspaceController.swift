@@ -12,11 +12,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let top = UIView()
     private let titleLabel = WorkspaceStyle.label(.headline)
     private let subtitle = WorkspaceStyle.label(.caption2, secondary: true)
-    private let status = WorkspaceStyle.label(.caption1, secondary: true)
+    private let status = WorkspaceStatusLabel()
     private let topScroll = UIScrollView()
     private let topActions = UIStackView()
     private let railScroll = UIScrollView()
     private let rail = UIStackView()
+    private let navigationScroll = UIScrollView()
+    private let navigationActions = UIStackView()
+    private let historyActions = UIStackView()
     private let table = UITableView(frame: .zero, style: .plain)
     private let inspectorScroll = UIScrollView()
     private let properties = UIStackView()
@@ -39,6 +42,28 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var sketchToolsButton = WorkspaceButton(SketchText.text("draw"), action: {})
     private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.run("sketch.finish") }
     private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.run("tool.finish_chain") }
+    private lazy var documentActionsButton = WorkspaceButton(WorkspaceStyle.text("document_actions"), action: {})
+    private lazy var fitButton = WorkspaceButton(WorkspaceStyle.text("fit")) { [weak self] in self?.run("view.fit") }
+    private lazy var projectionButton = WorkspaceButton(NativeText.value("ui.ipados.perspective")) { [weak self] in
+        guard let self else { return }; self.perspective.toggle()
+        self.run("view.perspective", params: ["enabled": self.perspective]); self.rebuildMenus()
+    }
+    private lazy var modifyButton = WorkspaceButton(WorkspaceStyle.text("modify"), action: {})
+    private lazy var patternButton = WorkspaceButton(WorkspaceStyle.text("pattern"), action: {})
+    private lazy var constraintsButton = WorkspaceButton(WorkspaceStyle.text("constraints"), action: {})
+    private lazy var dimensionsButton = WorkspaceButton(SketchText.text("dimension"), action: {})
+    private lazy var constructionButton = WorkspaceButton(SketchText.text("construction")) { [weak self] in
+        guard let self, self.state?.sketch != nil else { return }
+        let curves = self.state?.selection.filter { $0.type == "sketch_curve" }.compactMap { $0.id?.readout } ?? []
+        guard !curves.isEmpty else { return }; self.run("sketch.construction", params: ["curves": curves])
+    }
+    private lazy var sketchQuickTools: [(String, WorkspaceButton)] = [
+        ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"),
+        ("sketch.circle.center", "circle"), ("sketch.arc.three_point", "arc"),
+        ("sketch.spline.fit_point", "spline"), ("sketch.trim", "trim")
+    ].map { id, label in
+        (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
+    }
     private var state: WorkspaceState?
     private var visibleRows: [WorkspaceRow] = []
     private var rowByID: [String: WorkspaceRow] = [:]
@@ -117,7 +142,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var documentStatus = WorkspaceStyle.text("unsaved_session")
     private var keyboardTop: CGFloat?
     private var railRight = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.railRight")
-    private var appearance = UserDefaults.standard.integer(forKey: "SolidCraft.workspace.appearance")
+    private var appearance = (UserDefaults.standard.object(forKey: "SolidCraft.workspace.appearance") as? Int) ?? 2
+    private var compactChrome = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactChrome") as? Bool ?? true
+    private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
+    private var diagnostics = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.diagnostics")
+    private var resetChromeOffsets = false
 
     private var numericEditing: Bool { numericStarting || numericToken != nil || transformDraft != nil }
     private var modellingEditing: Bool { modellingStarting || modellingToken != nil }
@@ -171,7 +200,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         railScroll.backgroundColor = WorkspaceStyle.surface
         railScroll.layer.cornerRadius = WorkspaceStyle.radius
         for button in [selectButton, radiusButton, moreButton] {
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 60).isActive = true
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         }
         canvas.accessibilityIdentifier = "native-cad-surface"
         canvas.isAccessibilityElement = true
@@ -209,6 +238,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                              (inspectorButton, "inspector"), (viewButton, "view"), (selectButton, "select"),
                              (radiusButton, "radius"), (moreButton, "tools")] {
             button.accessibilityIdentifier = "workspace-" + id
+        }
+        configureChrome()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (controller: FoundationController, _: UITraitCollection) in
+            controller.rebuildMenus()
+            if controller.compactChrome {
+                [controller.top, controller.railScroll, controller.navigationScroll, controller.historyActions,
+                 controller.browserButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
+            }
         }
         canvas.onResize = { [weak self] in self?.updateSurface() }
         canvas.historyGesturesEnabled = UserDefaults.standard.object(forKey: "SolidCraft.workspace.historyGestures") as? Bool ?? true
@@ -271,6 +308,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     }
                 } else if ProcessInfo.processInfo.arguments.contains("--assembly-check") {
                     self.developmentCheckStarted = true; self.startAssemblyCheck()
+                } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
+                    self.developmentCheckStarted = true; self.checkChromeOnDevice()
                 }
             }
             if presented { self.assemblyCheckPresented(document: documentID, revision: revision, preview: preview) }
@@ -287,6 +326,79 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
         }
         rebuildMenus(); rebuildInspector(); updateAvailability()
+    }
+
+    private func configureChrome() {
+        resetChromeOffsets = true
+        for stack in [topActions, rail, navigationActions, historyActions] {
+            stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
+        }
+        let chromeIcons: [(WorkspaceButton, String)] = [
+            (undoButton, "undo"), (redoButton, "redo"), (browserButton, "list"),
+            (inspectorButton, "inspect"), (viewButton, "orbit"), (selectButton, "select"),
+            (radiusButton, "dimension"), (moreButton, "settings"), (modellingButton, "extrude"),
+            (modifyButton, "fillet"), (patternButton, "pattern_rect"), (assemblyButton, "component"),
+            (cancelToolButton, "sketch_cancel"), (createSketchButton, "sketch"),
+            (sketchToolsButton, "sketch"), (finishSketchButton, "finish"), (finishChainButton, "finish"),
+            (documentActionsButton, "folder"), (fitButton, "fit"), (projectionButton, "perspective"),
+            (constraintsButton, "c_parallel"), (dimensionsButton, "dimension"), (constructionButton, "construction")
+        ]
+        chromeIcons.forEach { $0.0.artwork($0.1, compact: compactChrome) }
+        for (id, button) in sketchQuickTools {
+            button.commandArtwork(id, compact: true)
+            button.accessibilityIdentifier = "workspace-tool-" + id
+        }
+        rail.spacing = compactChrome ? 2 : 8
+        if compactChrome {
+            topActions.addArrangedSubview(documentActionsButton)
+            [selectButton, createSketchButton].forEach(rail.addArrangedSubview)
+            sketchQuickTools.forEach { rail.addArrangedSubview($0.1) }
+            [sketchToolsButton, finishChainButton, finishSketchButton, modellingButton, modifyButton,
+             patternButton, assemblyButton, radiusButton, moreButton, cancelToolButton].forEach(rail.addArrangedSubview)
+            navigationActions.axis = .vertical; navigationActions.spacing = 2
+            [viewButton, fitButton, projectionButton, inspectorButton, constraintsButton, dimensionsButton, constructionButton].forEach(navigationActions.addArrangedSubview)
+            historyActions.axis = .horizontal; historyActions.spacing = 2; historyActions.distribution = .fillEqually
+            [undoButton, redoButton].forEach(historyActions.addArrangedSubview)
+            // UIStackView turns this off while it owns the browser button. Its
+            // floating frame is manually laid out after leaving that stack.
+            browserButton.translatesAutoresizingMaskIntoConstraints = true
+            workspace.addSubview(browserButton); workspace.addSubview(historyActions); workspace.addSubview(navigationScroll)
+            if navigationActions.superview == nil {
+                navigationScroll.addSubview(navigationActions)
+                navigationActions.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    navigationActions.leadingAnchor.constraint(equalTo: navigationScroll.contentLayoutGuide.leadingAnchor),
+                    navigationActions.trailingAnchor.constraint(equalTo: navigationScroll.contentLayoutGuide.trailingAnchor),
+                    navigationActions.topAnchor.constraint(equalTo: navigationScroll.contentLayoutGuide.topAnchor),
+                    navigationActions.bottomAnchor.constraint(equalTo: navigationScroll.contentLayoutGuide.bottomAnchor),
+                    navigationActions.widthAnchor.constraint(equalTo: navigationScroll.frameLayoutGuide.widthAnchor)
+                ])
+            }
+            navigationScroll.showsVerticalScrollIndicator = false
+            [top, railScroll, navigationScroll, historyActions, browserButton, status].forEach(WorkspaceStyle.floatingSurface)
+            subtitle.numberOfLines = 1
+        } else {
+            [undoButton, redoButton, browserButton, inspectorButton, viewButton].forEach(topActions.addArrangedSubview)
+            [selectButton, createSketchButton, sketchToolsButton, finishChainButton, finishSketchButton,
+             modellingButton, assemblyButton, radiusButton, moreButton, cancelToolButton].forEach(rail.addArrangedSubview)
+            top.backgroundColor = .clear; status.backgroundColor = .clear
+            subtitle.numberOfLines = 2
+        }
+        navigationScroll.isHidden = !compactChrome; historyActions.isHidden = !compactChrome
+        for scroll in [topScroll, railScroll, navigationScroll] { scroll.contentInsetAdjustmentBehavior = .never }
+        topScroll.showsHorizontalScrollIndicator = !compactChrome
+        // Panels are above visible chrome. Their bounds alone own UI contacts;
+        // there is no full-screen hit-testing overlay in the floating layout.
+        workspace.bringSubviewToFront(scrim)
+        workspace.bringSubviewToFront(browserPanel); workspace.bringSubviewToFront(inspectorPanel)
+        fitButton.accessibilityIdentifier = "workspace-fit"
+        projectionButton.accessibilityIdentifier = "workspace-projection"
+        documentActionsButton.accessibilityIdentifier = "workspace-document-actions"
+        constraintsButton.accessibilityIdentifier = "workspace-constraints"
+        dimensionsButton.accessibilityIdentifier = "workspace-dimensions"
+        constructionButton.accessibilityIdentifier = "workspace-construction"
+        if state != nil { updateStatus() }
+        view.setNeedsLayout()
     }
 
     private func receive(_ value: WorkspaceState) {
@@ -448,7 +560,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if !lastOperationFeedback.isEmpty {
             let message = WorkspaceMessage(); message.show(lastOperationFeedback.map(ModellingText.label).joined(separator: "\n")); properties.addArrangedSubview(message)
         }
-        if let assembly = state.assembly { addAssemblyContext(assembly) }
+        if let assembly = state.assembly,
+           !compactChrome || diagnostics || !assembly.active_path.isEmpty ||
+            state.selection.contains(where: { $0.type == "occurrence" }) ||
+            selectedAssemblyRowID.flatMap({ rowByID[$0]?.assembly }) != nil {
+            addAssemblyContext(assembly)
+        }
         if let draft = planeDraft {
             properties.addArrangedSubview(WorkspacePropertyRow(label: SketchText.text("plane"), value: draft.label))
             let hint = WorkspaceStyle.label(.body, secondary: true); hint.text = SketchText.text("plane_preview"); properties.addArrangedSubview(hint)
@@ -481,7 +598,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             edit.accessibilityIdentifier = "workspace-edit-radius"
             properties.addArrangedSubview(edit)
             let range = WorkspaceStyle.label(.footnote, secondary: true); range.text = WorkspaceStyle.text("numeric_range"); properties.addArrangedSubview(range)
-        } else if let reason = state.tools.first(where: { $0.id == "post_radius" })?.reason {
+        } else if !compactChrome || diagnostics, let reason = state.tools.first(where: { $0.id == "post_radius" })?.reason {
             let explanation = WorkspaceStyle.label(.footnote, secondary: true)
             explanation.text = NativeText.value(reason)
             properties.addArrangedSubview(explanation)
@@ -497,7 +614,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
            let feature = state.modelling?.timeline.first(where: { $0.id == id }) {
             addFeatureInspector(feature)
         }
-        if let modelling = state.modelling, !modelling.parameters.isEmpty {
+        if let modelling = state.modelling, !modelling.parameters.isEmpty, !compactChrome || diagnostics || selection.isEmpty {
             let heading = WorkspaceStyle.label(.headline); heading.text = ModellingText.text("parameters"); properties.addArrangedSubview(heading)
             for parameter in modelling.parameters {
                 let readout = [parameter.expression, parameter.value.map { String($0) + " " + parameter.unit }].compactMap { $0 }.joined(separator: " · ")
@@ -507,7 +624,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 })
             }
         }
-        if state.modelling?.tools.contains(where: { $0.id == "parameters.add" }) == true {
+        if state.modelling?.tools.contains(where: { $0.id == "parameters.add" }) == true, !compactChrome || diagnostics || selection.isEmpty {
             properties.addArrangedSubview(WorkspaceButton(ModellingText.text("add_parameter")) { [weak self] in self?.beginModelling(operation: "parameters.add") })
         }
         let guidance = WorkspaceStyle.label(.footnote, secondary: true)
@@ -516,6 +633,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func addFeatureInspector(_ feature: ModellingPresentation.Feature) {
+        func action(_ label: String, command: String, prominent: Bool = false, perform: @escaping () -> Void) {
+            let button = WorkspaceButton(label, prominent: prominent, action: perform)
+            button.commandArtwork(command)
+            properties.addArrangedSubview(button)
+        }
         let heading = WorkspaceStyle.label(.headline); heading.text = feature.name; properties.addArrangedSubview(heading)
         properties.addArrangedSubview(WorkspacePropertyRow(label: ModellingText.text("feature_type"), value: ModellingText.label(feature.kind)))
         if let error = feature.error {
@@ -524,14 +646,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let warning = feature.warning { let message = WorkspaceMessage(); message.show(warning); properties.addArrangedSubview(message) }
         if feature.stale == true { let message = WorkspaceMessage(); message.show(ModellingText.text("stale_geometry"), error: true); properties.addArrangedSubview(message) }
         if state?.rows.first(where: { $0.id == "feature:" + String(feature.id) })?.kind != "sketch" {
-            properties.addArrangedSubview(WorkspaceButton(ModellingText.text("edit_feature"), prominent: true) { [weak self] in self?.beginModelling(feature: feature.id) })
+            action(ModellingText.text("edit_feature"), command: "timeline.edit", prominent: true) { [weak self] in self?.beginModelling(feature: feature.id) }
         }
-        properties.addArrangedSubview(WorkspaceButton(ModellingText.text("rename")) { [weak self] in self?.renameFeature(feature) })
-        properties.addArrangedSubview(WorkspaceButton(ModellingText.text("dependencies")) { [weak self] in self?.showFeatureDependencies(feature) })
-        properties.addArrangedSubview(WorkspaceButton(ModellingText.text(feature.suppressed ? "unsuppress" : "suppress")) { [weak self] in
+        action(ModellingText.text("rename"), command: "timeline.rename") { [weak self] in self?.renameFeature(feature) }
+        action(ModellingText.text("dependencies"), command: "timeline.dependents") { [weak self] in self?.showFeatureDependencies(feature) }
+        action(ModellingText.text(feature.suppressed ? "unsuppress" : "suppress"), command: "timeline.suppress") { [weak self] in
             self?.run("timeline.suppress", params: ["feature": feature.id, "suppressed": !feature.suppressed])
-        })
-        properties.addArrangedSubview(WorkspaceButton(ModellingText.text("delete_feature")) { [weak self] in self?.deleteFeature(feature) })
+        }
+        action(ModellingText.text("delete_feature"), command: "timeline.delete") { [weak self] in self?.deleteFeature(feature) }
     }
 
     private func assemblyReadout(_ assembly: AssemblyRowPresentation) -> [String] {
@@ -556,6 +678,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func updateSubtitle() {
+        if compactChrome {
+            subtitle.text = state?.sketch.map { SketchText.text("draw") + " · " + $0.name } ?? documentStatus
+            subtitle.accessibilityLabel = subtitle.text
+            return
+        }
         if let assembly = state?.assembly {
             let path = assembly.active_path.isEmpty ? "" : " · " + assembly.active_path.map(String.init).joined(separator: " / ")
             subtitle.text = AssemblyText.text("authoring_context") + ": " + assembly.active_name + path + " · " + documentStatus
@@ -574,6 +701,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func addAssemblyActions(_ actions: [AssemblyActionPresentation]) {
         for action in actions {
             let button = WorkspaceButton(ModellingText.label(action.label)) { [weak self] in self?.performAssemblyAction(action) }
+            if let command = action.command ?? action.operation { button.commandArtwork(command) }
             button.availability(enabled: action.command != nil || action.operation != nil)
             properties.addArrangedSubview(button)
         }
@@ -961,11 +1089,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             properties.addArrangedSubview(WorkspacePropertyRow(label: SketchText.text(dimension.driven ? "reference_dimension" : "driving_dimension"), value: dimension.expression ?? dimension.name))
             if !dimension.driven {
                 let edit = WorkspaceButton(SketchText.text("edit_dimension"), prominent: true) { [weak self] in self?.beginNumeric() }
+                edit.commandArtwork("sketch.dimension")
                 edit.accessibilityIdentifier = "workspace-edit-dimension"
                 properties.addArrangedSubview(edit)
             }
         } else if let dimensions = sketch.eligible_dimensions, !dimensions.isEmpty {
             let dimension = WorkspaceButton(SketchText.text("dimension"), prominent: true, action: {})
+            dimension.commandArtwork("sketch.dimension")
             dimension.menu = UIMenu(children: dimensions.map { type in
                 UIAction(title: SketchText.text(type)) { [weak self] _ in self?.beginNumeric(dimension: type) }
             })
@@ -973,6 +1103,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             dimension.accessibilityIdentifier = "workspace-create-dimension"
             properties.addArrangedSubview(dimension)
             let place = WorkspaceButton(SketchText.text("place_dimension"), action: {})
+            place.commandArtwork("sketch.dimension")
             place.menu = UIMenu(children: dimensions.map { type in
                 UIAction(title: SketchText.text(type)) { [weak self] _ in
                     guard let self else { return }
@@ -987,6 +1118,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let mode = action.params["mode"]?.value as? String
             let key = mode ?? String(action.command.split(separator: ".").last ?? "")
             let button = WorkspaceButton(SketchText.text(key)) { [weak self] in self?.run(action.command, params: action.dictionary) }
+            button.commandArtwork(action.command)
             button.accessibilityIdentifier = "workspace-constraint-" + key
             properties.addArrangedSubview(button)
         }
@@ -1273,6 +1405,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         redoButton.availability(enabled: !locked && state?.can_redo == true, reason: numericEditing || modellingEditing ? WorkspaceStyle.text("editing_lock") : WorkspaceStyle.text("nothing_redo"))
         for button in [browserButton, inspectorButton, viewButton, moreButton] { button.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty, reason: numericEditing ? WorkspaceStyle.text("editing_lock") : nil) }
         browserButton.active(browserOpen); inspectorButton.active(inspectorOpen)
+        inspectorButton.isHidden = false
         for (button, id) in [(selectButton, "select"), (radiusButton, "post_radius")] {
             let tool = state?.tools.first { $0.id == id }
             button.availability(enabled: !locked && tool?.enabled == true, reason: numericEditing ? WorkspaceStyle.text("editing_lock") : tool?.reason.map(NativeText.value))
@@ -1286,7 +1419,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         assemblyButton.availability(enabled: !locked && state?.assembly?.tools.isEmpty == false)
         createSketchButton.isHidden = inSketch
         createSketchButton.availability(enabled: !locked && planeDraft == nil)
-        radiusButton.isHidden = inSketch
+        radiusButton.isHidden = inSketch || compactChrome && !diagnostics
         sketchToolsButton.isHidden = !inSketch
         finishSketchButton.isHidden = !inSketch
         finishChainButton.isHidden = !inSketch || !(state?.active_tool == "sketch.line" || state?.active_tool == "sketch.spline.fit_point")
@@ -1296,26 +1429,82 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let modal = layout?.compact == true && (browserOpen || inspectorOpen)
         canvas.isUserInteractionEnabled = !numericEditing && WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: modal, textEntryActive: textEntryActive)
         canvas.accessibilityElementsHidden = modal || numericEditing
+        if compactChrome {
+            let editing = numericEditing || modellingEditing
+            for (id, button) in sketchQuickTools {
+                let tool = state?.tools.first { $0.id == id }
+                button.isHidden = !inSketch || editing
+                button.active(state?.active_tool == id)
+                button.availability(enabled: !locked && tool?.enabled == true, reason: tool?.reason.map(NativeText.value))
+            }
+            createSketchButton.isHidden = inSketch || editing
+            modellingButton.isHidden = inSketch || editing
+            assemblyButton.isHidden = inSketch || editing
+            modifyButton.isHidden = inSketch || editing
+            patternButton.isHidden = inSketch || editing
+            for button in [modifyButton, patternButton] { button.availability(enabled: !locked && state?.modelling?.tools.isEmpty == false) }
+            sketchToolsButton.isHidden = !inSketch || editing
+            finishSketchButton.isHidden = !inSketch || editing
+            finishChainButton.isHidden = finishChainButton.isHidden || editing
+            [fitButton, projectionButton, documentActionsButton].forEach {
+                $0.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
+            }
+            projectionButton.active(perspective)
+            projectionButton.isHidden = inSketch
+            constraintsButton.isHidden = !inSketch || editing
+            dimensionsButton.isHidden = !inSketch || editing
+            constructionButton.isHidden = !inSketch || editing
+            constraintsButton.availability(enabled: !locked, reason: WorkspaceStyle.text("constraint_selection_hint"))
+            dimensionsButton.availability(enabled: !locked && state?.sketch?.eligible_dimensions?.isEmpty == false,
+                                           reason: WorkspaceStyle.text("dimension_selection_hint"))
+            constructionButton.availability(enabled: !locked && state?.selection.contains(where: { $0.type == "sketch_curve" }) == true,
+                                             reason: WorkspaceStyle.text("curve_selection_hint"))
+        }
     }
 
     private func rebuildMenus() {
         assemblyButton.menu = UIMenu(children: (state?.assembly?.tools ?? []).map { tool in
-            UIAction(title: ModellingText.label(tool.label)) { [weak self] _ in self?.beginModelling(operation: tool.id) }
+            UIAction(title: ModellingText.label(tool.label), image: WorkspaceIcon.command(tool.id, traits: traitCollection)) { [weak self] _ in self?.beginModelling(operation: tool.id) }
         })
+        if let assembly = state?.assembly {
+            let contextual = assembly.actions.map { action in
+                UIAction(title: ModellingText.label(action.label), image: action.command.flatMap { WorkspaceIcon.command($0, traits: traitCollection) }) { [weak self] _ in self?.performAssemblyAction(action) }
+            }
+            assemblyButton.menu = UIMenu(children: [UIMenu(options: .displayInline, children: assemblyButton.menu?.children ?? []), UIMenu(options: .displayInline, children: contextual)])
+        }
         assemblyButton.showsMenuAsPrimaryAction = true
-        modellingButton.menu = UIMenu(children: (state?.modelling?.tools ?? []).map { tool in
-            UIAction(title: ModellingText.label(tool.label)) { [weak self] _ in self?.beginModelling(operation: tool.id) }
+        let tools = state?.modelling?.tools ?? []
+        func modelActions(_ included: (String) -> Bool) -> [UIMenuElement] {
+            tools.filter { included($0.id) }.map { tool in
+                UIAction(title: ModellingText.label(tool.label), image: WorkspaceIcon.command(tool.id, traits: traitCollection)) { [weak self] _ in self?.beginModelling(operation: tool.id) }
+            }
+        }
+        // New native-supported operations remain reachable in this overflow
+        // group and inherit their registry icon without another native mapping.
+        modellingButton.menu = UIMenu(children: modelActions {
+            !compactChrome || !$0.hasPrefix("parameters.") && !$0.hasPrefix("solid.pattern.") &&
+                !["solid.fillet", "solid.chamfer", "solid.shell", "solid.hole", "solid.combine", "solid.mirror"].contains($0)
         })
+        modifyButton.menu = UIMenu(children: modelActions { ["solid.fillet", "solid.chamfer", "solid.shell", "solid.hole", "solid.combine"].contains($0) })
+        patternButton.menu = UIMenu(children: modelActions { $0.hasPrefix("solid.pattern.") || $0 == "solid.mirror" })
+        modifyButton.showsMenuAsPrimaryAction = true; patternButton.showsMenuAsPrimaryAction = true
         modellingButton.showsMenuAsPrimaryAction = true
-        var views = ["front", "back", "left", "right", "top", "bottom", "isometric"].map { name in
+        var views = (state?.sketch == nil ? ["front", "back", "left", "right", "top", "bottom", "isometric"] : []).map { name in
             UIAction(title: NativeText.value("ui.ipados." + name)) { [weak self] _ in self?.run("view." + name) }
         }
         views.insert(UIAction(title: WorkspaceStyle.text("fit")) { [weak self] _ in self?.run("view.fit") }, at: 0)
-        views.append(UIAction(title: NativeText.value("ui.ipados.perspective"), state: perspective ? .on : .off) { [weak self] _ in
+        if state?.sketch == nil {
+            views.append(UIAction(title: NativeText.value("ui.ipados.perspective"), state: perspective ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.perspective.toggle(); self.run("view.perspective", params: ["enabled": self.perspective]); self.rebuildMenus()
         })
-        views.append(UIAction(title: NativeText.value("ui.ipados.exit_planar")) { [weak self] _ in self?.run("view.exit_planar") })
+            views.append(UIAction(title: NativeText.value("ui.ipados.exit_planar")) { [weak self] _ in self?.run("view.exit_planar") })
+        }
         viewButton.menu = UIMenu(children: views); viewButton.showsMenuAsPrimaryAction = true
+        documentActionsButton.menu = UIMenu(children: [
+            UIAction(title: ModellingText.text("save_local"), image: WorkspaceIcon.image("save", traits: traitCollection), attributes: numericEditing || modellingEditing ? .disabled : []) { [weak self] _ in self?.localDocument(reopen: false) },
+            UIAction(title: ModellingText.text("reopen_local"), image: WorkspaceIcon.image("folder", traits: traitCollection), attributes: numericEditing || modellingEditing ? .disabled : []) { [weak self] _ in self?.localDocument(reopen: true) }
+        ])
+        documentActionsButton.showsMenuAsPrimaryAction = true
         let filters = ["occurrence", "auto", "body", "face", "edge", "vertex"].map { name in
             UIAction(title: NativeText.value(name == "occurrence" ? "ui.ipados.assembly.occurrence" : "ui.ipados." + name), state: filter == name ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.filter = name; self.run("select.filter", params: ["filter": name]); self.rebuildMenus()
@@ -1351,6 +1540,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
             historyGestures, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
+        moreActions.append(UIMenu(title: ModellingText.text("parameters"), children: modelActions { $0.hasPrefix("parameters.") }))
+        moreActions.append(UIAction(title: WorkspaceStyle.text("compact_chrome"), state: compactChrome ? .on : .off) { [weak self] _ in
+            guard let self else { return }; self.canvas.cancelInput(); self.compactChrome.toggle()
+            UserDefaults.standard.set(self.compactChrome, forKey: "SolidCraft.workspace.compactChrome")
+            self.configureChrome(); self.updateSubtitle(); self.updateAvailability(); self.rebuildMenus()
+        })
+        moreActions.append(UIAction(title: WorkspaceStyle.text("pin_browser"), state: pinnedBrowser ? .on : .off) { [weak self] _ in
+            guard let self else { return }; self.canvas.cancelInput(); self.pinnedBrowser.toggle()
+            UserDefaults.standard.set(self.pinnedBrowser, forKey: "SolidCraft.workspace.pinnedBrowser")
+            self.view.setNeedsLayout(); self.rebuildMenus()
+        })
+        moreActions.append(UIAction(title: WorkspaceStyle.text("diagnostics"), state: diagnostics ? .on : .off) { [weak self] _ in
+            guard let self else { return }; self.diagnostics.toggle()
+            UserDefaults.standard.set(self.diagnostics, forKey: "SolidCraft.workspace.diagnostics")
+            self.updateAvailability(); self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
+        })
         if state?.sketch != nil {
             moreActions.insert(UIAction(title: SketchText.text("snapping"), state: sketchInput?.snapping != false ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.run("tool.snapping", params: ["enabled": self.sketchInput?.snapping == false])
@@ -1361,15 +1566,30 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         moreButton.menu = UIMenu(children: moreActions)
         moreButton.showsMenuAsPrimaryAction = true
-        let tools = [("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
+        let sketchTools = [("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
                      ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
                      ("sketch.trim", "trim"), ("sketch.extend", "extend")]
-        sketchToolsButton.menu = UIMenu(children: tools.compactMap { id, label in
+        sketchToolsButton.menu = UIMenu(children: sketchTools.compactMap { id, label in
             guard state?.tools.contains(where: { $0.id == id && $0.enabled }) == true else { return nil }
-            return UIAction(title: SketchText.text(label), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
+            return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
         })
         sketchToolsButton.showsMenuAsPrimaryAction = true
         sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true)
+        let constraints = state?.sketch?.eligible_constraints ?? []
+        constraintsButton.menu = UIMenu(children: ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"].map { key in
+            let action = constraints.first {
+                ($0.params["mode"]?.value as? String ?? String($0.command.split(separator: ".").last ?? "")) == key
+            }
+            return UIAction(title: SketchText.text(key), image: action.flatMap { WorkspaceIcon.command($0.command, traits: traitCollection) },
+                            attributes: action == nil ? .disabled : []) { [weak self] _ in
+                guard let action else { return }; self?.run(action.command, params: action.dictionary)
+            }
+        })
+        constraintsButton.showsMenuAsPrimaryAction = true
+        dimensionsButton.menu = UIMenu(children: (state?.sketch?.eligible_dimensions ?? []).map { type in
+            UIAction(title: SketchText.text(type), image: WorkspaceIcon.image("dimension", traits: traitCollection)) { [weak self] _ in self?.beginNumeric(dimension: type) }
+        })
+        dimensionsButton.showsMenuAsPrimaryAction = true
     }
     private func applyAppearance() { overrideUserInterfaceStyle = appearance == 1 ? .light : (appearance == 2 ? .dark : .unspecified) }
 
@@ -1390,7 +1610,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             status.text = lastOperationFeedback.map(ModellingText.label).joined(separator: "\n")
             return
         }
-        if let assembly = state?.assembly, state?.sketch == nil, !assembly.diagnostics.isEmpty {
+        if let assembly = state?.assembly, state?.sketch == nil, !assembly.diagnostics.isEmpty, !compactChrome || diagnostics {
             status.text = assembly.diagnostics.prefix(2).map(ModellingText.label).joined(separator: "\n")
             return
         }
@@ -1406,7 +1626,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 else if input.tool == "sketch.circle.center" { measurement = SketchText.text("radius") + " " + number(feedback.radius) + " mm" }
                 else if input.tool == "sketch.line" { measurement = number(feedback.radius) + " mm" }
             }
-            status.text = sketch.name + " · " + sketchSolverText(sketch) + "\n" + [prompt, measurement, snap].filter { !$0.isEmpty }.joined(separator: " · ")
+            if compactChrome && !diagnostics {
+                let active = state?.active_tool == "select" ? WorkspaceStyle.text("select") : prompt
+                status.text = sketchSolverText(sketch) + "\n" + [active, measurement, snap].filter { !$0.isEmpty }.joined(separator: " · ")
+            } else { status.text = sketch.name + " · " + sketchSolverText(sketch) + "\n" + [prompt, measurement, snap].filter { !$0.isEmpty }.joined(separator: " · ") }
+            return
+        }
+        if compactChrome && !diagnostics {
+            let selection = state?.selection ?? []
+            let mode = numericEditing ? WorkspaceStyle.text("editing") :
+                (selection.contains(where: { $0.type == "occurrence" }) || state?.assembly?.active_path.isEmpty == false ? AssemblyText.text("tools") : ModellingText.text("tools"))
+            let selected = selection.isEmpty ? NativeText.value("ui.ipados.no_selection") :
+                String.localizedStringWithFormat(WorkspaceStyle.text("selection_count"), selection.count)
+            status.text = mode + " · " + selected
             return
         }
         let summary = state?.selection.isEmpty == false ? state?.selection.prefix(2).map(\.readout).joined(separator: ", ") : NativeText.value("ui.ipados.no_selection")
@@ -1463,20 +1695,39 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let titleHeight = ceil(titleLabel.font.lineHeight) + 2
         let subtitleHeight = 2 * ceil(subtitle.font.lineHeight) + 2
         let actionsHeight = max(44, ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 20)
-        let headingHeight = compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8)
+        let headingHeight = compactChrome ? max(52, titleHeight + ceil(subtitle.font.lineHeight) + 8) :
+            (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
+        let railHeight = CGFloat(rail.arrangedSubviews.filter { !$0.isHidden }.count) * 46 + 8
+        let navHeight = CGFloat(navigationActions.arrangedSubviews.filter { !$0.isHidden }.count) * 46 + 8
+        let inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
+            (modellingEditing ? min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84) : 640))
         let resolved = WorkspaceLayout.resolve(size: workspace.bounds.size, browser: browserOpen, inspector: inspectorOpen,
                                                railRight: railRight, largeText: largeText,
-                                               minimumHeaderHeight: headingHeight, minimumStatusHeight: 2 * ceil(status.font.lineHeight) + 4)
+                                               minimumHeaderHeight: headingHeight, minimumStatusHeight: 2 * ceil(status.font.lineHeight) + 8,
+                                               compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railHeight,
+                                               inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight)
         if canvas.frame != resolved.canvas { canvas.cancelInput() }
         layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
         railScroll.frame = resolved.rail
         let compact = resolved.compact
-        let titleWidth = compact ? top.bounds.width - 24 : max(140, top.bounds.width - min(520, topActions.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width) - 36)
-        titleLabel.frame = CGRect(x: 12, y: 4, width: max(0, titleWidth), height: titleHeight)
-        subtitle.frame = CGRect(x: 12, y: titleHeight + 4, width: max(0, titleWidth), height: subtitleHeight)
-        let controlsY = titleHeight + subtitleHeight + 8
-        topScroll.frame = compact ? CGRect(x: 8, y: controlsY, width: max(0, top.bounds.width - 16), height: max(44, top.bounds.height - controlsY)) : CGRect(x: titleWidth + 24, y: 4, width: max(0, top.bounds.width - titleWidth - 32), height: max(44, top.bounds.height - 8))
+        if resolved.floating {
+            let statusSize = status.sizeThatFits(resolved.status.size)
+            status.frame.size.width = min(resolved.status.width, statusSize.width)
+            let titleWidth = max(0, top.bounds.width - 64)
+            titleLabel.frame = CGRect(x: 12, y: 5, width: titleWidth, height: titleHeight)
+            subtitle.frame = CGRect(x: 12, y: titleHeight + 5, width: titleWidth, height: ceil(subtitle.font.lineHeight) + 2)
+            topScroll.frame = CGRect(x: max(0, top.bounds.width - 48), y: 4, width: min(44, top.bounds.width), height: max(0, top.bounds.height - 8))
+            browserButton.frame = resolved.browserAccess
+            navigationScroll.frame = resolved.navigation
+            historyActions.frame = resolved.history
+        } else {
+            let titleWidth = compact ? top.bounds.width - 24 : max(140, top.bounds.width - min(520, topActions.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width) - 36)
+            titleLabel.frame = CGRect(x: 12, y: 4, width: max(0, titleWidth), height: titleHeight)
+            subtitle.frame = CGRect(x: 12, y: titleHeight + 4, width: max(0, titleWidth), height: subtitleHeight)
+            let controlsY = titleHeight + subtitleHeight + 8
+            topScroll.frame = compact ? CGRect(x: 8, y: controlsY, width: max(0, top.bounds.width - 16), height: max(44, top.bounds.height - controlsY)) : CGRect(x: titleWidth + 24, y: 4, width: max(0, top.bounds.width - titleWidth - 32), height: max(44, top.bounds.height - 8))
+        }
         browserPanel.isHidden = resolved.browser == nil
         inspectorPanel.isHidden = resolved.inspector == nil
         if let frame = resolved.browser { browserPanel.frame = frame }
@@ -1488,7 +1739,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorScroll.frame = inspectorPanel.content.bounds
         browserPanel.accessibilityViewIsModal = compact && browserOpen
         inspectorPanel.accessibilityViewIsModal = compact && inspectorOpen
-        workspace.accessibilityElements = [top, railScroll, browserPanel, canvas, inspectorPanel, status]
+        workspace.accessibilityElements = resolved.floating ? [top, browserButton, railScroll, browserPanel, navigationScroll, inspectorPanel, canvas, historyActions, status] : [top, railScroll, browserPanel, canvas, inspectorPanel, status]
+        if resetChromeOffsets {
+            // Reparenting the same controls changes scroll content dimensions.
+            // Discard the old text-toolbar offsets once, after the new frames
+            // exist; normal user scrolling remains untouched thereafter.
+            [topScroll, railScroll, navigationScroll].forEach { $0.setContentOffset(.zero, animated: false) }
+            resetChromeOffsets = false
+        }
         updateAvailability()
         canvas.updateDrawableSize()
     }
@@ -1521,6 +1779,73 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 /// Opt-in device evidence driver. It uses the ordinary controller forms and their
 /// Preview/Apply/Cancel callbacks. It never synthesizes a hardware Pencil event.
 private extension FoundationController {
+    /// Actual UIKit regression for controls reparented between text/floating
+    /// layouts. Foundation rectangle tests cannot observe retained scroll state.
+    func checkChromeOnDevice() {
+        struct Report: Encodable {
+            let compact: Bool
+            let appearance: Int
+            let issues: [String]
+            let frames: [String: [Double]]
+        }
+        let savedCompact = compactChrome
+        let savedAppearance = appearance
+        let expected = generation
+        let variants = [(false, 1), (true, 1), (false, 2), (true, 2)]
+        var reports: [Report] = []
+        func step(_ index: Int) {
+            guard active, generation == expected else { return }
+            if index == variants.count {
+                let restoreDark = ProcessInfo.processInfo.arguments.contains("--chrome-check-restore-dark")
+                compactChrome = restoreDark ? true : savedCompact
+                appearance = restoreDark ? 2 : savedAppearance
+                if restoreDark {
+                    UserDefaults.standard.set(true, forKey: "SolidCraft.workspace.compactChrome")
+                    UserDefaults.standard.set(2, forKey: "SolidCraft.workspace.appearance")
+                }
+                applyAppearance(); configureChrome(); updateSubtitle(); updateAvailability(); rebuildMenus()
+                view.layoutIfNeeded()
+                do {
+                    let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                    let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    try encoder.encode(reports).write(to: directory.appendingPathComponent("workspace-chrome-check.json"), options: .atomic)
+                } catch { print("SolidCraft native chrome check could not save its report: \(error)") }
+                print("SolidCraft native chrome check \(reports.allSatisfy { $0.issues.isEmpty } ? "PASS" : "FAIL")")
+                return
+            }
+            canvas.cancelInput()
+            compactChrome = variants[index].0; appearance = variants[index].1
+            applyAppearance(); configureChrome(); updateSubtitle(); updateAvailability(); rebuildMenus()
+            view.layoutIfNeeded()
+            // Check after UIKit completes the reparenting/layout turn, rather
+            // than inspecting only the requested policy rectangles.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.active, self.generation == expected else { return }
+                self.view.layoutIfNeeded()
+                var issues: [String] = []
+                var frames: [String: [Double]] = [:]
+                if self.compactChrome {
+                    for (name, button, host) in [("document", self.documentActionsButton, self.topScroll),
+                                                  ("view", self.viewButton, self.navigationScroll),
+                                                  ("fit", self.fitButton, self.navigationScroll),
+                                                  ("projection", self.projectionButton, self.navigationScroll),
+                                                  ("properties", self.inspectorButton, self.navigationScroll)] {
+                        let frame = button.convert(button.bounds, to: host)
+                        let visible = frame.intersection(host.bounds)
+                        frames[name] = [frame.minX, frame.minY, frame.width, frame.height].map(Double.init)
+                        if visible.width < 43 || visible.height < 43 || button.configuration?.image == nil {
+                            issues.append(name + " lost its visible icon/touch region")
+                        }
+                    }
+                    if self.browserButton.frame != self.layout?.browserAccess { issues.append("floating browser frame was changed by Auto Layout") }
+                }
+                reports.append(Report(compact: self.compactChrome, appearance: self.appearance, issues: issues, frames: frames))
+                step(index + 1)
+            }
+        }
+        step(0)
+    }
+
     func startAssemblyCheck() {
         guard !assemblyCheckRunning else { return }
         assemblyCheckRunning = true

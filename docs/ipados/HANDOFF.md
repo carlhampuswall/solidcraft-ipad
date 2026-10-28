@@ -1,4 +1,128 @@
-# Step 8.5 resumed consolidation handoff
+# UI overhaul workstream — 2026-10-28
+
+Branch: `codex/ipados-ui`. Isolated checkout:
+`/Users/chw/.codex/worktrees/ipados-ui/SolidCraft - iPad`.
+Source baseline B: `c22acd12702cf3a405df01009b8d8662b3d46365`.
+Finalized policy P: `380b43b2047a1242c81dfec75142283a0b61bd76`, verified as a
+documentation-only descendant of B. P supersedes B's provisional planning
+documents. This branch does not merge P or modify the integration checkout.
+No push or merge is authorized/performed.
+
+## Implemented presentation
+
+The actual UIKit app now uses a floating document header, 52/56-point icon-first
+rail, create/modify/pattern/assembly groups, immediate sketch tools and contextual
+constraints/dimensions/construction. Right-side orientation/Fit/projection/
+Properties and bottom Undo/Redo use existing commands. Selection/tool/solver/
+snapping/error status is compact. Diagnostic tools and routine assembly reports
+are outside the normal workspace. Browser/Properties start closed; unpinned
+floating panels preserve the Metal frame and consume only visible bounds. An
+optional pinned wide browser reserves space. Short numeric transactions use a
+compact editor; native feature/assembly forms retain real Preview/Apply/Cancel.
+
+Canonical SolidCraft icons are generated as Xcode vector assets using the
+existing palette/alias resolver: 321 masters, 37 aliases and 481 discovered
+command-icon mappings. A bounded image cache handles theme and density. No SVG,
+review hash, command registry, native DTO or CAD state changed. The user approved
+the resource-only Xcode project registration outside C's original ownership.
+
+Changed files:
+
+- `apps/solidcraft-ipados/SolidCraft/{WorkspaceController,WorkspaceComponents,WorkspaceLayout}.swift` (layout sections only in WorkspaceLayout)
+- `apps/solidcraft-ipados/SolidCraft.xcodeproj/project.pbxproj` (resources only)
+- `apps/solidcraft-ipados/scripts/generate-icons.py` (new build tool)
+- `apps/solidcraft-ipados/scripts/{check-workspace.sh,workspace-check.swift}`
+- `assets/locales/pending/ipados-ui-refinement.json`
+- `docs/ipados/{UI,HANDOFF}.md`
+
+Changes a default: yes — compact floating chrome, with the earlier text rail,
+header and docking policy behind **Tools → Compact floating workspace** off
+(`SolidCraft.workspace.compactChrome`). Dark native chrome defaults only when
+there is no existing appearance preference; **Appearance → System** retains the
+old policy. Rail-side and history gesture preferences remain unchanged.
+
+## Verification and real evidence
+
+- PASS: `sh apps/solidcraft-ipados/scripts/check-workspace.sh`: 210 adaptive
+  layout/focus/decoder cases, plus 41 actual tool icon mappings, vector theme
+  assets, retired-output removal and unchanged canonical artwork/review data.
+- PASS: actual iPhoneOS arm64 Swift type checking with the C bridging header.
+- PASS: `sh apps/solidcraft-ipados/scripts/build.sh`; `target/ui-native-build.log`.
+- PASS: signed build/install/launch on physical iPad Pro 11-inch (3rd generation),
+  iPadOS 27.2. Existing development certificate/wildcard profile reused without
+  provisioning updates or global environment/signing changes;
+  `target/ui-device-build.log`.
+- Physical UIKit clicks/keyboard entry observed: browser open/close retains model
+  framing; selecting Post highlights real geometry; Properties opens its radius;
+  changing 7 to 12 and Preview displays the evaluated larger solid; Cancel
+  restores 7. Selecting the actual reference sketch and Edit sketch switches
+  the real planar view and tools; Rectangle dispatch changes the native prompt.
+  Visual review led to tighter navigation surfaces, a taller numeric editor and
+  removal of unrelated assembly/parameter sections, then successful rebuilds.
+- Real Device Hub window screenshots: `/private/tmp/solidcraft-ui-evidence/`.
+  These show live physical UIKit/engine geometry, including browser open/closed,
+  sketch mode and feature Preview/Cancel. They include Device Hub chrome; they
+  are not fabricated framebuffers. No review images are committed or uploaded.
+- PASS: physical UIKit `--chrome-check`: four text/floating × light/dark cases;
+  actual header/navigation icons retain visible >=44-point touch regions and the
+  floating browser keeps its requested frame. Report:
+  `target/ui-device-chrome-check.json`. This regression follows a real defect
+  observed when switching back to compact mode. The fix resets retained scroll
+  offsets after layout and restores manual frame ownership to the browser button.
+  The earlier CI attempt was stopped before that source fix and is preserved as
+  `target/ui-ci-interrupted-layout-toggle.log`; it is not a completed gate.
+  Physical portrait inspection/browser dismissal, light appearance and the legacy
+  compatibility layout were also exercised; simultaneous Pencil/VoiceOver remain
+  unverified. Final signed build/install/normal launch was captured in
+  `13-final-verified-workspace.png` in the evidence directory. Device Hub's compact capture/coordinate path intermittently
+  returned `noWindowsAvailable`; full-view screenshots and the native report are
+  separate evidence, not repaired/fabricated screenshots.
+
+The automatic full repository run was stopped at the user's instruction on
+2026-10-28: **run the engine suite only when the user explicitly requests a full
+test**. This instruction supersedes the earlier automatic full-gate-before-commit
+rule for this task. Future UI changes use focused native/UI checks. No engine
+test, tolerance or CI implementation was changed or disabled.
+
+`target/ui-ci.log` records the interrupted run (exit 143): structural gates and
+workspace Clippy passed, as did 54 completed top-level jobs, including the
+24-test bridge and the 14-crate wasm check. No completed job failed; the engine
+library did not complete. This is **not a completed or green full-CI result**.
+B's three accepted failures remain historical baseline observations; they were
+not reverified by this interrupted run. The final signed build also passed:
+`target/ui-device-final-build.log`.
+
+No simulator was launched. Device Hub pointer/keyboard checks do not establish
+physical Pencil, palm rejection, simultaneous fingers/Pencil or VoiceOver
+acceptance. Foundation geometry checks cover narrow/keyboard/accessibility sizes;
+they are not UIKit hardware tests. Complete hardware coverage remains required.
+
+## Remaining integration blockers
+
+**The professional dark viewport objective requires B/integrator integration.**
+Native chrome is themed, but the actual renderer still uses the default light
+palette and an always-on grid. The supplied development assembly screenshot also
+used an explicit Top view. UI.md identifies the exact session/viewport/renderer
+locations and a display-only palette/guide seam. C leaves those owner-controlled
+files intact and adds no fake scene/filter. Dark/light geometry/highlights and a
+restrained ordinary 3D grid need that seam and combined verification.
+
+**Full project/Files browsing requires A/integrator integration.** The header uses
+existing app-private Save/Reopen and real save state; it does not claim Files,
+autosave or recovery support. Wire A's reviewed document service through this
+header without adding a second document store. Preserve full occurrence paths,
+native feature identity and the existing preview/history/revision contracts.
+
+Review C after its gate, then integrate preserving task history. Reconcile the
+small approved Xcode resource additions with other project changes; never replace
+shared files wholesale. Integrate B's reviewed render seam and A's service wiring
+in P's dependency order. Run D's relevant cross-module regressions, native build
+and physical workflows on the combined tree. Run the full gate only on an
+explicit full-test request. No automatic baseline/main merge.
+
+---
+
+# Historical Step 8.5 resumed consolidation handoff (source B)
 
 **Development baseline pending fresh validation and commit.** On 2026-10-28
 the user resumed Step 8.5 and asked to leave the three already reported upstream

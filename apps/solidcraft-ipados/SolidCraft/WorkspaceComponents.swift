@@ -18,6 +18,14 @@ enum WorkspaceStyle {
     static let selectedForeground = UIColor.white
     static let error = UIColor.systemRed
 
+    static func floatingSurface(_ view: UIView) {
+        view.backgroundColor = surface.withAlphaComponent(0.96)
+        view.layer.cornerRadius = radius
+        view.layer.borderWidth = 0.5
+        view.layer.borderColor = separator.cgColor
+        view.clipsToBounds = true
+    }
+
     static func text(_ key: String) -> String { NativeText.value("ui.ipados.workspace." + key) }
     static func label(_ style: UIFont.TextStyle = .body, secondary: Bool = false) -> UILabel {
         let label = UILabel()
@@ -29,9 +37,64 @@ enum WorkspaceStyle {
     }
 }
 
-/// A text-labelled touch target; no essential meaning depends on hover or artwork.
+/// The native image cache consumes Xcode's vector assets generated from the same
+/// SVG masters, semantic aliases and palette as egui. No native icon registry.
+enum WorkspaceIcon {
+    private static let cache = NSCache<NSString, UIImage>()
+    private static let commands: [String: String] = {
+        guard let url = Bundle.main.url(forResource: "SolidCraftCommandIcons", withExtension: "json"),
+              let data = try? Data(contentsOf: url),
+              let values = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        cache.countLimit = 256
+        return values
+    }()
+
+    static func command(_ id: String, traits: UITraitCollection, size: CGFloat = 28) -> UIImage? {
+        guard let icon = commands[id] else { return nil }
+        return image(icon, traits: traits, size: size)
+    }
+
+    static func image(_ id: String, traits: UITraitCollection, size: CGFloat = 28) -> UIImage? {
+        let key = "\(id):\(traits.userInterfaceStyle.rawValue):\(traits.displayScale):\(size)" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        let name = (size * max(1, traits.displayScale) <= 24 ? "sc-small-" : "sc-") + id
+        guard let source = UIImage(named: name, in: .main, compatibleWith: traits) else { return nil }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = max(1, traits.displayScale)
+        let rendered = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format).image { _ in
+            source.draw(in: CGRect(x: 0, y: 0, width: size, height: size))
+        }.withRenderingMode(.alwaysOriginal)
+        cache.setObject(rendered, forKey: key)
+        return rendered
+    }
+}
+
+final class WorkspaceStatusLabel: UILabel {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        font = .preferredFont(forTextStyle: .caption1)
+        adjustsFontForContentSizeCategory = true
+        textColor = WorkspaceStyle.secondary
+        numberOfLines = 2
+    }
+    convenience init() { self.init(frame: .zero) }
+    required init?(coder: NSCoder) { nil }
+    override func drawText(in rect: CGRect) { super.drawText(in: rect.insetBy(dx: 10, dy: 4)) }
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let fitted = super.sizeThatFits(CGSize(width: max(0, size.width - 20), height: max(0, size.height - 8)))
+        return CGSize(width: fitted.width + 20, height: fitted.height + 8)
+    }
+}
+
+/// Icon-first chrome retains full labels for VoiceOver, pointer tooltips and
+/// menus. Forms continue to use text. Missing artwork keeps a readable title.
 final class WorkspaceButton: UIButton {
+    private let fullTitle: String
+    private var iconID: String?
+    private var commandID: String?
+    private var compactIcon = false
     init(_ title: String, prominent: Bool = false, action: @escaping () -> Void) {
+        fullTitle = title
         super.init(frame: .zero)
         var config = prominent ? UIButton.Configuration.filled() : .plain()
         config.title = title
@@ -43,22 +106,50 @@ final class WorkspaceButton: UIButton {
         heightAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch).isActive = true
         widthAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch).isActive = true
         accessibilityLabel = title
+        toolTip = title
+        isPointerInteractionEnabled = true
+        showsLargeContentViewer = true
+        largeContentTitle = title
+        addInteraction(UILargeContentViewerInteraction())
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (button: WorkspaceButton, _: UITraitCollection) in
+            button.refreshIcon()
+        }
         addAction(UIAction { _ in action() }, for: .touchUpInside)
     }
     required init?(coder: NSCoder) { nil }
+
+    func artwork(_ id: String, compact: Bool = false) {
+        iconID = id; commandID = nil; compactIcon = compact; refreshIcon()
+    }
+    func commandArtwork(_ id: String, compact: Bool = false) {
+        commandID = id; iconID = nil; compactIcon = compact; refreshIcon()
+    }
+    private func refreshIcon() {
+        let image = commandID.flatMap { WorkspaceIcon.command($0, traits: traitCollection) }
+            ?? iconID.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
+        var config = configuration
+        config?.image = image
+        config?.imagePadding = compactIcon ? 0 : 8
+        config?.title = compactIcon && image != nil ? nil : fullTitle
+        config?.contentInsets = NSDirectionalEdgeInsets(top: compactIcon ? 8 : 10, leading: 8, bottom: compactIcon ? 8 : 10, trailing: 8)
+        configuration = config
+        accessibilityLabel = fullTitle
+        largeContentImage = image
+    }
 
     func availability(enabled: Bool, reason: String? = nil) {
         isEnabled = enabled
         accessibilityHint = reason
         accessibilityValue = reason
-        toolTip = reason
+        toolTip = reason.map { fullTitle + " · " + $0 } ?? fullTitle
     }
     func active(_ value: Bool) {
         isSelected = value
         var config = configuration
-        config?.baseBackgroundColor = value ? WorkspaceStyle.accent : .clear
-        config?.baseForegroundColor = value ? WorkspaceStyle.selectedForeground : WorkspaceStyle.foreground
-        if value { config?.background.backgroundColor = WorkspaceStyle.accent }
+        let fill = compactIcon ? WorkspaceStyle.selectionFill : WorkspaceStyle.accent
+        config?.baseBackgroundColor = value ? fill : .clear
+        config?.baseForegroundColor = value && !compactIcon ? WorkspaceStyle.selectedForeground : WorkspaceStyle.foreground
+        if value { config?.background.backgroundColor = fill }
         else { config?.background.backgroundColor = .clear }
         configuration = config
         if value { accessibilityTraits.insert(.selected) }
@@ -75,6 +166,7 @@ final class WorkspacePanel: UIView {
         close = WorkspaceButton(WorkspaceStyle.text("close_short"), action: onClose)
         super.init(frame: .zero)
         backgroundColor = WorkspaceStyle.surface
+        close.artwork("close", compact: true)
         layer.cornerRadius = WorkspaceStyle.radius
         layer.borderWidth = 0.5
         layer.borderColor = WorkspaceStyle.separator.cgColor
@@ -172,6 +264,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
         super.init(frame: .zero)
         axis = .vertical; spacing = 12
+        preview.artwork("eye"); apply.artwork("finish"); cancel.artwork("close")
         let heading = WorkspaceStyle.label(.caption1, secondary: true)
         heading.text = WorkspaceStyle.text("expression") + (units.isEmpty ? "" : " · " + units)
         addArrangedSubview(heading)
@@ -318,6 +411,7 @@ final class ModellingInspector: UIStackView {
         select = WorkspaceButton(ModellingText.text("select_in_viewport"), action: {})
         super.init(frame: .zero)
         axis = .vertical; spacing = 16
+        preview.artwork("eye"); apply.artwork("finish"); cancel.artwork("close"); select.artwork("select")
         let heading = WorkspaceStyle.label(.headline)
         if let id = state.feature, let feature = state.workspace.modelling?.timeline.first(where: { $0.id == id }) {
             heading.text = ModellingText.text("editing") + ": " + feature.name
