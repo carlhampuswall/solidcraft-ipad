@@ -1,17 +1,8 @@
 # Future Codex task prompts
 
-**Resumed with a bounded validation exception (2026-10-28).** The user asked
-that the three already-reported upstream engine failures be left unchanged and
-tracked for later review. [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md)
-records their exact scope. A nonzero CI exit must remain visible; all other
-checks must pass. Final source commit and launch policy are still pending here.
+**Ready for individually authorized parallel development.** Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed and accepted under the bounded 2026-10-28 user exception in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md). Only those three unchanged engine failures may remain; all other required checks passed. CI retains its nonzero result and is not described as green. A future task still needs an explicit user launch request; no tasks have been launched and no branch has been pushed by this finalization.
 
-**NOT APPROVED FOR LAUNCH.** `BASELINE_PENDING_VERIFICATION` is deliberately not
-a Git commit. The integration owner must finish required checks, commit the
-consolidation and replace every marker here and in
-[PARALLEL-DEVELOPMENT.md](PARALLEL-DEVELOPMENT.md) with the same approved full SHA.
-Until then these prompts are drafts, not executable authorization. Do not use
-current HEAD as a substitute. No future implementation tasks were launched.
+Read launch policy from immutable documentation-only commit P, identified in the integrator's final report or resolved under the B/P verification rules below. Every source worktree starts at B. Do not use provisional planning documents inside B as the finalized policy.
 
 Each prompt is self-contained. Start an approved task with its recommended model
 and reasoning effort, in its own worktree. Review disk/build capacity first:
@@ -26,7 +17,7 @@ Use GPT-6.1 Sol with Medium reasoning.
 Repository: https://github.com/carlhampuswall/solidcraft-ipad
 Upstream: https://github.com/tangency-labs/solidcraft
 Integration branch: integration/ipados-foundation
-Exact approved starting SHA: BASELINE_PENDING_VERIFICATION
+Exact approved starting SHA: c22acd12702cf3a405df01009b8d8662b3d46365
 Branch: codex/ipados-files
 Worktree: ../solidcraft-ipados-a (relative to the original repository)
 
@@ -138,7 +129,7 @@ Use GPT-6.1 Sol with High reasoning.
 Repository: https://github.com/carlhampuswall/solidcraft-ipad
 Upstream: https://github.com/tangency-labs/solidcraft
 Integration branch: integration/ipados-foundation
-Exact approved starting SHA: BASELINE_PENDING_VERIFICATION
+Exact approved starting SHA: c22acd12702cf3a405df01009b8d8662b3d46365
 Branch: codex/ipados-rendering
 Worktree: ../solidcraft-ipados-b (relative to the original repository)
 
@@ -240,7 +231,7 @@ Use GPT-6.1 Sol with Medium reasoning.
 Repository: https://github.com/carlhampuswall/solidcraft-ipad
 Upstream: https://github.com/tangency-labs/solidcraft
 Integration branch: integration/ipados-foundation
-Exact approved starting SHA: BASELINE_PENDING_VERIFICATION
+Exact approved starting SHA: c22acd12702cf3a405df01009b8d8662b3d46365
 Branch: codex/ipados-ui
 Worktree: ../solidcraft-ipados-c (relative to the original repository)
 
@@ -345,7 +336,7 @@ Use GPT-6.1 Sol with High reasoning.
 Repository: https://github.com/carlhampuswall/solidcraft-ipad
 Upstream: https://github.com/tangency-labs/solidcraft
 Integration branch: integration/ipados-foundation
-Exact approved starting SHA: BASELINE_PENDING_VERIFICATION
+Exact approved starting SHA: c22acd12702cf3a405df01009b8d8662b3d46365
 Branch: codex/ipados-regressions
 Worktree: ../solidcraft-ipados-d (relative to the original repository)
 

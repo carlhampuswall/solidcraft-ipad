@@ -1,20 +1,13 @@
 # Parallel iPadOS development
 
-**Resumed with a bounded validation exception (2026-10-28).** The user asked
-that the three already-reported upstream engine failures be left unchanged and
-tracked for later review. [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md)
-records their exact scope. A nonzero CI exit must remain visible; all other
-checks must pass. Final source commit and launch policy are still pending here.
+**Ready for individually authorized parallel development.** Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed and accepted under the bounded 2026-10-28 user exception in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md). Only those three unchanged engine failures may remain; all other required checks passed. CI retains its nonzero result and is not described as green. A future task still needs an explicit user launch request; no tasks have been launched and no branch has been pushed by this finalization.
 
-**NOT APPROVED FOR LAUNCH.** The integration candidate has not yet completed its
-final validation review and baseline commit. Do not start a
-task, create its worktree, or substitute current HEAD for the marker below.
-Only the integration owner may replace the marker after verification.
+Read launch policy from immutable documentation-only commit P, identified in the integrator's final report or resolved under the B/P verification rules below. Every source worktree starts at B. Do not use provisional planning documents inside B as the finalized policy.
 
 - Repository: `https://github.com/carlhampuswall/solidcraft-ipad`
 - Upstream: `https://github.com/tangency-labs/solidcraft`
 - Integration branch: `integration/ipados-foundation`
-- Exact approved starting commit: `BASELINE_PENDING_VERIFICATION`
+- Exact approved starting commit: `c22acd12702cf3a405df01009b8d8662b3d46365`
 - Prompts: [NEXT-TASKS.md](NEXT-TASKS.md)
 - Provenance: [CONSOLIDATION-INVENTORY.md](CONSOLIDATION-INVENTORY.md)
 
@@ -44,15 +37,15 @@ Do not reset, clean, overwrite or discard earlier task work. Inspect existing
 branches/worktrees before creating anything; stop if a name/path is already in
 use and ask the integrator to choose a nonconflicting location.
 
-After approval, run from the existing repository, replacing the marker only with
-the approved full SHA recorded above:
+After an explicit task launch request, run from the existing repository using
+the exact approved full source SHA below:
 
 ```sh
-git cat-file -e BASELINE_PENDING_VERIFICATION^{commit}
-git worktree add -b codex/ipados-files ../solidcraft-ipados-a BASELINE_PENDING_VERIFICATION
-git worktree add -b codex/ipados-rendering ../solidcraft-ipados-b BASELINE_PENDING_VERIFICATION
-git worktree add -b codex/ipados-ui ../solidcraft-ipados-c BASELINE_PENDING_VERIFICATION
-git worktree add -b codex/ipados-regressions ../solidcraft-ipados-d BASELINE_PENDING_VERIFICATION
+git cat-file -e c22acd12702cf3a405df01009b8d8662b3d46365^{commit}
+git worktree add -b codex/ipados-files ../solidcraft-ipados-a c22acd12702cf3a405df01009b8d8662b3d46365
+git worktree add -b codex/ipados-rendering ../solidcraft-ipados-b c22acd12702cf3a405df01009b8d8662b3d46365
+git worktree add -b codex/ipados-ui ../solidcraft-ipados-c c22acd12702cf3a405df01009b8d8662b3d46365
+git worktree add -b codex/ipados-regressions ../solidcraft-ipados-d c22acd12702cf3a405df01009b8d8662b3d46365
 ```
 
 Create only the worktree needed for an approved task. In every task, record

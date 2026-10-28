@@ -1,61 +1,18 @@
-# Step 8.5 consolidation status
+# Step 8.5 consolidated implementation status
 
-**Resumed; development baseline pending fresh validation and commit.** On
-2026-10-28 the user accepted only the three already reported upstream engine
-failures for continued development and asked that they be documented for later
-checking. [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) records exact
-observations, upstream links and follow-up triggers. Tests remain enabled and
-expectations unchanged; CI is not relabeled green and any new failure blocks
-approval. The blocked decision in [CHECKPOINT.md](CHECKPOINT.md) is historical
-and superseded by this limited exception. Current results are in HANDOFF.md.
+Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed on `integration/ipados-foundation`. It is accepted for development under the bounded 2026-10-28 user exception, not certified for release. Tasks A–D are prepared for individually requested launches; this task has not launched them or pushed the branch. Read finalized planning documents from the documentation-only descendant **P** identified in the integrator's final report; create every implementation worktree at B. P is never embedded as its own hash.
 
-Steps 1–8 are real implementation in the original checkout. The dedicated
-`integration/ipados-foundation` branch preserves the Step 1–3 commits and the
-accumulated Steps 4–8 working files. No milestone was recreated, source history
-squashed or upstream update imported. No next-milestone feature was implemented
-by this consolidation task. The consolidated
-candidate is uncommitted; HEAD remains the Step 3 ancestor, not a launch baseline.
+The completed full `cargo +1.95.0 xtask ci` run exits **1**: **85/86 top-level checks pass**; the engine library has **2631 passed, 3 failed, 6 ignored**. Only the three unchanged failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) remain under the user exception. All other required checks passed. **CI is not green.**
 
-The audit confirms one authoritative session/dispatch/history, central input
-ownership, shared navigation, native transforms and scratch preview/atomic
-acceptance. [INTERFACES.md](INTERFACES.md) records actual contracts. Consolidation
-adds a deterministic suspension regression, seventeen equivalent compiler lint
-repairs, a test-only optimized crash-fixture correction and native catalog-domain
-isolation. ARCHITECTURE records their shared maintenance surface.
+Steps 1–8 use one authoritative engine session/command/history boundary, central input ownership, shared camera/navigation, native transforms and scratch preview/atomic acceptance. Consolidation preserves their code and adds the suspension regression, seventeen equivalent compiler lint repairs, test-only optimized crash-fixture correction and native catalog-domain isolation. ARCHITECTURE records the shared maintenance surface; no new CAD feature or kernel algorithm was implemented in this task.
 
-The earlier candidate checks passed 105 session / 24 bridge tests, 186 native Foundation cases,
-87 desktop-app and 2,932 UI tests, full-workspace Clippy and repository gates,
-wasm/doc jobs, dependency isolation, web offline/update, pending-format checks
-and the unsigned Rust/UIKit build. Real Mac GPU and independent CLI workflows
-verify sketch/modelling/assembly transactions, geometry and native persistence.
-Physical iPad and simulator testing were not performed in this consolidation.
+The baseline preserves the separate user-requested two-finger double-tap Undo and three-finger double-tap Redo work from “Add multitouch undo and redo” (`01a183dd-c2f4-74a1-a93d-024ef30a9e7c`). It uses existing engine history. `SolidCraft.workspace.historyGestures` defaults on and restores the earlier behavior when disabled. The separate UI overhaul task contributed no source changes.
 
-That complete gate failed on three pre-existing macOS engine geometry
-regressions. All three reproduce in the preserved older binary and match
-upstream reports; their expectations were not changed. The first full run
-completed with those failures. The repaired rerun passed 85/86 checks and again
-reported the same three failed engine tests before its duplicate engine process
-was stopped for the earlier checkpoint. It is explicitly not a passing full gate.
-Those exact failures alone no longer block the user-approved development
-baseline; a fresh full run and all other mandatory checks are still required.
+The resumed combined unsigned arm64 Rust/UIKit build passes in `/tmp/solidcraft-step85-resume-native-build.log`; all **186 Foundation cases** pass in `/tmp/solidcraft-step85-resume-native-check.log`. The native English catalog contains **373 keys**. No physical app launch, simulator, installation or signing operation was performed in this consolidation; physical gesture checks remain outstanding.
 
-Additional user work from “Add multitouch undo and redo” is preserved in the
-combined candidate: two-finger double-tap Undo and three-finger double-tap Redo
-in `MetalCanvas.swift`/`WorkspaceController.swift`, updated `INPUT.md` and pending
-`ipados-history-gestures.json`. It uses existing engine history and defaults on;
-`SolidCraft.workspace.historyGestures` restores the old behavior. The separate
-task's unsigned build and existing 186 layout checks passed; physical gesture
-testing remains outstanding. The UI overhaul task remained read-only and added
-no implementation. Fresh combined unsigned native compilation and all 186
-Foundation cases pass in `/tmp/solidcraft-step85-resume-native-{build,check}.log`.
-The history label increases the native English catalog from the historical 372
-to 373 keys. Fresh full CI and source baseline B remain pending. No consolidation
-commit, push or parallel-task launch has occurred.
-Both parallel documents still require the exact source baseline SHA before use.
+Tests remain enabled; expectations, tolerances and goldens are unchanged. Any new failed test or changed failure signature blocks acceptance. Recheck the exception after a relevant upstream fix, affected engine/kernel/toolchain changes, and before release. No automatic monitor was created.
 
-The sections below are retained milestone records. Their earlier “next step,”
-branch names, test totals and device availability statements are historical;
-current scope/ownership and validation are above and in HANDOFF.md.
+HANDOFF records exact current validation evidence. The milestone sections below are historical; their branch names, pending status, totals and earlier next-step instructions do not override the committed B and finalized policy P.
 
 ---
 

@@ -12,9 +12,13 @@ All three tests remain enabled. Their expectations, tolerances and golden data
 remain unchanged. Run the required full gate and report its actual exit/result;
 do not skip or suppress the tests to obtain success. Any new failed test, changed
 failure signature or other unmet mandatory check blocks approval pending review.
-The source baseline commit and fresh full-CI validation are still pending at this
-document's creation; native compilation and all 186 Foundation cases pass. See
-[HANDOFF.md](HANDOFF.md) for the current result and SHA.
+Source baseline B is `c22acd12702cf3a405df01009b8d8662b3d46365`.
+
+The completed full `cargo +1.95.0 xtask ci` run exits **1**: **85/86 top-level checks pass**; the engine library has **2631 passed, 3 failed, 6 ignored**. Only the three unchanged failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) remain under the user exception. All other required checks passed. **CI is not green.**
+
+Completed full-gate log: `/private/tmp/solidcraft-step85-accepted-ci.log`. SHA-256: `c38a8f810f4f554f93fb47468631d48300f4cab250ffe0b8ba81394190e61526`.
+
+Native compilation and all 186 Foundation cases pass. See HANDOFF for coverage distinctions and finalized policy P instructions; this exception does not launch tasks automatically.
 
 ## Exact accepted observations
 

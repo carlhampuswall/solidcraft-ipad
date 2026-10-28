@@ -1,45 +1,42 @@
-# Step 8.5 resumed consolidation handoff
+# Step 8.5 consolidated development baseline
 
-**Development baseline pending fresh validation and commit.** On 2026-10-28
-the user resumed Step 8.5 and asked to leave the three already reported upstream
-engine failures unchanged, document them and check later. This accepts only the
-exact failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) for a
-development baseline; it does not make CI green or waive any new failure.
-Tests remain enabled and expectations unchanged. The earlier blocked decision
-in [CHECKPOINT.md](CHECKPOINT.md) is historical and superseded by this exception.
+Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed on `integration/ipados-foundation`. It is accepted for development under the bounded 2026-10-28 user exception, not certified for release. Tasks A–D are prepared for individually requested launches; this task has not launched them or pushed the branch. Read finalized planning documents from the documentation-only descendant **P** identified in the integrator's final report; create every implementation worktree at B. P is never embedded as its own hash.
 
-All Steps 1–8 were found locally and assembled on `integration/ipados-foundation`.
-HEAD remains `fc58c334d997e7514f96d6b44b753f272dad9e91`, the Step 3 ancestor;
-it is **not** a consolidated baseline. Steps 4–8 and consolidation repairs remain
-uncommitted. No commit, push, main merge, source-branch deletion or future-task
-launch occurred. No upstream commits were imported. Provenance is in
-[CONSOLIDATION-INVENTORY.md](CONSOLIDATION-INVENTORY.md).
+The completed full `cargo +1.95.0 xtask ci` run exits **1**: **85/86 top-level checks pass**; the engine library has **2631 passed, 3 failed, 6 ignored**. Only the three unchanged failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) remain under the user exception. All other required checks passed. **CI is not green.**
 
-## Preserved work added after the checkpoint
+Completed full-gate log: `/private/tmp/solidcraft-step85-accepted-ci.log`. SHA-256: `c38a8f810f4f554f93fb47468631d48300f4cab250ffe0b8ba81394190e61526`.
 
-The user-requested “Add multitouch undo and redo” task
-(`01a183dd-c2f4-74a1-a93d-024ef30a9e7c`) added two-finger double-tap Undo and
-three-finger double-tap Redo using existing engine history. Its `MetalCanvas`,
-`WorkspaceController`, `INPUT.md` and pending history-gesture locale changes
-are preserved in the baseline candidate. The default is enabled; the Tools
-preference `SolidCraft.workspace.historyGestures` restores the previous behavior.
-Its unsigned build passed (`/tmp/solidcraft-history-gestures-build.log`) and the
-existing 186 layout cases passed. Physical gestures remain untested.
-The separate “Overhaul SolidCraft iPadOS CAD UI” task made no source changes.
+## Current verification and preserved work
 
-Fresh combined unsigned native compilation **passes** in
-`/tmp/solidcraft-step85-resume-native-build.log`; the native Foundation harness
-also **passes all 186 cases** in `/tmp/solidcraft-step85-resume-native-check.log`.
-The added history label brings the native English catalog to 373 keys; the
-372-key results below belong to the earlier candidate. Physical gesture testing
-remains unperformed. Fresh full CI is **pending**. Source baseline
-B and the policy-document commit are also pending; the known three failures
-alone no longer block the development baseline. Record the fresh run's actual
-exit status, all failures and immutable SHAs here before enabling task starts.
-Any failure beyond the accepted three, or a changed failure signature, requires
-review. No parallel task has been launched.
+The full source gate passed 105 session, 24 bridge, 87 desktop-app and 2,932 UI
+tests, along with the repository checks, full-workspace Clippy, wasm and doc-test
+jobs. The separate web offline/update gate passed in
+`/tmp/solidcraft-step85-accepted-web.log`; it is recorded separately because the
+full CI command exits at the engine failures before reaching that final stage.
+Completed logs are copied to
+`target/step8.5-verification/resume-accepted-exceptions/`.
 
-## Previous candidate verification — 2026-10-28
+The only source normalization after the source gate removed one redundant EOF
+newline from `WorkspaceLayout.swift`; executable Swift tokens did not change.
+The exact committed source passes all 186 Foundation checks again in
+`/tmp/solidcraft-step85-baseline-native-check.log` and its unsigned device-target
+build succeeds in `/tmp/solidcraft-step85-baseline-native-build.log`. The required policy-commit
+gate uses this exact source B; its actual result is recorded in P's commit
+message and the final report. Its log is `/tmp/solidcraft-step85-policy-ci.log`.
+
+The resumed combined unsigned arm64 Rust/UIKit build passes in `/tmp/solidcraft-step85-resume-native-build.log`; all **186 Foundation cases** pass in `/tmp/solidcraft-step85-resume-native-check.log`. The native English catalog contains **373 keys**. No physical app launch, simulator, installation or signing operation was performed in this consolidation; physical gesture checks remain outstanding.
+
+The baseline preserves the separate user-requested two-finger double-tap Undo and three-finger double-tap Redo work from “Add multitouch undo and redo” (`01a183dd-c2f4-74a1-a93d-024ef30a9e7c`). It uses existing engine history. `SolidCraft.workspace.historyGestures` defaults on and restores the earlier behavior when disabled. The separate UI overhaul task contributed no source changes.
+
+All Steps 1–8 were found and preserved with their real commit ancestry and accumulated implementation. No milestone was recreated, source branch deleted or unrelated upstream update imported. CONSOLIDATION-INVENTORY records provenance; INTERFACES and PARALLEL-DEVELOPMENT define the actual contracts and file ownership.
+
+Tests remain enabled; expectations, tolerances and goldens are unchanged. Any new failed test or changed failure signature blocks acceptance. Recheck the exception after a relevant upstream fix, affected engine/kernel/toolchain changes, and before release. No automatic monitor was created.
+
+The final policy commit P is made after these document edits. Record its full SHA in the final report and verify it is a documentation-only descendant of B. B may retain provisional planning documents; their pending status is superseded only by the finalized policy read from P. No task may substitute moving HEAD or P for the source baseline B.
+
+The prior GPU/CLI proofs and historical device records below retain their original scope. They are not new physical iPad testing. Statements about uncommitted work or pending validation in the historical sections describe those earlier candidates, not B.
+
+## Historical earlier Step 8.5 verification — superseded by the result above
 
 These results predate the preserved gesture work and resumed candidate. They
 used Rust `+1.95.0`, the locked `ci` profile and the established Xcode 27 beta
@@ -78,7 +75,8 @@ unmerged and not green at inspection; recording a platform failure does not
 repair geometry. The user's limited development exception and exact measurements
 are in KNOWN-UPSTREAM-FAILURES; CHECKPOINT preserves the previous decision.
 
-## Evidence and continuation
+
+## Historical evidence locations
 
 Complete first gate: `/tmp/solidcraft-step85-ci-resumed.log`.
 Repaired rerun, explicitly interrupted engine: `/tmp/solidcraft-step85-ci-final.log`.
@@ -90,21 +88,6 @@ The original 47-file archive and complete history bundle remain under
 `target/step8.5-preservation/`; both original and candidate hashes verify.
 These are local recovery artifacts, not a remote backup.
 
-INTERFACES documents actual shared boundaries. PARALLEL-DEVELOPMENT and
-NEXT-TASKS contain ownership and four complete draft prompts, deliberately
-retaining `BASELINE_PENDING_VERIFICATION`. No valid task-start SHA exists yet.
-NativeSession, shared protocols, lifecycle wiring and Xcode/Cargo registration
-remain integrator-owned. Source workstreams can be separated after approval;
-heavy builds need isolated outputs and capacity coordination (about 11 GiB free
-at the earlier checkpoint). Finish fresh validation and record source baseline B
-before task starts. If only the exact three accepted engine failures remain and
-all other required checks pass, the user exception permits a development-baseline
-commit with CI failures disclosed. Recheck the exceptions after a relevant
-upstream fix, engine/kernel/toolchain change and before release; no automatic
-monitor was created. Never describe this exception as a fully green CI result.
-
-The records below are preserved historical Step 8/7/6 reports; their commit
-eligibility and verification statements describe those earlier candidates.
 
 ---
 

@@ -1,31 +1,20 @@
-# Step 8.5 checkpoint and resumed decision
+# Step 8.5 recovered checkpoint and development baseline
 
-## Superseding user decision — 2026-10-28
+Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed on `integration/ipados-foundation`. It is accepted for development under the bounded 2026-10-28 user exception, not certified for release. Tasks A–D are prepared for individually requested launches; this task has not launched them or pushed the branch. Read finalized planning documents from the documentation-only descendant **P** identified in the integrator's final report; create every implementation worktree at B. P is never embedded as its own hash.
 
-The user resumed Step 8.5 and explicitly asked to leave the three already
-reported upstream engine failures unchanged, document them and check again
-later. The earlier blocked decision and recovery instructions below are retained
-as a historical record; they are superseded only for those three known failures
-by [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md).
+The completed full `cargo +1.95.0 xtask ci` run exits **1**: **85/86 top-level checks pass**; the engine library has **2631 passed, 3 failed, 6 ignored**. Only the three unchanged failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) remain under the user exception. All other required checks passed. **CI is not green.**
 
-This permits a development baseline with disclosed CI failures, not a green-CI
-claim or a release certification. Tests remain enabled, expectations/tolerances
-unchanged, and any new failed test or changed failure signature blocks approval.
-The current combined candidate passes a fresh unsigned native build and all 186
-Foundation cases (`/tmp/solidcraft-step85-resume-native-{build,check}.log`).
-Source baseline B still needs the fresh full-CI result and a commit; the exact three known failures alone do not
-block that commit. Recheck them after relevant upstream fixes, affected
-engine/kernel/toolchain updates and before release. No automatic monitor exists.
+Completed full-gate log: `/private/tmp/solidcraft-step85-accepted-ci.log`. SHA-256: `c38a8f810f4f554f93fb47468631d48300f4cab250ffe0b8ba81394190e61526`.
 
-The candidate also preserves subsequent user-requested two-finger double-tap
-Undo / three-finger double-tap Redo from chat “Add multitouch undo and redo”
-(`01a183dd-c2f4-74a1-a93d-024ef30a9e7c`). The default-on preference
-`SolidCraft.workspace.historyGestures` restores prior behavior when disabled.
-Its separate unsigned build and 186 existing layout cases passed; physical
-gesture verification remains pending. The UI overhaul chat remained read-only.
-The archives and counts below describe the earlier checkpoint, not this later
-candidate. No Tasks A–D were launched. Use HANDOFF for fresh outcomes and exact
-baseline/policy SHAs when available, without substituting the old Step 3 HEAD.
+The resumed combined unsigned arm64 Rust/UIKit build passes in `/tmp/solidcraft-step85-resume-native-build.log`; all **186 Foundation cases** pass in `/tmp/solidcraft-step85-resume-native-check.log`. The native English catalog contains **373 keys**. No physical app launch, simulator, installation or signing operation was performed in this consolidation; physical gesture checks remain outstanding.
+
+The baseline preserves the separate user-requested two-finger double-tap Undo and three-finger double-tap Redo work from “Add multitouch undo and redo” (`01a183dd-c2f4-74a1-a93d-024ef30a9e7c`). It uses existing engine history. `SolidCraft.workspace.historyGestures` defaults on and restores the earlier behavior when disabled. The separate UI overhaul task contributed no source changes.
+
+Tests remain enabled; expectations, tolerances and goldens are unchanged. Any new failed test or changed failure signature blocks acceptance. Recheck the exception after a relevant upstream fix, affected engine/kernel/toolchain changes, and before release. No automatic monitor was created.
+
+The final policy commit P is made after these document edits. Record its full SHA in the final report and verify it is a documentation-only descendant of B. B may retain provisional planning documents; their pending status is superseded only by the finalized policy read from P. No task may substitute moving HEAD or P for the source baseline B.
+
+The earlier blocked checkpoint below is preserved byte-for-byte after its historical heading. Its old HEAD, dirty-file counts, archive hashes and blocked-resume instructions remain provenance only; the limited user exception and current committed B supersede its launch-blocking decision. Keep the original and later archives; they describe earlier states and are not substitutes for the newly committed source.
 
 ---
 

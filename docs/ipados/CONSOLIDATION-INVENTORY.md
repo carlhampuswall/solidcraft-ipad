@@ -13,8 +13,13 @@ the three recorded upstream engine failures for a development baseline. Exact
 names, measurements and upstream links are in
 [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md). Tests and expectations
 remain intact, full CI is not relabeled green, and any new failure blocks
-approval. Fresh full-CI validation and source baseline B are still pending;
-the known three alone no longer block the development-baseline commit.
+approval. Source baseline B is committed as `c22acd12702cf3a405df01009b8d8662b3d46365`.
+
+The completed full `cargo +1.95.0 xtask ci` run exits **1**: **85/86 top-level checks pass**; the engine library has **2631 passed, 3 failed, 6 ignored**. Only the three unchanged failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) remain under the user exception. All other required checks passed. **CI is not green.**
+
+Completed full-gate log: `/private/tmp/solidcraft-step85-accepted-ci.log`. SHA-256: `c38a8f810f4f554f93fb47468631d48300f4cab250ffe0b8ba81394190e61526`.
+
+The finalized launch policy comes from documentation-only descendant P; all implementation worktrees start at B, subject to an explicit user launch request. No task was launched or branch pushed.
 
 Additional completed user work is preserved from “Add multitouch undo and redo,”
 chat `01a183dd-c2f4-74a1-a93d-024ef30a9e7c`: two-finger double-tap Undo and

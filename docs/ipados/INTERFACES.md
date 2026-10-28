@@ -183,6 +183,14 @@ invoke `edit.undo`/`edit.redo`; UIKit form state is not an undo stack. Cancellat
 discards provisional state without issuing Undo or restoring an old document over
 unrelated edits.
 
+`MetalCanvas.onUndo` and `onRedo` are main-thread shortcut callbacks. The
+existing `WorkspaceController` routes them through the same commands only while
+active and while the matching history button is enabled. Direct-touch double
+taps do not own a separate history; text fields retain UIKit editing behavior.
+`SolidCraft.workspace.historyGestures` restores the prior canvas behavior when
+disabled. The integration owner owns this input contract; presentation changes
+must preserve its command and availability guards.
+
 `ToolEvent` carries Begin/Update/Suspend/Resume/Commit/Cancel and actual world
 points on the tool plane. `ToolWork` carries interaction/version, source
 document/geometry, `ToolOperation` and commit intent. The viewport holds one

@@ -326,10 +326,10 @@ invalid geometry remains a real limitation, not an accepted correctness result.
 
 [CHECKPOINT.md](CHECKPOINT.md) preserves the earlier blocked decision and
 interrupted duplicate run as historical records, explicitly superseded by this
-limited user exception. Fresh validation and source baseline B are pending;
-the three documented failures alone no longer block creating that development
-baseline. Recheck after a relevant upstream fix, affected engine/kernel/toolchain
-changes and before release. No automatic monitor was created.
+limited user exception. Source baseline B is now `c22acd12702cf3a405df01009b8d8662b3d46365`. The completed full `cargo +1.95.0 xtask ci` run exits **1**: **85/86 top-level checks pass**; the engine library has **2631 passed, 3 failed, 6 ignored**. Only the three unchanged failures in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md) remain under the user exception. All other required checks passed. **CI is not green.**
+
+Tests remain enabled; expectations, tolerances and goldens are unchanged. Any new failed test or changed failure signature blocks acceptance. Recheck the exception after a relevant upstream fix, affected engine/kernel/toolchain changes, and before release. No automatic monitor was created.
+The finalized policy is read from the documentation-only descendant P recorded in the final report; every task starts at B and still requires an explicit launch request.
 
 ### Preserved user-requested history gestures
 
@@ -346,7 +346,7 @@ The user-requested default is enabled. Tools exposes
 text fields retain their editing gestures. The separate task's unsigned build
 and 186 existing layout cases passed, while physical gesture testing remains
 unperformed. The combined candidate's fresh unsigned native build and all 186
-Foundation cases pass; full CI and source baseline B remain pending. The added
+Foundation cases pass; the completed full-CI result and committed B are recorded above. The added
 label brings the native English catalog to 373 keys; the earlier 372-key
 isolation proof remains historical. The separate UI overhaul task made no source
 changes and is waiting for the baseline.
