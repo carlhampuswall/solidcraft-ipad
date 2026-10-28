@@ -1,5 +1,10 @@
 # Future Codex task prompts
 
+These are the historical B/P workstream prompts. Completed work is now combined
+on `develop`; [DEVELOP.md](DEVELOP.md) records what actually landed. New tasks
+need an approved current `origin/develop` SHA and ownership plan rather than
+reusing these older starting points automatically.
+
 **Ready for individually authorized parallel development.** Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed and accepted under the bounded 2026-10-28 user exception in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md). Only those three unchanged engine failures may remain; all other required checks passed. CI retains its nonzero result and is not described as green. A future task still needs an explicit user launch request; no tasks have been launched and no branch has been pushed by this finalization.
 
 Read launch policy from immutable documentation-only commit P, identified in the integrator's final report or resolved under the B/P verification rules below. Every source worktree starts at B. Do not use provisional planning documents inside B as the finalized policy.

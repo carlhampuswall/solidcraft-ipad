@@ -7,8 +7,20 @@ use std::sync::Arc;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--continuous-resize") {
+        return continuous_resize_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--profiles") {
+        return profile_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--origin") {
+        return origin_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--input") {
         return input_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--orbit") {
+        return orbit_proof(&destination);
     }
     if std::env::args().nth(2).as_deref() == Some("--sketch") {
         return sketch_proof(&destination);
@@ -165,8 +177,182 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// A synthetic Pencil tap selects one of two finished regions and supplies the
+/// exact source of an extrusion. Captures shared GPU output, never device input.
+fn profile_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY","name":"Two regions"}))?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-30,-10],"p1":[-10,10]}))?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[10,-5],"p1":[30,5]}))?;
+    engine.execute("sketch.finish", json!({}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, label: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("profile frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("profile PNG")?)?;
+        println!("{label}: {path}");
+        Ok(())
+    };
+    capture(&view, "before")?;
+    let projection = view.command("view.project", &json!({"point":[20,0,0]}))?;
+    let x = projection["points"][0].as_f64().ok_or("profile x")?;
+    let y = projection["points"][1].as_f64().ok_or("profile y")?;
+    let frame = view.diagnostic();
+    for (phase, timestamp) in [(InputPhase::Began, 1.), (InputPhase::Ended, 1.1)] {
+        view.input(InputEvent {
+            source: InputSource::Pencil,
+            phase,
+            id: 1,
+            x_points: x,
+            y_points: y,
+            x_pixels: x,
+            y_pixels: y,
+            scale: 1.,
+            timestamp,
+            azimuth: None,
+            predicted: false,
+            display_preview: false,
+            sequence: 0,
+            viewport_epoch: frame["viewport_epoch"].as_u64(),
+            camera_epoch: frame["camera_epoch"].as_u64(),
+            document_id: frame["document_id"].as_str().map(str::to_string),
+            pressure: None,
+            altitude: None,
+            geometry_revision: frame["geometry_revision"].as_u64(),
+            consumed: false,
+            shift: false,
+            button: 0,
+            scroll: 0.,
+        })?;
+    }
+    if view.selection().len() != 1 || view.diagnostic()["selection"][0]["type"] != "profile" {
+        return Err("Pencil tap did not select a finished profile".into());
+    }
+    capture(&view, "selected")?;
+    let edit = engine.begin_model(9000, Some("solid.extrude"), None, view.selection())?;
+    view.begin_model(edit.clone())?;
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    view.finish_model(edit.token, Some(engine.accept_model(&edit, prepared)?))?;
+    let volume = view.snapshot().ok_or("extruded frame")?.model.volume_mm3;
+    if (volume - 2000.).abs() > 1e-6 {
+        return Err(format!("wrong selected-region extrusion volume: {volume}").into());
+    }
+    capture(&view, "extruded")?;
+    println!("PASS: synthetic Pencil selected the right-hand 200 mm² region; Extrude used it directly and produced 2000 mm³. macOS GPU only.");
+    Ok(())
+}
+
+/// Real native finger routing after panning a top view. Captures the original and
+/// corrected orbit with the shared GPU; no UIKit or device input is simulated.
+fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let model = engine.proof()?;
+    let pivot = model.bounds.center();
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    for (follows_viewpoint, label) in [(false, "previous"), (true, "fixed")] {
+        let mut view = Viewport::default();
+        view.set_metrics(ViewportMetrics { width_points: 960.0, height_points: 640.0, scale: 1.0, origin_points: [0.0; 2] })?;
+        view.begin_update(1);
+        view.install(1, model.clone());
+        view.command("view.top", &json!({}))?;
+        view.command("view.navigate", &json!({"motion":"pan","delta":[100,50],"viewport":[960,640]}))?;
+        view.command("view.touch_orbit", &json!({"follows_viewpoint":follows_viewpoint}))?;
+        let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+            let frame = view.snapshot().ok_or("no orbit scene")?;
+            let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+            let path = destination.replace(".png", &format!("-{stage}.png"));
+            std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("orbit PNG encoding")?)?;
+            println!("{stage}: {path}");
+            Ok(())
+        };
+        if !follows_viewpoint {
+            capture(&view, "before")?;
+        }
+        let initial = view.command("view.project", &json!({"point":pivot}))?;
+        let x = initial["points"][0].as_f64().ok_or("missing orbit x")?;
+        let y = initial["points"][1].as_f64().ok_or("missing orbit y")?;
+        for (phase, dx, timestamp) in [(InputPhase::Began, 0.0, 1.0), (InputPhase::Moved, 120.0, 2.0), (InputPhase::Ended, 120.0, 3.0)] {
+            let report = view.diagnostic();
+            let sample: InputEvent = serde_json::from_value(json!({
+                "source":"finger","phase":phase,"id":1,"x_points":x+dx,"y_points":y,
+                "x_pixels":x+dx,"y_pixels":y,"scale":1.0,"timestamp":timestamp,
+                "document_id":report["document_id"],"geometry_revision":report["geometry_revision"],
+                "viewport_epoch":report["viewport_epoch"],"camera_epoch":report["camera_epoch"]
+            }))?;
+            view.input(sample)?;
+        }
+        let turned = view.command("view.project", &json!({"point":pivot}))?;
+        let tx = turned["points"][0].as_f64().ok_or("missing turned x")?;
+        let ty = turned["points"][1].as_f64().ok_or("missing turned y")?;
+        let drift = (tx - x).hypot(ty - y);
+        if follows_viewpoint && drift > 1e-6 {
+            return Err(format!("object centre drifted {drift} points").into());
+        }
+        println!("{label}: object centre drift {drift:.6} points");
+        capture(&view, label)?;
+    }
+    Ok(())
+}
+
 /// Actual native assembly documents and shared-renderer frames. This does not
 /// launch UIKit, a simulator or a device, and uses no independent motion model.
+fn origin_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("missing origin scene")?;
+        let line = |l: &SceneLine| SceneLine { points: l.points.clone(), color: l.color, alpha: l.alpha, width: l.width, on_top: l.on_top };
+        let mesh = |m: &SceneMesh| SceneMesh { mesh: m.mesh.clone(), color: m.color, face_colors: m.face_colors.clone(), opacity: m.opacity };
+        let scene = Scene {
+            background: frame.model.scene.background,
+            radius: frame.camera.distance * 2.,
+            meshes: frame.model.scene.meshes.iter().map(mesh).collect(),
+            lines: frame.model.scene.lines.iter().map(line).collect(),
+            grid: frame.guides.grid.iter().map(line).collect(),
+            ..Scene::default()
+        };
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        // Highlight and guide slots share the same depth-tested `trans` pass.
+        // Exercise the production converter rather than adding fills to the model.
+        let rgba =
+            capturer.rgba_highlighted(&scene, Some(solidcraft_ipados_bridge::renderer::guide_geometry(&frame.guides)), &frame.camera, 960, 640)?;
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("origin PNG encoding")?)?;
+        println!("{stage}: {path}");
+        Ok(())
+    };
+    capture(&view, "default-hidden")?;
+    view.command("view.choose_sketch_plane", &json!({}))?;
+    capture(&view, "visible")?;
+    view.command("view.origin", &json!({"item":"XZ","visible":false}))?;
+    capture(&view, "xz-hidden")?;
+    view.command("select.entity", &json!({"entity":{"type":"plane","name":"YZ"}}))?;
+    capture(&view, "yz-selected")?;
+    let plane = engine.preview_sketch_plane(json!("YZ"))?;
+    view.command("view.sketch_plane", &json!({"plane":plane}))?;
+    capture(&view, "plane-preview")?;
+    view.command("view.cancel_plane", &json!({}))?;
+    capture(&view, "automatic-hidden")?;
+    view.command("view.origin", &json!({"item":"XY","visible":true}))?;
+    capture(&view, "xy-manual-visible")?;
+    view.command("view.origin", &json!({"visible":false}))?;
+    capture(&view, "hidden")?;
+    println!(
+        "PASS: native origin guide geometry, individual visibility, existing plane selection and reversible preview; macOS GPU only, no UIKit/device claim"
+    );
+    Ok(())
+}
+
 fn assembly_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = SessionAdapter::new();
     let mut token = 8_000;
@@ -354,6 +540,83 @@ fn assembly_capture(
     Ok(())
 }
 
+fn continuous_resize_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let sketch = engine.execute("sketch.create", json!({"plane":"XY"}))?.value["sketch"].as_u64().ok_or("sketch")?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]}))?;
+    engine.execute("sketch.finish", json!({}))?;
+    engine.execute("solid.extrude", json!({"sketch":sketch,"distance":"10 mm"}))?;
+    let feature = engine.workspace(&[], false, false)["modelling"]["timeline"]
+        .as_array()
+        .and_then(|r| r.last())
+        .and_then(|r| r["id"].as_u64())
+        .ok_or("extrusion")?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.exit_planar", &json!({}))?;
+    view.command("view.home", &json!({}))?;
+    let edit = engine.begin_model(901, None, Some(feature), &[])?;
+    view.begin_model(edit)?;
+    let start = view.diagnostic()["handle_point"].as_array().ok_or("handle")?.clone();
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, label: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("resize frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        std::fs::write(destination.replace(".png", &format!("-{label}.png")), solidcraft_render::png(960, 640, rgba).ok_or("resize PNG")?)?;
+        println!("{label}: {:.3} mm³, contact {}", frame.model.volume_mm3, view.diagnostic()["input"]["edit"]);
+        Ok(())
+    };
+    let send = |view: &mut Viewport, phase: &str, depth: f64, time: f64| -> Result<(), Box<dyn std::error::Error>> {
+        let mut world = start.clone();
+        world[2] = json!(depth);
+        let projected = view.command("view.project", &json!({"point":world}))?;
+        let context = view.diagnostic();
+        view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":91,"timestamp":time,
+            "x_points":projected["points"][0],"y_points":projected["points"][1],"x_pixels":projected["pixels"][0],"y_pixels":projected["pixels"][1],"scale":1,
+            "geometry_revision":context["geometry_revision"],"document_id":context["document_id"],"viewport_epoch":context["viewport_epoch"],
+            "camera_epoch":context["camera_epoch"],"display_preview":context["preview"]}))?)?;
+        Ok(())
+    };
+    capture(&view, "depth10")?;
+    send(&mut view, "began", 10., 1.)?;
+    send(&mut view, "ended", 10., 2.)?;
+    send(&mut view, "began", 10., 3.)?;
+    for (index, depth) in [15., 20., 12.].into_iter().enumerate() {
+        send(&mut view, "moved", depth, 4. + index as f64)?;
+        let work = view.take_tool_work().ok_or("lost continuous resize contact")?;
+        let prepared = engine.prepare_tool(work.clone())?;
+        view.publish_model_tool_details(&work, prepared.reply, prepared.feedback, prepared.handle);
+        if !view.publish_preview(&work, prepared.model) {
+            return Err("resize preview rejected".into());
+        }
+        let edit = view.model_edit(901)?;
+        view.update_model(engine.refresh_model(&edit, &[], None)?)?;
+        capture(&view, &format!("depth{depth}"))?;
+    }
+    send(&mut view, "ended", 12., 8.)?;
+    let work = view.take_tool_work().ok_or("final lift")?;
+    let prepared = engine.prepare_tool(work.clone())?;
+    if !view.publish_preview(&work, prepared.model) {
+        return Err("final resize preview rejected".into());
+    }
+    if (engine.snapshot()?.volume_mm3 - 12_000.).abs() > 1e-6 {
+        return Err("a handle sample changed the authoritative document".into());
+    }
+    let edit = view.model_edit(901)?;
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    view.finish_model(901, Some(engine.accept_model(&edit, prepared)?))?;
+    if (engine.snapshot()?.volume_mm3 - 14_400.).abs() > 1e-5 {
+        return Err("wrong final extrusion volume".into());
+    }
+    capture(&view, "applied12")?;
+    println!(
+        "PASS: tap/re-grab, one continuous Pencil contact 10→15→20→12 mm, preview/inspection, explicit Apply. Synthetic input, macOS GPU; physical Pencil unverified."
+    );
+    Ok(())
+}
+
 fn modelling_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = SessionAdapter::new();
     let sketch = engine.execute("sketch.create", json!({"plane":"XY","name":"Plate sketch"}))?.value["sketch"].as_u64().ok_or("sketch")?;
@@ -403,6 +666,21 @@ fn modelling_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> 
         view.install(revision, engine.snapshot()?);
         capture(&view, label)?;
     }
+    let faces = engine.execute("model.faces", json!({"body":"Body1"}))?.value;
+    let face = faces["faces"]
+        .as_array()
+        .and_then(|faces| faces.iter().find(|face| face["plane_normal"][2].as_f64().is_some_and(|z| z > 0.999)))
+        .ok_or("planar push/pull face")?;
+    let selected = serde_json::from_value(json!({"type":"face","body":"Body1","index":face["index"],"point":face["point"]}))?;
+    let edit = engine.begin_model(74, Some("solid.offset_face"), None, &[selected])?;
+    view.begin_model(edit.clone())?;
+    let mut params = edit.params.clone();
+    params["distance"] = json!("5 mm");
+    let preview = engine.prepare_model(&edit, params, false)?;
+    view.publish_model(74, &preview)?;
+    capture(&view, "push-pull5")?;
+    std::fs::write(destination.replace(".png", "-handle.json"), serde_json::to_vec_pretty(&view.diagnostic()["model_value"])?)?;
+    view.finish_model(74, None)?;
     engine.execute("parameters.add", json!({"name":"bore_radius","expression":"3 mm"}))?;
     let bore = engine.execute("sketch.create", json!({"plane":"XY","offset":"15 mm","name":"Bore sketch"}))?.value["sketch"]
         .as_u64()

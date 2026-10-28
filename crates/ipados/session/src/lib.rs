@@ -7,6 +7,7 @@ mod assembly_references;
 mod editing;
 mod input;
 mod modelling;
+mod origin;
 mod picking;
 mod references;
 mod sketch_input;
@@ -86,6 +87,7 @@ pub struct SceneSnapshot {
     pub feature_ids: Vec<u64>,
     pub sketch: Option<SketchSnapshot>,
     pub sketch_plane: Option<solidcraft_engine::geom::Plane>,
+    pub construction_planes: Vec<(String, solidcraft_engine::geom::Plane)>,
     pub occurrence_paths: std::collections::BTreeMap<String, Vec<u64>>,
     pub occurrences: Vec<Vec<u64>>,
     pub joint_frames: Vec<solidcraft_engine::doc::Mat>,
@@ -131,6 +133,41 @@ impl SessionAdapter {
             revision: self.session.revision,
             geometry_revision: self.geometry_revision,
         })
+    }
+
+    /// Prepare and persist a browser project before replacing the live document.
+    /// A bad import, failed evaluation or unwritable destination leaves history,
+    /// selection and the current document untouched. All file semantics remain
+    /// in the upstream commands; this is only a native publication transaction.
+    pub fn replace_document(&mut self, source: Option<&str>, name: &str, destination: &str) -> Result<(Value, Arc<SceneSnapshot>), AdapterError> {
+        if name.trim().is_empty() || name.len() > 512 || destination.is_empty() || destination.len() >= 4096 {
+            return Err(error("bad_params", "invalid project name or destination"));
+        }
+        let revision = self.geometry_revision.checked_add(1).ok_or_else(|| error("revision_limit", "geometry revision exhausted"))?;
+        let mut candidate = Self::new();
+        let reply = match source {
+            Some(path) => candidate.execute("doc.open", json!({"path":path}))?.value,
+            None => candidate.execute("file.new", json!({"name":name}))?.value,
+        };
+        // Check the potentially large import-warning reply before adoption:
+        // response overflow must never look like a failed project switch after
+        // the live document has already changed. Leave room for viewport data.
+        if serde_json::to_vec(&reply).map_err(|e| error("response", e.to_string()))?.len() > 512 * 1024 {
+            return Err(error("response_limit", "project import diagnostics exceed 512 KiB"));
+        }
+        candidate.geometry_revision = revision;
+        let mut snapshot = candidate.snapshot()?;
+        let saved = candidate.execute("file.save_as", json!({"path":destination}))?;
+        // Save As may rename a design named after its previous file. Retain
+        // prepared geometry and normalise the publication to one new revision.
+        candidate.geometry_revision = revision;
+        if saved.changed {
+            snapshot = candidate.snapshot()?;
+        }
+        self.session = candidate.session;
+        self.geometry_revision = revision;
+        self.workspace_cache = None;
+        Ok((reply, snapshot))
     }
 
     /// Selection in `Viewport` consists of real engine `Sel`s. Synchronise via the
@@ -192,7 +229,14 @@ impl SessionAdapter {
         let world = self.session.world_state();
         let names: Vec<String> = world.bodies.iter().filter(|b| self.session.body_visible(&b.name)).map(|b| b.name.clone()).collect();
         let bounds = view::bounds(&self.session);
-        let picks = PickScene::new(&scene, names, bounds)?;
+        let mut picks = PickScene::new(&scene, names, bounds)?;
+        for sketch in world.sketches.iter().filter(|sketch| {
+            view::sketch_shown(&self.session, sketch.feature)
+                && !self.session.visibility.hidden_profiles.contains(&sketch.feature)
+                && !sketch.sketch.view.hide_profile
+        }) {
+            picks.add_profiles(sketch);
+        }
         let triangle_count = scene
             .meshes
             .iter()
@@ -228,6 +272,16 @@ impl SessionAdapter {
             feature_ids: self.session.doc.features.iter().map(|f| f.id).collect(),
             sketch: self.sketch_snapshot(),
             sketch_plane: view::open_sketch_plane(&self.session),
+            construction_planes: world
+                .construct
+                .iter()
+                .filter_map(|c| match &c.geom {
+                    solidcraft_engine::doc::construct::ConstructGeom::Plane(plane) if self.session.construction_visible(&c.name) => {
+                        Some((c.name.clone(), *plane))
+                    }
+                    _ => None,
+                })
+                .collect(),
             body_count: scene.meshes.len(),
             scene: Arc::new(scene),
             picks,

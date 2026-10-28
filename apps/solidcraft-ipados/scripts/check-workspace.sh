@@ -7,6 +7,10 @@ trap 'rm -rf "$check_dir"' EXIT HUP INT TERM
 xcrun --sdk macosx swiftc \
   -module-cache-path "$check_dir/module-cache" \
   "$script_dir/../SolidCraft/WorkspaceLayout.swift" \
+  "$script_dir/../SolidCraft/ProjectLibrary.swift" \
   "$script_dir/workspace-check.swift" \
   -o "$check_dir/workspace-check"
 "$check_dir/workspace-check"
+# Use an installed Python 3.11+ for the canonical TOML icon palette, scoped to
+# this command. No global Python setting or runtime dependency is changed.
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH" python3 -B "$script_dir/generate-icons.py" --check "$script_dir/../../.."

@@ -55,7 +55,9 @@ from that draft. Reassess shared frontend viability when integrating its outcome
 - `SceneSnapshot` contains the shared scene, visible world-space meshes indexed
   by actual body name, `MeshIndex` trees, world bounds, document ID, engine view
   revision and adapter geometry revision. The scene and picker are constructed
-  from the same evaluated state. B-rep faces come from `Mesh::tri_face`, edges
+  from the same evaluated state. Visible sketch profiles retain the engine's
+  world-space planes, native regions/holes and worker-prepared feedback meshes.
+  B-rep faces come from `Mesh::tri_face`, edges
   from `Mesh::edges`, vertices from the engine edges' endpoints. Display-only
   mesh outlines are excluded from edge/vertex selection. World transforms and
   visibility come from `Session::world_state` and `view::scene_with_guides`.
@@ -98,11 +100,13 @@ from that draft. Reassess shared frontend viability when integrating its outcome
   and handle rendering follow the evaluated preview. Camera input remains usable
   during evaluation. Lifecycle suspension cancels tools even without an attached
   surface and rejects late publications.
-- Native document/file browser, coordinated security-scoped access,
-  restoration and autosave remain future work. Step7 adds app-private full native
-  save/reopen through the existing command APIs. The generic command adapter is not
-  restricted to the development fixture, and native-format engine commands are
-  retained. No new native file format is introduced.
+- Native project browsing, coordinated security-scoped imports, autosave and
+  last-project restoration wrap the existing native file commands. The project
+  transaction prepares/evaluates/saves a candidate before replacing the live
+  session; a save-only request preserves provisional viewport work. Exports use a
+  frozen native container and a separate disposable worker session. See
+  INTERFACES.md for ownership, supported formats and limits. No new CAD format
+  or shared engine/kernel change is introduced.
 
 ## Approved platform exceptions
 

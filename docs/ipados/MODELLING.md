@@ -30,7 +30,7 @@ parameters the handlers actually read rather than assuming schema completeness.
 | 7C Sweep | `solid.sweep`: sketch/profile, path_sketch, ordered path curves, twist, scale, operation, targets | Basic native profile/path sweep, ordered curve list, twist/end-scale expressions and explicit Boolean targets. |
 | 7C Loft | `solid.loft`: ordered sections, operation, targets | Ordered native classified sections; list order can be changed before preview. |
 | Named parameters | `parameters.add`, `parameters.change` | Native names, units and expression validation; no independent expression parser. |
-| History and persistence | `edit.undo`, `edit.redo`, existing `file.save`/`doc.open` services | Native document and history semantics; app-local save/reopen is available without adding the Step 9 browser. |
+| History and persistence | `edit.undo`, `edit.redo`, existing native file commands | Native document/history semantics; the Projects browser supplies save, autosave/restoration and Files import/export. See UI.md and INTERFACES.md. |
 
 The engine supports more options than these initial native forms expose. They
 include extrusion Two Sides, start offsets, draft and To/From Object;
@@ -91,6 +91,58 @@ input and text focus uses the established workspace focus policy.
 The distance handle is hidden for Through All and other extents where changing
 distance would not control the displayed endpoint. Legacy symmetric extents keep
 their original per-side convention.
+
+## Direct handles and exact entry
+
+Straight modelling handles use a double-ended arrow at the actual evaluated
+endpoint, aligned with the projected tool axis and sized in display points.
+Pencil, a finger or the primary pointer can grab the 48-point target; a finger
+starting elsewhere continues through the shared navigation path. Angular assembly
+handles retain their existing ring. Looking straight along a linear axis still
+allows exact value entry when the drag plane cannot be resolved.
+
+A horizontal value chip follows the presented frame, staying inside the safe
+viewport and clear of the grip, panels and workspace controls. Tap it to enter
+an expression in a native popover. The numeric keypad inserts digits, signs and
+arithmetic; the accessory provides units, parentheses and a switch to the full
+keyboard for named parameters. The original expression stays in the field.
+Preview displays the engine-resolved value and provisional geometry. Apply
+validates and accepts the same modelling transaction as the inspector; Cancel
+abandons the operation. Dismissing the popover keeps the last submitted preview
+and discards text that was never submitted. Editing alone adds no history.
+
+The native Modify menu now includes the existing `solid.offset_face` command for
+push/pull. A single planar source face supplies its outward normal and moving
+endpoint; signed distances grow or shrink the native body. Multiple faces can
+use exact entry in the inspector without implying one shared drag axis. Native
+face lookup validates all points on one source body before preview or acceptance.
+Opening or changing a preview never adopts its moved face as the next source.
+Existing native face-offset features remain editable in place, including ones
+with an inferred body scope. No geometry algorithm or file format is added.
+
+Changes a default: yes — straight handles use arrows, direct finger/pointer
+capture and a value chip. Turn off **On-model editing handles** in the workspace
+menu to restore the cross, Pencil-only capture and inspector entry. The setting
+is native presentation state under `SolidCraft.workspace.directHandles`; it is
+not saved in a design. The native viewport command `view.tool_handles` accepts
+`{"enabled":true|false}` and returns its ordinary diagnostic snapshot.
+
+Verified on 2026-10-28: 125 session and 28 bridge tests; 330 native adaptive
+layout cases plus value-chip placement/response decoding and icon checks;
+affected all-targets Clippy with warnings denied; wasm compilation for both
+adapters; catalog, layering and UI-container gates; and an unsigned device build.
+The push/pull fixture checks 12,000 → 18,000 → 8,400 mm³, signed expression input,
+inferred/explicit source bodies, native save/reopen, cancellation and Undo/Redo.
+Finger and pointer samples verify that handle capture leaves the camera and
+authoritative history unchanged, and disabling the preference restores finger
+navigation. Existing tests retain Pencil, stale-work and lifecycle coverage.
+
+`render_proof --modelling` captures actual shared-GPU extrusion and push/pull
+handles and writes `-handle.json` with the presented chip value/position. Captures
+under `/tmp/solidcraft-handles-*` are macOS GPU evidence, not UIKit screenshots.
+Physical iPad dragging, keyboard/popover placement and VoiceOver still require
+hardware verification. No simulator was launched, and no commit or push was made.
+The full upstream `cargo xtask ci` gate was not run for this local UI change.
 
 ## Preview, confirmation and cancellation
 

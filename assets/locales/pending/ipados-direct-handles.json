@@ -1,0 +1,12 @@
+{
+  "en": {
+    "ui.ipados.handles.boolean_required": "Choose whether on-model editing handles are enabled.",
+    "ui.ipados.handles.choose_faces": "Choose faces on the target body before pushing or pulling.",
+    "ui.ipados.handles.delete": "Delete previous character",
+    "ui.ipados.handles.direct_handles": "On-model editing handles",
+    "ui.ipados.handles.edit_value": "Edit handle value",
+    "ui.ipados.handles.entry_hint": "Enter a distance, units or a parameter expression. Preview checks the result; Apply finishes the operation.",
+    "ui.ipados.handles.faces": "Faces to push or pull",
+    "ui.ipados.handles.keyboard": "123 / ABC"
+  }
+}

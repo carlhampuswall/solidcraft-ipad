@@ -12,6 +12,14 @@
     <key>CFBundleShortVersionString</key><string>0.24.1</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSRequiresIPhoneOS</key><true/>
+    <key>UTExportedTypeDeclarations</key>
+    <array><dict>
+        <key>UTTypeIdentifier</key><string>com.solidcraft.design</string>
+        <key>UTTypeConformsTo</key><array><string>public.data</string><string>public.content</string></array>
+        <key>UTTypeTagSpecification</key><dict>
+            <key>public.filename-extension</key><array><string>solidcraft</string></array>
+        </dict>
+    </dict></array>
     <key>UIApplicationSceneManifest</key>
     <dict>
         <key>UIApplicationSupportsMultipleScenes</key><false/>

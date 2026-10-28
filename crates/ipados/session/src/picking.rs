@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use solidcraft_engine::{
     Sel,
-    geom::{Aabb3, Mesh, MeshIndex, Vec3},
+    geom::{Aabb3, Mesh, MeshIndex, Plane, Region2, Vec3},
 };
 use solidcraft_render::{Camera, Mat4, Scene};
 
@@ -74,9 +74,19 @@ pub(crate) struct PickBody {
     index: MeshIndex,
 }
 
+pub(crate) struct PickProfile {
+    pub sketch: u64,
+    pub index: usize,
+    pub plane: Plane,
+    region: Region2,
+    pub fill: Arc<Mesh>,
+    pub boundaries: Vec<Vec<Vec3>>,
+}
+
 pub struct PickScene {
     bounds: Aabb3,
     pub(crate) bodies: Vec<PickBody>,
+    pub(crate) profiles: Vec<PickProfile>,
 }
 
 impl PickScene {
@@ -92,7 +102,67 @@ impl PickScene {
         Ok(Self {
             bounds,
             bodies: scene.meshes.iter().zip(names).map(|(m, name)| PickBody { name, index: MeshIndex::new(&m.mesh), mesh: m.mesh.clone() }).collect(),
+            profiles: Vec::new(),
         })
+    }
+
+    /// Called on the engine worker with the same visible, world-space sketch state
+    /// used by the shared scene builder. Profile detection and fill stay off input.
+    pub(crate) fn add_profiles(&mut self, sketch: &solidcraft_engine::doc::SolvedSketch) {
+        for (index, profile) in sketch.profiles.iter().enumerate() {
+            let region = &profile.region;
+            let mut fill = Mesh::default();
+            for tri in region.triangulate(1e-2) {
+                let Ok(start) = u32::try_from(fill.positions.len()) else { break };
+                if start > u32::MAX - 3 {
+                    break;
+                }
+                fill.positions.extend(tri.map(|p| sketch.plane.to_world(p)));
+                fill.normals.extend([sketch.plane.normal(); 3]);
+                fill.triangles.push([start, start + 1, start + 2]);
+            }
+            let boundaries = std::iter::once(&region.outer)
+                .chain(&region.holes)
+                .map(|boundary| {
+                    let mut points: Vec<_> = boundary.polyline(1e-2).into_iter().map(|p| sketch.plane.to_world(p)).collect();
+                    if let Some(first) = points.first().copied() {
+                        points.push(first);
+                    }
+                    points
+                })
+                .collect();
+            self.profiles.push(PickProfile {
+                sketch: sketch.feature,
+                index,
+                plane: sketch.plane,
+                region: region.clone(),
+                fill: Arc::new(fill),
+                boundaries,
+            });
+        }
+    }
+
+    pub(crate) fn pick_profile(&self, camera: &Camera, vp: Mat4, metrics: ViewportMetrics, pixel: [f64; 2]) -> Option<Sel> {
+        let [w, h] = metrics.pixels();
+        let (origin, direction) = self.ray(camera, pixel[0], pixel[1], w, h);
+        let solid_depth = self.nearest(origin, direction).map(|(depth, _, _)| depth);
+        self.profiles
+            .iter()
+            .filter_map(|profile| {
+                let point = profile.plane.intersect_ray(origin, direction)?;
+                let depth = (point - origin).dot(direction);
+                let epsilon = camera.distance.abs().max(point.len()).max(1.) * 1e-7;
+                if depth < 0.
+                    || solid_depth.is_some_and(|solid| depth > solid + epsilon)
+                    || project(vp, point, [w, h]).is_none()
+                    || !profile.region.contains(profile.plane.to_local(point))
+                {
+                    return None;
+                }
+                Some((depth, profile))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.sketch.cmp(&b.1.sketch)).then(a.1.index.cmp(&b.1.index)))
+            .map(|(_, profile)| Sel::Profile { sketch: profile.sketch, index: profile.index })
     }
 
     fn nearest(&self, o: Vec3, d: Vec3) -> Option<(f64, usize, usize)> {
@@ -182,7 +252,7 @@ impl PickScene {
     /// Start the shared screen ray on the same near plane the renderer uses. An
     /// orthographic zoom can place Camera::ray's usual origin inside the model;
     /// moving along that same ray to clip_bounds avoids selecting its back face.
-    fn ray(&self, camera: &Camera, x: f64, y: f64, w: f64, h: f64) -> (Vec3, Vec3) {
+    pub(crate) fn ray(&self, camera: &Camera, x: f64, y: f64, w: f64, h: f64) -> (Vec3, Vec3) {
         let (origin, direction) = camera.ray(x, y, w, h);
         let forward = -camera.back();
         let depth = (origin - camera.eye()).dot(forward);
@@ -194,7 +264,7 @@ impl PickScene {
         (origin + direction * ((near - depth) / along), direction)
     }
 
-    fn visible(&self, camera: &Camera, vp: Mat4, metrics: ViewportMetrics, point: Vec3) -> bool {
+    pub(crate) fn visible(&self, camera: &Camera, vp: Mat4, metrics: ViewportMetrics, point: Vec3) -> bool {
         let [w, h] = metrics.pixels();
         let Some(q) = project(vp, point, [w, h]) else { return false };
         let (o, d) = self.ray(camera, q[0], q[1], w, h);

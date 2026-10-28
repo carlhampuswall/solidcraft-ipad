@@ -83,6 +83,8 @@ enum Request {
     Proof,
     Fixture,
     Command { command: String, params: Value },
+    Document { source: Option<String>, name: String, destination: String },
+    SaveDocument { path: String },
     Snapshot,
     Input { event: InputEvent },
     InputBatch { events: Vec<InputEvent> },
@@ -372,6 +374,14 @@ impl Entry {
     }
 
     fn evaluate(&self, request: Request) -> Result<Value, AdapterError> {
+        if let Request::SaveDocument { path } = request {
+            // Persist only the authoritative document. Autosave must not cancel
+            // a Pencil contact, numeric draft or provisional modelling scene.
+            let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
+            return adapter
+                .execute("file.save", json!({"path":path}))
+                .and_then(|reply| serde_json::to_value(reply).map_err(|e| error("response", e.to_string())));
+        }
         if matches!(&request, Request::Workspace) {
             return self.workspace();
         }
@@ -426,6 +436,7 @@ impl Entry {
             match request {
                 Request::Proof => adapter.proof().map(|s| (metadata(&s), s)),
                 Request::Fixture => adapter.fixture().map(|s| (metadata(&s), s)),
+                Request::Document { source, name, destination } => adapter.replace_document(source.as_deref(), &name, &destination),
                 Request::Command { command, params } => {
                     adapter.selection(&selection)?;
                     let reply = adapter.execute(&command, params)?;

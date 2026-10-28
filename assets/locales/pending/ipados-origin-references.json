@@ -1,0 +1,12 @@
+{
+  "en": {
+    "ui.ipados.sketch.hide_origin": "Hide all origin references",
+    "ui.ipados.sketch.origin_point": "Origin point",
+    "ui.ipados.sketch.origin_references": "Origin references",
+    "ui.ipados.sketch.reference_unknown": "Unknown origin reference.",
+    "ui.ipados.sketch.reference_visibility_boolean": "Reference visibility must be a boolean or null for automatic visibility.",
+    "ui.ipados.sketch.show_origin": "Show all origin references",
+    "ui.ipados.sketch.tap_plane": "Tap a plane or a planar face to start a sketch. Drag to orbit. Show hidden planes in the Part browser > Origin references.",
+    "ui.ipados.sketch.visual_plane_selection": "Select sketch planes in 3D"
+  }
+}

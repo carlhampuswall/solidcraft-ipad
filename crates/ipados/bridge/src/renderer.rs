@@ -176,7 +176,7 @@ impl NativeRenderer {
             self.highlight_revision = 0;
         }
         if self.overlay_revision != snapshot.guide_revision {
-            *self.guides.lock().map_err(|_| "guide scene lock poisoned")? = Some(solidcraft_gpu::capture::scene_geometry(&snapshot.guides));
+            *self.guides.lock().map_err(|_| "guide scene lock poisoned")? = Some(guide_geometry(&snapshot.guides));
             self.overlay_revision = snapshot.guide_revision;
         }
         if self.highlight_revision != snapshot.highlight_revision {
@@ -341,6 +341,16 @@ impl NativeMeshCache {
     }
 }
 
+/// The shared sketch/guide slot draws lines and `trans` surfaces. Its opaque and
+/// glass mesh lanes are intentionally unused; route reference fills and the
+/// origin dot through its depth-tested, alpha-blended surface lane.
+pub fn guide_geometry(scene: &solidcraft_render::Scene) -> GpuScene {
+    let mut geometry = solidcraft_gpu::capture::scene_geometry(scene);
+    geometry.trans.append(&mut geometry.tris);
+    geometry.trans.append(&mut geometry.glass);
+    geometry
+}
+
 pub(crate) fn model_geometry(snapshot: &RenderSnapshot, key: u64) -> Result<(GpuScene, ModelBodies), String> {
     model_geometry_cached(snapshot, key, &mut NativeMeshCache::default())
 }
@@ -463,6 +473,10 @@ fn fallback_blocks(scene: &mut GpuScene, source: &solidcraft_render::Scene, name
 
 pub(crate) fn highlight_geometry(snapshot: &RenderSnapshot, bodies: &ModelBodies) -> GpuScene {
     let mut highlight = solidcraft_gpu::capture::scene_geometry(&snapshot.highlight);
+    // The shared highlight pass alpha-blends its triangle lane; it does not draw
+    // separate glass/trans lanes. Keep translucent profile feedback in that pass.
+    highlight.tris.append(&mut highlight.glass);
+    highlight.tris.append(&mut highlight.trans);
     for (selected, names, tint) in
         [(true, &snapshot.selected_bodies, snapshot.selection_tint), (false, &snapshot.hovered_bodies, snapshot.hover_tint)]
     {

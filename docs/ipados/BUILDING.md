@@ -1,9 +1,12 @@
 # Building the native iPadOS viewport
 
-Use the existing fork on `integration/ipados-foundation` for consolidation,
-or an approved task worktree at the exact common baseline in
-[PARALLEL-DEVELOPMENT.md](PARALLEL-DEVELOPMENT.md). Run from that checkout root.
-No simulator launch or device signing is part of the unsigned check.
+Use the existing fork's `develop` branch, or an isolated worktree at a recorded
+approved `origin/develop` SHA. Run from that checkout root. The older B/P task
+policy in [PARALLEL-DEVELOPMENT.md](PARALLEL-DEVELOPMENT.md) remains historical.
+Current combined results and exclusions are in [DEVELOP.md](DEVELOP.md).
+No simulator launch or device signing is part of the unsigned check. The
+consolidation request excludes the engine suite and complete `cargo xtask ci`;
+the full-gate examples below are for a later explicit full-test request.
 
 ## Prerequisites
 

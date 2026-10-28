@@ -8,6 +8,64 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        // A busy display lane must preserve the Pencil contact through a burst
+        // of actual samples, including its final lift, without an input.cancel.
+        func pencil(_ phase: InputSample.Phase, _ sequence: UInt64) -> InputSample {
+            var sample = InputSample(source: .pencil, phase: phase, id: 91,
+                x_points: Double(sequence), y_points: 100, x_pixels: Double(sequence) * 2, y_pixels: 200,
+                scale: 2, timestamp: Double(sequence), pressure: nil, altitude: nil,
+                geometry_revision: 1, consumed: false, shift: false, button: 0, scroll: 0)
+            sample.sequence = sequence; sample.viewport_epoch = 1; sample.camera_epoch = 1; sample.document_id = "design"
+            return sample
+        }
+        let mailbox = InputMailbox()
+        let inputToken = mailbox.append(pencil(.began, 1))
+        for sequence in UInt64(2)...1000 { _ = mailbox.append(pencil(.moved, sequence)) }
+        _ = mailbox.append(pencil(.ended, 1001))
+        guard let inputToken, let batch = mailbox.take(token: inputToken) else { throw NSError(domain: "InputChecks", code: 1) }
+        try require(!batch.cancelled, "Pencil sample backlog cancelled an active resize")
+        try require(batch.samples.count <= 128, "native input buffer exceeded its bound")
+        try require(batch.samples.first?.phase == .began && batch.samples.last?.phase == .ended, "backlog dropped contact boundaries")
+        try require(batch.samples.dropLast().last?.sequence == 1000, "backlog lost the latest actual drag position")
+        try require(zip(batch.samples, batch.samples.dropFirst()).allSatisfy { $0.sequence < $1.sequence }, "coalescing reordered Pencil samples")
+        let reversing = InputMailbox()
+        let reversingToken = reversing.append(pencil(.began, 1))
+        for sequence in UInt64(2)...1000 {
+            let position = sequence <= 500 ? sequence : 1000 - sequence
+            var sample = InputSample(source: .pencil, phase: .moved, id: 91,
+                x_points: Double(position), y_points: 100, x_pixels: Double(position) * 2, y_pixels: 200,
+                scale: 2, timestamp: Double(sequence), pressure: nil, altitude: nil,
+                geometry_revision: 1, consumed: false, shift: false, button: 0, scroll: 0)
+            sample.sequence = sequence
+            _ = reversing.append(sample)
+        }
+        guard let reversingToken, let reverseBatch = reversing.take(token: reversingToken) else { throw NSError(domain: "InputChecks", code: 2) }
+        try require(!reverseBatch.cancelled && reverseBatch.samples.contains(where: { $0.x_points == 500 }), "coalescing lost a direction reversal")
+        try require(reverseBatch.samples.last?.x_points == 0, "reverse drag lost its final actual position")
+        let uncertain = InputMailbox()
+        let uncertainToken = uncertain.append(pencil(.began, 1))
+        for sequence in UInt64(2)...130 { _ = uncertain.append(pencil(.hover, sequence)) }
+        guard let uncertainToken, let uncertainBatch = uncertain.take(token: uncertainToken) else { throw NSError(domain: "InputChecks", code: 3) }
+        try require(uncertainBatch.cancelled, "uncompressible input must retain conservative cancellation")
+        let staleInputToken = mailbox.append(pencil(.began, 1002))
+        mailbox.clear()
+        if let staleInputToken { try require(mailbox.take(token: staleInputToken) == nil, "cancelled input batch survived a context change") }
+        // On-model value chips stay readable, clear of both the grip and chrome.
+        for bounds in [CGRect(x: 0, y: 0, width: 1194, height: 790), CGRect(x: 0, y: 0, width: 390, height: 420)] {
+            for anchor in [CGPoint(x: bounds.midX, y: bounds.midY), CGPoint(x: bounds.maxX - 5, y: bounds.midY), CGPoint(x: 5, y: 5)] {
+                let obstacle = CGRect(x: bounds.maxX - 100, y: 0, width: 100, height: 120)
+                if let frame = ModelValuePlacement.resolve(anchor: anchor, size: CGSize(width: 100, height: 48), bounds: bounds, obstacles: [obstacle]) {
+                    try require(bounds.contains(frame), "handle value escaped the visible viewport")
+                    try require(!frame.intersects(obstacle), "handle value covers workspace controls")
+                    try require(!frame.intersects(CGRect(x: anchor.x - 26, y: anchor.y - 26, width: 52, height: 52)), "value chip steals handle drags")
+                }
+            }
+        }
+        try require(ModelValuePlacement.resolve(anchor: CGPoint(x: 100, y: 100), size: CGSize(width: 100, height: 48), bounds: CGRect(x: 0, y: 0, width: 300, height: 300), obstacles: []) != nil, "normal viewport lost exact value entry")
+        try require(ModelValuePlacement.resolve(anchor: .zero, size: CGSize(width: 100, height: 48), bounds: .zero, obstacles: []) == nil, "collapsed viewport exposes a value chip")
+        let handleJSON = Data(#"{"token":750,"parameter":"extent.distance","position":[400,300],"value":15,"units":"mm","expression":"plate_depth + 5 mm","valid":true}"#.utf8)
+        let handleValue = try JSONDecoder().decode(ModelValuePresentation.self, from: handleJSON)
+        try require(handleValue.expression == "plate_depth + 5 mm" && handleValue.token == 750 && handleValue.value == 15, "handle response replaced an expression or lost its transaction")
         // No simulator or UIKit runtime. Verify the geometry policy used by the
         // controller, including resizable windows and keyboard-reduced bounds.
         var cases = 0
@@ -18,7 +76,7 @@ struct WorkspaceChecks {
                 for railRight in [false, true] {
                     for panels in [(false, false), (true, false), (false, true), (true, true)] {
                         let layout = WorkspaceLayout.resolve(size: size, browser: panels.0, inspector: panels.1,
-                                                             railRight: railRight, largeText: largeText)
+                                                             railRight: railRight, largeText: largeText, compactChrome: false)
                         let bounds = CGRect(origin: .zero, size: size)
                         for frame in [layout.topBar, layout.status, layout.rail, layout.canvas] + [layout.browser, layout.inspector].compactMap({ $0 }) {
                             try require(frame.width >= 0 && frame.height >= 0, "negative frame")
@@ -36,7 +94,7 @@ struct WorkspaceChecks {
                             if let frame = layout.inspector { try require(!layout.canvas.intersects(frame), "docked inspector overlaps picking") }
                         }
                         let mirror = WorkspaceLayout.resolve(size: size, browser: panels.0, inspector: panels.1,
-                                                             railRight: !railRight, largeText: largeText)
+                                                             railRight: !railRight, largeText: largeText, compactChrome: false)
                         try require(layout.canvas.width == mirror.canvas.width, "handedness changes usable viewport width")
                         try require(layout.rail.minX == size.width - mirror.rail.maxX, "rail placement does not mirror")
                         cases += 1
@@ -45,7 +103,7 @@ struct WorkspaceChecks {
             }
         }
         for invalid in [CGSize.zero, CGSize(width: -10, height: -20), CGSize(width: CGFloat.nan, height: CGFloat.infinity)] {
-            let layout = WorkspaceLayout.resolve(size: invalid, browser: true, inspector: true, railRight: false, largeText: true)
+            let layout = WorkspaceLayout.resolve(size: invalid, browser: true, inspector: true, railRight: false, largeText: true, compactChrome: false)
             try require(layout.canvas.width.isFinite && layout.canvas.height.isFinite, "invalid dimensions escaped")
             try require(layout.canvas.width >= 0 && layout.canvas.height >= 0, "invalid dimensions became negative")
         }
@@ -55,7 +113,7 @@ struct WorkspaceChecks {
         for largeText in [false, true] {
             for width in [CGFloat(834), 1000, 1024, 1120, 1194] {
                 let layout = WorkspaceLayout.resolve(size: CGSize(width: width, height: 790), browser: true, inspector: true,
-                                                     railRight: false, largeText: largeText)
+                                                     railRight: false, largeText: largeText, compactChrome: false)
                 try require(layout.rail.width == (largeText ? 160 : 112), "tool rail compresses text-labelled controls")
                 if !layout.compact { try require(layout.canvas.width >= 360, "wider tool labels squeezed the docked canvas") }
                 cases += 1
@@ -68,7 +126,7 @@ struct WorkspaceChecks {
                 for railRight in [false, true] {
                     let size = CGSize(width: width, height: height)
                     let layout = WorkspaceLayout.resolve(size: size, browser: true, inspector: true,
-                                                         railRight: railRight, largeText: true)
+                                                         railRight: railRight, largeText: true, compactChrome: false)
                     for frame in [layout.topBar, layout.status, layout.rail, layout.canvas] + [layout.browser, layout.inspector].compactMap({ $0 }) {
                         try require(frame.width.isFinite && frame.height.isFinite, "transient size created invalid drawable")
                         try require(frame.width >= 0 && frame.height >= 0, "transient size created negative drawable")
@@ -91,7 +149,7 @@ struct WorkspaceChecks {
                 let (size, header, status) = item
                 let layout = WorkspaceLayout.resolve(size: size, browser: true, inspector: true,
                                                      railRight: railRight, largeText: true,
-                                                     minimumHeaderHeight: header, minimumStatusHeight: status)
+                                                     minimumHeaderHeight: header, minimumStatusHeight: status, compactChrome: false)
                 for frame in [layout.topBar, layout.status, layout.rail, layout.canvas] + [layout.browser, layout.inspector].compactMap({ $0 }) {
                     try require(frame.origin.x.isFinite && frame.origin.y.isFinite && frame.width.isFinite && frame.height.isFinite,
                                 "scaled type created nonfinite geometry")
@@ -111,6 +169,76 @@ struct WorkspaceChecks {
                 cases += 1
             }
         }
+        // Floating panels must not resize the viewport. Only an explicitly
+        // pinned wide browser consumes content width; closing it restores it.
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 1024, height: 700),
+                     CGSize(width: 834, height: 1140), CGSize(width: 600, height: 420),
+                     CGSize(width: 390, height: 760), CGSize(width: 320, height: 340)] {
+            for largeText in [false, true] {
+                for railRight in [false, true] {
+                    let closed = WorkspaceLayout.resolve(size: size, browser: false, inspector: false, railRight: railRight, largeText: largeText)
+                    try require(closed.canvas == CGRect(origin: .zero, size: size), "closed chrome consumes model space")
+                    try require(closed.canvas.width >= size.width * 0.8, "floating workspace misses viewport width target")
+                    try require(closed.rail.width >= 44 && closed.rail.width <= 56, "icon rail loses touch width")
+                    try require(closed.topBar.width < size.width && closed.topBar.height < 100, "floating header became a full-width banner")
+                    for panels in [(true, false), (false, true)] {
+                        let opened = WorkspaceLayout.resolve(size: size, browser: panels.0, inspector: panels.1, railRight: railRight, largeText: largeText)
+                        try require(opened.canvas == closed.canvas, "floating panel rebases rendering or picking")
+                        try require(!opened.compact, "floating panel incorrectly owns a full-screen modal scrim")
+                        for frame in [opened.topBar, opened.status, opened.rail, opened.navigation, opened.history, opened.browserAccess] + [opened.browser, opened.inspector].compactMap({ $0 }) {
+                            try require(CGRect(origin: .zero, size: size).contains(frame), "floating chrome escaped a resized window")
+                        }
+                    }
+                    let pinned = WorkspaceLayout.resolve(size: size, browser: true, inspector: false, railRight: railRight, largeText: largeText, pinnedBrowser: true)
+                    if size.width >= (largeText ? 1180 : 1000), let browser = pinned.browser {
+                        try require(pinned.canvas.width >= 360 && !pinned.canvas.intersects(browser), "pinning covers the remaining viewport")
+                    } else { try require(pinned.canvas == closed.canvas, "narrow pin preference consumes viewport") }
+                    cases += 1
+                }
+            }
+        }
+        for size in [CGSize.zero, CGSize(width: 1, height: 1), CGSize(width: 44, height: 55), CGSize(width: -10, height: CGFloat.infinity)] {
+            let layout = WorkspaceLayout.resolve(size: size, browser: true, inspector: true, railRight: true, largeText: true)
+            for frame in [layout.topBar, layout.status, layout.rail, layout.canvas, layout.navigation, layout.history] {
+                try require(frame.width.isFinite && frame.height.isFinite && frame.width >= 0 && frame.height >= 0, "invalid floating drawable")
+            }
+        }
+        // The viewport fills space behind system indicators; controls retain
+        // their safe, keyboard-reduced bounds, including with a pinned browser.
+        for size in [CGSize(width: 1366, height: 1024), CGSize(width: 1194, height: 834), CGSize(width: 834, height: 1194),
+                     CGSize(width: 600, height: 420), CGSize(width: 390, height: 844)] {
+            for keyboard in [false, true] {
+                let viewport = CGRect(x: 0, y: 0, width: size.width, height: size.height - (keyboard ? 300 : 0))
+                let safe = CGRect(x: 12, y: 24, width: size.width - 24, height: size.height - 44)
+                let chrome = CGRect(x: safe.minX, y: safe.minY, width: safe.width,
+                                    height: max(0, min(safe.maxY, viewport.maxY) - safe.minY))
+                for railRight in [false, true] {
+                    for largeText in [false, true] {
+                        let closed = WorkspaceLayout.resolve(size: chrome.size, browser: false, inspector: false,
+                            railRight: railRight, largeText: largeText).placed(in: chrome, viewport: viewport)
+                        try require(closed.canvas == viewport, "safe area leaves unused viewport strips")
+                        for panel in [(false, false), (true, false), (true, true)] {
+                            let layout = WorkspaceLayout.resolve(size: chrome.size, browser: panel.0, inspector: true,
+                                railRight: railRight, largeText: largeText, pinnedBrowser: panel.1).placed(in: chrome, viewport: viewport)
+                            try require(layout.canvas.minY == viewport.minY && layout.canvas.maxY == viewport.maxY,
+                                        "panel leaves top or bottom viewport strips")
+                            try require(viewport.contains(layout.canvas), "placed viewport escaped window/keyboard bounds")
+                            for frame in [layout.topBar, layout.status, layout.rail, layout.navigation, layout.history, layout.browserAccess] + [layout.browser, layout.inspector].compactMap({ $0 }) {
+                                try require(chrome.contains(frame), "full-window layout moved controls under system indicators")
+                            }
+                            if panel.1, chrome.width >= (largeText ? 1180 : 1000), let browser = layout.browser {
+                                try require(!layout.canvas.intersects(browser), "full-window expansion covers pinned browser")
+                            } else { try require(layout.canvas == closed.canvas, "floating panel changes full-window picking bounds") }
+                            cases += 1
+                        }
+                    }
+                }
+            }
+        }
+        let numericPanel = WorkspaceLayout.resolve(size: CGSize(width: 1194, height: 790), browser: false, inspector: true,
+                                                   railRight: false, largeText: false, inspectorContentHeight: 500, navigationContentHeight: 146)
+        try require(numericPanel.inspector?.height == 500, "simple numeric editor became a full-height inspector")
+        try require(numericPanel.navigation.height == 146, "navigation surface retains unused permanent space")
         try require(WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: false, numericEditActive: false), "document shortcuts unavailable at rest")
         try require(!WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: true, numericEditActive: false), "text undo routes to document")
         try require(!WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: false, numericEditActive: true), "numeric draft permits unrelated history action")
@@ -204,6 +332,50 @@ struct WorkspaceChecks {
         try require(PresentationLabelKey.label("cmd.solid.extrude", lookup: lookup) == "Extrude" && PresentationLabelKey.label("cmd.solid.pattern.path", lookup: lookup) == "Pattern on Path", "legacy modelling command labels did not reuse their native catalogue")
         try require(PresentationLabelKey.label("ui.ipados.assembly.field.a_point_x", lookup: lookup) == "First world origin X", "UI namespace punctuation changed")
         try require(PresentationLabelKey.label("Arm.1 / Bracket_2", lookup: lookup) == "Arm.1 / Bracket_2" && PresentationLabelKey.label("cmd.unknown.command", lookup: lookup) == "cmd.unknown.command", "user text or unknown label fallback was changed")
+        let libraryRoot = FileManager.default.temporaryDirectory.appendingPathComponent("SolidCraft-Library-Check-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: libraryRoot) }
+        let library = ProjectLibrary(root: libraryRoot)
+        let emptyProjects = try library.projects()
+        try require(emptyProjects.isEmpty, "new library is not empty")
+        let projectA = try library.reserve(name: "  Bracket  ")
+        let projectB = try library.reserve(name: "Bracket")
+        try require(projectA.id != projectB.id && projectA.file != projectB.file, "same-name projects overwrite each other")
+        try Data("first design".utf8).write(to: projectA.file)
+        try Data("second design".utf8).write(to: projectB.file)
+        let projectList = try library.projects()
+        try require(Set(projectList.map(\.id)) == Set([projectA.id, projectB.id]) && projectList.allSatisfy { $0.name == "Bracket" }, "library loses project identity or display name")
+        try library.remove(projectA)
+        try require(FileManager.default.fileExists(atPath: projectB.file.path), "deleting one project erased an equally named design")
+        for name in ["", "  ", "../Design", "a/b", "a\\b", "a:b", ".", "..", ".Hidden", "a\n", String(repeating: "界", count: 100)] {
+            // Trailing whitespace is allowed and removed; an embedded control is not.
+            if name == "a\n" { continue }
+            do { _ = try library.reserve(name: name); throw ProjectLibrary.failure("accepted_bad_name") }
+            catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_bad_name", "unsafe project name was accepted") }
+        }
+        let forged = ProjectRecord(id: projectB.id, file: libraryRoot.appendingPathComponent("elsewhere/Bracket.solidcraft"), modified: Date())
+        do { try library.remove(forged); throw ProjectLibrary.failure("accepted_bad_path") }
+        catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_bad_path", "deletion escaped the checked project path") }
+        try require(FileManager.default.fileExists(atPath: projectB.file.path), "invalid deletion touched the current library")
+        let stepFile = libraryRoot.appendingPathComponent("Bracket.STP")
+        try Data("ISO-10303-21;".utf8).write(to: stepFile)
+        let staged = try ProjectLibrary.stageImport(stepFile)
+        try require(staged != stepFile && staged.lastPathComponent == stepFile.lastPathComponent, "import overwrote its source or lost its format")
+        try FileManager.default.removeItem(at: stepFile)
+        let stagedBytes = try Data(contentsOf: staged)
+        try require(stagedBytes == Data("ISO-10303-21;".utf8), "staged import depended on an external URL")
+        try FileManager.default.removeItem(at: staged.deletingLastPathComponent())
+        let empty = libraryRoot.appendingPathComponent("Empty.step")
+        try Data().write(to: empty)
+        do { _ = try ProjectLibrary.stageImport(empty); throw ProjectLibrary.failure("accepted_empty") }
+        catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_empty", "empty import was accepted") }
+        let oversized = libraryRoot.appendingPathComponent("Oversized.step")
+        try Data().write(to: oversized)
+        let sparse = try FileHandle(forWritingTo: oversized)
+        try sparse.truncate(atOffset: UInt64(ProjectLibrary.maximumImportBytes + 1))
+        try sparse.close()
+        do { _ = try ProjectLibrary.stageImport(oversized); throw ProjectLibrary.failure("accepted_oversized") }
+        catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_oversized", "oversized import bypassed its limit") }
+        try require(ProjectLibrary.importExtensions.contains("step") && ProjectLibrary.importExtensions.contains("stp") && !ProjectLibrary.importExtensions.contains("exe"), "import extension contract changed")
         print("Workspace layout/focus/command decoding checks PASS: \(cases) adaptive cases; no simulator or device launch")
     }
 }

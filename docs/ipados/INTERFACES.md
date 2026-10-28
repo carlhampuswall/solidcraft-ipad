@@ -20,7 +20,7 @@ starting commit are governed by [PARALLEL-DEVELOPMENT.md](PARALLEL-DEVELOPMENT.m
 | Tool transactions | `editing.rs`: `ToolEvent`, `ToolPhase`, `ToolWork`, `ToolOperation`, `PreparedTool`; `workspace.rs`: `NumericEdit`, `PreparedNumeric`; `modelling.rs`: `ModelEdit`, `PreparedModel` | Bridge dispatch, viewport interaction state and native forms |
 | Feature/assembly references | `references.rs`, `assembly_references.rs`, native feature IDs, occurrence paths and joint origins | Modelling/assembly form adapters; no name-based replacement identity |
 | GPU integration | `bridge/src/renderer.rs`: `NativeRenderer`, `DrawOutcome`, internal mesh cache | Surface ABI; shared GPU drawing and camera APIs remain upstream |
-| Native file access today | `NativeSession.localModellingDocument`, existing `file.save` and `doc.open` commands | Current app-private save/reopen controls; a general Files service is not implemented |
+| Native file access today | `NativeSession` project services and `ProjectLibrary`, existing file commands | Private project library, coordinated Files import and native Files export |
 
 The safe adapter depends on shared Rust crates and remains wasm-compatible. The
 bridge adds the native ABI and GPU integration. Shared engine, document, geometry
@@ -36,6 +36,17 @@ lane. Its completion is `Result<Void, BridgeError>`: it intentionally does not
 expose the underlying command payload. A future service needing result data must
 coordinate that public contract with the integration owner instead of opening
 another handle or calling C directly from a second queue.
+
+`view.touch_orbit` is a viewport presentation preference. Input is
+`{"follows_viewpoint": boolean}`; the viewport diagnostic reply includes the same
+`touch_orbit` object. The default is `true`: finger deltas retain their direction
+for the shared screen-relative `view.navigate` orbit, with a fixed object-centre
+pivot, so the visible object follows the finger. The existing `follows_viewpoint`
+wire key and `SolidCraft.workspace.viewpointOrbit` preference key are retained.
+`false` restores the original world-axis, view-centred finger orbit. Changing it
+cancels current contacts and leaves the camera, document and history unchanged.
+UIKit persists and reapplies it at session startup; the Rust adapter owns routing
+and delegates all camera maths to the existing shared navigation implementation.
 
 `SessionAdapter::execute(&mut self, id, params)` returns
 `Result<CommandReply, AdapterError>`. `CommandReply` contains the actual command
@@ -130,6 +141,13 @@ path as hit testing. The engine mirrors selection through `select.set` before
 CAD actions. `WorkspaceEntity` preserves the existing schema; its text readout
 is a label, not an identity to parse back into commands.
 
+Finished sketch regions use the existing `Sel::Profile { sketch, index }` schema.
+The engine worker snapshots only visible native regions and prepares their fill
+and boundaries. Canvas selection and `select.entity` validate against that same
+snapshot. Modelling forms capture the exact selected regions through the existing
+`capture_profile_selection` API before issuing an engine command; a canvas
+reselection refreshes the profile while preserving numeric inputs.
+
 `NativeSession.onWorkspace` delivers immutable decoded `WorkspaceState` values
 on main. `refreshWorkspace` coalesces requests; normal camera changes do not
 require rebuilding the document tree. `onFrame` reports presentation success and
@@ -195,8 +213,11 @@ must preserve its command and availability guards.
 points on the tool plane. `ToolWork` carries interaction/version, source
 document/geometry, `ToolOperation` and commit intent. The viewport holds one
 replaceable pending work item; the host permits one queued/running tool job.
-The native input mailbox is bounded to 128 samples and cancels an uncertain
-interaction on overload. Predicted samples cannot commit geometry. Contact
+The native input mailbox is bounded to 128 samples. At capacity it thins redundant
+actual Pencil moves along the same screen path while retaining contact and context
+boundaries and reversals; uncompressible overload still cancels the interaction.
+`InputSample` and `InputMailbox` reside in Foundation-only `WorkspaceLayout.swift`
+for deterministic host checks. Their wire schema is unchanged. Predicted samples cannot commit geometry. Contact
 ownership and navigation suspension/rebasing remain in `input.rs` and
 `sketch_input.rs`; see [INPUT.md](INPUT.md).
 
@@ -228,20 +249,44 @@ and generated display names are not replacements for native references.
 
 ## Native document I/O, errors and progress
 
-`NativeSession.localModellingDocument(reopen:completion:)` currently obtains an
-app-private Application Support path on the engine queue and invokes `file.save`
-or `doc.open` for `SolidCraft/Modelling.solidcraft`. Full native serialization
-belongs to the existing engine/I/O APIs, including supported data that the iPad
-UI cannot edit. Writes retain upstream safe-write behavior. No iPad-specific
-document format or Swift DTO serialization is permitted.
+`ProjectLibrary` organises native containers under Application Support at
+`SolidCraft/Projects/<UUID>/<name>.solidcraft`. It owns filenames, directory
+identity and native file access only. The UUID prevents collisions between
+equally named projects. The prior `SolidCraft/Modelling.solidcraft` slot is
+migrated by opening/saving a new library project; the original is retained.
+`NativeSession` serialises saves and project switches on the engine queue,
+debounces autosave and remembers the selected project. A launch preference can
+retain the former starter-model behaviour. Diagnostic `--*-check` launches use
+only their disposable fixture and never restore/autosave the library.
 
-A general native Files/document service, security-scoped URL coordination,
-autosave/recovery ownership and document lifecycle API are not yet implemented.
-Task A must establish those platform responsibilities around the existing
-`NativeSession.command` seam with integration-owner review. Acquiring a path is
-platform work; parsing, import/export and document mutation remain existing
-engine commands. A security scope must outlive the asynchronous operation that
-uses it. Do not save only the currently displayed scene or preview.
+Two engine-lane JSON requests extend ABI 3 without changing C signatures:
+
+- `{kind:"document", source?:path, name, destination:path}` prepares a separate
+  candidate with `doc.open` or `file.new`, validates a scene and saves with
+  `file.save_as`, then replaces the authoritative session. Failures preserve its
+  document, undo history and revision. Native geometry revisions stay monotonic.
+- `{kind:"save_document", path}` calls `file.save` without viewport publication,
+  so autosave persists the committed document without cancelling numeric/Pencil
+  work or publishing its provisional geometry.
+
+The Files picker returns a URL whose security scope remains active during an
+`NSFileCoordinator` read and bounded local copy on the engine queue. New-project
+imports use the transaction above; insertion uses `file.insert_step` or
+`file.insert_mesh`, preserving upstream component and undo semantics. Native
+containers, STEP/STP, STL, OBJ and 3MF are accepted (up to 512 MiB); originals
+remain unchanged. Parse/evaluation errors and supported warnings reach the UI.
+Native containers with unavailable linked resources can be refused by the normal
+upstream evaluator; importing additional resource files is not implemented.
+
+Export supports native containers, STEP, STL, OBJ and 3MF. It saves first, then
+freezes a local container beside the project to preserve relative-link bases.
+A separate worker and disposable read-only bridge session run `file.export`;
+CAD evaluation/navigation on the live session need not wait for that export.
+Native-container export copies the saved file. The system export picker copies
+the resulting file to a user-selected destination; completion/cancellation
+cleans temporary output. No external save URL/bookmark or parallel design
+format is introduced. Native serialization, import/export semantics and safe
+writes remain the upstream engine/I/O implementation.
 
 Rust failures use `AdapterError { code, message }`; the C status is 0 for success,
 -1 for failure with a JSON error response, or -2 for an invalid handle. The host

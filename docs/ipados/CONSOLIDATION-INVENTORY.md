@@ -1,5 +1,9 @@
 # Step 8.5 discovery and preservation inventory
 
+This is the historical Step 8.5 inventory. The later `develop` consolidation,
+additional source branches, completed chats, recovery checkpoint and current
+verification scope are recorded in [DEVELOP.md](DEVELOP.md).
+
 Discovery date: 2026-10-28. This records the state found before consolidation;
 current validation and the eventual approved baseline belong in [HANDOFF.md](HANDOFF.md)
 and [PARALLEL-DEVELOPMENT.md](PARALLEL-DEVELOPMENT.md). Historical test results

@@ -1,17 +1,20 @@
 # iPadOS development setup
 
-This fork prepares SolidCraft for a professional native iPadOS application while
-keeping future upstream updates practical. Step 1 preparation is complete;
-Step 2's native host and adapter are described in [ARCHITECTURE.md](ARCHITECTURE.md),
-with current build instructions in [BUILDING.md](BUILDING.md) and verification in
-[HANDOFF.md](HANDOFF.md). The preparation observations below are historical.
+This fork implements a native iPadOS application while keeping future upstream
+updates practical. Completed Steps 1–8, Step 8.5 and later work are consolidated
+on `develop`; see [DEVELOP.md](DEVELOP.md) for provenance and verification limits.
+The native host and adapter are described in [ARCHITECTURE.md](ARCHITECTURE.md),
+with build instructions in [BUILDING.md](BUILDING.md) and historical verification
+in [HANDOFF.md](HANDOFF.md). Preparation observations below are historical.
 
 ## Repository and branches
 
 - `origin`: <https://github.com/carlhampuswall/solidcraft-ipad.git>
 - `upstream`: <https://github.com/tangency-labs/solidcraft.git>
 - `main`: the fork's integration base; preserve its history.
-- `feature/ipados`: iPadOS development, initially branched from the fork's current `main`.
+- `develop`: consolidated iPadOS development; start new development here.
+- `feature/ipados`: preserved original platform branch, initially based on `main`.
+- `integration/ipados-foundation` and `codex/ipados-ui`: preserved source branches.
 
 If working from a new checkout, clone the existing fork, never create another fork:
 
@@ -20,7 +23,7 @@ git clone https://github.com/carlhampuswall/solidcraft-ipad.git
 cd solidcraft-ipad
 git remote add upstream https://github.com/tangency-labs/solidcraft.git
 git fetch origin
-git switch --track origin/feature/ipados
+git switch --track origin/develop
 git remote -v
 ```
 
@@ -28,8 +31,8 @@ git remote -v
 
 | Location | Responsibility |
 | --- | --- |
-| `apps/solidcraft-ipados/` | Reserved native iPadOS host, Apple project, resources and packaging |
-| `crates/ipados/` | Reserved namespace for future narrow Rust integration crates |
+| `apps/solidcraft-ipados/` | Native iPadOS host, Apple project, resources and packaging |
+| `crates/ipados/` | Narrow Rust session/viewport and native ABI/render adapters |
 | `docs/ipados/` | Fork setup, permanent rules and upstream integration procedure |
 | `crates/geom`, `crates/kernel`, `crates/sketch` | Existing shared geometry and sketch solver |
 | `crates/doc` | Existing parametric feature timeline, evaluation and document model |

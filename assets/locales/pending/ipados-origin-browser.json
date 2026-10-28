@@ -1,0 +1,47 @@
+{
+  "de": {
+    "ui.ipados.sketch.automatic_origin": "Automatisch bei der Skizzenerstellung",
+    "ui.ipados.sketch.custom_origin": "Benutzerdefinierte Sichtbarkeit",
+    "ui.ipados.sketch.hide_reference": "Referenz ausblenden",
+    "ui.ipados.sketch.reference_automatic": "Automatisch",
+    "ui.ipados.sketch.reference_hidden": "Ausgeblendet",
+    "ui.ipados.sketch.reference_visible": "Sichtbar",
+    "ui.ipados.sketch.show_reference": "Referenz einblenden"
+  },
+  "en": {
+    "ui.ipados.sketch.automatic_origin": "Automatic during sketch creation",
+    "ui.ipados.sketch.custom_origin": "Custom visibility",
+    "ui.ipados.sketch.hide_reference": "Hide reference",
+    "ui.ipados.sketch.reference_automatic": "Automatic",
+    "ui.ipados.sketch.reference_hidden": "Hidden",
+    "ui.ipados.sketch.reference_visible": "Visible",
+    "ui.ipados.sketch.show_reference": "Show reference"
+  },
+  "ja": {
+    "ui.ipados.sketch.automatic_origin": "スケッチ作成時に自動表示",
+    "ui.ipados.sketch.custom_origin": "表示設定をカスタマイズ",
+    "ui.ipados.sketch.hide_reference": "参照を非表示",
+    "ui.ipados.sketch.reference_automatic": "自動",
+    "ui.ipados.sketch.reference_hidden": "非表示",
+    "ui.ipados.sketch.reference_visible": "表示",
+    "ui.ipados.sketch.show_reference": "参照を表示"
+  },
+  "ko": {
+    "ui.ipados.sketch.automatic_origin": "스케치 생성 중 자동 표시",
+    "ui.ipados.sketch.custom_origin": "사용자 지정 표시 설정",
+    "ui.ipados.sketch.hide_reference": "참조 숨기기",
+    "ui.ipados.sketch.reference_automatic": "자동",
+    "ui.ipados.sketch.reference_hidden": "숨김",
+    "ui.ipados.sketch.reference_visible": "표시",
+    "ui.ipados.sketch.show_reference": "참조 표시"
+  },
+  "zh": {
+    "ui.ipados.sketch.automatic_origin": "创建草图时自动显示",
+    "ui.ipados.sketch.custom_origin": "自定义可见性",
+    "ui.ipados.sketch.hide_reference": "隐藏参考",
+    "ui.ipados.sketch.reference_automatic": "自动",
+    "ui.ipados.sketch.reference_hidden": "隐藏",
+    "ui.ipados.sketch.reference_visible": "可见",
+    "ui.ipados.sketch.show_reference": "显示参考"
+  }
+}

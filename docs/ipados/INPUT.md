@@ -11,10 +11,10 @@ history; Escape or Cancel interaction discards a provisional interaction.
 
 | Input in the viewport | Action |
 | --- | --- |
-| Pencil tap in Select | Actual occurrence/body/face/edge/vertex/Auto picking; Multiple still applies |
+| Pencil tap in Select | Visible enclosed sketch region or actual occurrence/body/face/edge/vertex/Auto picking; Multiple still applies |
 | Pencil drag on the Post radius handle | Actual plane intersection → provisional solid → one command on completion |
 | Pencil drag on an active modelling/assembly handle | Native parameter proposal and scratch geometry; lift leaves a preview for explicit Apply |
-| One finger | Orbit in 3D; pan in an active sketch plane |
+| One finger | Turn the visible object in the drag direction in 3D; pan in an active sketch plane; an enabled direct handle captures its own drag |
 | Two fingers | Simultaneous centroid pan and distance-ratio zoom |
 | Two-finger double-tap | Undo one engine history action |
 | Three-finger double-tap | Redo one engine history action |
@@ -22,6 +22,51 @@ history; Escape or Cancel interaction discards a provisional interaction.
 | Secondary drag / middle or Shift-secondary | Existing orbit / pan; planar mode maps orbit to pan |
 | Wheel or trackpad scroll | Shared zoom path |
 | Input beginning on a native control | That control owns it until UIKit completes/cancels it |
+
+After finishing a sketch, tap inside its enclosed region with Pencil, then choose
+Extrude. The region highlights and populates the profile field directly, including
+when the sketch has several regions. Multiple selection can combine regions from
+one sketch. **Select geometry** in the modelling form also accepts a new canvas
+region while retaining the distance and other entered values. Face and Auto
+filters accept profiles; explicit Body, Occurrence, Edge and Vertex filters retain
+their existing targets. Only shown sketch profiles can be selected; regions
+behind solid geometry are excluded. Picking uses the engine's world-space
+profile regions, including their holes, without another solver or profile detector.
+
+The shared GPU reproduction uses synthetic Pencil input to select one of two
+regions and extrude just that 200 mm² region by 10 mm (2,000 mm³):
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-profile.png --profiles
+```
+
+It captures `-before.png`, `-selected.png` and `-extruded.png` on macOS. This is
+adapter/rendering evidence; physical Pencil and UIKit verification remain separate.
+
+One-finger orbit follows the screen axes, including rolled, top and bottom views,
+and passes smoothly through the poles. Drag right to turn the visible object
+right; drag down to turn it down. The viewpoint moves in the opposite direction. The orbit
+pivot is the centre of the body under the initial contact, or the visible model
+centre over empty space. It is fixed for the gesture and stays in place on screen,
+even after panning, so the object turns around itself rather than circling an
+off-centre camera target. One/two-finger transitions choose a fresh pivot without
+moving the camera. Disable **Tools → Rotate around object with one finger** to restore
+the previous world-axis, view-centred orbit and direction. The preference persists
+in `SolidCraft.workspace.viewpointOrbit` and never changes a design. Sketch pan,
+two-finger pan/zoom and pointer navigation retain their existing mapping.
+
+The existing `render_proof` example accepts `--orbit` for a repeatable GPU
+comparison of a rightward drag after panning a top view:
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-orbit.png --orbit
+```
+
+It writes `-before.png`, `-previous.png` and `-fixed.png` using the real input
+router and shared renderer, and checks that the corrected object's centre does
+not drift. This is macOS GPU evidence, separate from physical iPad verification.
 
 History double-taps are enabled by default and can be disabled under **Tools →
 Double-tap gestures for Undo/Redo** to restore the previous input behaviour.
@@ -53,6 +98,16 @@ are copied in time order (up to 32 per callback); the delivered sample is includ
 once. Predicted samples are deliberately not requested and are rejected by the
 router, including predicted end events. Estimated force/tilt corrections are not
 used for CAD dimensions. Basic editing works with all optional properties absent.
+
+The 128-sample native mailbox thins redundant actual Pencil motion when rendering
+falls behind. It retains begin/end/cancel, reversals and context boundaries;
+only intermediate moves on the same screen path (within a quarter point) can be
+removed. If no redundant motion remains, overload still cancels conservatively.
+The Foundation-only input values and mailbox live in `WorkspaceLayout.swift` so
+the native harness exercises production batching without UIKit or a simulator.
+Stationary handle samples do not supersede an in-flight geometry preview. Tapping
+a handle releases capture, and a new grab supersedes the previous lifted contact's
+pending preview. Preview completion still checks the current interaction ticket.
 
 Points are canvas-local, origin at top left, Y downward, in display points.
 Pixels equal points × scale exactly once. The adapter also supports an explicit

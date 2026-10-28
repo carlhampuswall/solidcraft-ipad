@@ -38,6 +38,14 @@ int32_t sc_view_response_copy(uint64_t session, uint8_t *output, size_t capacity
 size_t sc_surface_response_len(uint64_t session);
 int32_t sc_surface_response_copy(uint64_t session, uint8_t *output, size_t capacity);
 
+/* Project files add engine-lane JSON requests (no C ABI signature changes):
+ * {kind:"document",source?:path,name,destination:path}: prepare/open, evaluate
+ * and persist a candidate through the existing engine commands, then replace
+ * the live session. Failed preparation leaves the current document/history intact.
+ * {kind:"save_document",path}: save committed state without replacing the
+ * viewport snapshot or cancelling provisional tools/numeric edits.
+ */
+
 /* Step 5 adds engine-lane JSON requests (no C ABI signature changes):
  * {kind:"workspace"}: cached document/component/feature/body presentation data,
  * authoritative history availability and supported native tool context.

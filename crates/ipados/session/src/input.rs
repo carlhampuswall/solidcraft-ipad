@@ -114,6 +114,7 @@ struct Drag {
 pub(crate) struct Contacts {
     items: BTreeMap<u64, Contact>,
     pub(crate) navigating: bool,
+    orbit_pivot: Option<Vec3>,
     sequence: u64,
     pub(crate) next_interaction: u64,
     drag: Option<Drag>,
@@ -147,9 +148,11 @@ impl Contacts {
         self.cancel_edit();
         self.items.clear();
         self.navigating = false;
+        self.orbit_pivot = None;
     }
     fn rebase_fingers(&mut self) {
         // Count transitions have no camera delta; subsequent movement starts here.
+        self.orbit_pivot = None;
         for c in self.items.values_mut().filter(|c| c.owner == Owner::Navigation) {
             c.start = c.current;
         }
@@ -217,6 +220,39 @@ impl InputEvent {
 }
 
 impl Viewport {
+    /// Choose an object centre once per one-finger gesture, independent of the
+    /// panned camera target and selection filter. Camera maths remains shared.
+    fn finger_orbit_pivot(&self, start: [f64; 2]) -> Vec3 {
+        let Some(model) = self.display_model() else { return self.camera.target };
+        let vp = self.vp();
+        if let Some(pixel) = self.metrics.pixel(start)
+            && let Some(Sel::Body { name }) = model.picks.pick(&self.camera, vp, self.metrics, pixel, crate::PickFilter::Body)
+            && let Some(body) = model.picks.bodies.iter().find(|body| body.name == name)
+        {
+            return body.mesh.bounds().center();
+        }
+        // Empty-space drags use the bodies in view, excluding distant offscreen
+        // geometry that could otherwise make the visible object circle its pivot.
+        let [width, height] = self.metrics.pixels();
+        let bounds = model
+            .picks
+            .bodies
+            .iter()
+            .map(|body| body.mesh.bounds())
+            .filter(|bounds| {
+                crate::picking::project(vp, bounds.center(), [width, height])
+                    .is_some_and(|p| (0.0..width).contains(&p[0]) && (0.0..height).contains(&p[1]))
+            })
+            .fold(solidcraft_engine::geom::Aabb3::EMPTY, |bounds, body| bounds.union(&body));
+        if !bounds.is_empty() {
+            bounds.center()
+        } else if !model.bounds.is_empty() {
+            model.bounds.center()
+        } else {
+            self.camera.target
+        }
+    }
+
     pub fn input(&mut self, e: InputEvent) -> Result<Value, AdapterError> {
         if let Err(failure) = e.validate() {
             self.cancel_interactions();
@@ -374,7 +410,12 @@ impl Viewport {
         plane.intersect_ray(o, d).filter(|p| p.is_finite() && p.len() < 1e9)
     }
     fn begin_tool(&mut self, e: &InputEvent, point: [f64; 2]) -> bool {
-        if self.contacts.drag.is_some() {
+        if self
+            .contacts
+            .drag
+            .as_ref()
+            .is_some_and(|d| self.contacts.items.contains_key(&d.contact) || !matches!(d.work.operation, ToolOperation::Modelling { .. }))
+        {
             return false;
         }
         if let Some(edit) = self.modelling.as_ref()
@@ -386,7 +427,7 @@ impl Viewport {
             let Some(q) = self.metrics.pixel(point) else {
                 return false;
             };
-            if (p[0] - q[0]).hypot(p[1] - q[1]) / self.metrics.scale > 16. {
+            if (p[0] - q[0]).hypot(p[1] - q[1]) / self.metrics.scale > if self.direct_handles { 24. } else { 16. } {
                 return false;
             }
             let Some(plane) = h.interaction_plane(self.camera.back()) else {
@@ -415,6 +456,9 @@ impl Viewport {
                 },
                 commit: false,
             };
+            // A completed modelling contact may still have a preview in flight.
+            // The new interaction supersedes that ticket without waiting for CAD.
+            self.contacts.pending = None;
             self.contacts.drag = Some(Drag { contact: e.id, anchor, anchor_radius: h.distance, work, state: EditState::Candidate });
             self.contacts.event(ToolPhase::Begin, Some(anchor));
             return true;
@@ -520,6 +564,9 @@ impl Viewport {
                     let Some(handle) = self.modelling.as_ref().and_then(|e| e.handle.as_ref()) else {
                         return;
                     };
+                    if (radius - handle.distance).abs() < 1e-6 {
+                        return;
+                    }
                     handle.set_parameter(params, radius);
                     if handle.angular {
                         d.anchor = world;
@@ -564,6 +611,9 @@ impl Viewport {
                 // the validated form and accepts one authoritative transaction.
                 d.work.version = d.work.version.saturating_add(1);
                 self.contacts.pending = Some(d.work.clone());
+            } else {
+                // Tapping the handle creates no proposal and must release capture.
+                self.contacts.cancel_edit();
             }
             return;
         }
@@ -649,14 +699,23 @@ impl Viewport {
                 match e.source {
                     InputSource::Finger => Owner::Navigation,
                     InputSource::Pencil if valid => Owner::PencilCandidate,
-                    InputSource::Indirect if (!self.numeric_active() && !e.display_preview) || e.button != 0 => Owner::Pointer,
+                    InputSource::Indirect
+                        if (!self.numeric_active() && (!e.display_preview || self.direct_handles && valid && self.modelling.is_some()))
+                            || e.button != 0 =>
+                    {
+                        Owner::Pointer
+                    }
                     _ => Owner::Suppressed,
                 }
             };
             if owner == Owner::PencilCandidate && self.contacts.items.values().any(|c| c.source == InputSource::Pencil && c.owner != Owner::Ui) {
                 owner = Owner::Suppressed;
             }
-            if owner == Owner::PencilCandidate && self.begin_tool(&e, point) {
+            let direct = self.direct_handles
+                && valid
+                && self.modelling.as_ref().is_some_and(|edit| edit.handle.is_some())
+                && (owner == Owner::Navigation && self.contacts.items.is_empty() || owner == Owner::Pointer && e.button == 0);
+            if (owner == Owner::PencilCandidate || direct) && self.begin_tool(&e, point) {
                 owner = Owner::Tool;
             }
             // A validated provisional solid has different topology from the
@@ -687,6 +746,11 @@ impl Viewport {
             );
             if owner == Owner::Navigation {
                 self.contacts.rebase_fingers();
+                if self.contacts.fingers().len() > 1 {
+                    for contact in self.contacts.items.values_mut().filter(|c| c.owner == Owner::Navigation) {
+                        contact.moved = true;
+                    }
+                }
             }
             self.hover = None;
             self.changed();
@@ -699,6 +763,7 @@ impl Viewport {
         }
         let owner = c.owner;
         let old = c.current;
+        let start = c.start;
         let button = c.button;
         let revision = c.revision;
         let distance = (point[0] - c.start[0]).hypot(point[1] - c.start[1]);
@@ -745,11 +810,13 @@ impl Viewport {
             if e.phase == InputPhase::Ended
                 && !moved
                 && button == 0
-                && matches!(owner, Owner::PencilCandidate | Owner::Pointer)
+                && (matches!(owner, Owner::PencilCandidate | Owner::Pointer)
+                    || (owner == Owner::Navigation && (self.origin.choosing || self.pick_reference(point).is_some())))
                 && camera_current
                 && self.metrics.pixel(point).is_some()
                 && revision == e.geometry_revision
                 && !self.updating
+                && !self.numeric_active()
                 && revision.is_some()
                 && self.model.as_ref().is_some_and(|m| Some(m.geometry_revision) == revision)
                 && !self.contacts.navigating
@@ -779,8 +846,17 @@ impl Viewport {
                     }
                     let delta = [point[0] - old[0], point[1] - old[1]];
                     if fingers.len() == 1 {
-                        self.navigate(&json!({"motion":if self.planar {"pan"} else {"orbit"},"delta":delta,
-                            "viewport":[self.metrics.width_points,self.metrics.height_points]}))?;
+                        let mut params = json!({"motion":if self.planar {"pan"} else {"orbit"},"delta":delta,
+                            "viewport":[self.metrics.width_points,self.metrics.height_points]});
+                        if !self.planar && self.touch_orbit_follows_viewpoint {
+                            let pivot = self.contacts.orbit_pivot.unwrap_or_else(|| self.finger_orbit_pivot(start));
+                            self.contacts.orbit_pivot = Some(pivot);
+                            // Keep the shared drag direction so the visible
+                            // object follows the finger around its fixed centre.
+                            params["free_orbit"] = json!(true);
+                            params["pivot"] = json!(pivot);
+                        }
+                        self.navigate(&params)?;
                     } else if let Some((_, other)) = fingers.iter().find(|(id, _)| *id != e.id) {
                         self.navigate(&json!({"motion":"pan","delta":[delta[0]*0.5,delta[1]*0.5],"viewport":[self.metrics.width_points,self.metrics.height_points]}))?;
                         let before = (old[0] - other[0]).hypot(old[1] - other[1]);

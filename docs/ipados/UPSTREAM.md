@@ -36,7 +36,9 @@ preparation grants no blanket exception to upstream rules.
 ## Fetch and prepare an integration
 
 Use the fork's `main` as the integration base, never overwrite it with upstream.
-Keep `feature/ipados` for platform development. Verify remotes with `git remote -v`:
+Active platform development is consolidated on `develop`; `feature/ipados` and
+the original integration/UI branches remain preserved. See [DEVELOP.md](DEVELOP.md)
+for the development verification scope and history. Verify remotes with `git remote -v`:
 
 ```text
 origin    https://github.com/carlhampuswall/solidcraft-ipad.git
@@ -86,7 +88,7 @@ An authorized reviewer must approve and merge only after required checks pass on
 the candidate being merged. If the candidate changes, repeat affected checks.
 Use branch protection/required checks on `main` to enforce this gate; this
 preparation does not change repository protection settings. After merging, fetch
-origin and integrate the tested `origin/main` into `feature/ipados` in a reviewed
+origin and integrate the tested `origin/main` into `develop` in a reviewed
 change, then rerun affected adapter and compatibility checks. Never force-push
 `main` or discard platform work to catch up.
 

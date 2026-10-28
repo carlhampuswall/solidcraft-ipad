@@ -1,4 +1,179 @@
-# Native workspace — Steps 5–8
+# Native floating CAD workspace
+
+The UI workstream starts at source baseline
+`c22acd12702cf3a405df01009b8d8662b3d46365` (B), using finalized launch policy
+`380b43b2047a1242c81dfec75142283a0b61bd76` (P). The provisional blocked policy
+inside B is superseded by P. The original `codex/ipados-ui` implementation and
+later native work are consolidated on `develop`; [DEVELOP.md](DEVELOP.md) records
+the source history and current verification scope.
+
+## Current presentation
+
+`WorkspaceController.swift` hosts one real `MetalCanvas` behind native floating
+controls. The document header is a centred surface, normally 340 × 52 points,
+showing the actual document name and app-private persistence status. Its folder
+menu opens Projects, Save project, Import and Export. The separate top-left
+Model button opens the model browser. Projects presents the native design library
+with search, create/open, and context-menu duplicate/delete actions. Switching
+saves first; current projects cannot be deleted. Imports can open as a separate
+project or insert geometry into the current one. Export offers STEP, SolidCraft,
+STL, OBJ and 3MF through Files. See INTERFACES.md for ownership and limits.
+
+The floating viewport fills the entire app window, including the space behind
+the status and home indicators. Only the controls are inset to the safe area;
+there are no reserved black bands above or below the model. The workspace itself
+also fills the window, so the extended viewport remains a real native input
+surface. Pinned browsers retain their horizontal reservation. The keyboard still
+reduces the usable viewport height through the existing resize/cancellation path.
+
+The 52-point tool rail (56 for accessibility text) contains icon-first controls
+with at least 44-point interaction regions. Modelling groups expose the actual
+native-supported create, modify, pattern/mirror and assembly forms. Additional
+native-supported operations remain reachable in the create menu. Sketch editing
+replaces these with Line, Rectangle, Circle, Arc, Spline, Trim, overflow tools,
+Finish chain and Finish sketch. Constraints, dimensions and construction appear
+in the opposite rail only while sketching. Constraint menu eligibility and
+dimension types come from `eligible_constraints` / `eligible_dimensions`; the UI
+does not decide geometry compatibility or construct new constraint semantics.
+
+View orientation, Fit, projection and Properties use the existing viewport
+commands. Active sketches omit unavailable 3D orientation/projection actions.
+There is no second orientation cube or camera path; the existing native triad
+still describes the real camera. Undo/Redo occupy a small bottom surface and
+retain their existing history availability checks and keyboard/gesture ownership.
+Status is a fitted two-line pill reporting actual selection, solver/tool/snapping,
+processing or errors. Routine assembly diagnostics and the Post-radius development
+tool are available through **Tools → Show diagnostics**.
+
+Browser and properties panels start closed and float inside their own visible
+bounds. Opening an unpinned panel leaves the Metal view's origin and dimensions
+unchanged; UIKit consumes only contacts inside controls/panels. No scrim captures
+the remaining viewport. The optional **Pin model browser on wide windows**
+preference reserves browser space at widths >=1000 points (1180 with accessibility
+text); closing it restores the viewport. Floating mode leaves 100% of available
+content width assigned to the viewport when the browser is unpinned. Controls
+overlay its edges. This is a layout measurement, not a claim that every pixel is
+uncovered. Short numeric transactions use a 320 × 500-point floating editor,
+bounded by available height; larger forms and keyboard-reduced windows scroll.
+Preview validation, Apply/Cancel and original feature/occurrence identity remain
+owned by the existing session and forms.
+
+`WorkspaceLayout.resolve` uses safe-area display points, window size, Dynamic
+Type, keyboard intersection and visible control counts. `placed(in:viewport:)`
+translates chrome into window coordinates and extends the floating canvas to the
+window edges. It shrinks or scrolls
+chrome instead of introducing fixed screenshot dimensions. Actual canvas changes
+(pinning, keyboard, rotation) still run the original cancellation/drawable-metrics
+path. The Foundation harness retains the previous layout tests and additionally
+checks floating panel invariance, width targets, pinning thresholds, transient
+dimensions and short editor/navigation surfaces.
+
+Native labels, values, selected/disabled traits, pointer tooltips and the large
+content viewer retain meaning when labels are visually collapsed. Menus and
+forms show text. Icon selection does not depend on colour alone. Physical
+VoiceOver and simultaneous Pencil/finger coverage still require human checks.
+
+## Canonical icon bridge
+
+`scripts/generate-icons.py` reads the existing SVG masters, optical variants,
+`aliases.toml` and `palette.toml`. It calls the existing `icon_palette.py` resolver
+for semantic accents, guide paints and transparent knockouts. It never modifies
+masters, palette, aliases or review hashes. No artwork is redrawn or marked final.
+It generates light/dark SVG vector image sets in Xcode's target temporary directory;
+the asset compiler packages them in `Assets.car`. No generated catalog or copied
+SVG is committed. Original masters and their existing attribution remain the
+authority. Python 3.11+ is build tooling only, already a repository prerequisite.
+
+The same pipeline extracts `.icon(...)` from upstream `CommandSpec::new`
+declarations into `SolidCraftCommandIcons.json`. This is presentation metadata,
+not a second command registry. `WorkspaceIcon.command` uses this generated map;
+future native-supported operations inherit the canonical icon automatically.
+Chrome uses existing semantic icon IDs. UIKit resolves vector density and theme;
+`WorkspaceIcon` caches raster images by ID, appearance, display scale and size,
+bounded to 256 entries. Selected controls retain semantic artwork; disabled
+controls use native availability. Missing artwork keeps a readable label.
+
+The user explicitly authorized the resource-only Xcode project registration
+outside C's original ownership. No build/signing setting, app lifecycle,
+`NativeSession`, `MetalCanvas`, Rust production or ABI contract changed.
+`check-workspace.sh` verifies 41 actual native tool mappings, both appearances,
+vector preservation, retired-output removal and unchanged canonical resources.
+At implementation time the pipeline consumed 321 masters, 37 aliases and 481
+registry icon mappings; these counts are discovered rather than fixed limits.
+
+## Defaults and compatibility
+
+Changes a default: yes — compact floating chrome and dark native chrome are the
+new defaults. **Tools → Compact floating workspace** off restores the earlier
+text rail, header and docking policy (`SolidCraft.workspace.compactChrome`).
+**Tools → Appearance → System** restores the earlier appearance policy; an
+existing `SolidCraft.workspace.appearance` value is retained. Rail side and
+two-/three-finger history gesture preferences are unchanged. Pinning and diagnostic
+visibility are transient native presentation preferences, never CAD data.
+
+## Rendering integration still required
+
+The supplied assembly screenshot was produced by the opt-in DEBUG
+`--assembly-check` fixture and its explicit `view.top` command. It is the real
+shared shaded/depth-tested renderer. It is not a temporary drawing or a second
+2D CAD engine. The normal fixture is shown in an actual shaded 3D view on the
+physical iPad with body highlighting and native picking.
+
+Two platform presentation decisions explain the remaining white/dense-grid look:
+`SessionAdapter::snapshot` calls `view::scene_with_guides`, which uses the shared
+light `Palette::DEFAULT`; `Viewport::guides` always builds a grid with that palette.
+`NativeRenderer` clears using the scene background. Native UIKit appearance cannot
+correct those decisions. This UI branch deliberately leaves the owner-controlled
+rendering and session files intact. It does not simulate a dark viewport with a
+tinted overlay or advertise unsupported display settings.
+
+The integrator/rendering owner should provide a display-only appearance/guide
+seam in session `lib.rs` / `viewport.rs` and bridge `renderer.rs` if needed:
+reuse `view::scene_with_palette_and_guides` and canonical theme tokens, keep mesh
+buffers/revisions, picking, camera and transaction ownership intact, suppress the
+ordinary 3D grid by default, and retain the planar grid/axes during sketching.
+Wire `applyAppearance` to that seam through `NativeSession` only after its contract
+is reviewed. Theme/grid changes must not dirty the document, change geometry
+revision, retessellate CAD, or accept/cancel a draft. Verify shared shading/edges,
+depth and face/edge highlights in both themes on the combined candidate.
+
+## Verification and integration
+
+The actual unsigned device build and a signed physical-iPad build pass. The signed
+build reuses the pre-existing development certificate/profile without provisioning
+updates. Real Device Hub screenshots and click/keyboard checks exercise browser
+open/close, native body selection, radius Preview/Cancel and sketch entry/tool
+switching. These are physical UIKit observations, not mockups; hardware Pencil,
+palm rejection and VoiceOver are separate outstanding coverage. See the UI section
+of HANDOFF for current evidence and final gate status.
+
+Compatibility switching also has an opt-in DEBUG UIKit regression:
+launch with `--chrome-check` to cycle text/floating layouts in light/dark,
+then read `Documents/workspace-chrome-check.json` from the app container. It checks
+actual visible icon/touch frames after UIKit layout, including the reparented
+browser button and retained scroll offsets. It also checks that the actual
+canvas fills the top/bottom window edges, that edge hit tests reach the canvas,
+and that header/status controls stay safe. It does not merely repeat the
+Foundation policy calculation. Four physical cases pass. The optional
+`--chrome-check-restore-dark` restores compact/dark preferences after this check;
+without that flag it restores the preferences present at launch. This mode never
+authors CAD or synthesizes Pencil input. It caught a runtime reparenting issue;
+the fix resets scroll offsets once after new chrome frames are assigned and
+restores manual frame ownership to the floating browser button.
+
+Review C independently, then integrate its presentation changes with B's render
+contract. A's document menu/lifecycle wiring remains integrator-owned; replace the
+existing local-document menu through that reviewed service without adding a
+second document store. Preserve the original full occurrence paths and preview
+contracts below. Rerun the native harness, unsigned build and relevant scoped
+regressions on the final combined tree. Per the user's 2026-10-28 instruction,
+run the engine suite only on an explicit request for a full test. The automatic
+full-CI attempt for this UI change was stopped at that instruction; it is not a
+completed gate. See HANDOFF for the completed checks and interrupted-run record.
+
+---
+
+## Established Steps 5–8 contracts (historical layout description)
 
 The UIKit host is a thin presentation layer over the real Rust session, viewport
 and Step 4 input router. It adds no CAD document, evaluator, modelling registry,
@@ -11,9 +186,10 @@ the actual document name, real history availability and Model/Properties/View
 access. The two-line subtitle identifies the active authoring component and exact
 occurrence path, alongside the local-document status. The engine's `is_dirty`
 projection distinguishes unsaved edits from context changes. Panels start closed.
-Feature history and assembly placements share the Model browser. Save/Reopen local
-design use the native container in the app's private storage; Files browsing,
-autosave and restoration remain Step 9.
+Feature history and assembly placements share the Model browser. Projects use
+the existing native container in private storage, autosave committed edits and
+restore the last project. The Tools menu preference “Reopen last project on
+launch” can retain the former starter-model launch behaviour.
 
 `WorkspaceLayout.swift` uses safe-area points and available window size. Below
 1000 points wide (1120 with accessibility text), one secondary panel uses a
@@ -43,6 +219,18 @@ Native presentation preferences use UserDefaults keys
 1 light, 2 dark). They are not stored in a design or copied into egui preferences.
 
 ## Presentation mapping and browser
+
+The Part browser includes an expandable **Origin references** group with the
+origin point, X/Y/Z axes and XY/XZ/YZ planes. Each row and its eye button toggle
+the reference's saved visibility without selecting or changing CAD geometry.
+The group eye menu (also available in View) offers Show all, Hide all and reset
+to **Automatic during sketch creation**. With no saved override, references are
+hidden during ordinary modelling and temporarily appear in the sketch-plane
+chooser. Cancel/creation restores normal visibility; active sketch axes remain
+part of the sketch guides. Explicit per-item choices survive app relaunch and
+take precedence over automatic visibility. These rows are native presentation
+controls, separate from the authoritative document rows and their parent IDs.
+
 
 `session/src/workspace.rs` caches rows by document ID and geometry revision.
 Components use actual parent IDs, features use owning components, and bodies use
@@ -190,3 +378,25 @@ wide/portrait/narrow and larger text while checking:
 
 Mac GPU captures, synthetic controller drivers and human UIKit/Pencil checks are
 distinct evidence. No checklist item here claims a hardware result.
+
+
+## Project browser verification
+
+Use the header folder menu > Projects. Create two projects, add distinct geometry,
+switch between them, terminate/relaunch and confirm the last project returns.
+Duplicate using a row context menu; confirm edits/Undo in the copy leave the
+original unchanged. Delete an inactive project and cancel a second deletion.
+Search, large text and keyboard input must remain usable in a resized iPad scene.
+
+Export STEP to Files and import it into a new project; check geometry, placement
+and component names. Also insert STEP into an existing design and Undo it. Export
+an editable SolidCraft design, import that file, edit its timeline and save.
+Cancel both pickers, try a damaged/empty file and confirm the current design
+remains intact. Check iCloud/local providers, file extensions and repeated names.
+During a numeric preview, autosave must preserve the preview while writing only
+the committed model. Suspend/relaunch with dirty work and verify the saved project.
+
+The macOS Foundation harness covers library identity, safe deletion, bounded
+staging and names; Rust tests cover native/STEP persistence, transactional failure
+and autosave/preview isolation. Unsigned compilation is separate from the manual
+UIKit/Files provider and physical-device checklist above.

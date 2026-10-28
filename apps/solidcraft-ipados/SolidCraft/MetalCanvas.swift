@@ -2,35 +2,6 @@ import Metal
 import QuartzCore
 import UIKit
 
-/// UIKit captures source identity and local coordinates. Rust owns gesture policy and camera math.
-struct InputSample: Encodable {
-    enum Source: String, Encodable { case pencil, finger, indirect, unknown }
-    enum Phase: String, Encodable { case began, moved, ended, cancelled, hover, scroll }
-    let source: Source
-    let phase: Phase
-    let id: UInt64
-    let x_points: Double
-    let y_points: Double
-    let x_pixels: Double
-    let y_pixels: Double
-    let scale: Double
-    let timestamp: Double
-    let pressure: Double?
-    let altitude: Double?
-    let geometry_revision: UInt64?
-    let consumed: Bool
-    let shift: Bool
-    let button: UInt8
-    let scroll: Double
-    var predicted = false
-    var display_preview = false
-    var sequence: UInt64 = 0
-    var viewport_epoch: UInt64? = nil
-    var camera_epoch: UInt64? = nil
-    var document_id: String? = nil
-    var azimuth: Double? = nil
-}
-
 final class MetalCanvas: UIView, UIGestureRecognizerDelegate, UIPencilInteractionDelegate {
     var displayingPreview = false
     var geometryRevision: UInt64?

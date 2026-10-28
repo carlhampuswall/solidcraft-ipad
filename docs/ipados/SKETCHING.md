@@ -107,7 +107,10 @@ verification. See HANDOFF.md for the actual build/device/gate results.
 
 ## Native controls and gesture grammar
 
-Create Sketch opens the datum/construction/selected-face choices. Selecting a
+Create Sketch starts a 3D plane-picking mode. Tap a translucent XY/XZ/YZ or
+evaluated construction plane, or a planar body face; finger drags still orbit.
+Plane labels are also native accessible selection buttons. Preselecting a plane
+before Create Sketch uses that plane directly. Selecting a
 plane previews its resolved world plane and planar camera; **Create on this
 plane** commits the original native plane reference. Cancel returns the previous
 view. Selecting an existing sketch in Model exposes **Edit sketch**. The active
@@ -115,6 +118,37 @@ sketch name, actual solver state and native closed-profile count appear in
 Properties; **Finish sketch** remains available for open or under-constrained
 geometry. **Delete sketch** is a separate explicit action with a warning that
 native `timeline.delete` also removes dependent features.
+
+The **Part browser > Origin references** group lists the origin point, X/Y/Z axes
+and XY/XZ/YZ planes with an eye control and Visible/Hidden readout for each.
+The group's eye menu and **View > Origin references** also offer Show all, Hide
+all and **Automatic during sketch creation**. Automatic is the default: references
+appear while choosing a sketch plane and hide when the chooser is cancelled or
+the sketch starts. The active sketch retains its own planar axes/grid. Explicit
+Show/Hide choices override automatic visibility, including while choosing a
+plane; reset to Automatic to clear those choices. These native view preferences
+persist in UserDefaults and do not edit the design or its undo history. The
+world-space guides use the shared palette/camera and existing `Sel::Plane`,
+`Sel::Axis` and origin `Sel::Vertex` identities. They hide during sketch editing
+and numeric/modelling previews. Hidden references cannot be picked. The corner
+orientation triad remains an orientation aid. Visible evaluated construction
+planes also appear as 3D targets while choosing a sketch plane.
+
+Changes a default: yes — origin references default to visibility only during
+sketch-plane selection. **Origin references > Show all origin references** retains
+the previous always-visible setting. Disable **Tools > Select sketch planes in
+3D** for the previous plane menu. Cancel (including Escape and lifecycle suspension) restores
+the pre-chooser camera and never creates a feature. Only **Create on this plane**
+executes `sketch.create` and adds one native undo step.
+
+Native viewport commands: `view.choose_sketch_plane {}` starts the interactive
+picker; `view.origin {visible:bool|null,item?:O|X|Y|Z|XY|XZ|YZ}` updates guide visibility
+(`null` restores automatic visibility for the item or all items);
+`view.cancel_plane {}` restores the previous view. These are presentation commands,
+not additions to the engine's CAD registry. Snapshot `origin` reports visibility
+and choosing state; `reference_labels` carries native identities and view-local
+label positions. The existing plane-preview request resolves attachments on a
+scratch engine session. No shared source, dependency or file-format change.
 
 Pencil places points; fingers retain pan/zoom in the editing plane. A first tap
 places an anchor, a second placement completes a line/rectangle/circle. A drag
@@ -162,6 +196,17 @@ Native constraint/reference effects are retained; no platform topology editing
 is performed.
 
 ## Verification integration
+
+Origin-reference regressions are in the existing session and bridge test files:
+all three plane identities through finger/Pencil/pointer input, per-item hiding,
+axis/origin selection, topology-filter priority, construction visibility, stale
+input, multi-finger suppression, cancellation/history and portrait framing. The
+bridge regression verifies filled planes and the origin dot use the shared
+guide slot's supported depth-tested surface lane, without entering CAD meshes.
+`render_proof /tmp/solidcraft-origin.png --origin` captures visible, individually
+hidden, selected and cancelled-preview states using that production converter
+and the shared GPU. These are Mac GPU captures; native labels/chrome and physical
+iPad touch interaction still need separate device verification.
 
 `--sketch-check` is an opt-in DEBUG device smoke driver. It waits for presented
 frames and command/numeric completions instead of sleeps. It uses synthetic

@@ -1,0 +1,15 @@
+{
+  "en": {
+    "ui.ipados.workspace.compact_chrome": "Compact floating workspace",
+    "ui.ipados.workspace.constraint_selection_hint": "Select sketch geometry to enable compatible constraints.",
+    "ui.ipados.workspace.constraints": "Constraints",
+    "ui.ipados.workspace.curve_selection_hint": "Select sketch curves first.",
+    "ui.ipados.workspace.diagnostics": "Show diagnostics",
+    "ui.ipados.workspace.dimension_selection_hint": "Select geometry that supports a dimension.",
+    "ui.ipados.workspace.document_actions": "Document actions",
+    "ui.ipados.workspace.modify": "Modify solid",
+    "ui.ipados.workspace.pattern": "Pattern and mirror",
+    "ui.ipados.workspace.pin_browser": "Pin model browser on wide windows",
+    "ui.ipados.workspace.selection_count": "%d selected"
+  }
+}

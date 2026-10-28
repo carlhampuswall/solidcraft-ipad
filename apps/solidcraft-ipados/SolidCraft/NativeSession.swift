@@ -86,6 +86,12 @@ struct SketchAnnotationPresentation: Decodable {
     let selected: Bool
 }
 struct SketchConstraintIndicator: Decodable { let id: String; let name: String; let points: [Double]; let selected: Bool }
+struct ReferenceLabelPresentation: Decodable {
+    let name: String
+    let entity: WorkspaceEntity
+    let position: [Double]
+    let selected: Bool
+}
 struct SketchDependents: Decodable { let deleted_with_it: [String]; let would_fail: [String] }
 
 struct WorkspaceRow: Decodable {
@@ -179,9 +185,18 @@ final class NativeSession {
     var onFrame: ((Bool, UInt64?, UInt64?, UInt64?, String?, [Double]?, Bool, Bool, String) -> Void)?
     var onStatus: ((String) -> Void)?
     var onWorkspace: ((WorkspaceState) -> Void)?
+    var onProjectChange: ((ProjectRecord) -> Void)?
+    private(set) var currentProject: ProjectRecord?
+    private var projectBusy = false
+    private var autosave: DispatchWorkItem?
+    private var autosaveFailure: (document: String, revision: UInt64)?
+    private let fileExport = DispatchQueue(label: "SolidCraft.export", qos: .userInitiated, autoreleaseFrequency: .workItem)
+    private static let selectedProjectKey = "SolidCraft.projects.selected"
     var onSketchInput: ((SketchInputPresentation?) -> Void)?
     var onSketchAnnotations: (([SketchAnnotationPresentation]) -> Void)?
     var onConstraintIndicators: (([SketchConstraintIndicator]) -> Void)?
+    var onReferenceLabels: (([ReferenceLabelPresentation]) -> Void)?
+    var onModelValue: ((ModelValuePresentation?) -> Void)?
     var onToolWorkCompleted: (() -> Void)?
     private let engine = DispatchQueue(label: "SolidCraft.engine", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private let display = DispatchQueue(label: "SolidCraft.viewport", qos: .userInteractive, autoreleaseFrequency: .workItem)
@@ -191,10 +206,41 @@ final class NativeSession {
 
     func start(completion: @escaping (Result<String, BridgeError>) -> Void) {
         engine.async { [weak self, state] in
-            let result = Result { try state.request(Data("{\"kind\":\"fixture\"}".utf8), lane: .engine) }.mapError(BridgeState.error)
+            let result = Result { () throws -> (String, ProjectRecord?) in
+                // Diagnostic drivers retain their disposable fixture and never
+                // read, replace or autosave a person's library project.
+                let diagnostic = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("--") && $0.contains("-check") }
+                if diagnostic {
+                    let data = try state.request(Data("{\"kind\":\"fixture\"}".utf8), lane: .engine)
+                    return (String(decoding: data, as: UTF8.self), nil)
+                }
+                let library = try ProjectLibrary.applicationLibrary()
+                let projects = try library.projects()
+                let selected = UserDefaults.standard.string(forKey: Self.selectedProjectKey)
+                let restore = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
+                if restore, let project = projects.first(where: { $0.id.uuidString == selected }) ?? projects.first {
+                    let data = try Self.replaceProject(state, source: project.file, project: project)
+                    return (String(decoding: data, as: UTF8.self), project)
+                }
+                let support = library.root.deletingLastPathComponent()
+                let legacy = support.appendingPathComponent("Modelling.solidcraft")
+                let migrateLegacy = restore && FileManager.default.fileExists(atPath: legacy.path)
+                let project = try library.reserve(name: migrateLegacy ? NativeText.value("ui.ipados.projects.recovered") : NativeText.value("ui.ipados.projects.starter"))
+                do {
+                    let data: Data
+                    if migrateLegacy {
+                        data = try Self.replaceProject(state, source: legacy, project: project)
+                    } else {
+                        _ = try state.request(Data("{\"kind\":\"fixture\"}".utf8), lane: .engine)
+                        data = try Self.fileCommand(state, "file.save_as", params: ["path": project.file.path])
+                    }
+                    return (String(decoding: data, as: UTF8.self), project)
+                } catch { try? library.remove(project); throw error }
+            }.mapError(BridgeState.error)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.alive else { return }
-                completion(result.map { String(decoding: $0, as: UTF8.self) })
+                if case .success(let value) = result, let project = value.1 { self.selectProject(project) }
+                completion(result.map { $0.0 })
                 self.refreshWorkspace()
                 self.redraw()
             }
@@ -311,7 +357,7 @@ final class NativeSession {
                 self.workspacePending = false
                 if lifecycle.accepts(ticket), self.numericGeneration == expected {
                     switch result {
-                    case .success(let workspace): self.onWorkspace?(workspace)
+                    case .success(let workspace): self.onWorkspace?(workspace); self.scheduleAutosave(workspace)
                     case .failure(let failure): self.onFailure?(failure)
                     }
                 }
@@ -324,28 +370,182 @@ final class NativeSession {
     private struct NumericEnvelope: Decodable { let result: NumericState }
     private struct ModellingEnvelope: Decodable { let result: ModellingState }
 
-    /// One app-private native document slot; file bytes remain owned by the
-    /// shared engine writer/reader. Files browsing and security scopes are Step 9.
-    func localModellingDocument(reopen: Bool, completion: @escaping (Result<Void, BridgeError>) -> Void) {
-        guard alive, let ticket = lifecycle.ticket else { return }
+    private static func fileCommand(_ state: BridgeState, _ command: String, params: [String: Any]) throws -> Data {
+        try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": command, "params": params]), lane: .engine)
+    }
+
+    private static func replaceProject(_ state: BridgeState, source: URL?, project: ProjectRecord) throws -> Data {
+        var request: [String: Any] = ["kind": "document", "name": project.name, "destination": project.file.path]
+        if let source { request["source"] = source.path }
+        return try state.request(JSONSerialization.data(withJSONObject: request), lane: .engine)
+    }
+
+    private func selectProject(_ project: ProjectRecord) {
+        currentProject = project
+        autosaveFailure = nil
+        UserDefaults.standard.set(project.id.uuidString, forKey: Self.selectedProjectKey)
+        onProjectChange?(project)
+    }
+
+    private func projectTask<T>(_ operation: @escaping (BridgeState, ProjectLibrary, ProjectRecord?) throws -> T,
+                                completion: @escaping (Result<T, BridgeError>) -> Void) {
+        guard alive, !projectBusy else {
+            completion(.failure(BridgeError(code: "busy", message: "ui.ipados.projects.busy"))); return
+        }
+        autosave?.cancel(); autosave = nil
+        projectBusy = true
+        let current = currentProject
         let activity = UUID(); commandActivities.insert(activity); publishActivityStatus()
-        engine.async { [weak self, state, lifecycle] in
-            let result = Result { () throws -> Void in
-                guard lifecycle.accepts(ticket) else { throw BridgeError(code: "stale_edit", message: "ui.ipados.workspace.invalidated") }
-                let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                let directory = support.appendingPathComponent("SolidCraft", isDirectory: true)
-                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-                let path = directory.appendingPathComponent("Modelling.solidcraft", isDirectory: false).path
-                let request: [String: Any] = ["kind": "command", "command": reopen ? "doc.open" : "file.save", "params": ["path": path]]
-                _ = try state.request(JSONSerialization.data(withJSONObject: request), lane: .engine)
-            }.mapError(BridgeState.error)
+        engine.async { [weak self, state] in
+            let result = Result { try operation(state, ProjectLibrary.applicationLibrary(), current) }.mapError(BridgeState.error)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.alive else { return }
+                self.projectBusy = false
                 self.commandActivities.remove(activity); self.publishActivityStatus()
-                guard lifecycle.accepts(ticket) else { return }
-                completion(result); self.refreshWorkspace(); self.redraw()
+                completion(result)
+                self.refreshWorkspace(); self.redraw()
             }
         }
+    }
+
+    private static func saveProject(_ state: BridgeState, _ project: ProjectRecord?) throws {
+        if let project {
+            _ = try state.request(JSONSerialization.data(withJSONObject: ["kind": "save_document", "path": project.file.path]), lane: .engine)
+        }
+    }
+
+    func listProjects(completion: @escaping (Result<[ProjectRecord], BridgeError>) -> Void) {
+        projectTask({ _, library, _ in try library.projects() }, completion: completion)
+    }
+
+    func saveProject(completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        projectTask({ state, _, current in
+            guard current != nil else { throw ProjectLibrary.failure("invalid_project") }
+            try Self.saveProject(state, current)
+        }, completion: completion)
+    }
+
+    /// Save first; never discard a dirty project merely to browse another one.
+    func openProject(_ project: ProjectRecord, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        projectTask({ state, library, current in
+            guard try library.projects().contains(where: { $0.id == project.id && $0.file == project.file }) else { throw ProjectLibrary.failure("invalid_project") }
+            try Self.saveProject(state, current)
+            if current?.id != project.id { _ = try Self.replaceProject(state, source: project.file, project: project) }
+            return project
+        }) { [weak self] result in
+            if case .success(let project) = result { self?.selectProject(project) }
+            completion(result.map { _ in () })
+        }
+    }
+
+    func createProject(name: String, copying source: ProjectRecord? = nil, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        projectTask({ state, library, current in
+            try Self.saveProject(state, current)
+            let project = try library.reserve(name: name)
+            do { _ = try Self.replaceProject(state, source: source?.file, project: project); return project }
+            catch { try? library.remove(project); throw error }
+        }) { [weak self] result in
+            if case .success(let project) = result { self?.selectProject(project) }
+            completion(result.map { _ in () })
+        }
+    }
+
+    func deleteProject(_ project: ProjectRecord, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        projectTask({ _, library, current in
+            guard current?.id != project.id else { throw ProjectLibrary.failure("delete_current") }
+            try library.remove(project)
+        }, completion: completion)
+    }
+
+    func importProject(from source: URL, insert: Bool, completion: @escaping (Result<[String], BridgeError>) -> Void) {
+        projectTask({ state, library, current in
+            try Self.saveProject(state, current)
+            let staged = try ProjectLibrary.stageImport(source)
+            defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+            let data: Data
+            var created: ProjectRecord?
+            if insert {
+                guard source.pathExtension.lowercased() != "solidcraft" else { throw ProjectLibrary.failure("insert_native") }
+                let command = ["step", "stp"].contains(source.pathExtension.lowercased()) ? "file.insert_step" : "file.insert_mesh"
+                data = try Self.fileCommand(state, command, params: ["path": staged.path])
+                // The import is already an undoable command. A later autosave
+                // failure leaves it dirty and visible; it never erases it.
+            } else {
+                let project = try library.reserve(name: source.deletingPathExtension().lastPathComponent)
+                do { data = try Self.replaceProject(state, source: staged, project: project); created = project }
+                catch { try? library.remove(project); throw error }
+            }
+            let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let result = json?["result"] as? [String: Any]
+            let command = result?["command"] as? [String: Any]
+            let value = (command?["value"] as? [String: Any]) ?? command
+            return (created, value?["warnings"] as? [String] ?? [])
+        }) { [weak self] result in
+            if case .success(let value) = result, let project = value.0 { self?.selectProject(project) }
+            completion(result.map { $0.1 })
+        }
+    }
+
+    func exportProject(format: String, completion: @escaping (Result<URL, BridgeError>) -> Void) {
+        projectTask({ state, _, current in
+            guard ["solidcraft", "step", "stl", "obj", "3mf"].contains(format) else { throw ProjectLibrary.failure("unsupported_export") }
+            try Self.saveProject(state, current)
+            guard let current else { throw ProjectLibrary.failure("invalid_project") }
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("SolidCraft-Export-" + UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let output = directory.appendingPathComponent(current.name).appendingPathExtension(format)
+            // Keep a frozen container next to the project so native relative
+            // component links retain their base directory. The export worker
+            // owns a disposable engine, never the live document or viewport.
+            let frozen = current.file.deletingLastPathComponent().appendingPathComponent(".Export-" + UUID().uuidString + ".solidcraft")
+            do {
+                try FileManager.default.copyItem(at: current.file, to: format == "solidcraft" ? output : frozen)
+                return (output, format == "solidcraft" ? nil : frozen)
+            } catch { try? FileManager.default.removeItem(at: directory); throw error }
+        }) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error): completion(.failure(error))
+            case .success(let files):
+                guard let frozen = files.1 else { completion(.success(files.0)); return }
+                let activity = UUID(); self.commandActivities.insert(activity); self.publishActivityStatus()
+                self.fileExport.async { [weak self] in
+                    let exported = Result { () throws -> URL in
+                        let copy = BridgeState()
+                        defer { copy.close(); try? FileManager.default.removeItem(at: frozen) }
+                        _ = try Self.fileCommand(copy, "doc.open", params: ["path": frozen.path, "read_only": true])
+                        _ = try Self.fileCommand(copy, "file.export", params: ["path": files.0.path, "format": format])
+                        return files.0
+                    }.mapError(BridgeState.error)
+                    if case .failure = exported { try? FileManager.default.removeItem(at: files.0.deletingLastPathComponent()) }
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.alive else {
+                            try? FileManager.default.removeItem(at: files.0.deletingLastPathComponent()); return
+                        }
+                        self.commandActivities.remove(activity); self.publishActivityStatus()
+                        completion(exported)
+                    }
+                }
+            }
+        }
+    }
+
+    private func scheduleAutosave(_ workspace: WorkspaceState) {
+        autosave?.cancel(); autosave = nil
+        guard workspace.dirty == true, currentProject != nil, !projectBusy,
+              autosaveFailure?.document != workspace.document_id || autosaveFailure?.revision != workspace.geometry_revision else { return }
+        let work = DispatchWorkItem { [weak self] in
+            self?.saveProject { [weak self] result in
+                switch result {
+                case .failure(let error):
+                    self?.autosaveFailure = (workspace.document_id, workspace.geometry_revision)
+                    self?.onFailure?(error)
+                case .success: self?.autosaveFailure = nil
+                }
+            }
+        }
+        autosave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     func requestModelling(action: String, token: UInt64? = nil, operation: String? = nil, feature: UInt64? = nil,
@@ -380,7 +580,7 @@ final class NativeSession {
                     guard let self, self.alive, lifecycle.accepts(ticket), self.modellingGeneration == expected else { return }
                     completion(result)
                     guard lifecycle.accepts(ticket), self.modellingGeneration == expected else { return }
-                    if case .success(let model) = result { self.onWorkspace?(model.workspace) }
+                    if case .success(let model) = result { self.onWorkspace?(model.workspace); self.scheduleAutosave(model.workspace) }
                     self.redraw()
                 }
             }
@@ -447,7 +647,7 @@ final class NativeSession {
                     completion(result)
                     // The completion can synchronously cancel or start another edit.
                     guard lifecycle.accepts(ticket), self.numericGeneration == expected else { return }
-                    if case .success(let numeric) = result { self.onWorkspace?(numeric.workspace) }
+                    if case .success(let numeric) = result { self.onWorkspace?(numeric.workspace); self.scheduleAutosave(numeric.workspace) }
                     self.redraw()
                 }
             }
@@ -630,6 +830,16 @@ final class NativeSession {
     func activate() { lifecycle.activate(); publishActivityStatus() }
 
     func suspend() {
+        autosave?.cancel(); autosave = nil
+        if let project = currentProject, !projectBusy {
+            engine.async { [weak self, state] in
+                do { try Self.saveProject(state, project) }
+                catch {
+                    let failure = BridgeState.error(error)
+                    DispatchQueue.main.async { [weak self] in if self?.alive == true { self?.onFailure?(failure) } }
+                }
+            }
+        }
         input.clear()
         numericGeneration &+= 1
         modellingGeneration &+= 1
@@ -653,8 +863,8 @@ final class NativeSession {
         onFailure = nil
         onFrame = nil
         onStatus = nil
-        onWorkspace = nil
-        onSketchInput = nil; onSketchAnnotations = nil; onConstraintIndicators = nil
+        onWorkspace = nil; onProjectChange = nil
+        onSketchInput = nil; onSketchAnnotations = nil; onConstraintIndicators = nil; onReferenceLabels = nil; onModelValue = nil
         // Engine work finishes before the display queue releases the retained layer/handle.
         engine.async { [state, lifecycle, display] in
             display.async { lifecycle.exclusive { state.close() } }
@@ -681,6 +891,8 @@ final class NativeSession {
                     if frame.presented == true {
                         self.onSketchAnnotations?(frame.viewport?.annotations ?? [])
                         self.onConstraintIndicators?(frame.viewport?.constraint_indicators ?? [])
+                        self.onReferenceLabels?(frame.viewport?.reference_labels ?? [])
+                        self.onModelValue?(frame.viewport?.model_value)
                     }
                     #if DEBUG
                     if frame.presented == true, let next = self.sketchCheckAfterFrame {
@@ -1215,6 +1427,8 @@ private final class BridgeState {
         let input: Input?
         let annotations: [SketchAnnotationPresentation]?
         let constraint_indicators: [SketchConstraintIndicator]?
+        let reference_labels: [ReferenceLabelPresentation]?
+        let model_value: ModelValuePresentation?
         let selection: [Entity]
         let hover: Entity?
         let geometry_revision: UInt64?
@@ -1231,35 +1445,5 @@ private final class BridgeState {
             let preselect = hover.map { " · \(NativeText.value("ui.ipados.hover")): \($0.readout)" } ?? ""
             return "r\(geometry_revision ?? 0) · \(picks)\(preselect)" + (updating ? " · \(NativeText.value("ui.ipados.updating"))" : "")
         }
-    }
-}
-
-/// No UIKit objects cross a queue. Under overload discard the uncertain interaction
-/// as a whole. Begin/end/cancel are preserved during normal batching/coalescing.
-private final class InputMailbox {
-    private let lock = NSLock()
-    private var samples: [InputSample] = []
-    private var scheduled = false
-    private var cancelled = false
-    private var epoch: UInt64 = 0
-    func append(_ sample: InputSample) -> UInt64? {
-        lock.lock(); defer { lock.unlock() }
-        if samples.count >= 128 { samples.removeAll(keepingCapacity: true); cancelled = true }
-        samples.append(sample)
-        if scheduled { return nil }
-        scheduled = true
-        return epoch
-    }
-    func take(token: UInt64) -> (samples: [InputSample], cancelled: Bool)? {
-        lock.lock(); defer { lock.unlock() }
-        guard token == epoch else { return nil }
-        let result = (samples, cancelled)
-        samples.removeAll(keepingCapacity: true); cancelled = false; scheduled = false
-        return result
-    }
-    func clear() {
-        lock.lock(); defer { lock.unlock() }
-        samples.removeAll(keepingCapacity: true); cancelled = true
-        epoch &+= 1; scheduled = false
     }
 }

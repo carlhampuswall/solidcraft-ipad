@@ -1,3 +1,301 @@
+# Consolidated develop handoff
+
+Steps 1–8, Step 8.5, the isolated UI workstream and the completed orbit, origin,
+project-library and extrusion tasks are consolidated on `develop`.
+[DEVELOP.md](DEVELOP.md) is the current branch/provenance, verification and
+continuation report. `main` and all original source branches remain preserved.
+The source and per-task results below are historical records; their older test
+totals, single-save-slot descriptions and no-commit/no-push status do not describe
+the final combined branch. The engine suite is excluded from this integration's
+checks at the user's request; no full-CI success is claimed.
+
+---
+
+# Pencil selection of finished sketch profiles — 2026-10-28
+
+Finished, shown sketch regions are now selectable in the model view with Pencil
+or pointer under Face/Auto. The selected region has a filled blue highlight and
+boundary; Extrude receives its exact native profile identity without requiring a
+dropdown choice. Same-sketch multiple selection and canvas reselection into an
+open modelling form preserve entered dimensions. Explicit topology filters,
+hidden geometry, profile holes, solid occlusion and stale-scene guards remain
+covered. Profile detection and modelling semantics stay in the existing engine.
+
+The two initial regressions failed before the fix (empty Pencil selection and
+empty profile after reselection). All 124 current session and 28 bridge unit
+tests pass, including five new profile regressions. Affected-crate Clippy with
+`-D warnings`, the wasm adapter check, formatting and unsigned arm64 iPad build
+pass. The wasm graph retains its existing
+engine dead-code warnings. Test/build logs are `/tmp/solidcraft-profile-tests.log`
+and `/tmp/solidcraft-profile-build.log`.
+
+`render_proof --profiles` captured and checked actual shared-GPU output on macOS:
+two finished regions, the right-hand 200 mm² region selected through synthetic
+Pencil input, and only that region extruded 10 mm to 2,000 mm³. Evidence is in
+`target/ipados-evidence/profile-selection/` (ignored build output). GPU capture
+also exposed the highlight pass's unused glass lane; translucent profile fills
+now use its alpha-blended triangle lane, covered by the bridge regression.
+This is software input/rendering evidence, with no new physical Pencil/UIKit
+verification, device installation or simulator launch. No commit or push was made.
+
+# Project library and file exchange — 2026-10-28
+
+Local implementation adds a separate native Projects browser with search,
+create/open, duplicate and confirmed inactive-project deletion. Native containers
+are stored in UUID directories; the previous single save slot is migrated without
+removing its source. Committed changes autosave, switching saves first, and the
+selected project restores on launch (with a preference for starter-model launch).
+
+Files import accepts SolidCraft, STEP/STP, STL, OBJ and 3MF as a new project, or
+inserts supported CAD/mesh geometry into the current design. Export offers STEP,
+SolidCraft, STL, OBJ and 3MF via the system destination picker. External reads are
+security-scoped/coordinated and staged with size limits. Candidate loading and
+saving finish before document replacement. Autosave avoids viewport replacement;
+exports run against a frozen container on a separate worker. Engine commands own
+all parsing, serialization and CAD semantics. No shared crate changes, new
+dependencies, design format, commit, push or device installation were made.
+
+Validation: 117 session and 26 bridge tests pass, including native/STEP round
+trips, duplicate renaming, failed replacement/history preservation, and saves that
+retain numeric preview state. The macOS Foundation harness passes library name,
+same-name identity, deletion-confinement and coordinated-staging checks alongside
+330 layout cases and 41 icon checks. Affected Clippy (`-D warnings`), wasm adapter
+checks, formatting, sorted pending catalogues, dependency layers, UI containers,
+plist validation and the unsigned arm64 iPad build pass. The wasm dependency graph
+retains its existing engine dead-code warnings. Logs are
+`/tmp/solidcraft-project-{rust-tests,workspace,clippy,wasm,fmt,lists,layers,containers,build}.log`.
+Xcode and file-coordinator checks needed an unrestricted runner; their restricted
+attempts were capability failures and were not counted as passes.
+
+No simulator was launched. This change has no new physical-device/UIKit/Files
+provider runtime verification or screenshot evidence. The preceding installation
+record below predates these project changes. Use the Projects checklist in UI.md
+on a physical iPad before treating that coverage as complete. Full workspace CI
+was not run for this uncommitted change.
+
+# Origin visibility follow-up — 2026-10-28
+
+The Part browser now has an expandable Origin references group with individual
+eye controls for O, X/Y/Z and XY/XZ/YZ. The group menu and View menu offer Show
+all, Hide all and Automatic during sketch creation. Automatic is the default;
+explicit saved choices override it. Cancelling the chooser clears selections
+that become hidden. No shared engine, CAD data or undo-format change was needed.
+
+Validation: 117 session and 26 bridge tests, 330 native workspace cases, 41 icon
+checks, Clippy with warnings denied, formatting, locale lists and the adapter's
+wasm check pass. The unsigned iPad build passes. The real Mac Metal origin proof
+captures default-hidden, automatic chooser visibility, individual hiding, manual
+XY visibility and cancellation; representative captures were inspected. This
+follow-up does not claim physical testing of the new browser controls or full CI.
+Logs and captures use `/tmp/solidcraft-origin-browser-*`.
+
+---
+
+# One-finger rotation direction correction — 2026-10-28
+
+The user reported inverted one-finger rotation in the combined installation.
+Removed the extra negation of both drag axes from the object-centred input path.
+The visible object now follows the finger; the fixed body-centre pivot and
+screen-relative rotation through poles remain. The existing legacy-orbit
+preference and wire keys remain compatible; its menu text now reads
+"Rotate around object with one finger". The direction regression checks projected
+object motion across both up axes, standard views, rolls, projections and scales.
+It failed before the correction and passes after it. Existing pivot/framing,
+gesture-transition, planar, pan and pointer regressions also pass.
+
+Verification: 117 session and 26 bridge tests, affected-crate Clippy, formatting,
+iPhoneOS Rust build and signed UIKit build pass. The existing Mac GPU orbit proof
+reports zero object-centre drift and its captures were inspected. Strict signature
+verification, installation, normal launch and the live physical iPad display pass.
+Physical finger direction still requires the user's hardware check; the Mac GPU
+driver uses synthetic finger samples. No engine suite, full CI or simulator ran.
+
+To avoid including unfinished concurrent native project-browser edits, the signed
+host was reconstructed from the previously installed source hashes at
+`/private/tmp/solidcraft-orbit-host-i2rzk04i`, then linked with a private copy of the
+corrected Rust archive. The shared source checkout retains the correction and all
+other tasks' work. Nothing was committed or pushed by this correction.
+
+Logs: `/tmp/solidcraft-orbit-direction-{before,tests,clippy,ios-build,gpu,signed-build}.log`.
+The before log records the expected regression failure. Source hashes, host/app
+paths and device results are retained as `orbit-*` files in
+`target/latest-ipad-integration/`. This installation supersedes the one below.
+
+---
+
+# Combined local iPad installation — 2026-10-28
+
+The user's build/install request combines the working origin-reference and
+viewpoint-orbit changes with UI branch `codex/ipados-ui` through
+`22d4308ee1838f7786b2531f45e4f410f7c32447`. The integration checkout remains on
+`380b43b2047a1242c81dfec75142283a0b61bd76`; this combination is uncommitted.
+No branch history was changed or pushed. UI overlap was reconciled to preserve
+the full-window layout, visual plane picker, origin visibility, orbit preference
+and existing compatibility preferences. Original UI-overlapping working files,
+the prior patch and source hashes are preserved under
+`target/latest-ipad-integration/`.
+
+The combined tree passes 115 session and 25 bridge tests, 330 native layout cases,
+41 native icon checks, formatting, asset attribution and the icon gate. Unsigned
+and signed arm64 builds pass. The signed application passes strict code-signature
+verification and was installed and normally launched on the physical iPad Pro
+11-inch (3rd generation), iPadOS 27.2, using the existing development profile.
+Device Hub's live display shows the floating workspace, actual shaded fixture,
+origin references and full-window canvas. CoreDevice confirms the installed app
+remains running. This is launch/display verification; physical Pencil gestures
+were not exercised. The engine suite and full CI were not run.
+
+Logs: `/tmp/solidcraft-latest-adapter-tests.log`,
+`/tmp/solidcraft-latest-workspace-check.log`,
+`/tmp/solidcraft-latest-native-build.log`,
+`/tmp/solidcraft-latest-signed-build.log` and
+`/tmp/solidcraft-latest-icon-check.log`. Installation, launch and running-process
+results are in `target/latest-ipad-integration/{install,launch,process}.json`.
+
+---
+
+# UI overhaul workstream — 2026-10-28
+
+Branch: `codex/ipados-ui`. Isolated checkout:
+`/Users/chw/.codex/worktrees/ipados-ui/SolidCraft - iPad`.
+Source baseline B: `c22acd12702cf3a405df01009b8d8662b3d46365`.
+Finalized policy P: `380b43b2047a1242c81dfec75142283a0b61bd76`, verified as a
+documentation-only descendant of B. P supersedes B's provisional planning
+documents. This branch does not merge P or modify the integration checkout.
+No push or merge is authorized/performed.
+
+## Implemented presentation
+
+The actual UIKit app now uses a floating document header, 52/56-point icon-first
+rail, create/modify/pattern/assembly groups, immediate sketch tools and contextual
+constraints/dimensions/construction. Right-side orientation/Fit/projection/
+Properties and bottom Undo/Redo use existing commands. Selection/tool/solver/
+snapping/error status is compact. Diagnostic tools and routine assembly reports
+are outside the normal workspace. Browser/Properties start closed; unpinned
+floating panels preserve the Metal frame and consume only visible bounds. An
+optional pinned wide browser reserves space. Short numeric transactions use a
+compact editor; native feature/assembly forms retain real Preview/Apply/Cancel.
+
+Follow-up: remove the unused safe-area bands. The workspace now fills the window;
+chrome is placed within safe bounds and the floating Metal canvas extends behind
+the status/home indicators. Rendering and picking use that same enlarged native
+surface. Pinned-browser reservations and keyboard resizing are preserved. The
+text-layout compatibility preference keeps its original inset canvas policy.
+
+Canonical SolidCraft icons are generated as Xcode vector assets using the
+existing palette/alias resolver: 321 masters, 37 aliases and 481 discovered
+command-icon mappings. A bounded image cache handles theme and density. No SVG,
+review hash, command registry, native DTO or CAD state changed. The user approved
+the resource-only Xcode project registration outside C's original ownership.
+
+Changed files:
+
+- `apps/solidcraft-ipados/SolidCraft/{WorkspaceController,WorkspaceComponents,WorkspaceLayout}.swift` (layout sections only in WorkspaceLayout)
+- `apps/solidcraft-ipados/SolidCraft.xcodeproj/project.pbxproj` (resources only)
+- `apps/solidcraft-ipados/scripts/generate-icons.py` (new build tool)
+- `apps/solidcraft-ipados/scripts/{check-workspace.sh,workspace-check.swift}`
+- `assets/locales/pending/ipados-ui-refinement.json`
+- `docs/ipados/{UI,HANDOFF}.md`
+
+Changes a default: yes — compact floating chrome, with the earlier text rail,
+header and docking policy behind **Tools → Compact floating workspace** off
+(`SolidCraft.workspace.compactChrome`). Dark native chrome defaults only when
+there is no existing appearance preference; **Appearance → System** retains the
+old policy. Rail-side and history gesture preferences remain unchanged.
+
+## Verification and real evidence
+
+- PASS: `sh apps/solidcraft-ipados/scripts/check-workspace.sh`: 330 adaptive
+  layout/focus/decoder cases, plus 41 actual tool icon mappings, vector theme
+  assets, retired-output removal and unchanged canonical artwork/review data.
+- PASS: actual iPhoneOS arm64 Swift type checking with the C bridging header.
+- PASS: `sh apps/solidcraft-ipados/scripts/build.sh`; `target/ui-native-build.log`.
+- PASS: signed build/install/launch on physical iPad Pro 11-inch (3rd generation),
+  iPadOS 27.2. Existing development certificate/wildcard profile reused without
+  provisioning updates or global environment/signing changes;
+  `target/ui-device-build.log`.
+- Physical UIKit clicks/keyboard entry observed: browser open/close retains model
+  framing; selecting Post highlights real geometry; Properties opens its radius;
+  changing 7 to 12 and Preview displays the evaluated larger solid; Cancel
+  restores 7. Selecting the actual reference sketch and Edit sketch switches
+  the real planar view and tools; Rectangle dispatch changes the native prompt.
+  Visual review led to tighter navigation surfaces, a taller numeric editor and
+  removal of unrelated assembly/parameter sections, then successful rebuilds.
+- Real Device Hub window screenshots: `/private/tmp/solidcraft-ui-evidence/`.
+  These show live physical UIKit/engine geometry, including browser open/closed,
+  sketch mode and feature Preview/Cancel. They include Device Hub chrome; they
+  are not fabricated framebuffers. No review images are committed or uploaded.
+- PASS: physical UIKit `--chrome-check`: four text/floating × light/dark cases;
+  actual header/navigation icons retain visible >=44-point touch regions and the
+  floating browser keeps its requested frame. Report:
+  `target/ui-device-chrome-check.json`. This regression follows a real defect
+  observed when switching back to compact mode. The fix resets retained scroll
+  offsets after layout and restores manual frame ownership to the browser button.
+  The earlier CI attempt was stopped before that source fix and is preserved as
+  `target/ui-ci-interrupted-layout-toggle.log`; it is not a completed gate.
+  Physical portrait inspection/browser dismissal, light appearance and the legacy
+  compatibility layout were also exercised; simultaneous Pencil/VoiceOver remain
+  unverified. Final signed build/install/normal launch was captured in
+  `13-final-verified-workspace.png` in the evidence directory. Device Hub's compact capture/coordinate path intermittently
+  returned `noWindowsAvailable`; full-view screenshots and the native report are
+  separate evidence, not repaired/fabricated screenshots.
+- PASS: edge-to-edge follow-up unsigned and signed builds:
+  `target/ui-edge-to-edge-{build,device-build}.log`. The restricted unsigned
+  attempt could not start Xcode's sandbox resource phase; the same established
+  build succeeded with required local tool access. No project setting changed.
+  Physical UIKit checks pass in light/dark across text/floating switches in both
+  orientations: actual canvas `[0,0,1194,834]` in landscape and
+  `[0,0,834,1194]` in portrait. Top/bottom native hit tests reach the canvas and
+  header/status controls remain inside the safe area. Reports:
+  `target/ui-edge-to-edge-chrome-{landscape,portrait}.json`.
+  Real screenshots: `target/ui-evidence/14-edge-to-edge-landscape.png` and
+  `15-edge-to-edge-portrait.png`. The physical viewer was restored to its original
+  landscape orientation. No engine suite or full CI was run for this follow-up.
+
+The automatic full repository run was stopped at the user's instruction on
+2026-10-28: **run the engine suite only when the user explicitly requests a full
+test**. This instruction supersedes the earlier automatic full-gate-before-commit
+rule for this task. Future UI changes use focused native/UI checks. No engine
+test, tolerance or CI implementation was changed or disabled.
+
+`target/ui-ci.log` records the interrupted run (exit 143): structural gates and
+workspace Clippy passed, as did 54 completed top-level jobs, including the
+24-test bridge and the 14-crate wasm check. No completed job failed; the engine
+library did not complete. This is **not a completed or green full-CI result**.
+B's three accepted failures remain historical baseline observations; they were
+not reverified by this interrupted run. The final signed build also passed:
+`target/ui-device-final-build.log`.
+
+No simulator was launched. Device Hub pointer/keyboard checks do not establish
+physical Pencil, palm rejection, simultaneous fingers/Pencil or VoiceOver
+acceptance. Foundation geometry checks cover narrow/keyboard/accessibility sizes;
+they are not UIKit hardware tests. Complete hardware coverage remains required.
+
+## Historical UI workstream follow-ups
+
+**The professional dark viewport objective requires B/integrator integration.**
+Native chrome is themed, but the actual renderer still uses the default light
+palette and an always-on grid. The supplied development assembly screenshot also
+used an explicit Top view. UI.md identifies the exact session/viewport/renderer
+locations and a display-only palette/guide seam. C leaves those owner-controlled
+files intact and adds no fake scene/filter. Dark/light geometry/highlights and a
+restrained ordinary 3D grid need that seam and combined verification.
+
+**Project/Files browsing was subsequently integrated.** The completed project
+task supplies a library, autosave/restoration and import/export through the
+existing native session and upstream file commands. Its implementation and
+remaining physical Files-provider checks are documented above and in UI.md.
+
+Review C after its gate, then integrate preserving task history. Reconcile the
+small approved Xcode resource additions with other project changes; never replace
+shared files wholesale. Integrate B's reviewed render seam and A's service wiring
+in P's dependency order. Run D's relevant cross-module regressions, native build
+and physical workflows on the combined tree. Run the full gate only on an
+explicit full-test request. No automatic baseline/main merge.
+
+
+---
+
 # Step 8.5 consolidated development baseline
 
 Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed on `integration/ipados-foundation`. It is accepted for development under the bounded 2026-10-28 user exception, not certified for release. Tasks A–D are prepared for individually requested launches; this task has not launched them or pushed the branch. Read finalized planning documents from the documentation-only descendant **P** identified in the integrator's final report; create every implementation worktree at B. P is never embedded as its own hash.
@@ -581,3 +879,65 @@ autosave/restoration and the native document browser were not added.
   sketch workspace/annotations and tool proposals. Header documents the boundary.
 - Resolve the inherited full-gate blocker in a separate reviewed change before a
   commit. Preserve this dirty workspace and its preceding implementation.
+
+
+## Continuous Pencil extrusion resizing — 2026-10-28
+
+This local fix addresses the report that an existing extrusion jumps during a
+Pencil handle drag and repeatedly needs to be grabbed. No commit, push, signing,
+installation or device launch was performed by this task.
+
+Reproduced before the fix: the native 128-sample mailbox cancelled a straight
+Pencil burst after capacity was reached, dropping contact ownership; tapping a
+modelling handle left a Candidate capture after lift; a second grab was rejected
+while the first lifted contact still awaited geometry. Stationary actual samples
+also kept superseding otherwise useful in-flight previews.
+
+Changes are confined to the iPad host/adapters and existing tests/proof example:
+
+- `InputSample` moved unchanged from `MetalCanvas.swift`, and `InputMailbox` moved
+  from `NativeSession.swift`, into Foundation-only `WorkspaceLayout.swift` for
+  production-code tests. At capacity, the mailbox removes redundant intermediate
+  actual Pencil moves along the same screen path within a quarter display point.
+  It retains begin/end/cancel, final position, reversal and context boundaries;
+  uncompressible input still cancels conservatively. The bound remains128.
+- `session/src/input.rs` releases tap-only handle capture, permits a fresh grab
+  after lift while an old preview is pending, and ignores unchanged handle values.
+  Old interaction results remain rejected. Existing Apply/one-step history,
+  document/revision, navigation suspension and cancellation rules remain intact.
+- Existing session/ABI tests cover quick re-grabs, stale previous results,
+  stationary samples, continuous multi-preview resizing with form inspection,
+  real geometry and one explicit Apply history step. The native harness covers
+  1,000-sample straight/reversing bursts, ordering, final lift, the unchanged
+  uncompressible-overload fallback and stale mailbox generations.
+
+Verification completed:
+
+- `cargo +1.95.0 test --locked --profile ci -p solidcraft-ipados-session -p solidcraft-ipados-bridge --lib`:
+  PASS,125 session and28 bridge tests at this check. Log:
+  `/tmp/solidcraft-continuous-resize-tests.log`.
+- `sh apps/solidcraft-ipados/scripts/check-workspace.sh`: PASS,330 adaptive cases
+  plus production input/backlog checks and native icon checks. macOS file
+  coordination required running the harness outside the restricted sandbox.
+- Affected all-targets Clippy with `-D warnings`, and the updated render proof's
+  Clippy: PASS. Logs `/tmp/solidcraft-continuous-resize-clippy.log` and
+  `/tmp/solidcraft-continuous-resize-proof-clippy.log`.
+- `sh apps/solidcraft-ipados/scripts/build.sh`: PASS, unsigned device-target build,
+  after rerunning outside the restricted runner so Xcode could initialize its
+  build-script sandbox. Log `/tmp/solidcraft-continuous-resize-build.log`.
+- Both iPad crates' wasm32 check: PASS. Three pre-existing dead-code warnings in
+  shared engine file/slicer code remain. Log `/tmp/solidcraft-continuous-resize-wasm.log`.
+- `git diff --check` and `cargo +1.95.0 fmt --all -- --check`: PASS.
+
+The existing `render_proof` example adds `--continuous-resize`. A real shared-Metal
+capture replayed tap/re-grab then one Pencil contact10→15→20→12 mm with preview
+publication and form inspection between moves. Analytical volumes were12,000,
+18,000,24,000 and14,400 mm³; authoritative geometry stayed12,000 until explicit
+Apply. Captures `/tmp/solidcraft-continuous-resize-{depth10,depth15,depth20,depth12,applied12}.png`
+were produced; depth10/depth20/depth12 were visually inspected. The unchanged
+camera naturally clips the taller20 mm preview at its top edge. These are Mac GPU
+captures with synthetic input, not UIKit screenshots or physical Pencil evidence.
+Log: `/tmp/solidcraft-continuous-resize-gpu.log`. Physical iPad/Pencil retesting
+remains required; no simulator was used. Full repository CI was not run by this
+fix task because no commit was requested; the integration owner must run its
+required final gates before committing the combined workspace.

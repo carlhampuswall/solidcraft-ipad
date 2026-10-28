@@ -1,8 +1,36 @@
 import CoreGraphics
 import Foundation
 
-/// Native chrome geometry in safe-area display points. The actual Metal view is
-/// assigned `canvas`, so rendering and picking always share the same local bounds.
+/// Engine presentation only; the host never evaluates this expression.
+struct ModelValuePresentation: Decodable {
+    let token: UInt64
+    let parameter: String
+    let position: [Double]
+    let value: Double
+    let units: String
+    let expression: String
+    let valid: Bool
+}
+
+enum ModelValuePlacement {
+    static func resolve(anchor: CGPoint, size: CGSize, bounds: CGRect, obstacles: [CGRect]) -> CGRect? {
+        guard anchor.x.isFinite, anchor.y.isFinite, size.width.isFinite, size.height.isFinite,
+              bounds.minX.isFinite, bounds.minY.isFinite, bounds.maxX.isFinite, bounds.maxY.isFinite,
+              size.width > 0, size.height > 0, bounds.width >= size.width, bounds.height >= size.height else { return nil }
+        let grip = CGRect(x: anchor.x - 26, y: anchor.y - 26, width: 52, height: 52)
+        let candidates = [CGPoint(x: anchor.x + 34, y: anchor.y - size.height / 2),
+                          CGPoint(x: anchor.x - size.width / 2, y: anchor.y - 34 - size.height),
+                          CGPoint(x: anchor.x - 34 - size.width, y: anchor.y - size.height / 2),
+                          CGPoint(x: anchor.x - size.width / 2, y: anchor.y + 34)]
+        return candidates.map { origin in
+            CGRect(x: min(max(origin.x, bounds.minX), bounds.maxX - size.width),
+                   y: min(max(origin.y, bounds.minY), bounds.maxY - size.height), width: size.width, height: size.height)
+        }.first { frame in !frame.intersects(grip) && !obstacles.contains(where: { $0.intersects(frame) }) }
+    }
+}
+
+/// Native chrome geometry in safe-area display points, placed into window space
+/// before assigning the actual Metal view. Rendering and picking share its bounds.
 struct WorkspaceLayout {
     let topBar: CGRect
     let status: CGRect
@@ -11,10 +39,22 @@ struct WorkspaceLayout {
     let browser: CGRect?
     let inspector: CGRect?
     let compact: Bool
+    var navigation: CGRect = .zero
+    var history: CGRect = .zero
+    var browserAccess: CGRect = .zero
+    var floating = false
 
     static func resolve(size: CGSize, browser: Bool, inspector: Bool,
                         railRight: Bool, largeText: Bool,
-                        minimumHeaderHeight: CGFloat = 0, minimumStatusHeight: CGFloat = 0) -> WorkspaceLayout {
+                        minimumHeaderHeight: CGFloat = 0, minimumStatusHeight: CGFloat = 0,
+                        compactChrome: Bool = true, pinnedBrowser: Bool = false, railContentHeight: CGFloat = 460,
+                        inspectorContentHeight: CGFloat = 640, navigationContentHeight: CGFloat = 192) -> WorkspaceLayout {
+        if compactChrome {
+            return floatingLayout(size: size, browser: browser, inspector: inspector, railRight: railRight,
+                                  largeText: largeText, header: minimumHeaderHeight, status: minimumStatusHeight,
+                                  pinnedBrowser: pinnedBrowser, railContentHeight: railContentHeight, inspectorContentHeight: inspectorContentHeight,
+                                  navigationContentHeight: navigationContentHeight)
+        }
         let width = size.width.isFinite ? max(0, size.width) : 0
         let height = size.height.isFinite ? max(0, size.height) : 0
         let compact = width < (largeText ? 1120 : 1000)
@@ -69,6 +109,78 @@ struct WorkspaceLayout {
             canvas: CGRect(x: left, y: contentY, width: max(0, right - left), height: contentHeight),
             browser: browserFrame, inspector: inspectorFrame, compact: compact
         )
+    }
+}
+
+extension WorkspaceLayout {
+    /// Keep controls safe while the floating viewport extends underneath system
+    /// indicators. A pinned browser still reserves only its horizontal region.
+    func placed(in chrome: CGRect, viewport: CGRect) -> WorkspaceLayout {
+        func offset(_ frame: CGRect) -> CGRect { frame.offsetBy(dx: chrome.minX, dy: chrome.minY) }
+        let insetCanvas = offset(canvas)
+        let left = floating && canvas.minX <= 0 ? viewport.minX : insetCanvas.minX
+        let right = floating && canvas.maxX >= chrome.width ? viewport.maxX : insetCanvas.maxX
+        let modelFrame = floating ? CGRect(x: left, y: viewport.minY, width: max(0, right - left), height: viewport.height) : insetCanvas
+        var result = WorkspaceLayout(topBar: offset(topBar), status: offset(status), rail: offset(rail),
+            canvas: modelFrame, browser: browser.map(offset), inspector: inspector.map(offset), compact: compact)
+        result.navigation = offset(navigation)
+        result.history = offset(history)
+        result.browserAccess = offset(browserAccess)
+        result.floating = floating
+        return result
+    }
+
+    /// Floating controls consume only their visible bounds. Unpinned panels do
+    /// not move the Metal view or change its rendering/picking coordinate space.
+    private static func floatingLayout(size: CGSize, browser: Bool, inspector: Bool,
+                                       railRight: Bool, largeText: Bool, header: CGFloat, status: CGFloat,
+                                       pinnedBrowser: Bool, railContentHeight: CGFloat, inspectorContentHeight: CGFloat,
+                                       navigationContentHeight: CGFloat) -> WorkspaceLayout {
+        let w = size.width.isFinite ? max(0, size.width) : 0
+        let h = size.height.isFinite ? max(0, size.height) : 0
+        let gap = min(8, w / 8, h / 8)
+        let railWidth = min(largeText ? 56 : 52, max(0, w - 2 * gap))
+        let headerHeight = min(max(0, h - 2 * gap), max(largeText ? 76 : 52, header))
+        let headerWidth = min(largeText ? 420 : 340, max(0, w - 2 * (railWidth + 2 * gap)))
+        let top = CGRect(x: (w - headerWidth) / 2, y: gap, width: headerWidth, height: headerHeight)
+        let bottomHeight = min(max(0, h - top.maxY - 2 * gap), max(48, status))
+        let controlsY = min(h, top.maxY + gap)
+        let controlsHeight = max(0, h - bottomHeight - 2 * gap - controlsY)
+        let railX = railRight ? max(gap, w - gap - railWidth) : gap
+        let navX = railRight ? gap : max(gap, w - gap - railWidth)
+        let rail = CGRect(x: railX, y: controlsY, width: railWidth,
+                          height: min(controlsHeight, max(0, railContentHeight)))
+        let nav = CGRect(x: navX, y: controlsY, width: railWidth, height: min(controlsHeight, max(0, navigationContentHeight)))
+        var canvas = CGRect(x: 0, y: 0, width: w, height: h)
+        var browserFrame: CGRect?
+        var inspectorFrame: CGRect?
+        let panelHeight = max(0, min(largeText ? 760 : 640, h - controlsY - bottomHeight - gap))
+        let panelWidth = min(largeText ? 380 : 320, max(0, w - 2 * (railWidth + 2 * gap)))
+        let dock = pinnedBrowser && browser && w >= (largeText ? 1180 : 1000)
+        if browser {
+            let x = railRight ? max(0, w - 2 * gap - railWidth - panelWidth) : min(w, railWidth + 2 * gap)
+            browserFrame = CGRect(x: x, y: controlsY, width: panelWidth, height: panelHeight)
+            if dock {
+                let inset = panelWidth + railWidth + 3 * gap
+                canvas = CGRect(x: railRight ? 0 : inset, y: 0, width: max(0, w - inset), height: h)
+            }
+        }
+        if inspector {
+            let x = railRight ? min(w, railWidth + 2 * gap) : max(0, w - 2 * gap - railWidth - panelWidth)
+            inspectorFrame = CGRect(x: x, y: controlsY, width: panelWidth,
+                                    height: min(panelHeight, max(180, inspectorContentHeight)))
+        }
+        let historyWidth = min(100, max(0, w - 2 * gap))
+        let statusX = min(w, historyWidth + 2 * gap)
+        let statusWidth = max(0, min(560, w - statusX - railWidth - 2 * gap))
+        var result = WorkspaceLayout(topBar: top,
+            status: CGRect(x: statusX, y: max(0, h - bottomHeight - gap), width: statusWidth, height: bottomHeight),
+            rail: rail, canvas: canvas, browser: browserFrame, inspector: inspectorFrame, compact: false)
+        result.navigation = nav
+        result.history = CGRect(x: gap, y: max(0, h - bottomHeight - gap), width: historyWidth, height: bottomHeight)
+        result.browserAccess = CGRect(x: railX, y: gap, width: railWidth, height: min(headerHeight, 52))
+        result.floating = true
+        return result
     }
 }
 
@@ -180,6 +292,7 @@ struct ModellingPresentation: Decodable {
 }
 
 struct ModellingResponse<Workspace: Decodable>: Decodable {
+    struct Handle: Decodable { let distance: Double; let units: String }
     struct Field: Decodable {
         struct Option: Decodable { let label: String; let value: PresentationJSON }
         let key: String
@@ -199,6 +312,7 @@ struct ModellingResponse<Workspace: Decodable>: Decodable {
     let valid: Bool?
     let feedback: [String]?
     let reply: PresentationJSON?
+    let handle: Handle?
     let workspace: Workspace
 }
 
@@ -274,5 +388,88 @@ enum PresentationLabelKey {
         else { return value }
         let translated = lookup(key)
         return translated == key ? value : translated
+    }
+}
+
+/// UIKit captures source identity and local coordinates. Rust owns gesture policy and camera math.
+struct InputSample: Encodable {
+    enum Source: String, Encodable { case pencil, finger, indirect, unknown }
+    enum Phase: String, Encodable { case began, moved, ended, cancelled, hover, scroll }
+    let source: Source
+    let phase: Phase
+    let id: UInt64
+    let x_points: Double
+    let y_points: Double
+    let x_pixels: Double
+    let y_pixels: Double
+    let scale: Double
+    let timestamp: Double
+    let pressure: Double?
+    let altitude: Double?
+    let geometry_revision: UInt64?
+    let consumed: Bool
+    let shift: Bool
+    let button: UInt8
+    let scroll: Double
+    var predicted = false
+    var display_preview = false
+    var sequence: UInt64 = 0
+    var viewport_epoch: UInt64? = nil
+    var camera_epoch: UInt64? = nil
+    var document_id: String? = nil
+    var azimuth: Double? = nil
+}
+
+/// No UIKit objects cross a queue. Under load, thin redundant actual Pencil
+/// motion along the same screen path, retaining contact boundaries and turns.
+/// If no redundant motion remains, discard the uncertain interaction as a whole.
+final class InputMailbox {
+    private let lock = NSLock()
+    private var samples: [InputSample] = []
+    private var scheduled = false
+    private var cancelled = false
+    private var epoch: UInt64 = 0
+    func append(_ sample: InputSample) -> UInt64? {
+        lock.lock(); defer { lock.unlock() }
+        if samples.count >= 128 {
+            if let index = (1..<(samples.count - 1)).first(where: { redundantMotion(at: $0) }) {
+                samples.remove(at: index)
+            } else {
+                samples.removeAll(keepingCapacity: true); cancelled = true
+            }
+        }
+        samples.append(sample)
+        if scheduled { return nil }
+        scheduled = true
+        return epoch
+    }
+    private func redundantMotion(at index: Int) -> Bool {
+        let before = samples[index - 1], current = samples[index], after = samples[index + 1]
+        guard current.phase == .moved, current.source == .pencil,
+              before.phase == .began || before.phase == .moved, after.phase == .moved,
+              [before, after].allSatisfy({
+                  $0.source == current.source && $0.id == current.id && !$0.predicted && !current.predicted
+                      && $0.document_id == current.document_id && $0.geometry_revision == current.geometry_revision
+                      && $0.viewport_epoch == current.viewport_epoch && $0.camera_epoch == current.camera_epoch
+                      && $0.scale == current.scale && $0.display_preview == current.display_preview
+                      && $0.consumed == current.consumed && $0.shift == current.shift && $0.button == current.button
+              }), before.timestamp <= current.timestamp, current.timestamp <= after.timestamp else { return false }
+        let ax = current.x_points - before.x_points, ay = current.y_points - before.y_points
+        let bx = after.x_points - current.x_points, by = after.y_points - current.y_points
+        let cross = ax * by - ay * bx
+        // Quarter-point screen tolerance; reversals/curves keep their samples.
+        return ax * bx + ay * by >= 0 && cross * cross <= 0.0625 * ((ax + bx) * (ax + bx) + (ay + by) * (ay + by))
+    }
+    func take(token: UInt64) -> (samples: [InputSample], cancelled: Bool)? {
+        lock.lock(); defer { lock.unlock() }
+        guard token == epoch else { return nil }
+        let result = (samples, cancelled)
+        samples.removeAll(keepingCapacity: true); cancelled = false; scheduled = false
+        return result
+    }
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        samples.removeAll(keepingCapacity: true); cancelled = true
+        epoch &+= 1; scheduled = false
     }
 }

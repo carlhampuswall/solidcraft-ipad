@@ -8,6 +8,115 @@ fn isolated_registry() -> std::sync::MutexGuard<'static, ()> {
     ABI_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+#[test]
+fn project_save_preserves_numeric_preview_and_replacement_publishes_only_complete_documents() {
+    let _serial = isolated_registry();
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-abi-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let saved = directory.join("Fixture.solidcraft");
+    let blank = directory.join("Blank.solidcraft");
+    let id = sc_session_create();
+    assert_eq!(request(id, r#"{"kind":"fixture"}"#), 0);
+    let entry = lookup(id).unwrap();
+    let committed_volume = entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3;
+    view_request(id, json!({"kind":"command","command":"select.entity","params":{"entity":{"type":"body","name":"Post"}}}));
+    assert_eq!(request(id, r#"{"kind":"numeric","action":"begin"}"#), 0);
+    let token = response(id)["result"]["token"].as_u64().unwrap();
+    assert_eq!(request(id, &json!({"kind":"numeric","action":"preview","token":token,"expression":"10 mm"}).to_string()), 0);
+    let preview = entry.viewport.lock().unwrap().snapshot().unwrap();
+    let generation = entry.generation.load(Ordering::Acquire);
+    assert_eq!(request(id, &json!({"kind":"save_document","path":saved}).to_string()), 0, "{}", response(id));
+    assert!(entry.viewport.lock().unwrap().numeric_active());
+    assert_eq!(entry.generation.load(Ordering::Acquire), generation);
+    let after = entry.viewport.lock().unwrap().snapshot().unwrap();
+    assert!(Arc::ptr_eq(&preview.model, &after.model));
+
+    assert_eq!(request(id, &json!({"kind":"document","name":"Blank","destination":blank}).to_string()), -1, "replacement is refused during an edit");
+    assert_eq!(
+        request(id, &json!({"kind":"numeric","action":"commit","token":token,"expression":"10 mm"}).to_string()),
+        0,
+        "autosave must not invalidate Apply"
+    );
+    assert_eq!(request(id, &json!({"kind":"document","name":"Blank","destination":blank}).to_string()), 0, "{}", response(id));
+    assert_eq!(entry.adapter.lock().unwrap().snapshot().unwrap().body_count, 0);
+    assert_eq!(request(id, &json!({"kind":"document","name":"Fixture","source":saved,"destination":saved}).to_string()), 0);
+    assert_eq!(entry.adapter.lock().unwrap().snapshot().unwrap().body_count, 2);
+    assert!(
+        (entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - committed_volume).abs() < 1e-6,
+        "autosave must not serialize provisional geometry"
+    );
+    let before = entry.viewport.lock().unwrap().snapshot().unwrap();
+    assert_eq!(request(id, &json!({"kind":"document","name":"Missing","source":directory.join("missing.step"),"destination":blank}).to_string()), -1);
+    let after = entry.viewport.lock().unwrap().snapshot().unwrap();
+    assert_eq!(before.model.document_id, after.model.document_id);
+    assert_eq!(before.model.volume_mm3, after.model.volume_mm3);
+    assert_eq!(sc_session_destroy(id), 0);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn finished_profile_pencil_selection_reaches_modelling_and_the_drawn_highlight_lane() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    for (command, params) in [
+        ("sketch.create", json!({"plane":"XY"})),
+        ("sketch.rectangle.two_point", json!({"p0":[-30,-10],"p1":[-10,10]})),
+        ("sketch.rectangle.two_point", json!({"p0":[10,-5],"p1":[30,5]})),
+        ("sketch.finish", json!({})),
+    ] {
+        assert_eq!(request(id, &json!({"kind":"command","command":command,"params":params}).to_string()), 0);
+    }
+    view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
+    view_request(id, json!({"kind":"command","command":"view.top","params":{}}));
+    let projected = view_request(id, json!({"kind":"command","command":"view.project","params":{"point":[20,0,0]}}));
+    for phase in ["began", "ended"] {
+        view_request(
+            id,
+            json!({"kind":"input","event":{"source":"pencil","phase":phase,"id":1,
+            "x_points":projected["result"]["points"][0],"y_points":projected["result"]["points"][1],
+            "x_pixels":projected["result"]["pixels"][0],"y_pixels":projected["result"]["pixels"][1],
+            "scale":2,"timestamp":1,"geometry_revision":projected["result"]["geometry_revision"]}}),
+        );
+    }
+    let entry = lookup(id).unwrap();
+    let snapshot = entry.viewport.lock().unwrap().snapshot().unwrap();
+    let (_, bodies) = crate::renderer::model_geometry(&snapshot, 1).unwrap();
+    let highlight = crate::renderer::highlight_geometry(&snapshot, &bodies);
+    assert!(!highlight.tris.is_empty(), "profile fill must use the triangle lane drawn by the highlight pass");
+    assert!(highlight.glass.is_empty() && highlight.trans.is_empty());
+    assert_eq!(request(id, r#"{"kind":"model","action":"begin","operation":"solid.extrude"}"#), 0, "{}", response(id));
+    let result = response(id)["result"].clone();
+    assert!(!result["params"]["profile"].is_null(), "Pencil selection must reach the native form");
+    assert_eq!(
+        request(id, &json!({"kind":"model","action":"commit","token":result["token"],"params":result["params"]}).to_string()),
+        0,
+        "{}",
+        response(id)
+    );
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 2000.).abs() < 1e-6);
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
+fn native_origin_fills_and_dot_use_the_surface_lane_drawn_by_the_guide_slot() {
+    let mut adapter = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(solidcraft_ipados_session::ViewportMetrics { width_points: 800., height_points: 600., scale: 1., origin_points: [0.; 2] })
+        .unwrap();
+    view.begin_update(1);
+    view.install(1, adapter.snapshot().unwrap());
+    view.command("view.origin", &json!({"visible":true})).unwrap();
+    let frame = view.snapshot().unwrap();
+    assert_eq!(frame.guides.meshes.len(), 4, "three planes and a filled origin dot");
+    let geometry = crate::renderer::guide_geometry(&frame.guides);
+    assert!(!geometry.trans.is_empty(), "the shared guide slot draws only its trans surface lane");
+    assert!(geometry.tris.is_empty() && geometry.glass.is_empty(), "unsupported lanes would silently drop reference surfaces");
+    assert!(!geometry.lines.is_empty() && !geometry.under.is_empty());
+    assert!(frame.model.scene.meshes.is_empty(), "reference geometry must not become CAD bodies");
+    view.command("view.origin", &json!({"visible":false})).unwrap();
+    assert!(crate::renderer::guide_geometry(&view.snapshot().unwrap().guides).trans.is_empty());
+}
+
 fn request(id: u64, text: &str) -> i32 {
     // SAFETY: text is a valid Rust-owned buffer retained for the call.
     unsafe { sc_request(id, text.as_ptr(), text.len()) }
@@ -483,6 +592,59 @@ fn modelling_sketch(id: u64) -> u64 {
     engine_command(id, "sketch.finish", json!({}));
     view_request(id, json!({"kind":"command","command":"select.entity","params":{"entity":{"type":"feature","id":sketch}}}));
     sketch
+}
+
+#[test]
+fn modelling_extrusion_drag_survives_preview_publication_and_form_inspection() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    let sketch = modelling_sketch(id);
+    engine_command(id, "solid.extrude", json!({"sketch":sketch,"distance":"10 mm","body_name":"Block"}));
+    let design = engine_command(id, "document.inspect", json!({}));
+    let feature = design["timeline"].as_array().unwrap().iter().find(|feature| feature["type"] == "ExtrudeFeature").unwrap()["id"].as_u64().unwrap();
+    let history = design["undo"].clone();
+    view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
+    view_request(id, json!({"kind":"command","command":"view.exit_planar","params":{}}));
+    view_request(id, json!({"kind":"command","command":"view.home","params":{}}));
+    view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
+    assert_eq!(request(id, &json!({"kind":"model","action":"begin","feature":feature}).to_string()), 0, "{}", response(id));
+    let token = response(id)["result"]["token"].as_u64().unwrap();
+    let start = response(id)["result"]["viewport"]["handle_point"].as_array().unwrap().clone();
+    let input = |phase: &str, depth: f64, time: f64| {
+        let mut world = start.clone();
+        world[2] = json!(depth);
+        let projected = view_request(id, json!({"kind":"command","command":"view.project","params":{"point":world}}));
+        let viewport = view_request(id, json!({"kind":"snapshot"}))["result"].clone();
+        view_request(
+            id,
+            json!({"kind":"input","event":{
+                "source":"pencil","phase":phase,"id":91,"timestamp":time,
+                "x_points":projected["result"]["points"][0],"y_points":projected["result"]["points"][1],
+                "x_pixels":projected["result"]["pixels"][0],"y_pixels":projected["result"]["pixels"][1],"scale":2,
+                "geometry_revision":viewport["geometry_revision"],"document_id":viewport["document_id"],
+                "viewport_epoch":viewport["viewport_epoch"],"camera_epoch":viewport["camera_epoch"],"display_preview":viewport["preview"]
+            }}),
+        )
+    };
+    assert_eq!(input("began", 10.0, 1.0)["result"]["handled"], true);
+    for (index, depth) in [15.0, 20.0, 12.0].into_iter().enumerate() {
+        input("moved", depth, 2.0 + index as f64);
+        assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
+        assert_eq!(response(id)["result"]["worked"], true, "the same contact must keep producing previews");
+        assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token}).to_string()), 0, "{}", response(id));
+        let result = response(id)["result"].clone();
+        assert_eq!(result["viewport"]["input"]["edit"], "dragging", "inspection must preserve the active handle");
+        assert!((result["viewport"]["preview_volume_mm3"].as_f64().unwrap() - 1200.0 * depth).abs() < 1e-5);
+    }
+    input("ended", 12.0, 6.0);
+    assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
+    let entry = lookup(id).unwrap();
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 12_000.0).abs() < 1e-6);
+    let params = entry.viewport.lock().unwrap().model_edit(token).unwrap().params;
+    assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":params}).to_string()), 0, "{}", response(id));
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 14_400.0).abs() < 1e-5);
+    assert_eq!(engine_command(id, "document.inspect", json!({}))["undo"], history.as_u64().unwrap() + 1);
+    assert_eq!(sc_session_destroy(id), 0);
 }
 
 #[test]
