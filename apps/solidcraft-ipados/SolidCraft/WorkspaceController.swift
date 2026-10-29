@@ -104,6 +104,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var previewStale = false
     private var developmentCheckStarted = false
 #if DEBUG
+    private var groupedInspectorFrameReady = false
     private var assemblyCheckRunning = false
     private var assemblyCheckTicket: UInt64 = 0
     private var assemblyCheckSignal: DispatchSourceSignal?
@@ -455,6 +456,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if staleChanged { self.updateStatus() }
             }
             #if DEBUG
+            if presented { self.groupedInspectorFrameReady = true }
             if presented, !self.developmentCheckStarted {
                 if ProcessInfo.processInfo.arguments.contains("--input-check") {
                     self.developmentCheckStarted = true; self.session.developmentInputCheck()
@@ -480,11 +482,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 } else if ProcessInfo.processInfo.arguments.contains("--tool-dismissal-check") {
                     self.developmentCheckStarted = true; self.checkToolDismissalOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
-                    // Workspace decoding may complete after the first presented frame.
-                    if self.state != nil {
-                        self.developmentCheckStarted = true
-                        DispatchQueue.main.async { [weak self] in self?.checkGroupedInspectorOnDevice() }
-                    }
+                    self.startGroupedInspectorCheckIfReady()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
                     self.developmentCheckStarted = true; self.checkChromeOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--browser-check") {
@@ -720,6 +718,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         assemblyCheckWorkspace?(value)
         browserCheckWorkspace?(value)
         historyCheckWorkspace?(value)
+        startGroupedInspectorCheckIfReady()
 #endif
         openActivatedHistoryFeature()
         let idle = active && pending.isEmpty && !numericEditing && !modellingEditing &&
@@ -3152,6 +3151,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         historyActivation = nil
         featureHistory.cancelScrub()
         active = false
+#if DEBUG
+        groupedInspectorFrameReady = false
+#endif
         // Suspension synchronously invalidates the Rust token. Drop local draft
         // ownership now and ignore queued callbacks, including a pending Begin.
         numericGeneration &+= 1
@@ -3179,6 +3181,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 /// Opt-in device evidence driver. It uses the ordinary controller forms and their
 /// Preview/Apply/Cancel callbacks. It never synthesizes a hardware Pencil event.
 private extension FoundationController {
+    func startGroupedInspectorCheckIfReady() {
+        guard active, groupedInspectorFrameReady, state != nil, !developmentCheckStarted,
+              ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") else { return }
+        developmentCheckStarted = true
+        let expected = generation
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            guard self.active, self.generation == expected, self.groupedInspectorFrameReady, self.state != nil else {
+                self.developmentCheckStarted = false
+                return
+            }
+            self.checkGroupedInspectorOnDevice()
+        }
+    }
+
     /// Real UIKit sizing, scrolling and completion on a disposable native sketch.
     func checkSketchToolbarOnDevice() {
         let expected = generation
