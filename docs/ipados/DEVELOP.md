@@ -160,7 +160,7 @@ limitations are not claimed resolved by branch consolidation.
 
 Follow [TASK-COORDINATION.md](TASK-COORDINATION.md) for new task isolation,
 completion and serialized local integration into `develop`. Record the approved
-local `develop` SHA and its relationship to fetched `origin/develop`; preserve
+local `develop` SHA and its relationship to observed `origin/develop`; preserve
 locally integrated work when choosing the baseline. The B/P policy
 remains the historical approval record for the original workstreams; it is not
 an instruction to start new work from the older source after consolidation.

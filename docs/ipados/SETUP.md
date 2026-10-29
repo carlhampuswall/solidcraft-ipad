@@ -1,5 +1,9 @@
 # iPadOS development setup
 
+New tasks follow [TASK-COORDINATION.md](TASK-COORDINATION.md): work independently
+in separate worktrees, reserve integration and iPad access, and merge into
+develop before reporting done.
+
 This fork implements a native iPadOS application while keeping future upstream
 updates practical. Completed Steps 1–8, Step 8.5 and later work are consolidated
 on `develop`; see [DEVELOP.md](DEVELOP.md) for provenance and verification limits.
