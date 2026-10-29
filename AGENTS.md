@@ -7,6 +7,7 @@ For iPadOS work and upstream integration in `carlhampuswall/solidcraft-ipad`, fi
 [`docs/ipados/UPSTREAM.md`](docs/ipados/UPSTREAM.md) (permanent engineering rules) and
 [`docs/ipados/SETUP.md`](docs/ipados/SETUP.md) (layout and prerequisites).
 Native Swift/FFI exceptions: see `docs/ipados/ARCHITECTURE.md` and scoped iPad AGENTS.md files.
+Tasks must follow [TASK-COORDINATION.md](docs/ipados/TASK-COORDINATION.md).
 
 ## Start here
 Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelled `help wanted`, `good first issue`, `needs-triage`; architecture in `docs/architecture.md`. Act when the code, docs and rules settle a question; ask only when it changes what users see. Local `plan/` notes are optional.
@@ -29,7 +30,7 @@ Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelle
 - A regression test goes in the area's existing test file, never a per-bug file (#3226).
 - Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR, never force-push `main`, no pushes just to catch up with `main`: `skills/solidcraft-contributing/SKILL.md`.
 - Show observable changes with real screenshots or a recording, captured yourself.
-- Run `cargo xtask ci` before every commit, without switching branches while it runs. `cargo xtask skills` keeps this file and `skills/` honest.
+- iPad task commits/merges use TASK-COORDINATION.md's scoped checks; upstream commits require full CI. Never switch branches during a gate. `cargo xtask skills` checks this router.
 
 ## Working on X: read the skill first
 | Working on | Read |

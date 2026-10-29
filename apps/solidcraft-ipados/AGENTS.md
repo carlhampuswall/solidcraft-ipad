@@ -1,5 +1,9 @@
 # Native Apple host scope
 
+Follow [TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md) for isolated
+task worktrees, serialized local integration and physical iPad reservations.
+Merge into develop and verify before reporting done; no permanent coordinator.
+
 Read `../../docs/ipados/ARCHITECTURE.md` and `../../docs/ipados/UPSTREAM.md` first.
 The Step 2 platform exception and Steps 5–8 workspace/sketch/modelling/assembly
 requests permit Swift/UIKit only in this directory for application lifecycle,

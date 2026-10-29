@@ -1,7 +1,9 @@
 # Parallel iPadOS development
 
 The B/P launch policy below is historical. Completed work has since been
-consolidated on `develop`; new work starts from a recorded `origin/develop` SHA.
+consolidated on `develop`; new tasks follow
+[TASK-COORDINATION.md](TASK-COORDINATION.md), including its completion and local
+integration policy, and start from a recorded approved `develop` SHA.
 See [DEVELOP.md](DEVELOP.md) for integrated work and verification limits. Preserve
 the immutable B/P policy when reconstructing the original task provenance.
 

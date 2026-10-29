@@ -5,6 +5,12 @@ description: Use when someone wants to contribute code or documentation to Solid
 
 # Contribute to SolidCraft
 
+For local iPad task commits and merges into develop, the user-approved scoped
+validation policy in [TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md)
+supersedes this skill's full-CI-before-every-commit rule. Shared engine changes
+and main/release checkpoints still require full CI. Upstream PR rules below
+remain unchanged.
+
 Read [CONTRIBUTING.md](../../CONTRIBUTING.md), [AGENTS.md](../../AGENTS.md) (the router
 to the other skills), the [contributor book page](../../docs/book/src/dev/contributing.md),
 and the [skills index](../README.md) first. Follow their current rules; use this skill to
