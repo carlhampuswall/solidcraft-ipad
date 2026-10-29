@@ -64,11 +64,11 @@ final class ModellingFormRow: UIStackView {
         heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         control.setContentHuggingPriority(.required, for: .horizontal)
         control.setContentCompressionResistancePriority(control is UISwitch ? .required : .defaultHigh, for: .horizontal)
-        control.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -28).isActive = true
         isLayoutMarginsRelativeArrangement = true
         directionalLayoutMargins = NSDirectionalEdgeInsets(top: 5, leading: 14, bottom: 5, trailing: 10)
         heightAnchor.constraint(greaterThanOrEqualToConstant: 54).isActive = true
         addArrangedSubview(heading); addArrangedSubview(control)
+        control.widthAnchor.constraint(lessThanOrEqualTo: widthAnchor, constant: -28).isActive = true
         updateLayout()
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (row: ModellingFormRow, _: UITraitCollection) in row.updateLayout() }
     }
