@@ -14,6 +14,7 @@ history; Escape or Cancel interaction discards a provisional interaction.
 | Pencil tap in Select | Visible enclosed sketch region or actual occurrence/body/face/edge/vertex/Auto picking; Multiple still applies |
 | Pencil drag on the Post radius handle | Actual plane intersection → provisional solid → one command on completion |
 | Pencil drag on an active modelling/assembly handle | Native parameter proposal and scratch geometry; lift leaves a preview for explicit Apply |
+| Touch, Pencil or primary pointer drag on a sketch dimension label in Select or Move | Reposition text, extension lines and arrows together; measured geometry stays fixed; one undo step for a saved dimension, session-only placement for a selected-edge measurement |
 | One finger | Turn the visible object in the drag direction in 3D; pan in an active sketch plane; an enabled direct handle captures its own drag |
 | Two fingers | Simultaneous centroid pan and distance-ratio zoom |
 | Two-finger double-tap | Undo one engine history action |
@@ -22,6 +23,28 @@ history; Escape or Cancel interaction discards a provisional interaction.
 | Secondary drag / middle or Shift-secondary | Existing orbit / pan; planar mode maps orbit to pan |
 | Wheel or trackpad scroll | Shared zoom path |
 | Input beginning on a native control | That control owns it until UIKit completes/cancels it |
+
+Selection starts in **Auto**: a Pencil tap near a visible body edge selects the
+edge, a tap near its endpoint selects the vertex, and a tap inside a face selects
+the face. Edge and vertex tolerance is eight display points at every screen scale.
+**Tools → Filter** still offers explicit Edge, Vertex, Face, Body and Occurrence
+filters. The chosen filter persists in `SolidCraft.workspace.selectionFilter`;
+select **Face** to retain the previous face-only behaviour after relaunch.
+
+**Multiple** selection starts enabled. Successive Pencil or primary pointer taps
+keep earlier edge, face and other geometry picks; tapping a selected item again
+removes only that item. An ordinary tap on empty space, or **Tools → Clear**,
+clears the selection. Turn off **Tools → Multiple** (also in Properties) for the
+previous single-selection behaviour. This choice persists in
+`SolidCraft.workspace.multipleSelection` and is restored when the session starts.
+Shift still adds or removes picks while Multiple is off. Fillet and Chamfer
+receive every selected edge; face operations receive every selected face where
+the existing command supports it. Selection changes do not enter model history.
+
+Cylinder rims split into kernel edge pieces hover and select as one complete
+circle. Tapping either half again deselects the whole rim; inner, outer, top and
+bottom rims remain independent. Single selection also retains all pieces of the
+chosen rim, so edge tools receive the complete circle.
 
 After finishing a sketch, tap inside its enclosed region with Pencil, then choose
 Extrude. The region highlights and populates the profile field directly, including
@@ -100,14 +123,29 @@ router, including predicted end events. Estimated force/tilt corrections are not
 used for CAD dimensions. Basic editing works with all optional properties absent.
 
 The 128-sample native mailbox thins redundant actual Pencil motion when rendering
-falls behind. It retains begin/end/cancel, reversals and context boundaries;
+falls behind. It discards queued hover feedback first, and drops incoming hover
+if a full queue contains only authoritative input. Hover cannot cancel a tap.
+For contact samples it retains begin/end/cancel, reversals and context boundaries;
 only intermediate moves on the same screen path (within a quarter point) can be
-removed. If no redundant motion remains, overload still cancels conservatively.
+removed. If neither hover nor redundant motion remains, authoritative-input
+overload still cancels conservatively.
 The Foundation-only input values and mailbox live in `WorkspaceLayout.swift` so
 the native harness exercises production batching without UIKit or a simulator.
 Stationary handle samples do not supersede an in-flight geometry preview. Tapping
 a handle releases capture, and a new grab supersedes the previous lifted contact's
 pending preview. Preview completion still checks the current interaction ticket.
+Form inspection preserves a new operation's proposal version, so refreshing its
+fields after a preview does not release the live contact. During continuous
+modelling movement, completed scratch geometry from the same live contact can
+advance the display while the latest sample is still being evaluated. That
+geometry remains visibly stale, cannot enable Apply, and never rewinds the handle
+or its current parameters. Older/duplicate completions, lift, cancellation,
+navigation suspension/rebase and context changes reject late progress.
+
+The `render_proof --continuous-resize` check creates a new extrusion and captures
+one synthetic Pencil contact through repeated motion, in-flight progress and
+form inspection, before explicit Apply. This uses the macOS GPU; it does not
+verify physical Pencil delivery or UIKit.
 
 Points are canvas-local, origin at top left, Y downward, in display points.
 Pixels equal points × scale exactly once. The adapter also supports an explicit
@@ -261,3 +299,21 @@ joint-limit feedback, scoped capture/revert and simultaneous navigation to the
 checklist above. Device screenshots, software-injected events and physical
 Pencil/palm-rejection/VoiceOver observations must be recorded separately in
 [HANDOFF.md](HANDOFF.md); this document makes no hardware-verification claim.
+
+## Drag resolution
+
+Length sliders and canvas parameter handles use a **0.1 mm** step by default.
+The native More menu exposes **Drag resolution** with 0.01, 0.1, 0.5 and 1 mm
+choices and **Continuous** (the previous unrounded behaviour). The preference is
+saved as `SolidCraft.workspace.dragStepMM`; it is independent of sketch snapping.
+Exact typed expressions and angle controls retain their existing precision.
+Canvas drags round the absolute proposed length and retain their original contact
+anchor, so small movements accumulate and reversing direction does not drift.
+
+`view.drag_precision {"step_mm":0.1}` configures the viewport adapter. Input is a
+finite number: zero selects continuous movement; otherwise 0.001–10 mm is accepted.
+Its output is the viewport diagnostic object, including `drag_step_mm`. Invalid
+values return `bad_params` without changing the preference or active interaction.
+Changing resolution cancels current contacts. The native menu disables this choice
+during numeric/modelling edits. This is a presentation preference, never design
+geometry or a new engine command; desktop/web behaviour is unchanged.

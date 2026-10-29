@@ -1,0 +1,27 @@
+{
+  "en": {
+    "ui.ipados.workspace.cancel_tools_on_dismiss": "Cancel tools when dismissed",
+    "ui.ipados.workspace.cancel_tools_on_dismiss_help": "Close Properties or tap empty space to cancel. Turn off to keep the draft active.",
+    "ui.ipados.workspace.tool_dismiss_hint": "Use fingers to navigate. Close Properties or tap empty space to cancel."
+  },
+  "de": {
+    "ui.ipados.workspace.cancel_tools_on_dismiss": "Werkzeuge beim Schließen abbrechen",
+    "ui.ipados.workspace.cancel_tools_on_dismiss_help": "Eigenschaften schließen oder auf eine leere Stelle tippen, um abzubrechen. Deaktivieren, um den Entwurf aktiv zu lassen.",
+    "ui.ipados.workspace.tool_dismiss_hint": "Mit den Fingern navigieren. Eigenschaften schließen oder auf eine leere Stelle tippen, um abzubrechen."
+  },
+  "ja": {
+    "ui.ipados.workspace.cancel_tools_on_dismiss": "閉じるときにツールをキャンセル",
+    "ui.ipados.workspace.cancel_tools_on_dismiss_help": "プロパティを閉じるか空白部分をタップするとキャンセルします。オフにすると編集中の状態を維持します。",
+    "ui.ipados.workspace.tool_dismiss_hint": "指で表示を操作します。プロパティを閉じるか空白部分をタップするとキャンセルします。"
+  },
+  "ko": {
+    "ui.ipados.workspace.cancel_tools_on_dismiss": "닫을 때 도구 취소",
+    "ui.ipados.workspace.cancel_tools_on_dismiss_help": "속성을 닫거나 빈 공간을 탭하면 취소합니다. 끄면 편집 중인 상태가 유지됩니다.",
+    "ui.ipados.workspace.tool_dismiss_hint": "손가락으로 화면을 이동하세요. 속성을 닫거나 빈 공간을 탭하면 취소합니다."
+  },
+  "zh": {
+    "ui.ipados.workspace.cancel_tools_on_dismiss": "关闭时取消工具",
+    "ui.ipados.workspace.cancel_tools_on_dismiss_help": "关闭属性或轻点空白处即可取消。关闭此选项可保留编辑状态。",
+    "ui.ipados.workspace.tool_dismiss_hint": "使用手指调整视图。关闭属性或轻点空白处即可取消。"
+  }
+}

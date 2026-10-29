@@ -1,0 +1,81 @@
+//! Selection feedback projected from existing evaluator states, without evaluating
+//! or mutating the document on the display lane.
+use std::collections::{BTreeMap, BTreeSet};
+
+use solidcraft_engine::{
+    doc::{ModelState, construct::ConstructGeom},
+    geom::Vec3,
+    view,
+};
+
+use crate::SessionAdapter;
+
+#[derive(Default)]
+pub(crate) struct FeatureFeedback {
+    pub bodies: Vec<String>,
+    pub lines: Vec<Vec<Vec3>>,
+    pub construct: Option<ConstructGeom>,
+}
+
+impl SessionAdapter {
+    pub(crate) fn feature_feedback(&self, world: &ModelState) -> BTreeMap<u64, FeatureFeedback> {
+        let mut feedback = BTreeMap::new();
+        let mut previous = BTreeMap::new();
+        for result in &self.session.model.results {
+            if result.skipped || result.error.is_some() || result.stale {
+                continue;
+            }
+            // A modifying feature often retains the creator's ModelBody.feature.
+            // Compare authoritative before/after identities to include only the
+            // definitions this feature actually created or changed.
+            let current: BTreeMap<_, _> = result.state.bodies.iter().map(|body| ((body.component, body.name.as_str()), body)).collect();
+            let changed: BTreeSet<_> = current
+                .iter()
+                .filter(|(key, body)| {
+                    previous.get(*key).is_none_or(|old: &&solidcraft_engine::doc::ModelBody| {
+                        !old.body.same(&body.body) || old.source_transform != body.source_transform
+                    })
+                })
+                .map(|(key, _)| *key)
+                .collect();
+            let bodies = world
+                .bodies
+                .iter()
+                .filter(|body| changed.contains(&(body.component, body.definition_name())) && self.session.body_visible(&body.name))
+                .map(|body| body.name.clone())
+                .collect();
+            feedback.insert(result.id, FeatureFeedback { bodies, ..FeatureFeedback::default() });
+            previous = current;
+        }
+        for sketch in world.sketches.iter().filter(|sketch| {
+            // A consumed sketch may be outlined temporarily on selection. Keep
+            // explicit item/folder/occurrence hiding authoritative.
+            view::sketch_shown(&self.session, sketch.feature)
+                || (!self.session.visibility.hidden_sketches.contains(&sketch.feature)
+                    && !self.session.feature_folder_hidden(sketch.feature, "sketches")
+                    && self.session.doc.feature(sketch.feature).is_some_and(|feature| {
+                        let path = self
+                            .session
+                            .active_occurrence_path
+                            .as_ref()
+                            .filter(|_| self.session.active_component == feature.component)
+                            .cloned()
+                            .unwrap_or_else(|| self.session.doc.first_path(feature.component));
+                        self.session.occurrence_visible(&path)
+                    }))
+        }) {
+            if let Some(item) = feedback.get_mut(&sketch.feature) {
+                item.lines = view::sketch_lines(&sketch.sketch, &sketch.plane, false, &sketch.report.curve_determined)
+                    .into_iter()
+                    .map(|(points, _, _)| points)
+                    .collect();
+            }
+        }
+        for construct in world.construct.iter().filter(|construct| self.session.construction_visible(&construct.name)) {
+            if let Some(item) = feedback.get_mut(&construct.feature) {
+                item.construct = Some(construct.geom.clone());
+            }
+        }
+        feedback
+    }
+}

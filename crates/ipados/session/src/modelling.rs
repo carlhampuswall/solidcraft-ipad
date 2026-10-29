@@ -37,6 +37,7 @@ pub struct ModelEdit {
     pub operation: String,
     pub feature: Option<u64>,
     pub params: Value,
+    pub(crate) selection_field: Option<String>,
     pub(crate) document_id: String,
     pub(crate) geometry_revision: u64,
     pub(crate) fields: Vec<Value>,
@@ -50,7 +51,7 @@ pub struct ModelEdit {
     pub feedback: Vec<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 pub struct ModelHandle {
     pub origin: solidcraft_engine::geom::Vec3,
     pub normal: solidcraft_engine::geom::Vec3,
@@ -162,8 +163,52 @@ fn field(key: &str, label: &str, kind: &str, options: Vec<Value>) -> Value {
 fn choices(values: &[&str]) -> Vec<Value> {
     values.iter().map(|v| option(*v, json!(v))).collect()
 }
+
+fn extrusion_operations(editing: bool) -> Vec<Value> {
+    [
+        ("ui.ipados.face_extrude.new_body", if editing { "new_body" } else { "new" }),
+        ("ui.ipados.face_extrude.union", "join"),
+        ("ui.ipados.face_extrude.intersect", "intersect"),
+        ("ui.ipados.face_extrude.subtract", "cut"),
+    ]
+    .into_iter()
+    .map(|(label, value)| option(label, json!(value)))
+    .collect()
+}
+
+fn update_face_extrusion_target(params: &mut Value, previous: Option<&Value>) {
+    let source = params.get("profile").unwrap_or(params);
+    let Some(body) = source["face_body"].as_str() else { return };
+    let previous_body = previous.and_then(|params| params.get("profile").unwrap_or(params)["face_body"].as_str());
+    let targets = &params["targets"];
+    if targets.as_array().is_none_or(|targets| targets.is_empty())
+        || previous_body.is_some_and(|previous| previous != body && targets == &json!([previous]))
+    {
+        let targets = json!([body]);
+        params["targets"] = targets;
+    }
+}
+
+// Compare submitted targets with the current published form before inference.
+// Unchanged targets may be only the intersecting subset of a wider cached scope.
+fn invalidate_automatic_subtract_scope(previous: &Value, params: &mut Value) {
+    if params["targets"] != previous["targets"]
+        && let Some(fields) = params.as_object_mut()
+    {
+        fields.remove("_auto_subtract_scope");
+    }
+}
+
 fn expression(fields: &mut Vec<Value>, key: &str, label: &str) {
     fields.push(field(key, label, "expression", Vec::new()));
+}
+
+// Native length fields publish the engine's default unit for insertion controls;
+// the host never has to infer a dimension from its label or expression text.
+fn length_expression(fields: &mut Vec<Value>, key: &str, label: &str) {
+    let mut descriptor = field(key, label, "expression", Vec::new());
+    descriptor["units"] = json!(solidcraft_engine::doc::expr::Kind::Length.default_unit());
+    fields.push(descriptor);
 }
 
 fn boolean_choices() -> Vec<Value> {
@@ -180,6 +225,24 @@ fn profile_reference(sketch: &solidcraft_engine::doc::SolvedSketch, indices: &[u
         captured => serde_json::to_value(captured).map_err(|e| error("profile", e.to_string()))?,
     };
     Ok(json!({"sketch":sketch.feature,"profiles":profiles}))
+}
+
+fn extrusion_face_reference(selection: &[Sel]) -> Result<Option<Value>, AdapterError> {
+    let mut body = None;
+    let mut points = Vec::new();
+    for selected in selection {
+        if let Sel::Face { body: name, point, .. } = selected {
+            if body.is_some_and(|body| body != name) {
+                return Err(error("selection", "ui.ipados.face_extrude.same_body"));
+            }
+            if !point.is_finite() || points.len() >= 256 {
+                return Err(error("selection", "ui.ipados.face_extrude.choose_source"));
+            }
+            body = Some(name);
+            points.push(*point);
+        }
+    }
+    Ok(body.map(|body| json!({"faces":points,"face_body":body})))
 }
 
 /// Presentation eligibility for the upstream feature-replay path. Body sources
@@ -209,6 +272,71 @@ fn path_fields(fields: &mut Vec<Value>, sketches: Vec<Value>, curves: Vec<Value>
 }
 
 impl SessionAdapter {
+    // Runs on the engine worker. Only native world-space meshes and profile
+    // regions participate; the authoritative document is never modified here.
+    fn automatic_subtract(&self, edit: &ModelEdit, params: &mut Value) {
+        if edit.operation != "solid.extrude"
+            || edit.feature.is_some()
+            || params["_auto_subtract"] != true
+            || !matches!(params["operation"].as_str(), Some("new" | "cut"))
+            || params["direction"] == "symmetric"
+        {
+            return;
+        }
+        let mut proposal = edit.clone();
+        proposal.params = params.clone();
+        let Some(handle) = self.extrusion_handle(&proposal) else { return };
+        let length = (handle.distance * handle.factor).abs();
+        if !length.is_finite() || length < 1e-6 {
+            return;
+        }
+        let direction = handle.normal * (handle.distance * handle.factor).signum();
+        let world = self.session.world_state();
+        let mut origins = vec![handle.origin];
+        let source = params.get("profile").unwrap_or(params);
+        if let Some(sketch) = source["sketch"].as_u64().and_then(|id| world.sketch(id)) {
+            let value = &source["profiles"];
+            let selection = serde_json::from_value::<ProfileSel>(value.clone()).ok().or_else(|| {
+                let loops = value.as_array()?.iter().map(|value| serde_json::from_value(value["curves"].clone()).ok()).collect::<Option<Vec<_>>>()?;
+                Some(ProfileSel::Curves { loops })
+            });
+            if let Some(indices) = selection.and_then(|selection| solidcraft_engine::doc::profile_selection_indices(sketch, &selection).ok()) {
+                for profile in indices.iter().take(256).filter_map(|index| sketch.profiles.get(*index)) {
+                    origins.push(sketch.plane.to_world(profile.region.interior_point()));
+                    for triangle in profile.region.triangulate(1e-2).into_iter().take(256_usize.saturating_sub(origins.len())) {
+                        origins.push(sketch.plane.to_world((triangle[0] + triangle[1] + triangle[2]) / 3.));
+                    }
+                }
+            }
+        }
+        let scope = params.get("_auto_subtract_scope").unwrap_or(&params["targets"]).clone();
+        let explicit = scope.as_array().filter(|names| !names.is_empty());
+        let epsilon = length.min(1e-3) * 0.1;
+        let targets: Vec<_> = world
+            .bodies
+            .iter()
+            .filter(|body| {
+                self.session.body_visible(&body.name) && explicit.is_none_or(|names| names.iter().any(|name| name.as_str() == Some(&body.name)))
+            })
+            .filter(|body| {
+                let mesh = body.mesh();
+                let inside = mesh.inside_index();
+                let index = solidcraft_engine::geom::MeshIndex::new(&mesh);
+                origins.iter().any(|origin| {
+                    let start = *origin + direction * epsilon;
+                    inside.contains(start)
+                        || index
+                            .raycast(&mesh, start, direction)
+                            .is_some_and(|(distance, _)| distance + epsilon < length && inside.contains(start + direction * (distance + epsilon)))
+                })
+            })
+            .map(|body| body.name.clone())
+            .collect();
+        params["_auto_subtract_scope"] = scope.clone();
+        params["operation"] = json!(if targets.is_empty() { "new" } else { "cut" });
+        params["targets"] = if targets.is_empty() { scope } else { json!(targets) };
+    }
+
     fn replay_source_options(&self, native_ids: bool) -> Vec<Value> {
         self.session
             .doc
@@ -260,7 +388,8 @@ impl SessionAdapter {
             .into_iter()
             .map(|p| json!({"name":p.name,"expression":p.expression,"unit":p.unit,"value":p.value}))
             .collect();
-        json!({"tools":TOOLS.iter().map(|id|json!({"id":id,"label":format!("cmd.{id}")})).collect::<Vec<_>>(),"timeline":timeline,"parameters":parameters})
+        json!({"tools":TOOLS.iter().map(|id|json!({"id":id,"label":format!("cmd.{id}")})).collect::<Vec<_>>(),"timeline":timeline,
+            "position":self.session.doc.marker.unwrap_or(self.session.doc.features.len()),"parameters":parameters})
     }
 
     pub fn begin_model(&self, token: u64, operation: Option<&str>, feature: Option<u64>, selection: &[Sel]) -> Result<ModelEdit, AdapterError> {
@@ -290,6 +419,7 @@ impl SessionAdapter {
             operation: operation.into(),
             feature,
             params,
+            selection_field: None,
             document_id: self.session.document_id.clone(),
             geometry_revision: self.geometry_revision,
             fields: Vec::new(),
@@ -457,7 +587,9 @@ impl SessionAdapter {
                 edit.fields.push(field("sections", "Ordered sections", "references", options));
             }
             if edit.params.get("operation").is_some() {
-                edit.fields.push(field("operation", "Operation", "choice", choices(&["new_body", "join", "cut", "intersect"])));
+                let extrusion = self.session.doc.feature(feature.unwrap_or_default()).is_some_and(|f| matches!(f.kind, FeatureKind::Extrude { .. }));
+                let operations = if extrusion { extrusion_operations(true) } else { choices(&["new_body", "join", "cut", "intersect"]) };
+                edit.fields.push(field("operation", "Operation", if extrusion { "inline_choice" } else { "choice" }, operations));
             }
             if edit.params.get("keep_tools").is_some() {
                 edit.fields.push(field(
@@ -511,9 +643,6 @@ impl SessionAdapter {
         if extent["through_all"] == true || ["to", "from", "distance2", "start_offset"].iter().any(|key| extent.get(key).is_some()) {
             return None;
         }
-        let sid = edit.params["profile"]["sketch"].as_u64().or_else(|| edit.params["sketch"].as_u64())?;
-        let world = self.session.world_state();
-        let ss = world.sketch(sid)?;
         let distance = edit.params["distance"].as_str().or_else(|| edit.params["extent"]["distance"].as_str())?;
         let distance = self.session.doc.eval(distance, solidcraft_engine::doc::expr::Kind::Length).ok()?;
         let direction = edit.params["direction"].as_str().or_else(|| edit.params["extent"]["direction"].as_str()).unwrap_or("positive");
@@ -523,26 +652,41 @@ impl SessionAdapter {
             "symmetric" => 0.5,
             _ => 1.,
         };
-        let value = edit.params["profile"].get("profiles").or_else(|| edit.params.get("profiles"))?;
-        let selection = serde_json::from_value::<ProfileSel>(value.clone()).ok().or_else(|| {
-            let loops = value
-                .as_array()?
-                .iter()
-                .map(|v| v["curves"].as_array().and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()))
-                .collect::<Option<Vec<_>>>()?;
-            Some(ProfileSel::Curves { loops })
-        })?;
-        let indices = solidcraft_engine::doc::profile_selection_indices(ss, &selection).ok()?;
-        let centre = ss.profiles.get(*indices.first()?)?.region.interior_point();
+        let world = self.session.world_state();
+        let source = edit.params.get("profile").unwrap_or(&edit.params);
+        let face_point = source["faces"].as_array().and_then(|points| points.first()).or_else(|| source.get("face"));
+        let (origin, normal, arm) = if let Some(point) = face_point {
+            let point = serde_json::from_value::<solidcraft_engine::geom::Vec3>(point.clone()).ok()?;
+            let body = world.body(source["face_body"].as_str()?)?;
+            let index = solidcraft_engine::doc::appearance::face_index_at(body, point)?;
+            let spot = solidcraft_engine::doc::naming::face_spot(body, index)?;
+            let solidcraft_engine::kernel::FaceSurface::Plane { normal, .. } = spot.surface? else { return None };
+            (spot.point, normal.vec(), solidcraft_engine::geom::Vec3::X)
+        } else {
+            let sid = edit.params["profile"]["sketch"].as_u64().or_else(|| edit.params["sketch"].as_u64())?;
+            let ss = world.sketch(sid)?;
+            let value = edit.params["profile"].get("profiles").or_else(|| edit.params.get("profiles"))?;
+            let selection = serde_json::from_value::<ProfileSel>(value.clone()).ok().or_else(|| {
+                let loops = value
+                    .as_array()?
+                    .iter()
+                    .map(|v| v["curves"].as_array().and_then(|a| a.iter().map(|v| v.as_str().map(str::to_string)).collect::<Option<Vec<_>>>()))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(ProfileSel::Curves { loops })
+            })?;
+            let indices = solidcraft_engine::doc::profile_selection_indices(ss, &selection).ok()?;
+            let centre = ss.profiles.get(*indices.first()?)?.region.interior_point();
+            (ss.plane.to_world(centre), ss.plane.normal(), ss.plane.x)
+        };
         Some(ModelHandle {
-            origin: ss.plane.to_world(centre),
-            normal: ss.plane.normal(),
+            origin,
+            normal,
             distance,
             factor,
             parameter: if edit.feature.is_some() { "extent.distance".into() } else { "distance".into() },
             units: "mm".into(),
             angular: false,
-            arm: ss.plane.x,
+            arm,
             size: 20.,
         })
     }
@@ -582,15 +726,21 @@ impl SessionAdapter {
 
     pub fn refresh_model(&self, edit: &ModelEdit, selection: &[Sel], params: Option<Value>) -> Result<ModelEdit, AdapterError> {
         self.validate_model(edit)?;
-        let mut refreshed = if edit.feature.is_some() || crate::assembly::supported(&edit.operation) {
+        let selecting_targets = edit.selection_field.as_deref() == Some("targets");
+        let mut refreshed = if edit.feature.is_some() || crate::assembly::supported(&edit.operation) || selecting_targets {
             edit.clone()
         } else {
             self.begin_model(edit.token, Some(&edit.operation), None, selection)?
         };
+        // Rebuilding a creation form must not reset the live handle's version.
+        // Inspection runs after previews, including while its contact is down.
+        refreshed.version = edit.version;
+        refreshed.selection_field = edit.selection_field.clone();
         let canvas_profile = if params.is_none()
             && edit.feature.is_none()
+            && !selecting_targets
             && matches!(edit.operation.as_str(), "solid.extrude" | "solid.revolve" | "solid.sweep")
-            && selection.iter().any(|s| matches!(s, Sel::Profile { .. }))
+            && selection.iter().any(|s| matches!(s, Sel::Profile { .. }) || edit.operation == "solid.extrude" && matches!(s, Sel::Face { .. }))
         {
             refreshed.params.get("profile").cloned()
         } else {
@@ -601,7 +751,23 @@ impl SessionAdapter {
             && edit.operation == "solid.offset_face"
             && selection.iter().any(|selection| matches!(selection, Sel::Face { .. })))
         .then(|| (refreshed.params["faces"].clone(), refreshed.params["body"].clone()));
+        let canvas_selection = params.is_none();
         refreshed.params = params.unwrap_or_else(|| edit.params.clone());
+        invalidate_automatic_subtract_scope(&edit.params, &mut refreshed.params);
+        if selecting_targets && canvas_selection {
+            if let Some(fields) = refreshed.params.as_object_mut() {
+                fields.remove("_auto_subtract_scope");
+            }
+            refreshed.params["targets"] = json!(
+                selection
+                    .iter()
+                    .filter_map(|selected| match selected {
+                        Sel::Body { name } => Some(name.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            );
+        }
         if let Some((faces, body)) = canvas_faces {
             refreshed.params["faces"] = faces;
             refreshed.params["body"] = body;
@@ -609,6 +775,10 @@ impl SessionAdapter {
         if let Some(profile) = canvas_profile {
             refreshed.params["profile"] = profile;
         }
+        if edit.operation == "solid.extrude" && !selecting_targets {
+            update_face_extrusion_target(&mut refreshed.params, Some(&edit.params));
+        }
+        self.update_face_extrusion_direction(edit, &mut refreshed.params);
         if crate::assembly::supported(&edit.operation) {
             self.assembly_context_change(&edit.params, &mut refreshed.params);
             let submitted = refreshed.params.clone();
@@ -632,7 +802,77 @@ impl SessionAdapter {
         }
         refreshed.handle =
             if crate::assembly::supported(&edit.operation) { self.assembly_handle(&refreshed) } else { self.extrusion_handle(&refreshed) };
+        if refreshed.selection_field.is_some() {
+            refreshed.handle = None;
+        }
         Ok(refreshed)
+    }
+
+    fn update_face_extrusion_direction(&self, edit: &ModelEdit, params: &mut Value) {
+        if params["operation"] == edit.params["operation"]
+            && params["profile"] == edit.params["profile"]
+            && params["targets"] == edit.params["targets"]
+        {
+            return;
+        }
+        let source = params.get("profile").unwrap_or(params);
+        let face_source = edit.operation == "solid.extrude" && (source.get("faces").is_some() || source.get("face").is_some());
+        let attached_extrusion = edit.feature.and_then(|id| self.session.doc.feature(id)).is_some_and(|feature| {
+            let FeatureKind::Extrude { sketch, .. } = &feature.kind else { return false };
+            self.session
+                .doc
+                .feature(sketch.0)
+                .is_some_and(|sketch| matches!(&sketch.kind, FeatureKind::Sketch { plane: solidcraft_engine::doc::PlaneRef::Face { .. }, .. }))
+        });
+        let sketch_source = edit.operation == "solid.extrude" && source["sketch"].as_u64().is_some();
+        if !face_source && !attached_extrusion && !sketch_source {
+            return;
+        }
+        let extent = if edit.feature.is_some() { &params["extent"] } else { &*params };
+        let previous = if edit.feature.is_some() { &edit.params["extent"] } else { &edit.params };
+        if extent["direction"] != previous["direction"] || extent["direction"] == "symmetric" {
+            return;
+        }
+        let Some(distance) = extent["distance"]
+            .as_str()
+            .and_then(|expression| self.session.doc.eval(expression, solidcraft_engine::doc::expr::Kind::Length).ok())
+            .or_else(|| extent["distance"].as_f64())
+            .filter(|distance| distance.is_finite() && *distance != 0.)
+        else {
+            return;
+        };
+        let inward = match params["operation"].as_str() {
+            Some("cut" | "intersect") => true,
+            Some("new" | "new_body" | "join") => false,
+            _ => return,
+        };
+        let negative = if face_source || attached_extrusion {
+            inward
+        } else if inward {
+            let mut probe = edit.clone();
+            probe.params = params.clone();
+            let Some(handle) = self.extrusion_handle(&probe) else { return };
+            let world = self.session.world_state();
+            let targets = params["targets"].as_array();
+            let enters = |sign: f64| {
+                world.bodies.iter().any(|body| {
+                    targets.is_some_and(|names| names.iter().any(|name| name.as_str() == Some(&body.name)))
+                        && body.mesh().contains(handle.origin + handle.normal * sign * distance.abs().min(1e-3))
+                })
+            };
+            match (enters(1.), enters(-1.)) {
+                (false, true) => true,
+                (true, false) => false,
+                _ => return,
+            }
+        } else {
+            return;
+        };
+        let direction = if (distance > 0.) == negative { "negative" } else { "positive" };
+        let extent = if edit.feature.is_some() { params.get_mut("extent") } else { Some(params) };
+        if let Some(fields) = extent.and_then(Value::as_object_mut) {
+            fields.insert("direction".into(), json!(direction));
+        }
     }
 
     fn create_model_form(&self, edit: &mut ModelEdit, selection: &[Sel]) -> Result<(), AdapterError> {
@@ -734,12 +974,21 @@ impl SessionAdapter {
                 }
                 f.push(field("faces", "ui.ipados.handles.faces", "references", faces));
                 f.push(field("body", "Target body", "reference", bodies.clone()));
-                expression(f, "distance", "Distance");
+                length_expression(f, "distance", "Distance");
             }
             "solid.extrude" | "solid.revolve" | "solid.sweep" => {
                 // This composite presentation input is expanded immediately before
-                // calling the existing constructor; its profiles are native identities.
-                if let Some(profile) = selected_profile {
+                // calling the existing constructor; profiles and body-face extrusion
+                // both retain the upstream command's reference semantics.
+                let face_source = if edit.operation == "solid.extrude" { extrusion_face_reference(selection)? } else { None };
+                if face_source.is_some() && selected_sketch.is_some() {
+                    return Err(error("selection", "ui.ipados.face_extrude.mixed_sources"));
+                }
+                if let Some(source) = face_source {
+                    let label = faces.iter().map(|face| face["label"].as_str().unwrap_or_default()).collect::<Vec<_>>().join(", ");
+                    regions.push(option(label, source.clone()));
+                    p["profile"] = source;
+                } else if let Some(profile) = selected_profile {
                     if !regions.iter().any(|region| region["value"] == profile) {
                         let label = selected_sketch.and_then(|id| state.sketch(id)).map(|sketch| sketch.name.clone()).unwrap_or_default();
                         regions.push(option(label, profile.clone()));
@@ -748,12 +997,16 @@ impl SessionAdapter {
                 } else if selected_sketch.is_some() && regions.len() == 1 {
                     p["profile"] = regions.first().map(|region| region["value"].clone()).unwrap_or(Value::Null);
                 }
-                f.push(field("profile", "ui.ipados.modelling.profile", "reference", regions));
+                let mut source = field("profile", "ui.ipados.modelling.profile", "reference", regions);
+                if edit.operation == "solid.extrude" {
+                    source["label"] = json!("ui.ipados.face_extrude.source");
+                }
+                f.push(source);
                 if edit.operation == "solid.extrude" {
                     p["distance"] = json!("10 mm");
                     p["direction"] = json!("positive");
                     p["through_all"] = json!(false);
-                    expression(f, "distance", "Distance");
+                    length_expression(f, "distance", "Distance");
                     f.push(field("direction", "Direction", "choice", choices(&["positive", "negative", "symmetric"])));
                     f.push(field("through_all", "Through All", "choice", boolean_choices()));
                 }
@@ -901,15 +1154,18 @@ impl SessionAdapter {
             if p.get("operation").is_none() {
                 p["operation"] = json!("new");
             }
-            f.push(field(
-                "operation",
-                "Operation",
-                "choice",
-                choices(if edit.operation == "solid.combine" { &["join", "cut", "intersect"] } else { &["new", "join", "cut", "intersect"] }),
-            ));
+            let operations = if edit.operation == "solid.extrude" {
+                extrusion_operations(false)
+            } else {
+                choices(if edit.operation == "solid.combine" { &["join", "cut", "intersect"] } else { &["new", "join", "cut", "intersect"] })
+            };
+            f.push(field("operation", "Operation", if edit.operation == "solid.extrude" { "inline_choice" } else { "choice" }, operations));
         }
         if matches!(edit.operation.as_str(), "solid.extrude" | "solid.revolve" | "solid.sweep" | "solid.loft" | "solid.hole") {
             p["targets"] = json!([]);
+            if edit.operation == "solid.extrude" {
+                update_face_extrusion_target(p, None);
+            }
             f.push(field("targets", "Target bodies · required for join, cut or intersect", "references", bodies));
         }
         Ok(())
@@ -926,7 +1182,7 @@ impl SessionAdapter {
         Ok(())
     }
 
-    pub fn prepare_model(&self, edit: &ModelEdit, params: Value, commit: bool) -> Result<PreparedModel, AdapterError> {
+    pub fn prepare_model(&self, edit: &ModelEdit, mut params: Value, commit: bool) -> Result<PreparedModel, AdapterError> {
         self.validate_model(edit)?;
         if crate::assembly::supported(&edit.operation) {
             return self.prepare_assembly(edit, params, commit);
@@ -934,7 +1190,16 @@ impl SessionAdapter {
         if !params.is_object() || params.to_string().len() > 65536 {
             return Err(error("bad_params", "Invalid modelling form."));
         }
+        invalidate_automatic_subtract_scope(&edit.params, &mut params);
+        self.automatic_subtract(edit, &mut params);
         let mut p = params.clone();
+        if let Some(fields) = p.as_object_mut() {
+            fields.remove("_auto_subtract");
+            fields.remove("_auto_subtract_scope");
+        }
+        if edit.operation == "solid.extrude" {
+            update_face_extrusion_target(&mut p, None);
+        }
         let target_feature = edit.feature.and_then(|id| self.session.doc.feature(id));
         if edit.operation == "solid.offset_face" || target_feature.is_some_and(|feature| matches!(feature.kind, FeatureKind::OffsetFace { .. })) {
             let source = edit.feature.map_or_else(|| self.session.world_state(), |id| self.session.model.state_before(id));
@@ -1016,9 +1281,28 @@ impl SessionAdapter {
                 fields.remove("angle");
             }
         }
+        let source = p.get("profile").unwrap_or(&p);
+        if edit.operation == "solid.extrude"
+            && source.get("faces").is_none()
+            && source.get("face").is_none()
+            && source["sketch"].as_u64().is_none()
+            && source["sketch"].as_str().is_none_or(str::is_empty)
+        {
+            return Err(error("selection", "ui.ipados.face_extrude.choose_source"));
+        }
         if let Some(profile) = p.as_object_mut().and_then(|m| m.remove("profile")) {
-            p["sketch"] = profile["sketch"].clone();
-            p["profiles"] = profile["profiles"].clone();
+            if edit.operation == "solid.extrude" && profile.get("faces").is_some() {
+                for key in ["face", "sketch", "profiles"] {
+                    if let Some(fields) = p.as_object_mut() {
+                        fields.remove(key);
+                    }
+                }
+                p["faces"] = profile["faces"].clone();
+                p["face_body"] = profile["face_body"].clone();
+            } else {
+                p["sketch"] = profile["sketch"].clone();
+                p["profiles"] = profile["profiles"].clone();
+            }
         }
         let combine = target_feature.is_some_and(|f| matches!(f.kind, FeatureKind::Combine { .. })) || edit.operation == "solid.combine";
         let hole = target_feature.is_some_and(|f| matches!(f.kind, FeatureKind::Hole { .. })) || edit.operation == "solid.hole";
@@ -1074,10 +1358,6 @@ impl SessionAdapter {
             }
             ("timeline.edit", json!({"feature":feature,"set":p}))
         } else {
-            if let Some(profile) = p.as_object_mut().and_then(|m| m.remove("profile")) {
-                p["sketch"] = profile["sketch"].clone();
-                p["profiles"] = profile["profiles"].clone();
-            }
             if let Some(curves) = p.as_object_mut().and_then(|m| m.remove("path_curves")) {
                 let list = curves.as_array().ok_or_else(|| error("selection", "Choose an ordered path."))?;
                 if list.iter().any(|c| c["sketch"] != p["path_sketch"]) {
@@ -1099,20 +1379,146 @@ impl SessionAdapter {
         // Reject references that no longer resolve exactly before the evaluator's
         // optional lenient recovery can choose a different profile.
         let mut scratch = Self { session: self.session.scratch(), geometry_revision: self.geometry_revision, workspace_cache: None };
-        scratch.execute(command, p.clone())?;
+        let reply = scratch.execute(command, p.clone())?.value;
         if let Some(r) = scratch.session.model.results.iter().find(|r| r.warning.is_some()) {
             return Err(error("evaluation_warning", format!("{}: {}", r.name, r.warning.as_deref().unwrap_or_default())));
         }
         scratch.validate_model_references()?;
         scratch.validate_joint_references()?;
-        let model = scratch.snapshot()?;
+        let mut model = scratch.snapshot()?;
+        let mut feedback = Vec::new();
+        if !commit {
+            let feature = edit.feature.or_else(|| reply["feature"].as_u64());
+            if let Some(feature) =
+                feature.filter(|id| scratch.session.doc.feature(*id).is_some_and(|f| matches!(f.kind, FeatureKind::Extrude { .. })))
+            {
+                feedback = self.extrusion_preview_scene(&scratch, command, &p, feature, &mut model)?;
+            }
+        }
         let transaction = if commit { Some(self.session.scratch().compute_commands(&[(command.into(), p)], None)?) } else { None };
         let mut updated = edit.clone();
         updated.params = params.clone();
         let offset =
             edit.operation == "solid.offset_face" || target_feature.is_some_and(|feature| matches!(feature.kind, FeatureKind::OffsetFace { .. }));
-        let handle = if offset { self.extrusion_handle(&updated) } else { scratch.extrusion_handle(&updated) };
-        Ok(PreparedModel { model, params, version: edit.version, handle, transaction, reply: Value::Null, feedback: Vec::new() })
+        // Joining can replace the selected face in the preview. Resolve creation
+        // handles against the unchanged source, just like Offset Face.
+        let source = params.get("profile").unwrap_or(&params);
+        let face_extrude = edit.operation == "solid.extrude" && (source.get("faces").is_some() || source.get("face").is_some());
+        let handle = if offset || face_extrude { self.extrusion_handle(&updated) } else { scratch.extrusion_handle(&updated) };
+        Ok(PreparedModel { model, params, version: edit.version, handle, transaction, reply: Value::Null, feedback })
+    }
+
+    fn extrusion_preview_scene(
+        &self,
+        after: &Self,
+        command: &str,
+        params: &Value,
+        feature: u64,
+        model: &mut Arc<SceneSnapshot>,
+    ) -> Result<Vec<String>, AdapterError> {
+        use solidcraft_engine::{doc::Operation, view};
+        use solidcraft_render::{Scene, SceneMesh};
+
+        let Some(native) = after.session.doc.feature(feature) else { return Ok(Vec::new()) };
+        let FeatureKind::Extrude { operation, .. } = &native.kind else { return Ok(Vec::new()) };
+        let palette = view::Palette::DEFAULT;
+        let (color, label) = match operation {
+            Operation::NewBody => (view::colors::PROFILE, "ui.ipados.face_extrude.preview_new"),
+            Operation::Join => (palette.axes[1], "ui.ipados.face_extrude.preview_union"),
+            Operation::Intersect => (palette.body_selected, "ui.ipados.face_extrude.preview_intersect"),
+            Operation::Cut => (palette.axes[0], "ui.ipados.face_extrude.preview_subtract"),
+        };
+        let result = after.session.world_state();
+        let result_names = model.picks.body_names();
+        let mut base = self.session.scratch();
+        base.selection.clear();
+        if command == "timeline.edit"
+            && let Some(position) = base.doc.feature_index(feature)
+        {
+            base.execute("timeline.roll_to", &json!({"position":position}))?;
+        }
+        let before = base.world_state();
+        let before_scene = view::scene_with_guides(&base, &solidcraft_render::Camera::default(), None, view::Guides { grid: false, axes: false });
+        let before_names: Vec<_> = before.bodies.iter().filter(|body| base.body_visible(&body.name)).map(|body| body.name.clone()).collect();
+        let changed = |name: &str| match (before.body(name), result.body(name)) {
+            (Some(old), Some(new)) => {
+                let old = old.mesh();
+                let new = new.mesh();
+                old.positions != new.positions || old.triangles != new.triangles
+            }
+            _ => true,
+        };
+        let mesh = |source: &SceneMesh, color, opacity| SceneMesh { mesh: source.mesh.clone(), color, opacity, face_colors: Vec::new() };
+        let mut display = Scene { background: model.scene.background, ..Scene::default() };
+        display.lines = model
+            .scene
+            .lines
+            .iter()
+            .map(|line| solidcraft_render::SceneLine {
+                points: line.points.clone(),
+                color: line.color,
+                alpha: line.alpha,
+                width: line.width,
+                on_top: line.on_top,
+            })
+            .collect();
+        let mut names = Vec::new();
+        let mut bounds = model.bounds;
+        for (source, name) in before_scene.meshes.iter().zip(&before_names) {
+            bounds = bounds.union(&source.mesh.bounds());
+            if matches!(operation, Operation::NewBody | Operation::Join) || !changed(name) {
+                display.meshes.push(SceneMesh {
+                    mesh: source.mesh.clone(),
+                    color: source.color,
+                    opacity: source.opacity,
+                    face_colors: source.face_colors.clone(),
+                });
+            } else {
+                display.meshes.push(mesh(source, palette.body, 0.16));
+            }
+            names.push(name.clone());
+        }
+        if !matches!(operation, Operation::Join) {
+            for (source, name) in model.scene.meshes.iter().zip(&result_names).filter(|(_, name)| changed(name)) {
+                let tint = if *operation == Operation::Cut { source.color } else { color };
+                display.meshes.push(mesh(source, tint, source.opacity));
+                names.push(name.clone());
+            }
+        }
+        if matches!(operation, Operation::Join | Operation::Cut) {
+            // Request the existing engine's New Body form for the tool. This is
+            // presentation geometry only; the real Boolean result above remains
+            // authoritative and is the only geometry that can be accepted.
+            let mut tool = params.clone();
+            if command == "timeline.edit" {
+                tool["set"]["operation"] = json!("new_body");
+            } else {
+                tool["operation"] = json!("new");
+            }
+            let mut tool_source = self.session.scratch();
+            if command == "timeline.edit"
+                && let Some(position) = tool_source.doc.feature_index(feature).and_then(|position| position.checked_add(1))
+            {
+                tool_source.execute("timeline.roll_to", &json!({"position":position}))?;
+            }
+            let preview = tool_source.preview_world(&[(command.into(), tool)])?;
+            for body in preview.after.bodies.iter().filter(|body| body.feature == feature) {
+                let shape = body.mesh();
+                bounds = bounds.union(&shape.bounds());
+                display.meshes.push(SceneMesh {
+                    mesh: shape,
+                    color,
+                    face_colors: Vec::new(),
+                    opacity: if *operation == Operation::Cut { 0.38 } else { 1.0 },
+                });
+                names.push(String::new());
+            }
+        }
+        let snapshot = Arc::get_mut(model).ok_or_else(|| error("preview", "Prepared preview scene must be uniquely owned."))?;
+        display.radius = snapshot.scene.radius.max(bounds.diagonal());
+        snapshot.bounds = bounds;
+        snapshot.preview_scene = Some(Arc::new(crate::PreviewScene { scene: Arc::new(display), names }));
+        Ok(vec![label.into()])
     }
 
     pub fn accept_model(&mut self, edit: &ModelEdit, mut prepared: PreparedModel) -> Result<Arc<SceneSnapshot>, AdapterError> {
@@ -1171,6 +1577,7 @@ impl Viewport {
         }
         if let Some(e) = &mut self.modelling {
             e.preview = Some(prepared.model.clone());
+            e.selection_field = None;
             e.last_preview = None;
             e.params = prepared.params.clone();
             e.handle = prepared.handle.clone();
@@ -1186,6 +1593,25 @@ impl Viewport {
         if let Some(e) = &mut self.modelling {
             e.preview = None;
             e.last_preview = None;
+        }
+        self.changed();
+        Ok(())
+    }
+
+    pub fn select_model_inputs(&mut self, token: u64, field: Option<&str>) -> Result<(), AdapterError> {
+        let edit = self.model_edit(token)?;
+        let field = field.or_else(|| {
+            (edit.operation == "solid.extrude" && edit.params["operation"] != "new" && edit.params["profile"].is_object()).then_some("targets")
+        });
+        if field.is_some_and(|field| !matches!(field, "profile" | "targets") || !edit.fields.iter().any(|input| input["key"] == field)) {
+            return Err(error("bad_params", "Choose a modelling source or target field."));
+        }
+        self.fail_model(token)?;
+        self.selection.clear();
+        if let Some(edit) = &mut self.modelling {
+            edit.selection_field = field.map(str::to_string);
+            edit.handle = None;
+            edit.version = edit.version.saturating_add(1);
         }
         self.changed();
         Ok(())

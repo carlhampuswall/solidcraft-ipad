@@ -1,6 +1,6 @@
 //! Display state independent of the engine worker. All navigation uses the shared
 //! stateless `view.navigate` implementation; CAD geometry is immutable here.
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use serde_json::{Value, json};
 use solidcraft_engine::{
@@ -8,13 +8,14 @@ use solidcraft_engine::{
     geom::{Aabb3, Mesh, Plane, Vec3},
     view,
 };
-use solidcraft_render::{Camera, Mat4, Scene, SceneLine, SceneMesh};
+use solidcraft_render::{Camera, Mat4, Rgb, Scene, SceneLine, SceneMesh};
 
 use crate::input::Contacts;
 use crate::{AdapterError, PickFilter, SceneSnapshot, ViewportMetrics, error};
 
 pub struct RenderSnapshot {
     pub model: Arc<SceneSnapshot>,
+    pub background: Option<(Rgb, Rgb)>,
     pub camera: Camera,
     pub view_proj: Mat4,
     pub guides: Arc<Scene>,
@@ -30,6 +31,7 @@ pub struct RenderSnapshot {
 }
 
 struct HighlightKey {
+    model_handle: Option<crate::modelling::ModelHandle>,
     model: Option<Arc<SceneSnapshot>>,
     selection: Vec<Sel>,
     hover: Option<Sel>,
@@ -37,6 +39,18 @@ struct HighlightKey {
     scale: f64,
     height: f64,
     tool_revision: u64,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct GridStyle {
+    visible: bool,
+    colors: Option<[Rgb; 2]>,
+}
+
+impl Default for GridStyle {
+    fn default() -> Self {
+        Self { visible: true, colors: None }
+    }
 }
 
 /// Native viewport interaction state. It owns no CAD session and can continue navigating
@@ -53,12 +67,17 @@ pub struct Viewport {
     pub(crate) numeric: Option<crate::NumericEdit>,
     pub(crate) modelling: Option<crate::ModelEdit>,
     pub(crate) origin: crate::origin::OriginReferences,
+    background: Option<Rgb>,
+    grid: GridStyle,
     generation: u64,
     pub(crate) metrics_epoch: u64,
     pub(crate) camera_epoch: u64,
     pub(crate) planar: bool,
     pub(crate) touch_orbit_follows_viewpoint: bool,
     pub(crate) direct_handles: bool,
+    pub(crate) drag_step_mm: f64,
+    pub(crate) automatic_subtract: bool,
+    pub(crate) cancel_tools_on_dismiss: bool,
     pub(crate) plane_preview: Option<Plane>,
     pub(crate) plane_camera: Option<(Camera, bool)>,
     guide_plane: Option<Plane>,
@@ -69,6 +88,7 @@ pub struct Viewport {
     guide_revision: u64,
     guide_camera: Option<Camera>,
     guide_metrics: ViewportMetrics,
+    guide_grid: GridStyle,
     guides: Arc<Scene>,
     highlight: Arc<Scene>,
 }
@@ -82,17 +102,22 @@ impl Default for Viewport {
             selection: Vec::new(),
             hover: None,
             filter: PickFilter::default(),
-            multiple: false,
+            multiple: true,
             contacts: Contacts::default(),
             numeric: None,
             modelling: None,
             origin: crate::origin::OriginReferences::default(),
+            background: None,
+            grid: GridStyle::default(),
             generation: 0,
             metrics_epoch: 0,
             camera_epoch: 0,
             planar: false,
             touch_orbit_follows_viewpoint: true,
             direct_handles: true,
+            drag_step_mm: 0.1,
+            automatic_subtract: true,
+            cancel_tools_on_dismiss: true,
             plane_preview: None,
             plane_camera: None,
             guide_plane: None,
@@ -103,6 +128,7 @@ impl Default for Viewport {
             guide_revision: 1,
             guide_camera: None,
             guide_metrics: ViewportMetrics::default(),
+            guide_grid: GridStyle::default(),
             guides: Arc::default(),
             highlight: Arc::default(),
         }
@@ -116,6 +142,10 @@ impl Viewport {
 
     pub fn selection(&self) -> &[Sel] {
         &self.selection
+    }
+
+    pub(crate) fn is_selected(&self, item: &Sel) -> bool {
+        self.selection.iter().any(|selected| same(selected, item))
     }
 
     /// Request generations are issued before evaluation, and checked at publication.
@@ -216,6 +246,47 @@ impl Viewport {
     }
 
     pub fn command(&mut self, id: &str, params: &Value) -> Result<Value, AdapterError> {
+        if id == "view.tool_dismissal" {
+            let enabled = params["cancel_on_dismiss"].as_bool().ok_or_else(|| error("bad_params", "Expected a boolean cancel_on_dismiss."))?;
+            self.cancel_interactions();
+            self.cancel_tools_on_dismiss = enabled;
+            return Ok(self.diagnostic());
+        }
+        if id == "view.background" {
+            let color: Option<[u8; 3]> = serde_json::from_value(params["color"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
+            let grid: Option<[[u8; 3]; 2]> = serde_json::from_value(params["grid"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
+            self.background = color.map(|[r, g, b]| Rgb(r, g, b));
+            let colors = grid.map(|colors| colors.map(|[r, g, b]| Rgb(r, g, b)));
+            if self.grid.colors != colors {
+                self.grid.colors = colors;
+                self.changed();
+            }
+            return Ok(self.diagnostic());
+        }
+        if id == "view.grid" {
+            let visible: bool = serde_json::from_value(params["visible"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
+            if self.grid.visible != visible {
+                self.grid.visible = visible;
+                self.changed();
+            }
+            return Ok(self.diagnostic());
+        }
+        if id == "view.automatic_subtract" {
+            let enabled = params["enabled"].as_bool().ok_or_else(|| error("bad_params", "ui.ipados.handles.boolean_required"))?;
+            self.cancel_interactions();
+            self.automatic_subtract = enabled;
+            self.changed();
+            return Ok(self.diagnostic());
+        }
+        if id == "view.drag_precision" {
+            let step = params["step_mm"]
+                .as_f64()
+                .filter(|step| step.is_finite() && (*step == 0. || (0.001..=10.).contains(step)))
+                .ok_or_else(|| error("bad_params", "ui.ipados.workspace.drag_resolution_invalid"))?;
+            self.cancel_interactions();
+            self.drag_step_mm = step;
+            return Ok(self.diagnostic());
+        }
         if id == "view.tool_handles" {
             let enabled = params["enabled"].as_bool().ok_or_else(|| error("bad_params", "ui.ipados.handles.boolean_required"))?;
             self.cancel_interactions();
@@ -521,7 +592,15 @@ impl Viewport {
         if model.sketch.is_some() {
             return self.pick_sketch(points);
         }
-        let filter = if self.origin.choosing { PickFilter::Face } else { self.filter };
+        let filter = if self.origin.choosing {
+            PickFilter::Face
+        } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("targets")) {
+            PickFilter::Body
+        } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("profile")) {
+            PickFilter::Face
+        } else {
+            self.filter
+        };
         let picked = model.picks.pick(&self.camera, self.vp(), self.metrics, pixel, filter);
         if !self.origin.choosing
             && matches!(filter, PickFilter::Auto | PickFilter::Face)
@@ -551,12 +630,14 @@ impl Viewport {
             self.selection.clear();
         }
         if let Some(hit) = hit {
-            if let Some(index) = self.selection.iter().position(|s| same(s, &hit)) {
-                if add {
-                    self.selection.remove(index);
+            let picked = self.model.as_ref().map_or_else(|| vec![hit.clone()], |model| model.picks.grouped_selection(&hit));
+            if add && picked.iter().all(|piece| self.is_selected(piece)) {
+                self.selection.retain(|selected| !picked.iter().any(|piece| same(selected, piece)));
+            } else {
+                let missing: Vec<_> = picked.into_iter().filter(|piece| !self.is_selected(piece)).collect();
+                if self.selection.len().saturating_add(missing.len()) <= 1024 {
+                    self.selection.extend(missing);
                 }
-            } else if self.selection.len() < 1024 {
-                self.selection.push(hit);
             }
         }
         self.hover = None;
@@ -568,6 +649,7 @@ impl Viewport {
         let model = self.display_model().cloned()?;
         Some(RenderSnapshot {
             geometry_revision: authoritative.geometry_revision,
+            background: self.background.map(|color| (color, color)).or(model.scene.background),
             model,
             camera: self.camera,
             view_proj: self.vp(),
@@ -593,6 +675,11 @@ impl Viewport {
                 Sel::Occurrence { path } => {
                     names.extend(model.occurrence_paths.iter().filter(|(_, p)| p.starts_with(path)).map(|(name, _)| name.clone()))
                 }
+                Sel::Feature { id } => {
+                    if let Some(feedback) = model.feature_feedback.get(id) {
+                        names.extend(feedback.bodies.iter().cloned());
+                    }
+                }
                 _ => {}
             }
         }
@@ -609,11 +696,14 @@ impl Viewport {
             "geometry_revision":self.model.as_ref().map(|m| m.geometry_revision),
             "revision":self.model.as_ref().map(|m| m.revision),"scene_revision":self.scene_revision,
             "selection":self.selection,"hover":self.hover,"filter":self.filter,"multiple":self.multiple,
-            "updating":self.updating,"camera":self.camera,"viewport_epoch":self.metrics_epoch,"camera_epoch":self.camera_epoch,"metrics":self.metrics,
+            "updating":self.updating,"drag_step_mm":self.drag_step_mm,"camera":self.camera,"viewport_epoch":self.metrics_epoch,"camera_epoch":self.camera_epoch,"metrics":self.metrics,
             "volume_mm3":self.model.as_ref().map(|m|m.volume_mm3),"preview_volume_mm3":self.display_model().filter(|m| self.model.as_ref().is_none_or(|a| !Arc::ptr_eq(a,m))).map(|m|m.volume_mm3),"preview":self.contacts.preview.is_some() || self.numeric.as_ref().is_some_and(|e|e.preview.is_some()) || self.modelling.as_ref().is_some_and(|e|e.preview.is_some() || e.last_preview.is_some()),"preview_stale":self.modelling.as_ref().is_some_and(|e|e.preview.is_none() && e.last_preview.is_some()),"numeric_token":self.numeric.as_ref().map(|e|e.token),"model_token":self.modelling.as_ref().map(|e|e.token),
             "input":input,"tool_pending":self.contacts.diagnostic()["tool_pending"],"planar":self.planar,
             "origin":self.origin,"reference_labels":self.reference_labels(),
+            "background":self.background.map(|color| [color.0,color.1,color.2]),
+            "grid":{"visible":self.grid.visible,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
             "touch_orbit":{"follows_viewpoint":self.touch_orbit_follows_viewpoint},
+            "tool_dismissal":{"cancel_on_dismiss":self.cancel_tools_on_dismiss},
             "handle":self.handle(),"handle_point":self.handle_point(),"model_value":self.model_value(),"annotations":self.sketch_annotations(),"constraint_indicators":self.sketch_constraint_indicators()})
     }
 
@@ -668,9 +758,14 @@ impl Viewport {
             self.camera_epoch = self.camera_epoch.saturating_add(1);
         }
         let plane = self.plane_preview.or_else(|| self.model.as_ref().and_then(|m| m.sketch_plane));
-        if self.guide_camera != Some(self.camera) || self.guide_metrics != self.metrics || self.guide_plane != plane || self.origin.dirty {
+        if self.guide_camera != Some(self.camera)
+            || self.guide_metrics != self.metrics
+            || self.guide_plane != plane
+            || self.guide_grid != self.grid
+            || self.origin.dirty
+        {
             self.guide_revision = self.guide_revision.saturating_add(1);
-            let mut scene = guides(&self.camera, self.metrics, plane);
+            let mut scene = guides(&self.camera, self.metrics, plane, self.grid);
             if plane.is_none() {
                 self.draw_references(&mut scene);
             }
@@ -678,14 +773,20 @@ impl Viewport {
             self.origin.dirty = false;
             self.guide_camera = Some(self.camera);
             self.guide_metrics = self.metrics;
+            self.guide_grid = self.grid;
             self.guide_plane = plane;
         }
         let vertex = self.handle().is_some()
             || self.modelling.as_ref().is_some_and(|e| e.handle.is_some())
             || self.display_model().is_some_and(|m| m.sketch.is_some())
-            || self.selection.iter().chain(self.hover.iter()).any(|s| matches!(s, Sel::Vertex { .. }));
+            || self.selection.iter().chain(self.hover.iter()).any(|s| match s {
+                Sel::Vertex { .. } => true,
+                Sel::Feature { id } => self.display_model().and_then(|m| m.feature_feedback.get(id)).is_some_and(|f| f.construct.is_some()),
+                _ => false,
+            });
         let camera = vertex.then_some(self.camera);
         let height = if vertex { self.metrics.height_points } else { 0.0 };
+        let model_handle = self.modelling.as_ref().and_then(|edit| edit.handle.as_ref());
         let stale = self.highlight_key.as_ref().is_none_or(|key| {
             let same_model = match (&key.model, self.display_model()) {
                 (Some(a), Some(b)) => Arc::ptr_eq(a, b),
@@ -693,6 +794,7 @@ impl Viewport {
                 _ => false,
             };
             !same_model
+                || key.model_handle.as_ref() != model_handle
                 || key.selection.len() != self.selection.len()
                 || !key.selection.iter().zip(&self.selection).all(|(a, b)| same(a, b))
                 || !match (&key.hover, &self.hover) {
@@ -709,6 +811,7 @@ impl Viewport {
             self.highlight_revision = self.highlight_revision.saturating_add(1);
             self.highlight = Arc::new(self.highlights());
             self.highlight_key = Some(HighlightKey {
+                model_handle: model_handle.cloned(),
                 model: self.display_model().cloned(),
                 selection: self.selection.clone(),
                 hover: self.hover.clone(),
@@ -788,7 +891,52 @@ impl Viewport {
         }
         let selected = view::Palette::DEFAULT.body_selected;
         let hover = view::Palette::DEFAULT.sketch_construction;
+        let mut highlighted_faces = BTreeSet::new();
+        let mut highlighted_edges = BTreeSet::new();
         for (sel, color) in self.selection.iter().map(|s| (s, selected)).chain(self.hover.iter().map(|s| (s, hover))) {
+            if let Sel::Feature { id } = sel {
+                if let Some(feedback) = model.feature_feedback.get(id) {
+                    for points in &feedback.lines {
+                        scene.lines.push(SceneLine { points: points.clone(), color, alpha: 1., width: 3. * self.metrics.scale, on_top: false });
+                    }
+                    for name in &feedback.bodies {
+                        if let Some(body) = model.picks.bodies.iter().find(|body| &body.name == name) {
+                            for (_, points) in body.mesh.edges.iter().enumerate().filter(|(i, _)| body.mesh.shaded_edge_visible(*i)) {
+                                scene.lines.push(SceneLine {
+                                    points: points.clone(),
+                                    color,
+                                    alpha: 1.,
+                                    width: 3. * self.metrics.scale,
+                                    on_top: false,
+                                });
+                            }
+                        }
+                    }
+                    if let Some(construct) = &feedback.construct {
+                        use solidcraft_engine::doc::construct::ConstructGeom;
+                        let size = self.camera.half_height() * 0.2;
+                        let lines = match construct {
+                            ConstructGeom::Plane(plane) => vec![vec![
+                                plane.origin,
+                                plane.origin + plane.x * size,
+                                plane.origin + (plane.x + plane.y) * size,
+                                plane.origin + plane.y * size,
+                                plane.origin,
+                            ]],
+                            ConstructGeom::Axis { origin, dir } => vec![vec![*origin - *dir * size, *origin + *dir * size]],
+                            ConstructGeom::Point(point) => {
+                                let (right, up, _) = self.camera.basis();
+                                let radius = 6. * 2. * self.camera.half_height() / self.metrics.height_points.max(1.);
+                                [right, up].into_iter().map(|axis| vec![*point - axis * radius, *point + axis * radius]).collect()
+                            }
+                        };
+                        for points in lines {
+                            scene.lines.push(SceneLine { points, color, alpha: 1., width: 3. * self.metrics.scale, on_top: false });
+                        }
+                    }
+                }
+                continue;
+            }
             if let Sel::Profile { sketch, index } = sel {
                 if let Some(profile) = model.picks.profiles.iter().find(|p| p.sketch == *sketch && p.index == *index) {
                     scene.meshes.push(SceneMesh { mesh: profile.fill.clone(), color, face_colors: Vec::new(), opacity: 0.3 });
@@ -814,13 +962,19 @@ impl Viewport {
                     }
                 }
                 Sel::Edge { index, .. } => {
-                    if let Some(points) = mesh.edges.get(*index) {
-                        scene.lines.push(line(points.clone()));
+                    for edge in mesh.circular_rim(*index).into_iter().filter(|edge| highlighted_edges.insert((name, *edge))) {
+                        if let Some(points) = mesh.edges.get(edge) {
+                            scene.lines.push(line(points.clone()));
+                        }
                     }
                 }
                 Sel::Face { index, .. } => {
+                    let faces: BTreeSet<_> = mesh.surface_patch(*index).into_iter().filter(|face| highlighted_faces.insert((name, *face))).collect();
+                    if faces.is_empty() {
+                        continue;
+                    }
                     let mut face = Mesh::default();
-                    for (ti, tri) in mesh.triangles.iter().enumerate().filter(|(i, _)| mesh.tri_face.get(*i) == Some(&(*index as u32))) {
+                    for (tri, id) in mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, id)| faces.contains(&(**id as usize))) {
                         let Some(pts) = mesh.tri(tri) else { continue };
                         let Ok(start) = u32::try_from(face.positions.len()) else { break };
                         if start > u32::MAX - 3 {
@@ -829,8 +983,7 @@ impl Viewport {
                         face.positions.extend(pts);
                         face.normals.extend(tri.iter().map(|i| mesh.normals.get(*i as usize).copied().unwrap_or(Vec3::Z)));
                         face.triangles.push([start, start + 1, start + 2]);
-                        face.tri_face.push(*index as u32);
-                        let _ = ti;
+                        face.tri_face.push(*id);
                     }
                     scene.meshes.push(SceneMesh::solid(Arc::new(face), color));
                 }
@@ -862,15 +1015,19 @@ fn same(a: &Sel, b: &Sel) -> bool {
         (Sel::Face { body: a, index: ai, .. }, Sel::Face { body: b, index: bi, .. })
         | (Sel::Edge { body: a, index: ai, .. }, Sel::Edge { body: b, index: bi, .. }) => a == b && ai == bi,
         (Sel::Vertex { body: a, point: ap }, Sel::Vertex { body: b, point: bp }) => a == b && ap.dist(*bp) < 1e-9,
+        // Omitted sketch IDs refer to the active sketch. Its annotation and
+        // picker include the ID, so both representations name the same curve.
+        (Sel::SketchCurve { id: a, sketch: sa }, Sel::SketchCurve { id: b, sketch: sb }) => a == b && (sa.is_none() || sb.is_none() || sa == sb),
         _ => a == b,
     }
 }
 
 /// Reference grid uses the shared spacing/fade/plane helpers. The orientation triad
 /// is anchored in the canvas corner and rotates with this same shared camera basis.
-fn guides(camera: &Camera, metrics: ViewportMetrics, sketch_plane: Option<Plane>) -> Scene {
+fn guides(camera: &Camera, metrics: ViewportMetrics, sketch_plane: Option<Plane>, grid: GridStyle) -> Scene {
     let mut scene = Scene::default();
     let palette = view::Palette::DEFAULT;
+    let [grid_minor, grid_major] = grid.colors.unwrap_or([palette.grid, palette.grid_major]);
     let (minor, major) = view::grid_step(camera.half_height());
     let plane = view::grid_plane(camera.to_frame(camera.back()), view::GridPlane::Ground);
     let (u, v) = sketch_plane.map(|p| (p.x, p.y)).unwrap_or_else(|| plane.axes());
@@ -881,9 +1038,9 @@ fn guides(camera: &Camera, metrics: ViewportMetrics, sketch_plane: Option<Plane>
     let ext = view::grid_ext(camera.half_height(), major, slant);
     let fade = view::GridFade::new(camera.half_height(), slant, ext, ext);
     let count = ((fade.end / minor) as i64).clamp(1, 200);
-    for i in -count..=count {
+    for i in (-count..=count).filter(|_| grid.visible) {
         let offset = i as f64 * minor;
-        let color = if (offset / major).fract().abs() < 1e-9 { palette.grid_major } else { palette.grid };
+        let color = if (offset / major).fract().abs() < 1e-9 { grid_major } else { grid_minor };
         for (along, across) in [(u, v), (v, u)] {
             for (a, b, alpha) in fade.pieces(offset) {
                 scene.grid.push(SceneLine {

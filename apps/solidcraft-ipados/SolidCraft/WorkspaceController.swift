@@ -21,10 +21,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let navigationScroll = UIScrollView()
     private let navigationActions = UIStackView()
     private let historyActions = UIStackView()
+    private let featureHistory = FeatureHistoryBar()
+    private var historyExpanded = false
     private let table = UITableView(frame: .zero, style: .plain)
     private let inspectorScroll = UIScrollView()
     private let properties = UIStackView()
     private let scrim = UIControl()
+    private let browserSearchBar = UIStackView()
+    private let browserSearchField = BrowserSearchField()
+    private let browserMatchCount = WorkspaceStyle.label(.caption1, secondary: true)
+    private lazy var browserFindButton = WorkspaceButton(BrowserText.text("find")) { [weak self] in self?.toggleBrowserSearch() }
+    private lazy var browserSearchDismiss = WorkspaceButton(BrowserText.text("dismiss_find")) { [weak self] in self?.dismissBrowserSearch() }
+    private var browserSearchOpen = false
+    private var browserSearchBookmark: BrowserScrollBookmark?
+    private var browserSearching = false
+    private var visibleOriginRows: [String] = []
+    private let browserOriginPrefix = "native-origin:"
     private let browserMessage = WorkspaceStyle.label(.body, secondary: true)
     private lazy var browserPanel = WorkspacePanel(title: WorkspaceStyle.text("browser")) { [weak self] in self?.closePanels() }
     private lazy var inspectorPanel = WorkspacePanel(title: WorkspaceStyle.text("inspector")) { [weak self] in self?.closePanels() }
@@ -32,7 +44,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var redoButton = WorkspaceButton(NativeText.value("ui.ipados.redo")) { [weak self] in self?.run("edit.redo") }
     private lazy var browserButton = WorkspaceButton(WorkspaceStyle.text("browser")) { [weak self] in self?.toggleBrowser() }
     private lazy var inspectorButton = WorkspaceButton(WorkspaceStyle.text("inspector")) { [weak self] in self?.toggleInspector() }
-    private lazy var viewButton = WorkspaceButton(WorkspaceStyle.text("view"), action: {})
+    private lazy var viewButton = WorkspaceButton(WorkspaceStyle.text("view"), activationEvent: .primaryActionTriggered) { [weak self] in self?.showViewControls() }
     private lazy var selectButton = WorkspaceButton(WorkspaceStyle.text("select")) { [weak self] in self?.setTool("select") }
     private lazy var radiusButton = WorkspaceButton(WorkspaceStyle.text("radius")) { [weak self] in self?.setTool("post_radius") }
     private lazy var moreButton = WorkspaceButton(WorkspaceStyle.text("tools"), action: {})
@@ -50,8 +62,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var documentActionsButton = WorkspaceButton(WorkspaceStyle.text("document_actions"), action: {})
     private lazy var fitButton = WorkspaceButton(WorkspaceStyle.text("fit")) { [weak self] in self?.run("view.fit") }
     private lazy var projectionButton = WorkspaceButton(NativeText.value("ui.ipados.perspective")) { [weak self] in
-        guard let self else { return }; self.perspective.toggle()
-        self.run("view.perspective", params: ["enabled": self.perspective]); self.rebuildMenus()
+        self?.togglePerspective()
     }
     private lazy var modifyButton = WorkspaceButton(WorkspaceStyle.text("modify"), action: {})
     private lazy var patternButton = WorkspaceButton(WorkspaceStyle.text("pattern"), action: {})
@@ -70,15 +81,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
     }
     private var state: WorkspaceState?
+    private var faceExtrudeTrigger = FaceExtrudeTrigger<WorkspaceEntity>()
+    private var historyActivation: (feature: UInt64, document: String)?
     private var visibleRows: [WorkspaceRow] = []
     private var rowByID: [String: WorkspaceRow] = [:]
     private var parents: Set<String> = []
     private var collapsed: Set<String> = []
     private var browserOpen = false
+    private var browserAnimationGeneration: UInt64 = 0
+    private var browserControlsEnabled: Bool?
     private var inspectorOpen = false
-    private var multiple = false
-    private var filter = "face"
+    private var multiple = UserDefaults.standard.object(forKey: "SolidCraft.workspace.multipleSelection") as? Bool ?? true
+    private var filter = WorkspaceSelectionFilter(storedValue: UserDefaults.standard.string(forKey: "SolidCraft.workspace.selectionFilter"))
     private var perspective = false
+    private weak var viewControlsPopover: WorkspaceViewPopover?
+    private var viewPresentation: ViewControlsPresentation?
+    private var viewControlPending = false
     private var active = false
     private var generation: UInt64 = 0
     private var failure: String?
@@ -91,6 +109,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var assemblyCheckSignal: DispatchSourceSignal?
     private var assemblyCheckContinue: (() -> Void)?
     private var assemblyCheckWorkspace: ((WorkspaceState) -> Void)?
+    private var browserCheckWorkspace: ((WorkspaceState) -> Void)?
+    private var historyCheckWorkspace: ((WorkspaceState) -> Void)?
+    private var historyDeleteConfirmation: (() -> Void)?
+    private var historyMenuDelete: (() -> Void)?
     private var assemblyCheckBegan: ((Result<ModellingState, BridgeError>) -> Void)?
     private var assemblyCheckEvaluated: ((Result<ModellingState, BridgeError>, Bool) -> Void)?
     private var assemblyCheckCancelled: ((Result<ModellingState, BridgeError>) -> Void)?
@@ -107,6 +129,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var numericToken: UInt64?
     private var numericContext: (document: String, revision: UInt64)?
     private var editor: NumericExpressionEditor?
+    private weak var inlineNumericEditor: NumericValueEditorController?
     private var numericStarting = false
     private var numericGeneration: UInt64 = 0
     private var sketchInput: SketchInputPresentation?
@@ -116,7 +139,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var planeChoosing = false
     private var referenceLabels: [String: WorkspaceButton] = [:]
     private var showAllConstraints = false
-    private var annotationLabels: [String: UILabel] = [:]
+    private var annotationLabels: [String: SketchDimensionControl] = [:]
+    private var sketchAnnotations: [String: SketchAnnotationPresentation] = [:]
     private var constraintLabels: [String: UILabel] = [:]
     private struct TransformDraft {
         let entities: [String]
@@ -128,6 +152,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var transformGeneration: UInt64 = 0
     private var transformMessage: WorkspaceMessage?
     private var transformBusy = false
+    private var modellingStartedFromFaceSelection = false
     private var modellingStarting = false
     private var modellingToken: UInt64?
     private var modellingFeature: UInt64?
@@ -136,7 +161,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var modellingInspector: ModellingInspector?
     private var modelValue: ModelValuePresentation?
     private var acceptsModelValueFrame = false
-    private weak var modelValueEditor: ModelValueEditorController?
+    private weak var modelValueEditor: NumericValueEditorController?
     private lazy var modelValueButton = WorkspaceButton(HandleText.text("edit_value")) { [weak self] in self?.editModelValue() }
     private var modellingInspectPending = false
     private var modellingCommitting = false
@@ -158,19 +183,37 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var railRight = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.railRight")
     private var appearance = (UserDefaults.standard.object(forKey: "SolidCraft.workspace.appearance") as? Int) ?? 2
     private var compactChrome = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactChrome") as? Bool ?? true
+    private var compactInspector = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactInspector") as? Bool ?? true
+    private var useTopSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useTopSafeArea") as? Bool ?? true
+    private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
     private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
+    private var leftBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.leftBrowser") as? Bool ?? true
     private var diagnostics = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.diagnostics")
+    private var gridVisible = UserDefaults.standard.object(forKey: "SolidCraft.workspace.gridVisible") as? Bool ?? true
+    private var originInBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.originInBrowser") as? Bool ?? false
     private var resetChromeOffsets = false
     private var viewpointOrbit = UserDefaults.standard.object(forKey: "SolidCraft.workspace.viewpointOrbit") as? Bool ?? true
+    private var dragStepMM = DragResolution.current
     private var directHandles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.directHandles") as? Bool ?? true
+    private var automaticSubtract = UserDefaults.standard.object(forKey: "SolidCraft.workspace.automaticSubtract") as? Bool ?? true
+    private var inlineDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.inlineDimensions") as? Bool ?? true
+    private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
+    private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
     private var originVisibility = UserDefaults.standard.dictionary(forKey: "SolidCraft.workspace.originVisibility") as? [String: Bool] ?? [:]
     private static let originItems = ["O", "X", "Y", "Z", "XY", "XZ", "YZ"]
+    private static let originAxes = ["X", "Y", "Z"]
+    private static let originPlanes = ["XY", "XZ", "YZ"]
     private var originExpanded = true
 
     private var numericEditing: Bool { numericStarting || numericToken != nil || transformDraft != nil }
+    private var topStripHeaderEnabled: Bool {
+        // Older iPadOS versions reserve the top centre for multitasking controls.
+        if #available(iOS 26.0, *) { return useTopSafeArea && traitCollection.userInterfaceIdiom == .pad }
+        return false
+    }
     private var modellingEditing: Bool { modellingStarting || modellingToken != nil }
-    private var textEntryActive: Bool { editor?.field.isFirstResponder == true || transformEditors.contains { $0.editor.field.isFirstResponder } || modellingInspector?.textEntryActive == true }
+    private var textEntryActive: Bool { browserSearchField.isFirstResponder || modelValueEditor?.editor.field.isFirstResponder == true || editor?.field.isFirstResponder == true || transformEditors.contains { $0.editor.field.isFirstResponder } || modellingInspector?.textEntryActive == true }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -181,6 +224,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         workspace.addSubview(top)
         workspace.addSubview(status)
         workspace.addSubview(railScroll)
+        workspace.addSubview(featureHistory)
         workspace.addSubview(scrim)
         workspace.addSubview(browserPanel)
         workspace.addSubview(inspectorPanel)
@@ -237,6 +281,41 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         table.register(UITableViewCell.self, forCellReuseIdentifier: "model-row")
         table.accessibilityIdentifier = "workspace-model-browser"
         browserPanel.content.addSubview(table)
+        browserFindButton.systemArtwork("magnifyingglass", compact: true)
+        browserFindButton.accessibilityIdentifier = "browser-find"
+        browserPanel.setHeaderAction(browserFindButton)
+        browserSearchBar.axis = .vertical; browserSearchBar.spacing = 4
+        let searchEntry = UIStackView(arrangedSubviews: [browserSearchField, browserSearchDismiss])
+        searchEntry.axis = .horizontal; searchEntry.spacing = 4
+        browserSearchField.placeholder = BrowserText.text("find")
+        browserSearchField.accessibilityLabel = BrowserText.text("find")
+        browserSearchField.accessibilityIdentifier = "browser-search-field"
+        browserSearchField.font = .preferredFont(forTextStyle: .body)
+        browserSearchField.adjustsFontForContentSizeCategory = true
+        browserSearchField.backgroundColor = WorkspaceStyle.fieldBackground
+        browserSearchField.borderStyle = .roundedRect
+        browserSearchField.clearButtonMode = .always
+        browserSearchField.autocorrectionType = .no
+        browserSearchField.spellCheckingType = .no
+        browserSearchField.autocapitalizationType = .none
+        browserSearchField.returnKeyType = .done
+        browserSearchField.addAction(UIAction { [weak self] _ in self?.browserQueryChanged() }, for: .editingChanged)
+        browserSearchField.addAction(UIAction { [weak self] _ in
+            self?.browserSearchField.resignFirstResponder(); self?.updateAvailability()
+        }, for: .editingDidEndOnExit)
+        browserSearchField.addAction(UIAction { [weak self] _ in
+            self?.canvas.cancelInput(); self?.updateAvailability()
+        }, for: [.editingDidBegin, .editingDidEnd])
+        browserSearchField.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+        browserSearchField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        browserSearchDismiss.artwork("close", compact: true)
+        browserSearchDismiss.widthAnchor.constraint(equalToConstant: 44).isActive = true
+        browserSearchDismiss.accessibilityIdentifier = "browser-dismiss-find"
+        browserMatchCount.numberOfLines = 0
+        browserMatchCount.accessibilityIdentifier = "browser-match-count"
+        browserSearchBar.addArrangedSubview(searchEntry); browserSearchBar.addArrangedSubview(browserMatchCount)
+        browserSearchBar.isHidden = true
+        browserPanel.content.addSubview(browserSearchBar)
         browserMessage.textAlignment = .center
         browserMessage.text = WorkspaceStyle.text("loading")
         browserMessage.isUserInteractionEnabled = true
@@ -260,6 +339,28 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             button.accessibilityIdentifier = "workspace-" + id
         }
         configureChrome()
+        featureHistory.onPreferredSizeChange = { [weak self] in self?.view.setNeedsLayout() }
+        featureHistory.onToggle = { [weak self] in
+            guard let self else { return }
+            self.canvas.cancelInput()
+            self.historyExpanded.toggle()
+            self.featureHistory.setExpanded(self.historyExpanded)
+            self.relayoutPanels()
+        }
+        featureHistory.onSelect = { [weak self] id in
+            self?.activateHistoryFeature(id)
+        }
+        featureHistory.onShowActions = { [weak self] id, source in self?.showHistoryFeatureActions(id, source: source) }
+        featureHistory.onMove = { [weak self] position in
+            self?.historyActivation = nil; self?.moveHistory(to: position)
+        }
+        featureHistory.onScrubBegan = { [weak self] in self?.historyActivation = nil; self?.canvas.cancelInput() }
+        featureHistory.onScrubMove = { [weak self] position, completion in
+            guard let self else { completion(false); return }
+            self.moveHistory(to: position) { result in
+                if case .success = result { completion(true) } else { completion(false) }
+            }
+        }
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (controller: FoundationController, _: UITraitCollection) in
             controller.rebuildMenus()
             if controller.compactChrome {
@@ -282,7 +383,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.session.command("tool.previous")
         }
         canvas.onCancel = { [weak self] in self?.session.cancelInput() }
-        canvas.onInput = { [weak self] sample in self?.session.record(sample) }
+        canvas.onInput = { [weak self] sample in
+            if sample.phase == .began { self?.historyActivation = nil }
+            self?.session.record(sample)
+        }
+        canvas.onAppearanceChange = { [weak self] in self?.updateCanvasAppearance() }
         session.onFailure = { [weak self] error in self?.showFailure(error) }
         session.onWorkspace = { [weak self] value in self?.receive(value) }
         session.onSketchInput = { [weak self] value in
@@ -290,8 +395,25 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.sketchInput = value; self.updateStatus(); self.rebuildMenus()
         }
         session.onSketchAnnotations = { [weak self] annotations in self?.showSketchAnnotations(annotations) }
+        canvas.dimensionAt = { [weak self] point in
+            guard let self else { return nil }
+            return self.annotationLabels.filter { id, label in
+                label.frame.contains(point) && self.sketchAnnotations[id] != nil
+            }.min { a, b in
+                hypot(a.value.center.x - point.x, a.value.center.y - point.y) < hypot(b.value.center.x - point.x, b.value.center.y - point.y)
+            }?.key
+        }
+        canvas.onDimensionTap = { [weak self] id in self?.editSketchAnnotation(id) }
         session.onConstraintIndicators = { [weak self] indicators in self?.showConstraintIndicators(indicators) }
         session.onReferenceLabels = { [weak self] labels in self?.showReferenceLabels(labels) }
+        session.onViewPresentation = { [weak self] value in
+            guard let self, self.viewPresentation != value else { return }
+            self.viewPresentation = value
+            self.perspective = value.camera.fov > 0
+            self.rebuildViewMenu()
+            self.projectionButton.active(self.perspective)
+            self.table.reloadSections(IndexSet(integer: 0), with: .none)
+        }
         modelValueButton.accessibilityIdentifier = "workspace-model-value"
         modelValueButton.accessibilityLabel = HandleText.text("edit_value")
         modelValueButton.isHidden = true
@@ -303,6 +425,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.layoutModelValue()
         }
         session.onToolWorkCompleted = { [weak self] in self?.inspectModelling() }
+        session.onModelDismissed = { [weak self] token in
+            guard let self, self.modellingToken == token else { return }
+            // Rust already invalidated the token and any pending preview. Drop
+            // the matching native form even if selection was already empty.
+            self.cancelModelling(alreadyDismissed: true)
+            self.inspectorOpen = false; self.browserOpen = false
+            self.relayoutPanels(); self.session.refreshWorkspace()
+        }
         session.onStatus = { [weak self] message in
             guard let self else { return }
             self.pending = message; self.failure = nil; self.updateStatus(); self.updateAvailability()
@@ -339,10 +469,32 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                         self.receive(workspace); self.inspectorOpen = true; self.browserOpen = false
                         self.rebuildInspector(); self.relayoutPanels()
                     }
-                } else if ProcessInfo.processInfo.arguments.contains("--assembly-check") {
+                } else if ProcessInfo.processInfo.arguments.contains("--numeric-entry-check") {
+                    self.developmentCheckStarted = true; self.checkNumericEntryOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--inline-dimension-check") {
+                    self.developmentCheckStarted = true; self.checkInlineDimensionsOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--sketch-toolbar-check") {
+                    self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--assembly-check") || ProcessInfo.processInfo.arguments.contains("--face-extrude-check") || ProcessInfo.processInfo.arguments.contains("--compact-inspector-check") {
                     self.developmentCheckStarted = true; self.startAssemblyCheck()
+                } else if ProcessInfo.processInfo.arguments.contains("--tool-dismissal-check") {
+                    self.developmentCheckStarted = true; self.checkToolDismissalOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
+                    // Workspace decoding may complete after the first presented frame.
+                    if self.state != nil {
+                        self.developmentCheckStarted = true
+                        DispatchQueue.main.async { [weak self] in self?.checkGroupedInspectorOnDevice() }
+                    }
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
                     self.developmentCheckStarted = true; self.checkChromeOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--browser-check") {
+                    self.developmentCheckStarted = true; self.checkBrowserOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--history-check") {
+                    self.developmentCheckStarted = true; self.checkHistoryOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--view-controls-check") {
+                    self.developmentCheckStarted = true; self.checkViewControlsOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--history-actions-check") {
+                    self.developmentCheckStarted = true; self.checkHistoryActionsOnDevice()
                 }
             }
             if presented { self.assemblyCheckPresented(document: documentID, revision: revision, preview: preview) }
@@ -365,8 +517,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             switch result {
             case .success:
                 self.failure = nil
+                self.updateCanvasAppearance()
+                self.session.command("view.grid", params: ["visible": self.gridVisible])
                 self.session.command("view.touch_orbit", params: ["follows_viewpoint": self.viewpointOrbit])
+                self.session.command("view.drag_precision", params: ["step_mm": self.dragStepMM])
                 self.session.command("view.tool_handles", params: ["enabled": self.directHandles])
+                self.session.command("view.automatic_subtract", params: ["enabled": self.automaticSubtract])
+                self.session.command("view.tool_dismissal", params: ["cancel_on_dismiss": self.cancelToolsOnDismiss])
+                self.session.command("select.filter", params: ["filter": self.filter.rawValue])
+                self.session.command("select.multiple", params: ["enabled": self.multiple])
                 for (item, visible) in self.originVisibility {
                     self.session.command("view.origin", params: ["item": item, "visible": visible])
                 }
@@ -382,9 +541,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         for stack in [topActions, rail, navigationActions, historyActions] {
             stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         }
+        documentActionsButton.removeFromSuperview()
+        viewButton.removeFromSuperview()
         let chromeIcons: [(WorkspaceButton, String)] = [
             (undoButton, "undo"), (redoButton, "redo"), (browserButton, "list"),
-            (inspectorButton, "inspect"), (viewButton, "orbit"), (selectButton, "select"),
+            (inspectorButton, "inspect"), (selectButton, "select"),
             (radiusButton, "dimension"), (moreButton, "settings"), (modellingButton, "extrude"),
             (modifyButton, "fillet"), (patternButton, "pattern_rect"), (assemblyButton, "component"),
             (cancelToolButton, "sketch_cancel"), (createSketchButton, "sketch"),
@@ -393,19 +554,35 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             (constraintsButton, "c_parallel"), (dimensionsButton, "dimension"), (constructionButton, "construction")
         ]
         chromeIcons.forEach { $0.0.artwork($0.1, compact: compactChrome) }
+        viewButton.artwork("chevron")
+        viewButton.configuration?.imagePlacement = .trailing
+        viewButton.configuration?.baseForegroundColor = WorkspaceStyle.foreground
+        viewButton.accessibilityIdentifier = "workspace-view-menu"
+        viewButton.showsLargeContentViewer = false
+        for interaction in viewButton.interactions where interaction is UILargeContentViewerInteraction { viewButton.removeInteraction(interaction) }
         for (id, button) in sketchQuickTools {
             button.commandArtwork(id, compact: true)
             button.accessibilityIdentifier = "workspace-tool-" + id
         }
         rail.spacing = compactChrome ? 2 : 8
         if compactChrome {
-            topActions.addArrangedSubview(documentActionsButton)
+            // A single menu button needs no scroll view. In the top strip,
+            // UIKit's scroll-edge treatment can obscure this control.
+            documentActionsButton.translatesAutoresizingMaskIntoConstraints = true
+            top.addSubview(documentActionsButton)
+            // Completion must remain visible while the drawing tools scroll.
+            finishSketchButton.artwork("finish")
+            finishSketchButton.translatesAutoresizingMaskIntoConstraints = true
+            top.addSubview(finishSketchButton)
             [selectButton, createSketchButton].forEach(rail.addArrangedSubview)
             sketchQuickTools.forEach { rail.addArrangedSubview($0.1) }
-            [sketchToolsButton, finishChainButton, finishSketchButton, modellingButton, modifyButton,
+            [sketchToolsButton, finishChainButton, modellingButton, modifyButton,
              patternButton, assemblyButton, radiusButton, moreButton, cancelToolButton].forEach(rail.addArrangedSubview)
             navigationActions.axis = .vertical; navigationActions.spacing = 2
-            [viewButton, fitButton, projectionButton, inspectorButton, constraintsButton, dimensionsButton, constructionButton].forEach(navigationActions.addArrangedSubview)
+            [fitButton, projectionButton, inspectorButton, constraintsButton, dimensionsButton, constructionButton].forEach(navigationActions.addArrangedSubview)
+            viewButton.translatesAutoresizingMaskIntoConstraints = true
+            workspace.addSubview(viewButton)
+            WorkspaceStyle.floatingSurface(viewButton)
             historyActions.axis = .horizontal; historyActions.spacing = 2; historyActions.distribution = .fillEqually
             [undoButton, redoButton].forEach(historyActions.addArrangedSubview)
             // UIStackView turns this off while it owns the browser button. Its
@@ -433,6 +610,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             top.backgroundColor = .clear; status.backgroundColor = .clear
             subtitle.numberOfLines = 2
         }
+        topScroll.isHidden = compactChrome
         navigationScroll.isHidden = !compactChrome; historyActions.isHidden = !compactChrome
         for scroll in [topScroll, railScroll, navigationScroll] { scroll.contentInsetAdjustmentBehavior = .never }
         topScroll.showsHorizontalScrollIndicator = !compactChrome
@@ -446,6 +624,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         constraintsButton.accessibilityIdentifier = "workspace-constraints"
         dimensionsButton.accessibilityIdentifier = "workspace-dimensions"
         constructionButton.accessibilityIdentifier = "workspace-construction"
+        finishSketchButton.accessibilityIdentifier = "workspace-finish-sketch"
+        cancelToolButton.accessibilityIdentifier = "workspace-cancel-tool"
         if state != nil { updateStatus() }
         view.setNeedsLayout()
     }
@@ -462,7 +642,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             // to a replacement document. Ordinary selection reports do not steal focus.
             numericGeneration &+= 1
             numericToken = nil; numericContext = nil; numericStarting = false
-            editor?.field.resignFirstResponder(); editor = nil
+            clearNumericEditor()
             transformGeneration &+= 1; transformDraft = nil
             transformBusy = false
             transformEditors.forEach { $0.editor.field.resignFirstResponder() }; transformEditors.removeAll(); transformMessage = nil
@@ -470,6 +650,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         let previous = state
         state = value
+        if FaceExtrudeTrigger<WorkspaceEntity>.shouldDismiss(
+            automatic: modellingStartedFromFaceSelection, committing: modellingCommitting,
+            selection: value.selection, isFace: { $0.type == "face" }) {
+            // Cancel the draft as well as its chrome, including a begin request
+            // still in flight. The generation guards discard its late callback.
+            cancelModelling()
+            inspectorOpen = false
+            relayoutPanels()
+        }
         if let label = localSaveLabel {
             documentStatus = label; localSaveLabel = nil; hasLocalSave = true
         } else if hasLocalSave {
@@ -496,7 +685,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         titleLabel.text = session.currentProject?.name ?? value.title
         titleLabel.accessibilityLabel = titleLabel.text
         canvas.accessibilityValue = value.selection.isEmpty ? NativeText.value("ui.ipados.no_selection") : value.selection.map(\.readout).joined(separator: ", ")
-        if previous?.document_id != value.document_id { collapsed.removeAll(); selectedAssemblyRowID = nil; lastOperationFeedback = [] }
+        if previous?.document_id != value.document_id {
+            browserSearchField.resignFirstResponder(); browserSearchField.text = ""
+            browserSearchOpen = false; browserSearching = false; browserSearchBookmark = nil
+            browserSearchBar.isHidden = true; browserFindButton.active(false)
+            collapsed.removeAll(); selectedAssemblyRowID = nil; lastOperationFeedback = []
+        }
         if previous?.selection != value.selection, previous?.geometry_revision == value.geometry_revision {
             if let id = selectedAssemblyRowID, let row = value.rows.first(where: { $0.id == id }),
                row.entity == nil || !value.selection.contains(where: { $0 == row.entity }) {
@@ -504,12 +698,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
             lastOperationFeedback = []
         }
-        if previous?.geometry_revision != value.geometry_revision || previous?.document_id != value.document_id {
+        do {
             rowByID = Dictionary(value.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             parents = Set(value.rows.compactMap(\.parent_id))
             if let id = selectedAssemblyRowID, rowByID[id] == nil { selectedAssemblyRowID = nil }
         }
-        if previous?.selection != value.selection {
+        if previous?.selection != value.selection && !browserSearching {
             for row in value.rows where row.selected {
                 var parent = row.parent_id
                 var visited: Set<String> = []
@@ -518,58 +712,122 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
             }
         }
-        if previous?.selection != value.selection || previous?.geometry_revision != value.geometry_revision || previous?.document_id != value.document_id {
-            updateRows()
-        }
+        updateRows()
         if !numericEditing && !modellingEditing { rebuildInspector() }
         if modellingToken != nil && previous?.selection != value.selection { inspectModelling() }
         updateAvailability(); rebuildMenus(); updateStatus(); view.setNeedsLayout()
 #if DEBUG
         assemblyCheckWorkspace?(value)
+        browserCheckWorkspace?(value)
+        historyCheckWorkspace?(value)
 #endif
+        openActivatedHistoryFeature()
+        let idle = active && pending.isEmpty && !numericEditing && !modellingEditing &&
+            !planeChoosing && planeDraft == nil && value.sketch == nil && value.active_tool == "select" &&
+            !textEntryActive && presentedViewController == nil && !featureHistory.isScrubbing
+        if faceExtrudeTrigger.update(document: value.document_id, revision: value.geometry_revision,
+                                     selection: value.selection, enabled: extrudeOnFaceSelection, idle: idle,
+                                     isFace: { $0.type == "face" }) {
+            beginModelling(operation: "solid.extrude", fromFaceSelection: true)
+        }
     }
 
     private func updateRows() {
         guard let state else { return }
-        // The read model carries authoritative parent IDs. Arrange them in tree
-        // order without inferring any feature/body ownership from display names.
-        let children = Dictionary(grouping: state.rows, by: { $0.parent_id ?? "" })
-        var pendingRows = Array((children[""] ?? []).reversed())
-        var visited: Set<String> = []
-        visibleRows.removeAll(keepingCapacity: true)
-        while let row = pendingRows.popLast(), visited.insert(row.id).inserted {
-            visibleRows.append(row)
-            if !collapsed.contains(row.id) { pendingRows.append(contentsOf: (children[row.id] ?? []).reversed()) }
+        let nodes = state.rows.map { BrowserSearchNode(id: $0.id, parent: $0.parent_id, name: browserName($0)) }
+        var referenceNodes: [BrowserSearchNode] = []
+        if originInBrowser {
+            referenceNodes = [BrowserSearchNode(id: browserOriginPrefix + "all", parent: nil, name: SketchText.text("origin_references"))]
+            referenceNodes += Self.originItems.map {
+                BrowserSearchNode(id: browserOriginPrefix + $0, parent: browserOriginPrefix + "all",
+                                  name: $0 == "O" ? SketchText.text("origin_point") : $0)
+            }
         }
-        // Origin controls are present even before the document has geometry.
-        browserMessage.text = nil
+        var collapsedIDs = collapsed
+        if !originExpanded { collapsedIDs.insert(browserOriginPrefix + "all") }
+        let projection = BrowserSearchProjection.make(nodes: referenceNodes + nodes,
+            query: browserSearchOpen ? browserSearchField.text ?? "" : "", collapsed: collapsedIDs)
+        browserSearching = projection.searching
+        visibleRows = projection.ids.compactMap { rowByID[$0] }
+        visibleOriginRows = projection.ids.filter { $0.hasPrefix(browserOriginPrefix) }
+            .map { String($0.dropFirst(browserOriginPrefix.count)) }
+        browserMatchCount.text = BrowserText.text("match_count").replacingOccurrences(of: "{count}", with: String(projection.matches.count))
+        browserMatchCount.isHidden = !projection.searching
+        browserMessage.text = visibleRows.isEmpty && visibleOriginRows.isEmpty ?
+            (projection.searching ? BrowserText.text("no_matches") : WorkspaceStyle.text("empty")) : nil
         table.reloadData()
+    }
+
+    private func browserBookmark() -> BrowserScrollBookmark {
+        let first = table.indexPathsForVisibleRows?.sorted().first
+        let id = first.flatMap { index -> String? in
+            if index.section == 0, visibleOriginRows.indices.contains(index.row) { return browserOriginPrefix + visibleOriginRows[index.row] }
+            return visibleRows.indices.contains(index.row) ? visibleRows[index.row].id : nil
+        }
+        return BrowserScrollBookmark(id: id, displacement: first.map { table.contentOffset.y - table.rectForRow(at: $0).minY } ?? 0,
+                                     fallback: table.contentOffset.y)
+    }
+
+    private func restoreBrowserBookmark() {
+        guard let bookmark = browserSearchBookmark else { return }
+        browserSearchBookmark = nil
+        table.layoutIfNeeded()
+        var index: IndexPath?
+        if let id = bookmark.id {
+            if let row = visibleRows.firstIndex(where: { $0.id == id }) { index = IndexPath(row: row, section: 1) }
+            else if let row = visibleOriginRows.firstIndex(where: { browserOriginPrefix + $0 == id }) { index = IndexPath(row: row, section: 0) }
+        }
+        let maximum = max(0, table.contentSize.height - table.bounds.height)
+        table.setContentOffset(CGPoint(x: 0, y: bookmark.restoredY(rowY: index.map { table.rectForRow(at: $0).minY }, maximum: maximum)), animated: false)
+    }
+
+    private func browserQueryChanged() {
+        let wasSearching = browserSearching
+        if !wasSearching && browserSearchBookmark == nil { browserSearchBookmark = browserBookmark() }
+        updateRows(); view.setNeedsLayout(); view.layoutIfNeeded()
+        if wasSearching && !browserSearching { restoreBrowserBookmark() }
+    }
+
+    private func toggleBrowserSearch() {
+        guard !numericEditing && !modellingEditing && !planeConfirming && pending.isEmpty else { return }
+        if browserSearchOpen { dismissBrowserSearch(); return }
+        browserSearchBookmark = browserBookmark()
+        canvas.cancelInput(); browserSearchOpen = true; browserSearchBar.isHidden = false
+        browserFindButton.active(true); updateRows(); view.setNeedsLayout(); view.layoutIfNeeded()
+        browserSearchField.becomeFirstResponder(); updateAvailability()
+        UIAccessibility.post(notification: .layoutChanged, argument: browserSearchField)
+    }
+
+    private func dismissBrowserSearch() {
+        browserSearchField.resignFirstResponder(); browserSearchField.text = ""
+        browserSearchOpen = false; browserSearchBar.isHidden = true; browserFindButton.active(false)
+        updateRows(); view.setNeedsLayout(); view.layoutIfNeeded(); restoreBrowserBookmark(); updateAvailability()
+        UIAccessibility.post(notification: .layoutChanged, argument: browserFindButton)
     }
 
     func numberOfSections(in tableView: UITableView) -> Int { 2 }
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        section == 0 ? (originExpanded ? Self.originItems.count + 1 : 1) : visibleRows.count
+        section == 0 ? visibleOriginRows.count : visibleRows.count
     }
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "model-row", for: indexPath)
-        if indexPath.section == 0 { return originCell(cell, row: indexPath.row) }
+        if indexPath.section == 0 {
+            guard visibleOriginRows.indices.contains(indexPath.row) else { return cell }
+            let id = visibleOriginRows[indexPath.row]
+            return originCell(cell, row: id == "all" ? 0 : (Self.originItems.firstIndex(of: id).map { $0 + 1 } ?? 0))
+        }
         guard visibleRows.indices.contains(indexPath.row) else { return cell }
         let row = visibleRows[indexPath.row]
         var content = cell.defaultContentConfiguration()
-        content.text = row.label
-        let feature = state?.modelling?.timeline.first(where: { row.id == "feature:" + String($0.id) })
-        if let feature {
-            content.secondaryText = [String(feature.order + 1) + " · " + ModellingText.label(feature.kind),
-                                     feature.id == modellingFeature ? ModellingText.text("editing") : nil,
-                                     feature.suppressed ? ModellingText.text("suppressed") : nil,
-                                     feature.stale == true ? ModellingText.text("stale") : nil,
-                                     feature.error, feature.warning].compactMap { $0 }.joined(separator: " · ")
-        } else if let assembly = row.assembly {
-            content.secondaryText = assemblyReadout(assembly).joined(separator: " · ")
-        } else { content.secondaryText = WorkspaceStyle.text(row.kind) }
+        content.text = browserName(row)
+        content.image = WorkspaceIcon.image(row.browser?.icon ?? "component", traits: traitCollection, size: 24)
+        content.imageProperties.maximumSize = CGSize(width: 24, height: 24)
+        content.imageProperties.reservedLayoutSize = CGSize(width: 24, height: 24)
+        content.imageToTextPadding = 8
+        content.secondaryText = nil
         content.textProperties.font = .preferredFont(forTextStyle: parents.contains(row.id) ? .headline : .body)
-        content.textProperties.numberOfLines = 0
-        content.secondaryTextProperties.color = WorkspaceStyle.secondary
+        content.textProperties.numberOfLines = 1
+        content.textProperties.color = row.browser?.drawn == false ? .secondaryLabel : .label
         var depth = 0
         var parent = row.parent_id
         var visited: Set<String> = []
@@ -581,39 +839,65 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         background.backgroundColor = selected ? WorkspaceStyle.selectionFill : .clear
         background.cornerRadius = 8
         cell.backgroundConfiguration = background
-        cell.accessoryView = nil
-        cell.accessoryType = selected ? .checkmark : .none
-        if parents.contains(row.id) {
-            let expand = WorkspaceButton(collapsed.contains(row.id) ? "+" : "−") { [weak self] in self?.toggleGroup(row.id) }
-            expand.accessibilityLabel = WorkspaceStyle.text(collapsed.contains(row.id) ? "open_group" : "close_group") + ": " + row.label
-            expand.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
-            cell.accessoryView = expand
-        }
-        cell.accessibilityLabel = row.label
-        cell.accessibilityValue = content.secondaryText
+        let controls = UIStackView()
+        controls.axis = .horizontal
+        let document = state?.document_id
+        let revision = state?.geometry_revision
+        if let browser = row.browser, browser.visibility != nil, let visible = browser.visible {
+            let label = BrowserText.text(visible ? "hide" : "show") + ": " + browserName(row)
+            let eye = WorkspaceButton(label) { [weak self] in
+                guard let self, let current = self.currentBrowserRow(row.id, document: document, revision: revision) else { return }
+                self.setBrowserVisibility(current)
+            }
+            eye.artwork("eye", compact: true)
+            eye.active(visible)
+            eye.alpha = visible ? 1 : 0.45
+            eye.availability(enabled: browserCanChange)
+            eye.accessibilityIdentifier = "browser-visibility-" + row.id
+            eye.accessibilityValue = BrowserText.text(browser.drawn == false ? "hidden" : "visible")
+            eye.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            controls.addArrangedSubview(eye)
+        } else { controls.addArrangedSubview(browserEmptyControl()) }
+        if row.browser?.container == true || parents.contains(row.id) {
+            let expand = WorkspaceButton(WorkspaceStyle.text(collapsed.contains(row.id) ? "open_group" : "close_group") + ": " + browserName(row)) { [weak self] in self?.toggleGroup(row.id) }
+            expand.artwork(!browserSearching && collapsed.contains(row.id) ? "chevron_right" : "chevron", compact: true)
+            expand.availability(enabled: !browserSearching)
+            expand.widthAnchor.constraint(equalToConstant: 44).isActive = true
+            controls.addArrangedSubview(expand)
+        } else { controls.addArrangedSubview(browserEmptyControl()) }
+        controls.frame = CGRect(x: 0, y: 0, width: BrowserRowColumns.width, height: BrowserRowColumns.touch)
+        cell.accessoryType = .none
+        cell.accessoryView = controls.arrangedSubviews.isEmpty ? nil : controls
+        cell.accessibilityLabel = browserName(row)
+        cell.accessibilityValue = row.browser?.drawn.map { BrowserText.text($0 ? "visible" : "hidden") }
         cell.accessibilityTraits = selected ? [.button, .selected] : .button
-        cell.accessibilityHint = numericEditing ? WorkspaceStyle.text("editing_lock") : nil
+        cell.accessibilityHint = numericEditing ? WorkspaceStyle.text("editing_lock") : BrowserText.text("hold_for_actions")
         cell.selectionStyle = .none
         cell.accessibilityIdentifier = "workspace-row-" + row.id
         return cell
     }
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         if indexPath.section == 0 {
-            if indexPath.row == 0 { originExpanded.toggle(); table.reloadData() }
-            else if Self.originItems.indices.contains(indexPath.row - 1) {
-                let item = Self.originItems[indexPath.row - 1]
+            guard visibleOriginRows.indices.contains(indexPath.row) else { return }
+            let reference = visibleOriginRows[indexPath.row]
+            if reference == "all" { if !browserSearching { originExpanded.toggle(); updateRows() } }
+            else if Self.originItems.contains(reference) {
+                let item = reference
                 setOriginVisibility(item: item, visible: !originVisible(item))
             }
             return
         }
         guard !numericEditing, visibleRows.indices.contains(indexPath.row) else { return }
+        historyActivation = nil
         let row = visibleRows[indexPath.row]
         selectedAssemblyRowID = row.assembly == nil ? nil : row.id
         lastOperationFeedback = []
         if let entity = row.entity {
+            let document = state?.document_id
             canvas.cancelInput()
             session.selectEntity(entity.dictionary, additive: multiple) { [weak self] result in
-                guard case .success = result, (row.kind == "sketch" || row.kind == "feature" || row.assembly != nil), let self, !self.multiple else { return }
+                guard case .success = result, (row.kind == "sketch" || row.kind == "feature" || row.assembly != nil),
+                      let self, self.state?.document_id == document, self.rowByID[row.id] != nil, !self.multiple else { return }
                 if self.modellingEditing { return }
                 self.inspectorOpen = true; self.browserOpen = false
                 self.rebuildInspector(); self.relayoutPanels()
@@ -622,31 +906,272 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             inspectorOpen = true; browserOpen = false; rebuildInspector(); relayoutPanels(); table.reloadData()
         } else if parents.contains(row.id) { toggleGroup(row.id) }
     }
+    private func browserEmptyControl() -> UIView {
+        let space = UIView()
+        space.isUserInteractionEnabled = false; space.isAccessibilityElement = false
+        space.widthAnchor.constraint(equalToConstant: BrowserRowColumns.touch).isActive = true
+        return space
+    }
+
+    private func currentBrowserRow(_ id: String, document: String?, revision: UInt64?) -> WorkspaceRow? {
+        guard browserCanChange, state?.document_id == document, state?.geometry_revision == revision else { return nil }
+        return rowByID[id]
+    }
+
     private func toggleGroup(_ id: String) {
+        guard !browserSearching else { return }
         if collapsed.contains(id) { collapsed.remove(id) } else { collapsed.insert(id) }
         updateRows()
     }
 
-    private func originVisible(_ item: String) -> Bool { originVisibility[item] ?? planeChoosing }
+    private var browserCanChange: Bool {
+        state != nil && !numericEditing && !modellingEditing && !planeChoosing && !planeConfirming && pending.isEmpty
+    }
 
-    private func setOriginVisibility(item: String? = nil, visible: Bool?) {
-        guard !numericEditing, !modellingEditing, !planeConfirming, pending.isEmpty else { return }
-        var params: [String: Any] = ["visible": NSNull()]
-        if let visible { params["visible"] = visible }
-        if let item { params["item"] = item }
-        canvas.cancelInput()
-        session.command("view.origin", params: params) { [weak self] result in
-            guard let self, case .success = result else { return }
-            if let item { self.originVisibility[item] = visible }
-            else { self.originVisibility = visible.map { value in Dictionary(uniqueKeysWithValues: Self.originItems.map { ($0, value) }) } ?? [:] }
-            UserDefaults.standard.set(self.originVisibility, forKey: "SolidCraft.workspace.originVisibility")
-            self.table.reloadData(); self.rebuildMenus()
+    private var historyContextAllowsNavigation: Bool {
+        state != nil && !numericEditing && !modellingEditing && !planeChoosing && !planeConfirming &&
+            state?.sketch == nil && planeDraft == nil && !textEntryActive
+    }
+    private var historyCanNavigate: Bool { historyContextAllowsNavigation && pending.isEmpty }
+
+    private func moveHistory(to position: Int, completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
+        guard historyCanNavigate, let model = state?.modelling, (0...model.timeline.count).contains(position) else {
+            completion?(.failure(BridgeError(code: "disabled", message: "ui.ipados.workspace.finish_edit")))
+            return
+        }
+        canvas.cancelInput(); failure = nil; selectedAssemblyRowID = nil
+        session.command("timeline.roll_to", params: ["position": position == model.timeline.count ? "end" as Any : position], completion: completion)
+    }
+
+    private func selectHistoryFeature(_ id: UInt64, completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
+        guard browserCanChange, let state, let model = state.modelling,
+              let feature = model.timeline.first(where: { $0.id == id }) else {
+            completion?(.failure(BridgeError(code: "disabled", message: "ui.ipados.workspace.finish_edit")))
+            return
+        }
+        canvas.cancelInput(); selectedAssemblyRowID = nil
+        if feature.order >= model.activeFeatureCount {
+            let document = state.document_id
+            moveHistory(to: feature.order + 1) { [weak self] result in
+                guard let self else { return }
+                guard case .success = result, self.state?.document_id == document else { completion?(result); return }
+                self.session.selectEntity(["type": "feature", "id": id], additive: false, completion: completion)
+            }
+        } else { session.selectEntity(["type": "feature", "id": id], additive: false, completion: completion) }
+    }
+
+    private func showHistoryFeatureActions(_ id: UInt64, source: UIView) {
+        guard browserCanChange, state?.sketch == nil, presentedViewController == nil,
+              let context = state, let feature = context.modelling?.timeline.first(where: { $0.id == id }) else { return }
+        historyActivation = nil
+        canvas.cancelInput(); view.endEditing(true)
+        let sheet = UIAlertController(title: feature.name, message: nil, preferredStyle: .actionSheet)
+        let delete = { [weak self] in
+            guard let self, self.browserCanChange, self.state?.document_id == context.document_id,
+                  self.state?.geometry_revision == context.geometry_revision,
+                  let current = self.state?.modelling?.timeline.first(where: { $0.id == id }) else { return }
+            self.deleteFeature(current)
+        }
+#if DEBUG
+        historyMenuDelete = delete
+#endif
+        sheet.addAction(UIAlertAction(title: ModellingText.text("delete_feature"), style: .destructive) { _ in delete() })
+        sheet.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
+        sheet.popoverPresentationController?.sourceView = source
+        sheet.popoverPresentationController?.sourceRect = source.bounds
+        present(sheet, animated: true)
+    }
+
+    private func activateHistoryFeature(_ id: UInt64) {
+        guard historyCanNavigate, presentedViewController == nil, let document = state?.document_id else { return }
+        historyActivation = (id, document)
+        selectHistoryFeature(id) { [weak self] result in
+            guard let self, self.historyActivation?.feature == id, self.historyActivation?.document == document else { return }
+            if case .failure = result { self.historyActivation = nil }
+            else { self.session.refreshWorkspace() }
         }
     }
 
-    private func originMenu() -> UIMenu {
-        let locked = numericEditing || modellingEditing || planeConfirming || !pending.isEmpty
-        let attributes: UIMenuElement.Attributes = locked ? .disabled : []
+    private func openActivatedHistoryFeature() {
+        guard let activation = historyActivation, let state else { return }
+        guard state.document_id == activation.document,
+              let feature = state.modelling?.timeline.first(where: { $0.id == activation.feature }) else { historyActivation = nil; return }
+        guard historyCanNavigate, presentedViewController == nil,
+              feature.order < (state.modelling?.activeFeatureCount ?? 0),
+              state.selection.contains(where: { $0.type == "feature" && $0.id?.readout == String(activation.feature) }) else { return }
+        historyActivation = nil
+        if state.rows.first(where: { $0.id == "feature:" + String(feature.id) })?.kind == "sketch" {
+            browserOpen = false; inspectorOpen = false
+            run("sketch.edit", params: ["sketch": feature.id]); relayoutPanels()
+        } else { beginModelling(feature: feature.id) }
+    }
+
+    private func browserName(_ row: WorkspaceRow) -> String {
+        row.browser?.localised == true ? NativeText.value(row.label) : row.label
+    }
+
+    private func setBrowserVisibility(_ row: WorkspaceRow) {
+        guard browserCanChange, let browser = row.browser, let visible = browser.visible,
+              var params = browser.visibility?.mapValues(\.value) else { return }
+        params["visible"] = !visible
+        canvas.cancelInput()
+        run("browser.visibility", params: params)
+    }
+
+    func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
+        guard indexPath.section == 1, browserCanChange, visibleRows.indices.contains(indexPath.row) else { return nil }
+        let row = visibleRows[indexPath.row]
+        let document = state?.document_id, revision = state?.geometry_revision
+        return UIContextMenuConfiguration(identifier: row.id as NSString, previewProvider: nil) { [weak self] _ in
+            guard let self, let current = self.currentBrowserRow(row.id, document: document, revision: revision) else { return nil }
+            return self.browserMenu(current)
+        }
+    }
+
+    private func browserMenu(_ row: WorkspaceRow) -> UIMenu {
+        guard let browser = row.browser else { return UIMenu(children: []) }
+        let document = state?.document_id, revision = state?.geometry_revision
+        func current(_ controller: FoundationController) -> WorkspaceRow? {
+            controller.currentBrowserRow(row.id, document: document, revision: revision)
+        }
+        var actions: [UIMenuElement] = []
+        if browser.rename != nil {
+            actions.append(UIAction(title: BrowserText.text("rename"), image: WorkspaceIcon.image("rename", traits: traitCollection)) { [weak self] _ in
+                guard let self, let row = current(self), let rename = row.browser?.rename else { return }
+                self.askBrowserName(title: BrowserText.text("rename"), initial: row.label, command: rename.command,
+                                    params: rename.params.mapValues(\.value), rowID: row.id)
+            })
+        }
+        if let visible = browser.visible, browser.visibility != nil {
+            actions.append(UIAction(title: BrowserText.text(visible ? "hide" : "show"), image: WorkspaceIcon.image("eye", traits: traitCollection)) { [weak self] _ in
+                guard let self, let row = current(self) else { return }
+                self.setBrowserVisibility(row)
+            })
+        }
+        if let folder = browser.folder, let component = browser.component {
+            var params: [String: Any] = ["component": component, "folder": folder]
+            if let key = browser.key { params["items"] = [key] }
+            let groupParams = params
+            actions.append(UIAction(title: BrowserText.text(browser.key == nil ? "new_folder" : "new_folder_with_item"), image: WorkspaceIcon.image("folder", traits: traitCollection)) { [weak self] _ in
+                guard let self, current(self) != nil else { return }
+                self.askBrowserName(title: BrowserText.text("new_folder"), initial: "", command: "browser.group", params: groupParams, rowID: row.id)
+            })
+            if let key = browser.key {
+                let groups = state?.rows.filter { $0.kind == "folder" && $0.browser?.component == component && $0.browser?.folder == folder && $0.browser?.group != nil } ?? []
+                var seen: Set<UInt64> = []
+                var destinations: [UIMenuElement] = [UIAction(title: BrowserText.text("outside_folders"), state: browser.group == nil ? .on : .off) { [weak self] _ in
+                    guard let self, current(self) != nil else { return }
+                    self.run("browser.move", params: ["component": component, "folder": folder, "items": [key]])
+                }]
+                for group in groups {
+                    guard let id = group.browser?.group, seen.insert(id).inserted else { continue }
+                    destinations.append(UIAction(title: browserName(group), state: browser.group == id ? .on : .off) { [weak self] _ in
+                        guard let self, current(self) != nil, self.rowByID[group.id]?.browser?.group == id else { return }
+                        self.run("browser.move", params: ["component": component, "folder": folder, "items": [key], "group": id])
+                    })
+                }
+                actions.append(UIMenu(title: BrowserText.text("move_to_folder"), image: WorkspaceIcon.image("folder", traits: traitCollection), children: destinations))
+            } else if let group = browser.group {
+                actions.append(UIAction(title: BrowserText.text("remove_folder")) { [weak self] _ in
+                    guard let self, current(self) != nil else { return }
+                    self.run("browser.ungroup", params: ["group": group])
+                })
+            }
+        }
+        return UIMenu(title: browserName(row), children: actions)
+    }
+
+    private func askBrowserName(title: String, initial: String, command: String, params: [String: Any], rowID: String) {
+        guard browserCanChange, presentedViewController == nil, let document = state?.document_id else { return }
+        let revision = state?.geometry_revision
+        browserSearchField.resignFirstResponder()
+        canvas.cancelInput()
+        let alert = UIAlertController(title: title, message: nil, preferredStyle: .alert)
+        alert.addTextField { field in
+            field.text = initial; field.placeholder = BrowserText.text("name")
+            field.autocapitalizationType = .sentences
+            field.accessibilityIdentifier = "browser-name"
+        }
+        func valid(_ text: String) -> Bool {
+            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !value.isEmpty && value.utf8.count <= 128
+        }
+        alert.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
+        let save = UIAlertAction(title: BrowserText.text("save"), style: .default) { [weak self, weak alert] _ in
+            guard let self, self.currentBrowserRow(rowID, document: document, revision: revision) != nil,
+                  let name = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), valid(name) else { return }
+            var values = params; values["name"] = name
+            self.run(command, params: values)
+        }
+        save.isEnabled = valid(initial)
+        alert.textFields?.first?.addAction(UIAction { [weak save] action in
+            guard let field = action.sender as? UITextField else { return }
+            save?.isEnabled = valid(field.text ?? "")
+        }, for: .editingChanged)
+        alert.addAction(save)
+        present(alert, animated: true)
+    }
+
+    private func originVisible(_ item: String) -> Bool {
+        viewPresentation?.originVisible(item) ?? (originVisibility[item] ?? planeChoosing)
+    }
+
+    private var referencesLocked: Bool {
+        numericEditing || modellingEditing || planeConfirming || !pending.isEmpty || viewControlPending || viewPresentation == nil
+    }
+
+    private func setOriginVisibility(item: String? = nil, group: String? = nil, visible: Bool?) {
+        guard !referencesLocked else { return }
+        var params: [String: Any] = ["visible": NSNull()]
+        if let visible { params["visible"] = visible }
+        if let item { params["item"] = item }
+        if let group { params["group"] = group }
+        let items = group == "axes" ? Self.originAxes : (group == "planes" ? Self.originPlanes : item.map { [$0] } ?? Self.originItems)
+        viewControlPending = true; rebuildViewMenu()
+        canvas.cancelInput()
+        session.command("view.origin", params: params) { [weak self] result in
+            guard let self else { return }
+            self.viewControlPending = false
+            if case .success = result {
+                for item in items { self.originVisibility[item] = visible }
+                UserDefaults.standard.set(self.originVisibility, forKey: "SolidCraft.workspace.originVisibility")
+            }
+            self.table.reloadData(); self.rebuildViewMenu()
+        }
+    }
+
+    private func toggleOriginReferences() {
+        guard let view = viewPresentation else { return }
+        setOriginVisibility(visible: view.masterTarget)
+    }
+
+    private func toggleGrid() {
+        guard !referencesLocked else { return }
+        let visible = !(viewPresentation?.grid.visible ?? gridVisible)
+        viewControlPending = true; rebuildViewMenu()
+        session.command("view.grid", params: ["visible": visible]) { [weak self] result in
+            guard let self else { return }
+            self.viewControlPending = false
+            if case .success = result {
+                self.gridVisible = visible
+                UserDefaults.standard.set(visible, forKey: "SolidCraft.workspace.gridVisible")
+            }
+            self.rebuildViewMenu()
+        }
+    }
+
+    private func togglePerspective() {
+        guard !numericEditing, !modellingCommitting, pending.isEmpty, !viewControlPending, state?.sketch == nil else { return }
+        let enabled = !(viewPresentation.map { $0.camera.fov > 0 } ?? perspective)
+        viewControlPending = true; rebuildViewMenu()
+        session.command("view.perspective", params: ["enabled": enabled]) { [weak self] _ in
+            guard let self else { return }
+            self.viewControlPending = false; self.rebuildViewMenu()
+        }
+    }
+
+    private func visibilityMenu() -> UIMenu {
+        let attributes: UIMenuElement.Attributes = referencesLocked ? .disabled : []
         var actions: [UIMenuElement] = [true, false].map { visible in
             UIAction(title: SketchText.text(visible ? "show_origin" : "hide_origin"), attributes: attributes) { [weak self] _ in
                 self?.setOriginVisibility(visible: visible)
@@ -654,13 +1179,79 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         actions.append(UIAction(title: SketchText.text("automatic_origin"), attributes: attributes,
                                 state: originVisibility.isEmpty ? .on : .off) { [weak self] _ in self?.setOriginVisibility(visible: nil) })
-        actions.append(contentsOf: Self.originItems.map { item in
+        func reference(_ item: String) -> UIAction {
             UIAction(title: item == "O" ? SketchText.text("origin_point") : item, attributes: attributes,
                      state: originVisible(item) ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.setOriginVisibility(item: item, visible: !self.originVisible(item))
             }
-        })
-        return UIMenu(title: SketchText.text("origin_references"), children: actions)
+        }
+        func references(_ group: String, items: [String]) -> UIAction {
+            let allVisible = items.allSatisfy(originVisible)
+            let state: UIMenuElement.State = allVisible ? .on : (items.contains(where: originVisible) ? .mixed : .off)
+            return UIAction(title: WorkspaceStyle.text("all_" + group), attributes: attributes, state: state) { [weak self] _ in
+                guard let self else { return }
+                self.setOriginVisibility(group: group, visible: !items.allSatisfy(self.originVisible))
+            }
+        }
+        let browser = UIAction(title: WorkspaceStyle.text("origin_in_model"), state: originInBrowser ? .on : .off) { [weak self] _ in
+            self?.toggleOriginInModel()
+        }
+        return UIMenu(title: ViewText.text("individual_references"), children: [
+            UIMenu(options: .displayInline, children: [reference("O")]),
+            UIMenu(title: WorkspaceStyle.text("axes"), options: .displayInline,
+                   children: [references("axes", items: Self.originAxes)] + Self.originAxes.map(reference)),
+            UIMenu(title: WorkspaceStyle.text("planes"), options: .displayInline,
+                   children: [references("planes", items: Self.originPlanes)] + Self.originPlanes.map(reference)),
+            UIMenu(options: .displayInline, children: actions),
+            UIMenu(options: .displayInline, children: [browser])
+        ])
+    }
+
+    private func showViewControls() {
+        guard viewButton.isEnabled, presentedViewController == nil else { return }
+        let panel = WorkspaceViewPopover()
+        panel.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        panel.onCommand = { [weak self] command in self?.runViewCommand(command) }
+        panel.onPerspective = { [weak self] in self?.togglePerspective() }
+        panel.onGrid = { [weak self] in self?.toggleGrid() }
+        panel.onOrigin = { [weak self] in self?.toggleOriginReferences() }
+        panel.onReference = { [weak self] item, group, visible in self?.setOriginVisibility(item: item, group: group, visible: visible) }
+        panel.onOriginInModel = { [weak self] in self?.toggleOriginInModel() }
+        if let popover = panel.popoverPresentationController {
+            popover.sourceView = viewButton; popover.sourceRect = viewButton.bounds
+            popover.permittedArrowDirections = .up; popover.delegate = self
+            popover.backgroundColor = WorkspaceStyle.surface
+        }
+        viewControlsPopover = panel
+        rebuildViewMenu()
+        present(panel, animated: true)
+    }
+
+    private func toggleOriginInModel() {
+        originInBrowser.toggle()
+        UserDefaults.standard.set(originInBrowser, forKey: "SolidCraft.workspace.originInBrowser")
+        updateRows(); rebuildMenus()
+    }
+
+    private var viewCameraLocked: Bool {
+        numericEditing || modellingCommitting || !pending.isEmpty || viewControlPending
+    }
+
+    private func runViewCommand(_ command: String) {
+        guard !viewCameraLocked else { return }
+        viewControlPending = true; rebuildViewMenu()
+        session.command(command) { [weak self] _ in
+            guard let self else { return }
+            self.viewControlPending = false; self.rebuildViewMenu()
+        }
+    }
+
+    private func rebuildViewMenu() {
+        // Only View uses this panel. The native tool/browser menus are untouched.
+        viewButton.menu = nil; viewButton.showsMenuAsPrimaryAction = false
+        viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
+            referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
+            automatic: originVisibility.isEmpty, originInModel: originInBrowser)
     }
 
     private func originCell(_ cell: UITableViewCell, row: Int) -> UITableViewCell {
@@ -672,15 +1263,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         content.textProperties.numberOfLines = 0
         content.secondaryTextProperties.color = WorkspaceStyle.secondary
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: item == nil ? 16 : 40, bottom: 10, trailing: 8)
-        if let item {
-            let visibility = SketchText.text(visible ? "reference_visible" : "reference_hidden")
-            content.secondaryText = originVisibility[item] == nil ? SketchText.text("reference_automatic") + " · " + visibility : visibility
-        } else {
-            content.image = WorkspaceIcon.image(originExpanded ? "chevron" : "chevron_right", traits: traitCollection, size: 16)
-            content.secondaryText = originVisibility.isEmpty ? SketchText.text("automatic_origin") : SketchText.text("custom_origin")
-        }
+        content.image = WorkspaceIcon.image(item == nil ? "origin" : (item == "O" ? "point" : (item?.count == 2 ? "plane" : "axis")), traits: traitCollection, size: 24)
+        content.secondaryText = nil
         cell.contentConfiguration = content
-        cell.backgroundConfiguration = UIBackgroundConfiguration.listPlainCell()
+        var background = UIBackgroundConfiguration.listPlainCell()
+        background.backgroundColor = .clear
+        cell.backgroundConfiguration = background
         let label = item == nil ? SketchText.text("origin_references") : SketchText.text(visible ? "hide_reference" : "show_reference")
         let eye = WorkspaceButton(label) { [weak self] in
             guard let self, let item else { return }; self.setOriginVisibility(item: item, visible: !self.originVisible(item))
@@ -690,10 +1278,24 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         eye.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
         eye.accessibilityIdentifier = "origin-visibility-" + (item ?? "all")
         eye.accessibilityLabel = label + (item.map { ": " + ($0 == "O" ? SketchText.text("origin_point") : $0) } ?? "")
-        eye.accessibilityValue = content.secondaryText
-        if item == nil { eye.menu = originMenu(); eye.showsMenuAsPrimaryAction = true }
-        cell.accessoryType = .none; cell.accessoryView = eye
-        cell.accessibilityLabel = content.text; cell.accessibilityValue = content.secondaryText
+        let visibilityReadout = SketchText.text(visible ? "reference_visible" : "reference_hidden")
+        eye.accessibilityValue = visibilityReadout
+        if item == nil { eye.menu = visibilityMenu(); eye.showsMenuAsPrimaryAction = true }
+        cell.accessoryType = .none
+        let controls = UIStackView(arrangedSubviews: [eye])
+        eye.widthAnchor.constraint(equalToConstant: BrowserRowColumns.touch).isActive = true
+        if item == nil {
+            let expand = WorkspaceButton(WorkspaceStyle.text(originExpanded ? "close_group" : "open_group")) { [weak self] in
+                guard let self, !self.browserSearching else { return }; self.originExpanded.toggle(); self.updateRows()
+            }
+            expand.artwork(originExpanded || browserSearching ? "chevron" : "chevron_right", compact: true)
+            expand.availability(enabled: !browserSearching)
+            expand.widthAnchor.constraint(equalToConstant: BrowserRowColumns.touch).isActive = true
+            controls.addArrangedSubview(expand)
+        } else { controls.addArrangedSubview(browserEmptyControl()) }
+        controls.frame = CGRect(x: 0, y: 0, width: BrowserRowColumns.width, height: BrowserRowColumns.touch)
+        cell.accessoryView = controls
+        cell.accessibilityLabel = content.text; cell.accessibilityValue = visibilityReadout
         cell.accessibilityHint = item == nil ? WorkspaceStyle.text(originExpanded ? "close_group" : "open_group") : nil
         cell.accessibilityTraits = .button; cell.selectionStyle = .none
         cell.accessibilityIdentifier = "workspace-origin-" + (item ?? "group")
@@ -702,6 +1304,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func rebuildInspector() {
         guard !numericEditing, !modellingEditing else { return }
+        inspectorPanel.setTitle(WorkspaceStyle.text("inspector")); inspectorPanel.setFooter(nil)
         properties.arrangedSubviews.forEach { properties.removeArrangedSubview($0); $0.removeFromSuperview() }
         guard let state else {
             let loading = WorkspaceMessage(); loading.show(WorkspaceStyle.text("loading"), busy: true); properties.addArrangedSubview(loading); return
@@ -924,19 +1527,25 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if !dependencies.would_fail.isEmpty { message += "\n\n" + ModellingText.text("failing_dependents") + "\n" + dependencies.would_fail.joined(separator: "\n") }
                 let alert = UIAlertController(title: ModellingText.text("delete_feature") + ": " + feature.name, message: message, preferredStyle: .alert)
                 alert.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
-                alert.addAction(UIAlertAction(title: ModellingText.text("delete_feature"), style: .destructive) { [weak self] _ in
+                let confirm = { [weak self] in
                     guard let self, self.state?.document_id == context.document_id, self.state?.geometry_revision == context.geometry_revision else { return }
                     self.run("timeline.delete", params: ["feature": feature.id])
-                })
+                }
+#if DEBUG
+                self.historyDeleteConfirmation = confirm
+#endif
+                alert.addAction(UIAlertAction(title: ModellingText.text("delete_feature"), style: .destructive) { _ in confirm() })
                 self.canvas.cancelInput(); self.present(alert, animated: true)
             }
         }
     }
 
-    private func beginModelling(operation: String? = nil, feature: UInt64? = nil, initialParams: [String: PresentationJSON]? = nil) {
+    private func beginModelling(operation: String? = nil, feature: UInt64? = nil, initialParams: [String: PresentationJSON]? = nil, fromFaceSelection: Bool = false) {
         guard !numericEditing, !modellingEditing, let context = state else { return }
+        historyActivation = nil
         canvas.cancelInput(); modellingGeneration &+= 1; lastOperationFeedback = []
         let expected = modellingGeneration
+        modellingStartedFromFaceSelection = fromFaceSelection
         modellingStarting = true; modellingContext = (context.document_id, context.geometry_revision)
         updateAvailability()
         session.requestModelling(action: "begin", operation: operation, feature: feature, params: initialParams) { [weak self] result in
@@ -950,28 +1559,58 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.modellingToken = token
                 self.modellingFeature = model.feature; self.table.reloadData()
-                let form = ModellingInspector(state: model)
+                let form = ModellingInspector(state: model, compact: self.compactInspector)
                 self.modellingInspector = form
+                self.inspectorPanel.setTitle(form.compact ? form.title : WorkspaceStyle.text("inspector"))
+                self.inspectorPanel.setFooter(form.compact ? form.footer : nil)
+                self.inspectorScroll.setContentOffset(.zero, animated: false)
                 self.properties.arrangedSubviews.forEach { self.properties.removeArrangedSubview($0); $0.removeFromSuperview() }
                 self.properties.addArrangedSubview(form)
                 form.onPreview = { [weak self] params in self?.evaluateModelling(params, commit: false) }
                 form.onLivePreview = { [weak self] params in self?.evaluateModelling(params, commit: false, live: true) }
                 form.onContextChange = { [weak self] params in self?.refreshModellingContext(params) }
+                form.onInlineChoice = { [weak self] params in self?.refreshModellingContext(params, previewAfter: true) }
                 form.onApply = { [weak self] params in self?.evaluateModelling(params, commit: true) }
                 form.onCancel = { [weak self] in self?.cancelModelling() }
                 form.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.revealField(); self?.updateAvailability() }
+                form.onEditValue = form.compact ? { [weak self] field, expression, source in
+                    self?.presentModelValue(parameter: field.key, expression: expression, units: field.units ?? "",
+                        name: ModellingText.label(field.label), source: source)
+                } : nil
                 form.onChange = { [weak self] in self?.failure = nil; self?.updateStatus(); self?.layoutModelValue() }
-                form.onSelect = { [weak self, weak form] in
-                    guard let self else { return }
-                    form?.invalidatePreview()
-                    self.session.requestModelling(action: "selection", token: token) { [weak self] result in
+                form.onSelect = { [weak self, weak form] field in
+                    guard let self, let form else { return }
+                    form.beginContextRefresh()
+                    self.session.requestModelling(action: "inspect", token: token, params: form.params) { [weak self, weak form] result in
                         guard let self, self.modellingToken == token else { return }
-                        if case .failure(let error) = result { self.showFailure(error); return }
-                        self.inspectorOpen = false; self.browserOpen = false; self.relayoutPanels()
+                        switch result {
+                        case .failure(let error): form?.failed(error)
+                        case .success(let model):
+                            form?.contextRefreshed(model)
+                            let selectionParams: [String: PresentationJSON] = field.map { ["field": .string($0)] } ?? [:]
+                            // Explicit picking continues this draft after the adapter clears
+                            // the original face selection. It is no longer an automatic popup.
+                            let automatic = self.modellingStartedFromFaceSelection
+                            self.modellingStartedFromFaceSelection = false
+                            self.session.requestModelling(action: "selection", token: token, params: selectionParams) { [weak self] result in
+                                guard let self, self.modellingToken == token else { return }
+                                if case .failure(let error) = result {
+                                    self.modellingStartedFromFaceSelection = automatic
+                                    self.showFailure(error); return
+                                }
+                                self.inspectorOpen = false; self.browserOpen = false; self.relayoutPanels()
+                            }
+                        }
                     }
                 }
                 self.inspectorOpen = true; self.browserOpen = false; self.failure = nil
                 self.relayoutPanels()
+#if DEBUG
+                if ProcessInfo.processInfo.arguments.contains("--auto-face-extrude-check"),
+                   operation == "solid.extrude", feature == nil {
+                    NSLog("Automatic face extrude check PASS: selected face opened the production Extrude form; source=%@", String(describing: model.params?["profile"]))
+                }
+#endif
             }
             self.updateAvailability(); self.updateStatus()
 #if DEBUG
@@ -994,8 +1633,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         let expected = modellingGeneration
         let expectedForm = modellingFormVersion
+        let valueEditor = modelValueEditor?.editor
+        let valueRevision = valueEditor?.draft.revision
+        valueEditor?.setBusy(true, committing: commit)
         modellingCommitting = commit
-        form.setBusy(committing: commit, allowInput: live); updateAvailability()
+        form.setBusy(committing: commit, allowInput: live || valueEditor != nil); updateAvailability()
         session.requestModelling(action: commit ? "commit" : "preview", token: token, params: params) { [weak self, weak form] result in
             guard let self, self.modellingGeneration == expected, self.modellingToken == token else { return }
             self.modellingCommitting = false
@@ -1007,16 +1649,20 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if commit { self.lastOperationFeedback = model.feedback ?? []; self.clearModelling(); self.rebuildInspector() }
                 else {
                     form?.evaluated(model)
-                    self.modelValueEditor?.editor.setBusy(false)
-                    self.modelValueEditor?.editor.message.show(WorkspaceStyle.text("preview_ready"))
-                    if let handle = model.handle { self.modelValueEditor?.editor.setEvaluation(value: handle.distance, units: handle.units) }
+                    if let valueRevision, valueEditor === self.modelValueEditor?.editor {
+                        valueEditor?.completePreview(revision: valueRevision,
+                            valid: model.valid == true && model.params == form?.params && queuedPreview == nil,
+                            value: model.handle?.distance, units: model.handle?.units ?? "",
+                            feedback: ([WorkspaceStyle.text("preview_ready")] + (model.feedback ?? []).map(ModellingText.label)).joined(separator: "\n"))
+                    }
+                    self.updateModelValueChoices()
                 }
                 self.failure = nil
             }
             self.updateAvailability(); self.updateStatus()
-            if case .failure(let error) = result {
-                self.modelValueEditor?.editor.setBusy(false)
-                self.modelValueEditor?.editor.message.show(error.message, error: true)
+            if case .failure(let error) = result, let valueRevision, valueEditor === self.modelValueEditor?.editor {
+                valueEditor?.completePreview(revision: valueRevision, error: error.message)
+                self.updateModelValueChoices()
             }
             if let next = queuedPreview, !commit { self.evaluateModelling(next, commit: false, live: true) }
 #if DEBUG
@@ -1051,6 +1697,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         previewAfterModellingContext = previewAfter
         modellingPreviewQueue.discardPending()
         form.beginContextRefresh()
+        modelValueEditor?.editor.setBusy(true)
         drainModellingContext()
     }
 
@@ -1072,22 +1719,28 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     if self.previewAfterModellingContext, let current = form?.params {
                         self.previewAfterModellingContext = false
                         self.evaluateModelling(current, commit: false)
+                    } else {
+                        self.modelValueEditor?.editor.setBusy(false)
                     }
                 case .failure(let error):
                     form?.failed(error); self.previewAfterModellingContext = false
+                    self.modelValueEditor?.editor.setBusy(false)
+                    self.modelValueEditor?.editor.message.show(error.message, error: true)
                 }
             } else if self.pendingModellingContext == nil {
                 // Text typed after the context request remains provisional. The
                 // next explicit Preview refreshes those complete current fields;
                 // typing itself never sends a new engine request.
                 form?.contextRefreshDiscarded(); self.previewAfterModellingContext = false
+                self.modelValueEditor?.editor.setBusy(false)
             }
             if self.pendingModellingContext != nil { self.drainModellingContext() }
+            self.updateAvailability()
         }
     }
 
-    private func cancelModelling() {
-        guard !modellingCommitting, modellingEditing else { return }
+    private func cancelModelling(alreadyDismissed: Bool = false) {
+        guard !modellingCommitting || alreadyDismissed, modellingEditing else { return }
         let token = modellingToken
         clearModelling(); rebuildInspector(); updateAvailability(); updateStatus()
         session.requestModelling(action: "cancel", token: token) { [weak self] result in
@@ -1100,10 +1753,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func clearModelling() {
+        modellingStartedFromFaceSelection = false
         modellingGeneration &+= 1
         if let editor = modelValueEditor { editor.dismiss(animated: false) { [weak self] in self?.updateAvailability() } }
         modelValueEditor = nil; modelValue = nil; modelValueButton.isHidden = true
         modellingInspector?.endEditing(true); modellingInspector = nil
+        inspectorPanel.setFooter(nil); inspectorPanel.setTitle(WorkspaceStyle.text("inspector"))
         previewStale = false
         modellingToken = nil; modellingFeature = nil; modellingContext = nil; modellingStarting = false
         modellingCommitting = false; modellingInspectPending = false
@@ -1132,10 +1787,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let anchor = CGPoint(x: canvas.frame.minX + value.position[0], y: canvas.frame.minY + value.position[1])
         let fitting = modelValueButton.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
         let size = CGSize(width: min(220, max(80, fitting.width)), height: max(44, fitting.height))
-        let obstacles = [top, railScroll, navigationScroll, historyActions, browserButton, status, browserPanel, inspectorPanel]
+        let obstacles = [top, railScroll, navigationScroll, historyActions, featureHistory, browserButton, status, browserPanel, inspectorPanel]
             .filter { !$0.isHidden }.map { $0.frame.insetBy(dx: -6, dy: -6) }
-        let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view).intersection(canvas.frame).insetBy(dx: 8, dy: 8)
-        guard let frame = ModelValuePlacement.resolve(anchor: anchor, size: size, bounds: safe, obstacles: obstacles) else {
+        let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
+        let bounds = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: canvas.frame, useBottomSafeArea: useBottomSafeArea)
+            .intersection(canvas.frame).insetBy(dx: 8, dy: 8)
+        guard let frame = ModelValuePlacement.resolve(anchor: anchor, size: size, bounds: bounds, obstacles: obstacles) else {
             modelValueButton.isHidden = true; return
         }
         modelValueButton.frame = frame
@@ -1146,12 +1803,26 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func editModelValue() {
         guard let value = modelValue, value.token == modellingToken, let form = modellingInspector,
               form.handleEntryEnabled, !form.hasLocalChanges, presentedViewController == nil else { return }
+        let name = form.fields.first(where: { $0.key == value.parameter }).map { ModellingText.label($0.label) } ?? HandleText.text("edit_value")
+        presentModelValue(parameter: value.parameter, expression: value.expression, units: value.units, name: name, source: modelValueButton)
+    }
+
+    private func presentModelValue(parameter: String, expression: String, units: String, name: String, source: UIView) {
+        guard let token = modellingToken, let form = modellingInspector, form.handleEntryEnabled,
+              presentedViewController == nil else { return }
         canvas.cancelInput(); form.endEditing(true)
-        let controller = ModelValueEditorController(value: value, expression: value.expression)
+        let controller = NumericValueEditorController(expression: expression, units: units, name: name,
+            context: form.numericContext, parameter: parameter)
+        controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
         let expected = modellingGeneration
+        controller.editor.onChange = { [weak self, weak controller, weak form] in
+            guard let self, self.modellingGeneration == expected, self.modellingToken == token,
+                  let controller, let form else { return }
+            form.editExpression(parameter, expression: controller.editor.field.text ?? "")
+        }
         let submit: (String, Bool) -> Void = { [weak self, weak controller, weak form] expression, commit in
-            guard let self, self.modellingGeneration == expected, self.modellingToken == value.token, let form else { return }
-            form.editExpression(value.parameter, expression: expression)
+            guard let self, self.modellingGeneration == expected, self.modellingToken == token, let form else { return }
+            form.editExpression(parameter, expression: expression)
             controller?.editor.setBusy(true, committing: commit)
             self.evaluateModelling(form.params, commit: commit)
         }
@@ -1159,18 +1830,61 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         controller.editor.onApply = { submit($0, true) }
         controller.editor.onCancel = { [weak self] in self?.cancelModelling() }
         if let popover = controller.popoverPresentationController {
-            popover.sourceView = modelValueButton; popover.sourceRect = modelValueButton.bounds
+            // The source field may be rebuilt as its form updates. Retain the
+            // exact original on-screen anchor in the stable workspace instead.
+            popover.sourceView = workspace; popover.sourceRect = source.convert(source.bounds, to: workspace)
             popover.permittedArrowDirections = [.up, .down, .left, .right]; popover.delegate = self
         }
         modelValueEditor = controller
+        updateModelValueChoices()
         present(controller, animated: true) { [weak self] in self?.updateAvailability() }
     }
 
+    private func updateModelValueChoices() {
+        guard let controller = modelValueEditor, let form = modellingInspector else { return }
+        let field = form.fields.first { $0.kind == "inline_choice" }
+        let selected = field.flatMap { PresentationJSON.parameter($0.key, in: form.params) }
+        controller.setInlineChoices(field, selected: selected, enabled: form.handleEntryEnabled) { [weak form, weak controller] value in
+            guard let form, let controller, let field, form.handleEntryEnabled else { return }
+            if let parameter = controller.parameter {
+                form.editExpression(parameter, expression: controller.editor.field.text ?? "")
+            }
+            controller.editor.invalidatePreview()
+            form.selectInlineChoice(field.key, value: value)
+        }
+    }
+
     func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        if presentationController.presentedViewController === viewControlsPopover {
+            viewControlsPopover = nil
+            return
+        }
+        if presentationController.presentedViewController === inlineNumericEditor {
+            inlineNumericEditor = nil
+            cancelNumeric()
+            return
+        }
         modelValueEditor = nil; updateAvailability(); layoutModelValue()
     }
 
-    func adaptivePresentationStyle(for controller: UIPresentationController, traitCollection: UITraitCollection) -> UIModalPresentationStyle { .none }
+    func popoverPresentationControllerDidDismissPopover(_ popoverPresentationController: UIPopoverPresentationController) {
+        presentationControllerDidDismiss(popoverPresentationController)
+    }
+
+    func presentationControllerShouldDismiss(_ presentationController: UIPresentationController) -> Bool {
+        if presentationController.presentedViewController === modelValueEditor { return !modellingCommitting }
+        return presentationController.presentedViewController !== inlineNumericEditor || editor?.busy != true
+    }
+
+    func popoverPresentationControllerShouldDismissPopover(_ popoverPresentationController: UIPopoverPresentationController) -> Bool {
+        presentationControllerShouldDismiss(popoverPresentationController)
+    }
+
+    func adaptivePresentationStyle(for controller: UIPresentationController, traitCollection: UITraitCollection) -> UIModalPresentationStyle {
+        if controller.presentedViewController is NumericValueEditorController,
+           traitCollection.horizontalSizeClass == .compact { return .pageSheet }
+        return .none
+    }
 
     private func localDocument(reopen: Bool) {
         guard !numericEditing, !modellingEditing else { return }
@@ -1414,7 +2128,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let button: WorkspaceButton
             if let existing = referenceLabels[label.name] { button = existing }
             else {
-                button = WorkspaceButton(label.name) { [weak self] in
+                button = WorkspaceButton(label.name == "O" ? SketchText.text("origin_point") : label.name, viewportPoint: label.name == "O") { [weak self] in
                     guard let self, !self.numericEditing, !self.modellingEditing, !self.planeConfirming else { return }
                     self.canvas.cancelInput()
                     self.session.selectEntity(label.entity.dictionary, additive: false)
@@ -1440,26 +2154,51 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func showSketchAnnotations(_ annotations: [SketchAnnotationPresentation]) {
+        sketchAnnotations = Dictionary(annotations.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let retained = Set(annotations.map(\.id))
         for id in Array(annotationLabels.keys) where !retained.contains(id) { annotationLabels.removeValue(forKey: id)?.removeFromSuperview() }
         let formatter = NumberFormatter()
         formatter.locale = .current; formatter.numberStyle = .decimal
         formatter.usesSignificantDigits = true; formatter.maximumSignificantDigits = 9
         for annotation in annotations where annotation.points.count == 2 && annotation.points.allSatisfy(\.isFinite) && annotation.value.isFinite {
-            let label = annotationLabels[annotation.id] ?? WorkspaceStyle.label(.caption1)
+            let label = annotationLabels[annotation.id] ?? SketchDimensionControl()
             if annotationLabels[annotation.id] == nil {
                 annotationLabels[annotation.id] = label
-                label.isUserInteractionEnabled = false; label.numberOfLines = 1
-                label.layer.cornerRadius = 4; label.clipsToBounds = true
+                let id = annotation.id
+                label.onEdit = { [weak self] in self?.editSketchAnnotation(id) }
                 canvas.addSubview(label)
             }
             let number = formatter.string(from: NSNumber(value: annotation.value)) ?? String(annotation.value)
-            label.text = " " + (annotation.driven ? "(" + number + ")" : number) + " " + annotation.units + " "
-            label.textColor = annotation.selected ? WorkspaceStyle.selectedForeground : WorkspaceStyle.foreground
-            label.backgroundColor = annotation.selected ? WorkspaceStyle.accent : WorkspaceStyle.surface.withAlphaComponent(0.92)
-            label.sizeToFit()
+            let text = (annotation.driven ? "(" + number + ")" : number) + " " + annotation.units
+            label.update(text: text, selected: annotation.selected, driven: annotation.driven, editable: annotationEditable(annotation))
+            label.bounds.size = label.intrinsicContentSize
             label.center = CGPoint(x: annotation.points[0], y: annotation.points[1])
             label.accessibilityIdentifier = "sketch-dimension-" + annotation.id
+        }
+    }
+
+    private func annotationEditable(_ annotation: SketchAnnotationPresentation) -> Bool {
+        inlineDimensions && !annotation.driven && state?.sketch != nil && state?.active_tool == "select" &&
+            !numericEditing && !modellingEditing && pending.isEmpty && presentedViewController == nil
+    }
+
+    private func editSketchAnnotation(_ id: String) {
+        guard let annotation = sketchAnnotations[id], annotationEditable(annotation),
+              let context = state, let source = annotationLabels[id] else { return }
+        canvas.cancelInput()
+        // Reserve the numeric lane while selection is delivered asynchronously.
+        numericStarting = true; numericGeneration &+= 1
+        let expected = numericGeneration
+        updateAvailability()
+        session.selectEntity(annotation.entity.dictionary, additive: false) { [weak self, weak source] result in
+            guard let self, self.numericGeneration == expected else { return }
+            self.numericStarting = false
+            guard let source, self.state?.document_id == context.document_id,
+                  self.state?.geometry_revision == context.geometry_revision else { self.updateAvailability(); return }
+            switch result {
+            case .failure(let error): self.showFailure(error); self.updateAvailability()
+            case .success: self.beginNumeric(dimension: annotation.dimension_type, source: source)
+            }
         }
     }
 
@@ -1476,6 +2215,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             label.textColor = indicator.selected ? WorkspaceStyle.selectedForeground : WorkspaceStyle.foreground
             label.sizeToFit(); label.center = CGPoint(x: indicator.points[0], y: indicator.points[1])
         }
+        // Constraint badges can share the default dimension lane. Keep the
+        // editable number legible above those smaller glyphs.
+        annotationLabels.values.forEach { canvas.bringSubviewToFront($0) }
     }
 
     private func rebuildSketchInspector(_ sketch: WorkspaceSketch, selection: [WorkspaceEntity]) {
@@ -1552,8 +2294,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
         }
         let multipleButton = WorkspaceButton(WorkspaceStyle.text("multiple")) { [weak self] in
-            guard let self else { return }; self.multiple.toggle()
-            self.run("select.multiple", params: ["enabled": self.multiple]); self.rebuildInspector(); self.rebuildMenus()
+            self?.toggleMultipleSelection()
         }
         multipleButton.active(multiple); properties.addArrangedSubview(multipleButton)
         let disclosure = WorkspaceButton(SketchText.text(showAllConstraints ? "related_constraints" : "all_constraints")) { [weak self] in
@@ -1669,7 +2410,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         clearTransform(); session.command("tool.cancel"); rebuildInspector(); updateAvailability()
     }
 
-    private func beginNumeric(dimension: String? = nil) {
+    private func beginNumeric(dimension: String? = nil, source: UIView? = nil) {
         guard !numericEditing, state?.radius != nil || state?.sketch != nil else { return }
         canvas.cancelInput()
         numericStarting = true
@@ -1687,56 +2428,52 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.numericToken = token
                 self.numericContext = (value.workspace.document_id, value.workspace.geometry_revision)
-                self.installEditor(expression: expression, units: value.units)
+                self.installEditor(expression: expression, units: value.units, source: source)
                 if let number = value.value { self.editor?.setEvaluation(value: number, units: value.units) }
             }
         }
     }
 
-    private func installEditor(expression: String, units: String) {
-        properties.arrangedSubviews.forEach { properties.removeArrangedSubview($0); $0.removeFromSuperview() }
-        let editor = NumericExpressionEditor(expression: expression, units: units)
+    private func installEditor(expression: String, units: String, source: UIView? = nil) {
+        let name = state?.sketch == nil ? WorkspaceStyle.text("radius") : SketchText.text("dimension")
+        let controller = NumericValueEditorController(expression: expression, units: units, name: name)
+        controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        let editor = controller.editor
         self.editor = editor
-        let heading = WorkspaceStyle.label(.headline)
-        heading.text = state?.sketch == nil ? WorkspaceStyle.text("radius") : SketchText.text("dimension")
-        heading.accessibilityTraits = .header
-        properties.addArrangedSubview(heading)
         editor.onPreview = { [weak self] expression in self?.evaluateNumeric(expression, commit: false) }
         editor.onApply = { [weak self] expression in self?.evaluateNumeric(expression, commit: true) }
         editor.onCancel = { [weak self] in self?.cancelNumeric() }
-        editor.onFocus = { [weak self] in
-            guard let self else { return }
-            self.canvas.cancelInput(); self.updateAvailability()
-            DispatchQueue.main.async { [weak self] in self?.revealField() }
+        editor.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.updateAvailability() }
+        let anchor = source ?? inspectorButton
+        if let popover = controller.popoverPresentationController {
+            popover.sourceView = workspace; popover.sourceRect = anchor.convert(anchor.bounds, to: workspace)
+            popover.permittedArrowDirections = [.up, .down, .left, .right]; popover.delegate = self
         }
-        properties.addArrangedSubview(editor)
-        inspectorOpen = true; browserOpen = false
+        inlineNumericEditor = controller
+        present(controller, animated: true)
         failure = nil
         updateAvailability(); updateStatus(); view.setNeedsLayout()
-        // Opening an editor leaves the expression visible but does not summon a
-        // keyboard until a person intentionally focuses the field.
     }
 
     private func evaluateNumeric(_ expression: String, commit: Bool) {
         guard let token = numericToken, let editor, !editor.busy else { return }
         let expected = numericGeneration
+        let revision = editor.draft.revision
         editor.setBusy(true, committing: commit)
         session.requestNumeric(action: commit ? "commit" : "preview", token: token, expression: expression) { [weak self, weak editor] result in
             guard let self, self.numericGeneration == expected else { return }
-            editor?.setBusy(false)
             switch result {
             case .failure(let error):
-                editor?.message.show(error.message, error: true)
-                UIAccessibility.post(notification: .announcement, argument: error.message)
+                editor?.completePreview(revision: revision, error: error.message)
+                if editor?.draft.revision == revision { UIAccessibility.post(notification: .announcement, argument: error.message) }
             case .success(let value):
                 if commit {
                     self.numericToken = nil; self.numericContext = nil
-                    editor?.field.resignFirstResponder(); self.editor = nil
+                    self.clearNumericEditor()
                     self.receive(value.workspace)
                     self.failure = nil; self.updateStatus()
                 } else {
-                    if let number = value.value { editor?.setEvaluation(value: number, units: value.units) }
-                    editor?.message.show(WorkspaceStyle.text("preview_ready"))
+                    editor?.completePreview(revision: revision, value: value.value, units: value.units)
                 }
             }
             self.updateAvailability()
@@ -1753,21 +2490,29 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             switch result {
             case .failure(let error):
                 if error.code == "stale_edit" {
-                    self.numericToken = nil; self.numericContext = nil; self.editor = nil
+                    self.numericToken = nil; self.numericContext = nil; self.clearNumericEditor()
                     self.failure = error.message; self.rebuildInspector(); self.updateStatus()
                     self.session.refreshWorkspace()
                 } else { self.editor?.setBusy(false); self.editor?.message.show(error.message, error: true) }
             case .success(let value):
-                self.numericToken = nil; self.numericContext = nil; self.editor = nil
+                self.numericToken = nil; self.numericContext = nil; self.clearNumericEditor()
                 self.failure = nil; self.receive(value.workspace)
             }
             self.updateAvailability()
         }
     }
 
+    private func clearNumericEditor() {
+        editor?.field.resignFirstResponder(); editor = nil
+        let controller = inlineNumericEditor
+        inlineNumericEditor = nil
+        controller?.dismiss(animated: false) { [weak self] in self?.updateAvailability() }
+    }
+
     private func run(_ command: String, params: [String: Any] = [:]) {
         guard WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: textEntryActive, numericEditActive: numericEditing) else { return }
         guard !modellingEditing || command.hasPrefix("view.") || command.hasPrefix("select.") else { return }
+        historyActivation = nil
         canvas.cancelInput(); failure = nil; lastOperationFeedback = []
         session.command(command, params: params)
     }
@@ -1776,33 +2521,98 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         run("tool.set", params: ["tool": tool])
         if tool == "post_radius" { inspectorOpen = true; browserOpen = false; view.setNeedsLayout() }
     }
+    private func toggleMultipleSelection() {
+        let enabled = !multiple
+        canvas.cancelInput()
+        session.command("select.multiple", params: ["enabled": enabled]) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.multiple = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.multipleSelection")
+                self.rebuildInspector(); self.rebuildMenus()
+            case .failure(let error): self.showFailure(error)
+            }
+        }
+    }
+
     private func toggleBrowser() {
-        guard !numericEditing else { return }
+        guard !numericEditing, !modellingCommitting else { return }
+        if inspectorOpen && cancelToolsOnDismiss { cancelModelling() }
         modellingInspector?.endEditing(true)
         canvas.cancelInput(); browserOpen.toggle(); inspectorOpen = false
         relayoutPanels()
     }
     private func toggleInspector() {
-        guard !numericEditing else { return }
+        guard !numericEditing, !modellingCommitting else { return }
+        if inspectorOpen { closePanels(); return }
         modellingInspector?.endEditing(true)
         canvas.cancelInput(); inspectorOpen.toggle(); browserOpen = false
         relayoutPanels()
     }
     private func closePanels() {
-        // A compact sheet's outside tap is always consumed, including while an
-        // edit requires an explicit Apply/Cancel decision.
+        // Closing or tapping outside a form discards its provisional operation.
+        // An Apply already being accepted must finish before dismissal.
         guard !numericEditing else { editor?.message.show(WorkspaceStyle.text("editing_lock")); return }
+        guard !modellingCommitting else { return }
+        if cancelToolsOnDismiss { cancelModelling() }
         canvas.cancelInput(); browserOpen = false; inspectorOpen = false
         relayoutPanels()
     }
     private func relayoutPanels() {
-        view.setNeedsLayout(); updateAvailability()
+        let animateBrowser = compactChrome && leftBrowser && !UIAccessibility.isReduceMotionEnabled
+        let wasOpen = !browserPanel.isHidden
+        let oldFrame = browserPanel.frame
+        let chrome: [UIView] = [top, status, railScroll, navigationScroll, historyActions, featureHistory, browserButton]
+        let oldChrome = chrome.map(\.frame)
+        browserAnimationGeneration &+= 1
+        let animation = browserAnimationGeneration
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        if animateBrowser, wasOpen != browserOpen {
+            let target = browserPanel.frame
+            let targetChrome = chrome.map(\.frame)
+            for (control, frame) in zip(chrome, oldChrome) { control.frame = frame }
+            browserPanel.isHidden = false
+            if browserOpen {
+                browserPanel.frame = target.offsetBy(dx: -target.width - 16, dy: 0)
+            } else { browserPanel.frame = oldFrame }
+            UIView.animate(withDuration: 0.25, delay: 0, options: [.beginFromCurrentState, .curveEaseInOut]) {
+                for (control, frame) in zip(chrome, targetChrome) { control.frame = frame }
+                self.browserPanel.frame = self.browserOpen ? target : oldFrame.offsetBy(dx: -oldFrame.width - 16, dy: 0)
+            } completion: { [weak self] _ in
+                guard let self, self.browserAnimationGeneration == animation else { return }
+                self.browserPanel.isHidden = !self.browserOpen
+                self.view.setNeedsLayout()
+            }
+        }
+        updateAvailability()
         UIAccessibility.post(notification: .layoutChanged, argument: browserOpen ? browserPanel : (inspectorOpen ? inspectorPanel : browserButton))
     }
 
     private func updateAvailability() {
-        table.reloadSections(IndexSet(integer: 0), with: .none)
+        rebuildViewMenu()
+        updateModelValueChoices()
+        for (id, label) in annotationLabels {
+            label.editable = sketchAnnotations[id].map(annotationEditable) ?? false
+        }
+        browserFindButton.availability(enabled: !numericEditing && !modellingEditing && !planeConfirming && pending.isEmpty)
+        browserSearchField.isEnabled = !numericEditing && !modellingEditing && !planeConfirming && pending.isEmpty
+        if browserControlsEnabled != browserCanChange {
+            browserControlsEnabled = browserCanChange
+            table.reloadData()
+        } else { table.reloadSections(IndexSet(integer: 0), with: .none) }
         let locked = numericEditing || modellingEditing || !pending.isEmpty
+        let features = state?.modelling?.timeline ?? []
+        let featureIcons = Dictionary(features.map { feature in
+            (feature.id, rowByID["feature:" + String(feature.id)]?.browser?.icon ?? "component")
+        }, uniquingKeysWith: { first, _ in first })
+        let selectedFeatures = Set((state?.selection ?? []).filter { $0.type == "feature" }.compactMap { entity in
+            entity.id.flatMap { UInt64($0.readout) }
+        })
+        featureHistory.update(features: features, icons: featureIcons, selected: selectedFeatures,
+            position: state?.modelling?.activeFeatureCount ?? 0, enabled: browserCanChange && state?.sketch == nil, navigationEnabled: historyCanNavigate,
+            scrubbingEnabled: historyContextAllowsNavigation && (pending.isEmpty || featureHistory.scrubInFlight), documentID: state?.document_id)
         undoButton.availability(enabled: !locked && state?.can_undo == true, reason: numericEditing || modellingEditing ? WorkspaceStyle.text("editing_lock") : WorkspaceStyle.text("nothing_undo"))
         redoButton.availability(enabled: !locked && state?.can_redo == true, reason: numericEditing || modellingEditing ? WorkspaceStyle.text("editing_lock") : WorkspaceStyle.text("nothing_redo"))
         for button in [browserButton, inspectorButton, viewButton, moreButton] { button.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty, reason: numericEditing ? WorkspaceStyle.text("editing_lock") : nil) }
@@ -1828,11 +2638,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         for button in [sketchToolsButton, finishSketchButton, finishChainButton] { button.availability(enabled: !locked) }
         cancelToolButton.isHidden = numericEditing || !(inSketch || state?.active_tool == "post_radius" || planeChoosing || planeDraft != nil)
         let cancelTitle = planeChoosing || planeDraft != nil ? WorkspaceStyle.text("cancel") : SketchText.text("cancel_segment")
-        cancelToolButton.configuration?.title = cancelTitle
-        cancelToolButton.accessibilityLabel = cancelTitle
+        cancelToolButton.updateTitle(cancelTitle)
         table.allowsSelection = !numericEditing && !modellingCommitting && pending.isEmpty
         let modal = layout?.compact == true && (browserOpen || inspectorOpen)
-        canvas.isUserInteractionEnabled = !numericEditing && WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: modal, textEntryActive: textEntryActive)
+        let textBlocksViewport = textEntryActive && !(cancelToolsOnDismiss && modellingEditing)
+        canvas.isUserInteractionEnabled = !numericEditing && WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: modal, textEntryActive: textBlocksViewport)
         canvas.accessibilityElementsHidden = modal || numericEditing
         for button in referenceLabels.values {
             button.accessibilityElementsHidden = modal || numericEditing || modellingEditing
@@ -1899,27 +2709,28 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         patternButton.menu = UIMenu(children: modelActions { $0.hasPrefix("solid.pattern.") || $0 == "solid.mirror" })
         modifyButton.showsMenuAsPrimaryAction = true; patternButton.showsMenuAsPrimaryAction = true
         modellingButton.showsMenuAsPrimaryAction = true
-        var views: [UIMenuElement] = (state?.sketch == nil ? ["front", "back", "left", "right", "top", "bottom", "isometric"] : []).map { name in
-            UIAction(title: NativeText.value("ui.ipados." + name)) { [weak self] _ in self?.run("view." + name) }
-        }
-        views.insert(UIAction(title: WorkspaceStyle.text("fit")) { [weak self] _ in self?.run("view.fit") }, at: 0)
-        if state?.sketch == nil {
-            views.append(UIAction(title: NativeText.value("ui.ipados.perspective"), state: perspective ? .on : .off) { [weak self] _ in
-            guard let self else { return }; self.perspective.toggle(); self.run("view.perspective", params: ["enabled": self.perspective]); self.rebuildMenus()
-        })
-            views.append(UIAction(title: NativeText.value("ui.ipados.exit_planar")) { [weak self] _ in self?.run("view.exit_planar") })
-        }
-        views.append(originMenu())
-        viewButton.menu = UIMenu(children: views); viewButton.showsMenuAsPrimaryAction = true
+        rebuildViewMenu()
         documentActionsButton.menu = UIMenu(children: projectMenuActions())
         documentActionsButton.showsMenuAsPrimaryAction = true
-        let filters = ["occurrence", "auto", "body", "face", "edge", "vertex"].map { name in
-            UIAction(title: NativeText.value(name == "occurrence" ? "ui.ipados.assembly.occurrence" : "ui.ipados." + name), state: filter == name ? .on : .off) { [weak self] _ in
-                guard let self else { return }; self.filter = name; self.run("select.filter", params: ["filter": name]); self.rebuildMenus()
+        let filters = WorkspaceSelectionFilter.allCases.map { option in
+            let name = option.rawValue
+            return UIAction(title: NativeText.value(option == .occurrence ? "ui.ipados.assembly.occurrence" : "ui.ipados." + name), state: filter == option ? .on : .off) { [weak self] _ in
+                guard let self, WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: self.textEntryActive, numericEditActive: self.numericEditing) else { return }
+                self.canvas.cancelInput()
+                self.session.command("select.filter", params: ["filter": name]) { [weak self] result in
+                    guard let self else { return }
+                    switch result {
+                    case .success:
+                        self.filter = option
+                        UserDefaults.standard.set(name, forKey: "SolidCraft.workspace.selectionFilter")
+                        self.rebuildMenus()
+                    case .failure(let error): self.showFailure(error)
+                    }
+                }
             }
         }
         let multiple = UIAction(title: WorkspaceStyle.text("multiple"), state: multiple ? .on : .off) { [weak self] _ in
-            guard let self else { return }; self.multiple.toggle(); self.run("select.multiple", params: ["enabled": self.multiple]); self.rebuildMenus()
+            self?.toggleMultipleSelection()
         }
         let side = UIAction(title: WorkspaceStyle.text(railRight ? "rail_left" : "rail_right")) { [weak self] _ in
             guard let self else { return }
@@ -1963,11 +2774,52 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.layoutModelValue(); self.rebuildMenus()
             }
         }
+        let dragResolution = UIMenu(title: WorkspaceStyle.text("drag_resolution"), children: DragResolution.options.map { step in
+            UIAction(title: step == 0 ? WorkspaceStyle.text("drag_continuous") : String(step) + " mm",
+                     attributes: numericEditing || modellingEditing ? .disabled : [], state: dragStepMM == step ? .on : .off) { [weak self] _ in
+                guard let self, !self.numericEditing, !self.modellingEditing else { return }
+                self.canvas.cancelInput()
+                self.session.command("view.drag_precision", params: ["step_mm": step]) { [weak self] result in
+                    guard let self, case .success = result else { return }
+                    self.dragStepMM = step
+                    UserDefaults.standard.set(step, forKey: DragResolution.key)
+                    self.rebuildMenus()
+                }
+            }
+        })
+        let dismissal = UIAction(title: WorkspaceStyle.text("cancel_tools_on_dismiss"), subtitle: WorkspaceStyle.text("cancel_tools_on_dismiss_help"), attributes: modellingEditing ? .disabled : [], state: cancelToolsOnDismiss ? .on : .off) { [weak self] _ in
+            guard let self, !self.modellingEditing else { return }
+            let enabled = !self.cancelToolsOnDismiss
+            self.canvas.cancelInput()
+            self.session.command("view.tool_dismissal", params: ["cancel_on_dismiss": enabled]) { [weak self] result in
+                guard let self, case .success = result else { return }
+                self.cancelToolsOnDismiss = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.cancelToolsOnDismiss")
+                self.rebuildMenus()
+            }
+        }
+        let faceExtrude = UIAction(title: WorkspaceStyle.text("extrude_on_face_selection"), subtitle: WorkspaceStyle.text("extrude_on_face_selection_help"), state: extrudeOnFaceSelection ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.extrudeOnFaceSelection.toggle()
+            UserDefaults.standard.set(self.extrudeOnFaceSelection, forKey: "SolidCraft.workspace.extrudeOnFaceSelection")
+            self.rebuildMenus()
+        }
+        let automaticCut = UIAction(title: NativeText.value("ui.ipados.extrude.automatic_subtract"), attributes: modellingEditing ? .disabled : [], state: automaticSubtract ? .on : .off) { [weak self] _ in
+            guard let self, !self.modellingEditing else { return }
+            let enabled = !self.automaticSubtract
+            self.canvas.cancelInput()
+            self.session.command("view.automatic_subtract", params: ["enabled": enabled]) { [weak self] result in
+                guard let self, case .success = result else { return }
+                self.automaticSubtract = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.automaticSubtract")
+                self.rebuildMenus()
+            }
+        }
         var moreActions: [UIMenuElement] = [
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            historyGestures, orbit, handles, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            historyGestures, orbit, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
@@ -1987,9 +2839,35 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.compactChrome, forKey: "SolidCraft.workspace.compactChrome")
             self.configureChrome(); self.updateSubtitle(); self.updateAvailability(); self.rebuildMenus()
         })
+        moreActions.append(UIAction(title: InspectorText.text("compact_inspector"),
+                                    attributes: modellingEditing ? .disabled : [], state: compactInspector ? .on : .off) { [weak self] _ in
+            guard let self, !self.modellingEditing else { return }
+            self.compactInspector.toggle()
+            UserDefaults.standard.set(self.compactInspector, forKey: "SolidCraft.workspace.compactInspector")
+            self.rebuildMenus()
+        })
+        moreActions.append(UIAction(title: WorkspaceStyle.text("use_top_safe_area"),
+                                    subtitle: WorkspaceStyle.text("use_top_safe_area_help"),
+                                    state: useTopSafeArea ? .on : .off) { [weak self] _ in
+            guard let self else { return }; self.useTopSafeArea.toggle()
+            UserDefaults.standard.set(self.useTopSafeArea, forKey: "SolidCraft.workspace.useTopSafeArea")
+            self.view.setNeedsLayout(); self.rebuildMenus()
+        })
+        moreActions.append(UIAction(title: WorkspaceStyle.text("use_bottom_safe_area"),
+                                    subtitle: WorkspaceStyle.text("use_bottom_safe_area_help"),
+                                    state: useBottomSafeArea ? .on : .off) { [weak self] _ in
+            guard let self else { return }; self.canvas.cancelInput(); self.useBottomSafeArea.toggle()
+            UserDefaults.standard.set(self.useBottomSafeArea, forKey: "SolidCraft.workspace.useBottomSafeArea")
+            self.view.setNeedsLayout(); self.rebuildMenus()
+        })
         moreActions.append(UIAction(title: WorkspaceStyle.text("pin_browser"), state: pinnedBrowser ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.canvas.cancelInput(); self.pinnedBrowser.toggle()
             UserDefaults.standard.set(self.pinnedBrowser, forKey: "SolidCraft.workspace.pinnedBrowser")
+            self.view.setNeedsLayout(); self.rebuildMenus()
+        })
+        moreActions.append(UIAction(title: BrowserText.text("left_browser"), state: leftBrowser ? .on : .off) { [weak self] _ in
+            guard let self else { return }; self.canvas.cancelInput(); self.leftBrowser.toggle()
+            UserDefaults.standard.set(self.leftBrowser, forKey: "SolidCraft.workspace.leftBrowser")
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
         moreActions.append(UIAction(title: WorkspaceStyle.text("diagnostics"), state: diagnostics ? .on : .off) { [weak self] _ in
@@ -1998,6 +2876,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.updateAvailability(); self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
         })
         if state?.sketch != nil {
+            moreActions.insert(UIAction(title: SketchText.text("inline_dimensions"), subtitle: SketchText.text("inline_dimensions_help"),
+                                        attributes: numericEditing ? .disabled : [], state: inlineDimensions ? .on : .off) { [weak self] _ in
+                guard let self, !self.numericEditing else { return }
+                self.canvas.cancelInput(); self.inlineDimensions.toggle()
+                UserDefaults.standard.set(self.inlineDimensions, forKey: "SolidCraft.workspace.inlineDimensions")
+                self.updateAvailability(); self.rebuildMenus()
+            }, at: 0)
             moreActions.insert(UIAction(title: SketchText.text("snapping"), state: sketchInput?.snapping != false ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.run("tool.snapping", params: ["enabled": self.sketchInput?.snapping == false])
             }, at: 0)
@@ -2032,7 +2917,42 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         })
         dimensionsButton.showsMenuAsPrimaryAction = true
     }
-    private func applyAppearance() { overrideUserInterfaceStyle = appearance == 1 ? .light : (appearance == 2 ? .dark : .unspecified) }
+    private var workspaceInterfaceStyle: UIUserInterfaceStyle {
+        appearance == 1 ? .light : (appearance == 2 ? .dark : .unspecified)
+    }
+    private func applyAppearance() {
+        overrideUserInterfaceStyle = workspaceInterfaceStyle
+        // UIKit presents popovers/sheets beside the root view hierarchy. Give
+        // their presentation environment the saved preference, including System.
+        viewIfLoaded?.window?.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        presentedViewController?.overrideUserInterfaceStyle = workspaceInterfaceStyle
+    }
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        applyAppearance()
+    }
+
+    private func updateCanvasAppearance() {
+        guard canvas.traitCollection.userInterfaceStyle == .dark else {
+            session.command("view.background", params: ["color": NSNull()])
+            return
+        }
+        func components(_ color: UIColor) -> ([CGFloat], CGFloat)? {
+            let resolved = color.resolvedColor(with: canvas.traitCollection)
+            var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+            guard resolved.getRed(&red, green: &green, blue: &blue, alpha: &alpha),
+                  [red, green, blue, alpha].allSatisfy({ $0.isFinite }) else { return nil }
+            return ([red, green, blue], min(1, max(0, alpha)))
+        }
+        func rgb(_ values: [CGFloat]) -> [Int] { values.map { Int((min(1, max(0, $0)) * 255).rounded()) } }
+        guard let (surface, _) = components(WorkspaceStyle.surface),
+              let (separator, alpha) = components(WorkspaceStyle.separator) else { return }
+        // Composite the semantic separator over the canvas; minor lines are subtler.
+        let grid = [CGFloat(0.5), 1].map { strength in
+            rgb(zip(surface, separator).map { background, line in background + (line - background) * alpha * strength })
+        }
+        session.command("view.background", params: ["color": rgb(surface), "grid": grid])
+    }
 
     private func updateStatus() {
         if let failure { status.textColor = WorkspaceStyle.error; status.text = failure; return }
@@ -2040,7 +2960,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if planeChoosing { status.text = SketchText.text("tap_plane"); return }
         if modellingEditing {
             if previewStale { status.text = ModellingText.text("preview_stale"); return }
-            status.text = ModellingText.text("draft_hint") + "\n" + ModellingText.text("navigation_hint")
+            status.text = ModellingText.text("draft_hint") + "\n" + (cancelToolsOnDismiss ? WorkspaceStyle.text("tool_dismiss_hint") : ModellingText.text("navigation_hint"))
             return
         }
         if state?.sketch == nil, state?.modelling?.timeline.contains(where: { $0.error != nil || $0.stale == true }) == true {
@@ -2096,7 +3016,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     override var canBecomeFirstResponder: Bool { true }
     override var keyCommands: [UIKeyCommand]? {
-        var commands = [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(cancelKey))]
+        let escape = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(cancelKey))
+        escape.wantsPriorityOverSystemBehavior = browserSearchOpen && browserOpen
+        var commands = [escape]
         if WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: textEntryActive, numericEditActive: numericEditing || modellingEditing) {
             if state?.can_undo == true { commands.append(UIKeyCommand(input: "z", modifierFlags: .command, action: #selector(undoKey))) }
             if state?.can_redo == true { commands.append(UIKeyCommand(input: "z", modifierFlags: [.command, .shift], action: #selector(redoKey))) }
@@ -2106,7 +3028,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     @objc private func undoKey() { run("edit.undo") }
     @objc private func redoKey() { run("edit.redo") }
     @objc private func cancelKey() {
-        if modellingEditing { cancelModelling() }
+        if browserSearchOpen && browserOpen { dismissBrowserSearch() }
+        else if modellingEditing { cancelModelling() }
         else if transformDraft != nil { cancelTransform() }
         else if numericEditing { cancelNumeric() }
         else if planeDraft != nil || planeChoosing { cancelSketchPlane() }
@@ -2115,7 +3038,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     @objc private func keyboardChanged(_ notification: Notification) {
-        if notification.name == UIResponder.keyboardWillHideNotification { keyboardTop = nil }
+        if inlineNumericEditor?.editor.panelKeypadVisible == true || modelValueEditor?.editor.panelKeypadVisible == true {
+            keyboardTop = nil
+        } else if notification.name == UIResponder.keyboardWillHideNotification { keyboardTop = nil }
         else if let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
                 let window = view.window {
             let local = view.convert(window.convert(frame, from: nil), from: window)
@@ -2124,6 +3049,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         view.setNeedsLayout(); view.layoutIfNeeded(); revealField(); updateAvailability()
     }
     private func revealField() {
+        guard inlineNumericEditor == nil else { return }
         guard let field = editor?.field ?? transformEditors.first(where: { $0.editor.field.isFirstResponder })?.editor.field ?? modellingInspector?.focusedField else { return }
         inspectorScroll.scrollRectToVisible(field.convert(field.bounds, to: inspectorScroll).insetBy(dx: 0, dy: -16), animated: false)
     }
@@ -2134,29 +3060,42 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
         let keyboardY = keyboardTop.map { workspace.convert(CGPoint(x: 0, y: $0), from: view).y } ?? workspace.bounds.maxY
         let viewport = CGRect(x: 0, y: 0, width: workspace.bounds.width, height: max(0, min(workspace.bounds.maxY, keyboardY)))
-        let chrome = CGRect(x: safe.minX, y: safe.minY, width: safe.width,
-                            height: max(0, min(safe.maxY, viewport.maxY) - safe.minY))
+        let chrome = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: viewport, useBottomSafeArea: useBottomSafeArea)
         let largeText = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
         let compactWidth = chrome.width < (largeText ? 1120 : 1000)
         let titleHeight = ceil(titleLabel.font.lineHeight) + 2
         let subtitleHeight = 2 * ceil(subtitle.font.lineHeight) + 2
         let actionsHeight = max(44, ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 20)
-        let headingHeight = compactChrome ? max(52, titleHeight + ceil(subtitle.font.lineHeight) + 8) :
+        let compactHeadingHeight = max(52, titleHeight + ceil(subtitle.font.lineHeight) + 8)
+        let completionHeight = finishSketchButton.isHidden ? 0 : actionsHeight + 8
+        let headingHeight = compactChrome ? compactHeadingHeight + completionHeight :
             (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
-        let railHeight = CGFloat(rail.arrangedSubviews.filter { !$0.isHidden }.count) * 46 + 8
-        let navHeight = CGFloat(navigationActions.arrangedSubviews.filter { !$0.isHidden }.count) * 46 + 8
         let inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
-            (modellingEditing ? min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84) : 640))
-        let resolved = WorkspaceLayout.resolve(size: chrome.size, browser: browserOpen, inspector: inspectorOpen,
+            (modellingEditing ? (modellingInspector?.compact == true ? 620 : min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84)) : 640))
+        func resolve(railHeight: CGFloat, navHeight: CGFloat) -> WorkspaceLayout {
+            WorkspaceLayout.resolve(size: chrome.size, browser: browserOpen, inspector: inspectorOpen,
                                                railRight: railRight, largeText: largeText,
                                                minimumHeaderHeight: headingHeight, minimumStatusHeight: 2 * ceil(status.font.lineHeight) + 8,
                                                compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railHeight,
-                                               inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight)
-            .placed(in: chrome, viewport: viewport)
+                                               inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight, leftBrowser: leftBrowser,
+                                               historyExpanded: historyExpanded,
+                                               inspectorPreferredWidth: modellingInspector?.compact == true ? 380 : 320,
+                                               historyToggleWidth: featureHistory.preferredToggleWidth,
+                                               viewButtonSize: viewButton.intrinsicContentSize)
+                .placed(in: chrome, viewport: viewport, useTopSafeArea: topStripHeaderEnabled)
+        }
+        let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
+        func contentHeight(_ stack: UIStackView, width: CGFloat) -> CGFloat {
+            stack.systemLayoutSizeFitting(CGSize(width: width, height: 0),
+                withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+        }
+        let resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
+                               navHeight: contentHeight(navigationActions, width: available.navigation.width))
         if canvas.frame != resolved.canvas { canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true }
         layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
         railScroll.frame = resolved.rail
+        featureHistory.frame = resolved.featureHistory
         let compact = resolved.compact
         if resolved.floating {
             let statusSize = status.sizeThatFits(resolved.status.size)
@@ -2164,9 +3103,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let titleWidth = max(0, top.bounds.width - 64)
             titleLabel.frame = CGRect(x: 12, y: 5, width: titleWidth, height: titleHeight)
             subtitle.frame = CGRect(x: 12, y: titleHeight + 5, width: titleWidth, height: ceil(subtitle.font.lineHeight) + 2)
-            topScroll.frame = CGRect(x: max(0, top.bounds.width - 48), y: 4, width: min(44, top.bounds.width), height: max(0, top.bounds.height - 8))
+            documentActionsButton.frame = CGRect(x: max(0, top.bounds.width - 48), y: 4, width: min(44, top.bounds.width), height: max(0, compactHeadingHeight - 8))
+            finishSketchButton.frame = CGRect(x: 8, y: compactHeadingHeight, width: max(0, top.bounds.width - 16),
+                height: max(0, top.bounds.height - compactHeadingHeight - 8))
             browserButton.frame = resolved.browserAccess
             navigationScroll.frame = resolved.navigation
+            viewButton.frame = resolved.viewAccess
             historyActions.frame = resolved.history
         } else {
             let titleWidth = compact ? top.bounds.width - 24 : max(140, top.bounds.width - min(520, topActions.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width) - 36)
@@ -2176,17 +3118,23 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             topScroll.frame = compact ? CGRect(x: 8, y: controlsY, width: max(0, top.bounds.width - 16), height: max(44, top.bounds.height - controlsY)) : CGRect(x: titleWidth + 24, y: 4, width: max(0, top.bounds.width - titleWidth - 32), height: max(44, top.bounds.height - 8))
         }
         browserPanel.isHidden = resolved.browser == nil
+        if resolved.browser == nil { browserSearchField.resignFirstResponder() }
         inspectorPanel.isHidden = resolved.inspector == nil
         if let frame = resolved.browser { browserPanel.frame = frame }
         if let frame = resolved.inspector { inspectorPanel.frame = frame }
         scrim.frame = CGRect(x: 0, y: resolved.rail.minY, width: workspace.bounds.width, height: resolved.canvas.height)
         scrim.isHidden = !compact || resolved.browser == nil && resolved.inspector == nil
         browserPanel.layoutIfNeeded(); inspectorPanel.layoutIfNeeded()
-        table.frame = browserPanel.content.bounds
+        let browserBounds = browserPanel.content.bounds
+        let searchHeight = browserSearchOpen ? min(browserBounds.height, browserSearchBar.systemLayoutSizeFitting(
+            CGSize(width: max(0, browserBounds.width - 24), height: 0),
+            withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height + 12) : 0
+        browserSearchBar.frame = CGRect(x: 12, y: 0, width: max(0, browserBounds.width - 24), height: max(0, searchHeight - 12))
+        table.frame = CGRect(x: 0, y: searchHeight, width: browserBounds.width, height: max(0, browserBounds.height - searchHeight))
         inspectorScroll.frame = inspectorPanel.content.bounds
         browserPanel.accessibilityViewIsModal = compact && browserOpen
         inspectorPanel.accessibilityViewIsModal = compact && inspectorOpen
-        workspace.accessibilityElements = resolved.floating ? [top, browserButton, railScroll, browserPanel, navigationScroll, inspectorPanel, modelValueButton, canvas, historyActions, status] : [top, railScroll, browserPanel, modelValueButton, canvas, inspectorPanel, status]
+        workspace.accessibilityElements = resolved.floating ? [top, browserButton, railScroll, browserPanel, navigationScroll, inspectorPanel, modelValueButton, canvas, historyActions, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, canvas, inspectorPanel, featureHistory, status]
         if resetChromeOffsets {
             // Reparenting the same controls changes scroll content dimensions.
             // Discard the old text-toolbar offsets once, after the new frames
@@ -2200,6 +3148,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     func activate() { loadViewIfNeeded(); active = true; session.activate(); updateSurface() }
     func suspend() {
         guard active else { return }
+        viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
+        historyActivation = nil
+        featureHistory.cancelScrub()
         active = false
         // Suspension synchronously invalidates the Rust token. Drop local draft
         // ownership now and ignore queued callbacks, including a pending Begin.
@@ -2208,11 +3159,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         clearModelling()
         clearTransform()
         numericToken = nil; numericContext = nil; numericStarting = false
-        editor?.field.resignFirstResponder(); editor = nil
+        clearNumericEditor()
         rebuildInspector(); updateAvailability()
         canvas.cancelInput(); session.suspend()
     }
     func shutdown() {
+        historyActivation = nil
+        featureHistory.cancelScrub()
         generation &+= 1; numericGeneration &+= 1; active = false
         canvas.cancelInput(); session.stop()
     }
@@ -2226,19 +3179,1207 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 /// Opt-in device evidence driver. It uses the ordinary controller forms and their
 /// Preview/Apply/Cancel callbacks. It never synthesizes a hardware Pencil event.
 private extension FoundationController {
+    /// Real UIKit sizing, scrolling and completion on a disposable native sketch.
+    func checkSketchToolbarOnDevice() {
+        let expected = generation
+        let savedCompact = compactChrome, savedAppearance = appearance
+        let variants = [(true, 2, "select"), (true, 2, "sketch.line"),
+                        (true, 1, "sketch.spline.fit_point"), (false, 1, "select"), (true, 2, "select")]
+        var issues: [String] = []
+        var finished = false
+        func report() {
+            guard !finished else { return }; finished = true
+            compactChrome = savedCompact; appearance = savedAppearance
+            applyAppearance(); configureChrome(); updateAvailability(); view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let data = try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues, "variants": variants.count], options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: directory.appendingPathComponent("sketch-toolbar-check.json"), options: .atomic)
+            } catch { print("Sketch toolbar report failed: \(error)") }
+            print("Sketch toolbar check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+        }
+        func waitForFinish(_ remaining: Int = 100) {
+            guard active, generation == expected, !finished else { return }
+            if state?.sketch == nil && pending.isEmpty { report(); return }
+            guard remaining > 0 else { issues.append("Finish sketch button did not exit the sketch"); report(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitForFinish(remaining - 1) }
+        }
+        func waitForTool(_ tool: String, remaining: Int = 100, then action: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if state?.sketch != nil && state?.active_tool == tool && pending.isEmpty { action(); return }
+            guard remaining > 0 else { issues.append("workspace did not publish tool: \(tool)"); report(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitForTool(tool, remaining: remaining - 1, then: action) }
+        }
+        func check(_ index: Int) {
+            guard active, generation == expected, !finished else { return }
+            guard index < variants.count else {
+                finishSketchButton.sendActions(for: .touchUpInside); waitForFinish(); return
+            }
+            let (compact, style, tool) = variants[index]
+            compactChrome = compact; appearance = style
+            applyAppearance(); configureChrome()
+            session.command("tool.set", params: ["tool": tool]) { result in
+                guard case .success = result else { issues.append("tool selection failed: \(tool)"); report(); return }
+                waitForTool(tool) {
+                    self.updateAvailability(); self.view.setNeedsLayout(); self.view.layoutIfNeeded()
+                    self.railScroll.layoutIfNeeded()
+                    if self.finishSketchButton.isHidden || !self.finishSketchButton.isEnabled {
+                        issues.append("completion unavailable: \(index)")
+                    }
+                    if compact {
+                        self.railScroll.setContentOffset(CGPoint(x: 0, y: max(0, self.railScroll.contentSize.height - self.railScroll.bounds.height)), animated: false)
+                        let frame = self.finishSketchButton.convert(self.finishSketchButton.bounds, to: self.top)
+                        if !self.top.bounds.contains(frame) || frame.height < 44 || self.finishSketchButton.configuration?.title != SketchText.text("finish") {
+                            issues.append("labelled completion is outside header: \(index)")
+                        }
+                        for button in self.rail.arrangedSubviews.compactMap({ $0 as? WorkspaceButton }) where !button.isHidden {
+                            if button.configuration?.image == nil || button.configuration?.title != nil || button.bounds.height < 44 || button.bounds.height > 52 {
+                                issues.append("icon rail has a missing icon or wrapped title: \(button.accessibilityLabel ?? "")")
+                            }
+                        }
+                        let point = self.finishSketchButton.convert(CGPoint(x: self.finishSketchButton.bounds.midX, y: self.finishSketchButton.bounds.midY), to: self.workspace)
+                        if self.workspace.hitTest(point, with: nil) !== self.finishSketchButton { issues.append("completion cannot be tapped: \(index)") }
+                    }
+                    do {
+                        let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                        let surface: UIView = self.view.window ?? self.view
+                        let capture = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                        if let png = capture.pngData() { try png.write(to: directory.appendingPathComponent("sketch-toolbar-\(index).png"), options: .atomic) }
+                    } catch { issues.append("capture failed: \(error)") }
+                    check(index + 1)
+                }
+            }
+        }
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]),
+            ("sketch.rectangle.two_point", ["p0": [0, 0], "p1": [20, 20]]), ("view.fit", [:])]
+        func prepare(_ index: Int) {
+            guard active, generation == expected else { return }
+            guard index < fixture.count else { browserOpen = false; inspectorOpen = false; check(0); return }
+            session.command(fixture[index].0, params: fixture[index].1) { result in
+                guard case .success = result else { issues.append("fixture failed"); report(); return }
+                prepare(index + 1)
+            }
+        }
+        prepare(0)
+    }
+
+    /// Uses production joint forms and dismissal handlers on a disposable launch
+    /// fixture. Input is synthetic; this does not verify physical Pencil hardware.
+    /// Actual compact UIKit controls with synthetic fields; no engine command or library mutation.
+    func checkGroupedInspectorOnDevice() {
+        let prefix = "--grouped-inspector-run="
+        let runID = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix(prefix) }).map { String($0.dropFirst(prefix.count)) } ?? "missing"
+        guard let directory = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
+            NSLog("Grouped inspector RUN %@ FAIL: evidence directory unavailable", runID); return
+        }
+        var report = ["RUN " + runID, "START compact UIKit fixture; synthetic actions, no engine/Pencil/VoiceOver claim"]
+        func saveReport() {
+            let text = report.joined(separator: "\n") + "\n"; NSLog("%@", text)
+            do { try text.write(to: directory.appendingPathComponent("grouped-inspector-check.log"), atomically: true, encoding: .utf8) }
+            catch { NSLog("Grouped inspector evidence write failed: %@", error.localizedDescription) }
+        }
+        saveReport()
+        guard let workspace = state, UUID(uuidString: runID) != nil else {
+            report.append("FAIL missing workspace or valid --grouped-inspector-run UUID"); saveReport(); return
+        }
+        func require(_ condition: Bool, _ message: String) throws {
+            if !condition { throw NSError(domain: "GroupedInspectorCheck", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+        }
+        func descendants(_ root: UIView) -> [UIView] { [root] + root.subviews.flatMap(descendants) }
+        func find<T: UIView>(_ id: String, in root: UIView, as type: T.Type) throws -> T {
+            guard let value = descendants(root).first(where: { $0.accessibilityIdentifier == id }) as? T else {
+                throw NSError(domain: "GroupedInspectorCheck", code: 2, userInfo: [NSLocalizedDescriptionKey: "Missing " + id])
+            }; return value
+        }
+        func actions(_ elements: [UIMenuElement]) -> [UIAction] {
+            elements.flatMap { element in
+                if let action = element as? UIAction { return [action] }
+                if let menu = element as? UIMenu { return actions(menu.children) }
+                return []
+            }
+        }
+        func menuAction(_ title: String, from button: UIButton) throws -> UIAction {
+            guard let action = actions(button.menu?.children ?? []).first(where: { $0.title == title }) else {
+                throw NSError(domain: "GroupedInspectorCheck", code: 3, userInfo: [NSLocalizedDescriptionKey: "Missing action " + title])
+            }; return action
+        }
+        func field(_ key: String, kind: String, options: [ModellingState.Field.Option], units: String? = nil) -> ModellingState.Field {
+            .init(key: key, label: "ui.ipados.modelling.field." + key, kind: kind, options: options, units: units, min: nil, max: nil, value: nil)
+        }
+        let profile = PresentationJSON.object(["face_body": .string("Body1"), "faces": .array([.array([.integer(0), .integer(0), .integer(20)])])])
+        let fields = [
+            field("profile", kind: "reference", options: [.init(label: "Body1", value: profile)]),
+            field("distance", kind: "expression", options: [], units: "mm"),
+            field("operation", kind: "inline_choice", options: [("new", "new_body"), ("join", "union"), ("intersect", "intersect"), ("cut", "subtract")].map {
+                .init(label: "ui.ipados.face_extrude." + $0.1, value: .string($0.0)) }),
+            field("direction", kind: "choice", options: ["positive", "negative", "symmetric"].map { .init(label: $0, value: .string($0)) }),
+            field("through_all", kind: "choice", options: [.init(label: "false", value: .bool(false)), .init(label: "true", value: .bool(true))]),
+            field("targets", kind: "references", options: ["Body1", "Body2", "Body3"].map { .init(label: $0, value: .string($0)) })
+        ]
+        func model(_ params: [String: PresentationJSON]) -> ModellingState {
+            .init(token: 9001, operation: "solid.extrude", feature: nil, params: params, fields: fields, valid: true,
+                  feedback: [], reply: nil, handle: nil, workspace: workspace)
+        }
+        do {
+            let initial: [String: PresentationJSON] = ["profile": profile, "distance": .string("5 mm"), "operation": .string("new"),
+                "direction": .string("positive"), "through_all": .bool(false), "targets": .array([.string("Body1"), .string("Body2")])]
+            let form = ModellingInspector(state: model(initial), compact: true); form.evaluated(model(initial))
+            let more = try find("workspace-model-more-options", in: form, as: UIButton.self); more.sendActions(for: .touchUpInside)
+            let apply = try find("workspace-model-apply", in: form.footer, as: UIButton.self)
+            let oldRemove = try find("workspace-model-reference-targets-0-remove", in: form, as: UIButton.self)
+            let oldDirection = try find("workspace-model-field-direction", in: form, as: UIButton.self)
+            let oldChoice = try menuAction(ModellingFormText.text("negative"), from: oldDirection)
+            try require(apply.isEnabled, "validated fixture did not enable Apply")
+            let toggle = try find("workspace-model-field-through_all", in: form, as: UISwitch.self)
+            toggle.setOn(true, animated: false); toggle.sendActions(for: .valueChanged)
+            try require(form.params["through_all"] == .bool(true) && !apply.isEnabled, "switch lost Boolean payload or reused validated Apply")
+            oldRemove.sendActions(for: .primaryActionTriggered); oldChoice.performWithSender(oldDirection, target: nil)
+            try require(form.params["targets"] == initial["targets"] && form.params["direction"] == initial["direction"], "stale controls changed a rebuilt form")
+            form.setBusy(committing: false, allowInput: true)
+            let busyToggle = try find("workspace-model-field-through_all", in: form, as: UISwitch.self)
+            try require(!busyToggle.isEnabled, "busy switch remains enabled for accessibility")
+            busyToggle.setOn(false, animated: false); busyToggle.sendActions(for: .valueChanged)
+            try require(busyToggle.isOn && form.params["through_all"] == .bool(true), "busy switch disagreed with its draft value")
+            form.evaluated(model(form.params))
+            let restoredToggle = try find("workspace-model-field-through_all", in: form, as: UISwitch.self)
+            try require(restoredToggle.isEnabled && restoredToggle.isOn, "completed preview did not restore switch availability/value")
+            let direction = try find("workspace-model-field-direction", in: form, as: UIButton.self)
+            try menuAction(ModellingFormText.text("negative"), from: direction).performWithSender(direction, target: nil)
+            try require(form.params["direction"] == .string("negative") && !apply.isEnabled, "choice changed the engine value or reused Apply")
+            let reorder = try find("workspace-model-reference-targets-0-reorder", in: form, as: UIButton.self)
+            try menuAction(ModellingText.text("move_down"), from: reorder).performWithSender(reorder, target: nil)
+            try require(form.params["targets"] == .array([.string("Body2"), .string("Body1")]), "Move down did not preserve target order")
+            try find("workspace-model-reference-targets-0-remove", in: form, as: UIButton.self).sendActions(for: .primaryActionTriggered)
+            try require(form.params["targets"] == .array([.string("Body1")]), "Remove changed the wrong target")
+            try require(!descendants(form).contains { $0.accessibilityIdentifier == "workspace-model-reference-targets-0-reorder" }, "singleton still displays reorder")
+            let add = try find("workspace-model-field-targets", in: form, as: UIButton.self)
+            let addThird = try menuAction("Body3", from: add)
+            addThird.performWithSender(add, target: nil); addThird.performWithSender(add, target: nil)
+            try require(form.params["targets"] == .array([.string("Body1"), .string("Body3")]), "Add duplicated a reference or changed its order")
+            let refreshedAdd = try find("workspace-model-field-targets", in: form, as: UIButton.self)
+            let names = actions(refreshedAdd.menu?.children ?? []).map(\.title)
+            try require(names.contains("Body2") && !names.contains("Body1") && !names.contains("Body3"), "selected references remain in the nested add menu")
+            var selectedField: String?; form.onSelect = { selectedField = $0 }
+            let beforeSelection = form.params
+            try menuAction(ModellingFormText.text("select_in_model"), from: refreshedAdd).performWithSender(refreshedAdd, target: nil)
+            try require(selectedField == "targets" && form.params == beforeSelection, "viewport action lost its target field or changed the draft")
+            let disabledButton = ModellingFormButton(title: "Empty", symbol: "plus", label: "Empty", identifier: "grouped-check-empty")
+            disabledButton.isEnabled = false; let disabledGroup = ModellingFormGroup(); disabledGroup.append(disabledButton)
+            disabledGroup.setEditingEnabled(false); disabledGroup.setEditingEnabled(true)
+            try require(!disabledButton.isEnabled, "busy recovery enabled an unavailable menu")
+            report.append("PASS typed values, Apply, busy restoration, stale actions, ordered references, duplicates and target viewport callback"); saveReport()
+            let variants: [(CGFloat, UIContentSizeCategory, UIUserInterfaceStyle, String)] = [
+                (320, .large, .light, "320-light"), (380, .large, .dark, "380-dark"),
+                (320, .accessibilityExtraExtraExtraLarge, .dark, "320-xxxl-dark"), (380, .accessibilityExtraExtraExtraLarge, .light, "380-xxxl-light")]
+            for (width, category, style, name) in variants {
+                let host = UIViewController(); host.loadViewIfNeeded(); host.overrideUserInterfaceStyle = style
+                host.traitOverrides.preferredContentSizeCategory = category
+                addChild(host); view.addSubview(host.view); host.didMove(toParent: self)
+                defer { host.willMove(toParent: nil); host.view.removeFromSuperview(); host.removeFromParent() }
+                host.view.frame = CGRect(x: 0, y: 0, width: width, height: min(900, max(600, view.bounds.height - 24)))
+                let specimen = ModellingInspector(state: model(form.params), compact: true)
+                let panel = WorkspacePanel(title: specimen.title, onClose: {}); panel.frame = host.view.bounds
+                host.view.addSubview(panel); panel.setFooter(specimen.footer)
+                let scroll = UIScrollView(); scroll.translatesAutoresizingMaskIntoConstraints = false; panel.content.addSubview(scroll)
+                specimen.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(specimen)
+                NSLayoutConstraint.activate([
+                    scroll.leadingAnchor.constraint(equalTo: panel.content.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: panel.content.trailingAnchor),
+                    scroll.topAnchor.constraint(equalTo: panel.content.topAnchor), scroll.bottomAnchor.constraint(equalTo: panel.content.bottomAnchor),
+                    specimen.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
+                    specimen.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -16),
+                    specimen.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
+                    specimen.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -12),
+                    specimen.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32)])
+                let disclosure = try find("workspace-model-more-options", in: specimen, as: UIButton.self)
+                disclosure.sendActions(for: .touchUpInside); host.view.layoutIfNeeded()
+                for control in descendants(specimen).compactMap({ $0 as? UIControl }).filter({ $0 is ModellingFormButton || $0 is ModellingFormSwitch }) {
+                    let frame = control.convert(control.bounds, to: specimen)
+                    try require(specimen.bounds.insetBy(dx: -0.5, dy: -0.5).contains(frame), name + ": grouped control escaped content bounds")
+                    let touchHeight = control is UISwitch ? control.point(inside: CGPoint(x: control.bounds.midX, y: control.bounds.midY + 21), with: nil) : frame.height >= 44
+                    try require(frame.width >= 44 && touchHeight, name + ": grouped control lost its touch target")
+                }
+                for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+                    let action = try find(id, in: panel, as: UIButton.self), frame = action.convert(action.bounds, to: panel)
+                    try require(!action.isDescendant(of: scroll) && panel.bounds.contains(frame) && frame.width >= 44 && frame.height >= 44, name + ": persistent action clipped")
+                }
+                let offset = disclosure.convert(disclosure.bounds, to: scroll).minY - 12
+                scroll.setContentOffset(CGPoint(x: 0, y: min(max(0, offset), max(0, scroll.contentSize.height - scroll.bounds.height))), animated: false)
+                host.view.layoutIfNeeded()
+                let capture = UIGraphicsImageRenderer(bounds: host.view.bounds).image { _ in host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true) }
+                guard let png = capture.pngData() else { throw NSError(domain: "GroupedInspectorCheck", code: 4) }
+                try png.write(to: directory.appendingPathComponent("grouped-inspector-" + name + ".png"), options: .atomic)
+                report.append("PASS " + name + ": compact panel, expanded options, 44pt controls, persistent footer and actual UIKit capture"); saveReport()
+            }
+            report.append("PASS complete; library projects and saved preferences unchanged")
+        } catch { report.append("FAIL " + error.localizedDescription) }
+        saveReport()
+    }
+
+    func checkToolDismissalOnDevice() {
+        guard state != nil else {
+            assemblyCheckWorkspace = { [weak self] _ in
+                self?.assemblyCheckWorkspace = nil; self?.checkToolDismissalOnDevice()
+            }
+            session.refreshWorkspace()
+            return
+        }
+        let savedPreference = cancelToolsOnDismiss
+        let expected = generation
+        let cases = ["legacy", "close", "toggle", "browser", "empty"]
+        var results: [String] = []
+        var finished = false
+        func finish(_ failure: String? = nil) {
+            guard !finished else { return }; finished = true
+            cancelToolsOnDismiss = savedPreference
+            session.command("view.tool_dismissal", params: ["cancel_on_dismiss": savedPreference])
+            let report: [String: Any] = ["passed": failure == nil && results.count == cases.count,
+                                         "cases": results, "failure": failure ?? ""]
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("tool-dismissal-check.json"), options: .atomic)
+            } catch { NSLog("Tool dismissal report failed: %@", String(describing: error)) }
+            NSLog("SolidCraft tool dismissal check %@", String(describing: report))
+        }
+        func step(_ index: Int) {
+            guard active, generation == expected, !finished else { return }
+            if index == cases.count { finish(); return }
+            let name = cases[index]
+            NSLog("SolidCraft tool dismissal case %@", name)
+            cancelToolsOnDismiss = name != "legacy"
+            session.command("view.tool_dismissal", params: ["cancel_on_dismiss": cancelToolsOnDismiss]) { [weak self] result in
+                guard let self, case .success = result else { finish("preference setup failed"); return }
+                self.assemblyCheckBegan = { [weak self] result in
+                    guard let self, case .success(let model) = result, let form = self.modellingInspector,
+                          let token = model.token, self.inspectorOpen else { finish("joint form did not open: \(name)"); return }
+                    self.assemblyCheckCancelled = { [weak self] result in
+                        guard let self else { return }
+                        if case .failure(let error) = result, error.code != "stale_edit" { finish(error.description); return }
+                        self.view.layoutIfNeeded()
+                        guard !self.modellingEditing, !self.inspectorOpen,
+                              !self.modellingButton.isHidden, !self.assemblyButton.isHidden,
+                              self.modellingButton.isEnabled, self.assemblyButton.isEnabled else {
+                            finish("dismissal did not restore the normal tool rail: \(name)"); return
+                        }
+                        results.append(name); step(index + 1)
+                    }
+                    switch name {
+                    case "legacy":
+                        self.closePanels(); self.toggleInspector()
+                        guard self.modellingToken == token, self.modellingInspector === form, self.inspectorOpen,
+                              self.modellingInspector?.params == form.params else { finish("legacy draft did not reopen intact"); return }
+                        self.cancelModelling(); self.closePanels()
+                    case "toggle": self.toggleInspector()
+                    case "browser": self.toggleBrowser()
+                    case "empty":
+                        let scale = Double(self.canvas.contentScaleFactor)
+                        for phase in [InputSample.Phase.began, .ended] {
+                            var sample = InputSample(source: .finger, phase: phase, id: 900,
+                                x_points: 180, y_points: 140, x_pixels: 180 * scale, y_pixels: 140 * scale,
+                                scale: scale, timestamp: ProcessInfo.processInfo.systemUptime,
+                                pressure: nil, altitude: nil, geometry_revision: self.canvas.geometryRevision,
+                                consumed: false, shift: false, button: 0, scroll: 0)
+                            sample.viewport_epoch = self.canvas.viewportEpoch; sample.camera_epoch = self.canvas.cameraEpoch
+                            sample.document_id = self.canvas.documentID
+                            self.session.record(sample)
+                        }
+                    default: self.closePanels()
+                    }
+                }
+                self.beginModelling(operation: "joint.create")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { if !finished { finish("diagnostic timed out") } }
+        step(0)
+    }
+
+    /// Disposable launch fixture only. Exercise the real browser button and eye
+    /// controls, inspect the long-press menu and capture the actual UIKit views.
+    /// Disposable real-engine sketch for physical tap/keyboard/drag verification.
+    /// NativeSession's diagnostic launch path never opens or autosaves a project.
+    /// Disposable fixture; invokes the production control handlers, then restores
+    /// every saved visibility override. It never opens/autosaves a library design.
+    private func checkViewControlsOnDevice() {
+        let expected = generation
+        let savedOrigin = originVisibility, savedGrid = gridVisible
+        let defaults = UserDefaults.standard
+        let savedOriginDefault = defaults.object(forKey: "SolidCraft.workspace.originVisibility")
+        let savedGridDefault = defaults.object(forKey: "SolidCraft.workspace.gridVisible")
+        var original: WorkspaceState?
+        var issues: [String] = []
+        func check(_ value: Bool, _ message: String) { if !value { issues.append(message) } }
+        func control(_ id: String, in parent: UIView? = nil) -> UIControl? {
+            guard let parent = parent ?? viewControlsPopover?.view else { return nil }
+            if parent.accessibilityIdentifier == "workspace-view-" + id { return parent as? UIControl }
+            for child in parent.subviews { if let found = control(id, in: child) { return found } }
+            return nil
+        }
+        func master() -> UISwitch? { control("origin") as? UISwitch }
+        func capture(_ name: String) {
+            view.layoutIfNeeded()
+            do {
+                let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                if let png = image.pngData() { try png.write(to: folder.appendingPathComponent("view-controls-" + name + ".png"), options: .atomic) }
+            } catch { issues.append("capture: \(error)") }
+        }
+        func finish() {
+            originVisibility = savedOrigin; gridVisible = savedGrid
+            defaults.set(savedOriginDefault, forKey: "SolidCraft.workspace.originVisibility")
+            defaults.set(savedGridDefault, forKey: "SolidCraft.workspace.gridVisible")
+            session.command("view.origin", params: ["visible": NSNull()])
+            for (item, visible) in savedOrigin { session.command("view.origin", params: ["item": item, "visible": visible]) }
+            session.command("view.grid", params: ["visible": savedGrid])
+            failure = nil; updateStatus(); rebuildViewMenu()
+            viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
+            print("View controls check " + (issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")))
+        }
+        func wait(_ condition: @escaping () -> Bool, remaining: Int = 100, then next: @escaping () -> Void) {
+            guard active, generation == expected else { return }
+            if condition() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: next); return }
+            guard remaining > 0 else { issues.append("state update timed out"); finish(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(condition, remaining: remaining - 1, then: next) }
+        }
+        func unchanged() {
+            check(state?.document_id == original?.document_id && state?.geometry_revision == original?.geometry_revision &&
+                  state?.can_undo == original?.can_undo && state?.selection == original?.selection, "visibility mutated document/history/selection")
+        }
+        let steps: [(() -> Void, () -> Bool, () -> Void)] = [
+            ({ self.setOriginVisibility(visible: false) }, { self.viewPresentation?.visibility == ViewControlsPresentation.Visibility.none }, {
+                check(master()?.isOn == false, "none master indicator"); capture("none")
+            }),
+            ({ control("origin")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.visibility == .all }, {
+                check(master()?.isOn == true, "all master indicator"); capture("all")
+            }),
+            ({ control("origin")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.visibility == ViewControlsPresentation.Visibility.none }, {}),
+            ({
+                control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                control("reference-X")?.sendActions(for: .valueChanged)
+            }, { self.viewPresentation?.visibility == .some }, {
+                control("back")?.sendActions(for: .primaryActionTriggered)
+                check(master()?.isOn == true && master()?.accessibilityValue == ViewText.text("some_visible"), "mixed master indicator/subtitle")
+                capture("mixed")
+            }),
+            ({ control("origin")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.visibility == .all }, {
+                let origin = self.viewPresentation?.origin
+                self.viewControlPending = true; self.rebuildViewMenu()
+                check(master()?.isEnabled == false, "busy master remains enabled")
+                self.setOriginVisibility(visible: false)
+                self.viewControlPending = false; self.rebuildViewMenu()
+                check(self.viewPresentation?.origin == origin, "busy command changed visibility")
+            }),
+            ({ control("grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.visible != savedGrid }, {
+                check(self.viewPresentation?.visibility == .all, "Grid changed references")
+            }),
+            ({ self.setOriginVisibility(visible: nil) }, { self.viewPresentation?.visibility == ViewControlsPresentation.Visibility.none }, {
+                check(self.originVisibility.isEmpty, "Automatic retained overrides")
+                check(self.viewPresentation?.grid.visible != savedGrid, "references changed Grid")
+            }),
+            ({ self.session.command("view.choose_sketch_plane") }, { self.viewPresentation?.origin.choosing == true }, {
+                check(self.viewPresentation?.visibility == .all && master()?.isOn == true, "Automatic effective state")
+            }),
+            ({ self.session.command("view.cancel_plane") }, { self.viewPresentation?.origin.choosing == false }, {
+                check(self.viewPresentation?.visibility == ViewControlsPresentation.Visibility.none, "Automatic cancellation state")
+            })
+        ]
+        func step(_ index: Int) {
+            guard index < steps.count else {
+                let beforeFailure = viewPresentation
+                session.command("view.origin", params: ["visible": "invalid"]) { result in
+                    if case .success = result { issues.append("invalid command succeeded") }
+                    check(self.viewPresentation == beforeFailure && self.originVisibility.isEmpty, "failed command changed state/preferences")
+                    unchanged()
+                    self.failure = nil; self.updateStatus()
+                    control("front")?.sendActions(for: .primaryActionTriggered)
+                    wait({ !self.viewControlPending && self.viewPresentation?.camera.standardView == "front" }) {
+                        check((control("front") as? UIButton)?.isSelected == true && (control("isometric") as? UIButton)?.isSelected == false, "standard-view selection is not camera-derived")
+                        control("isometric")?.sendActions(for: .primaryActionTriggered)
+                        wait({ !self.viewControlPending && self.viewPresentation?.camera.standardView == "isometric" }) {
+                            control("perspective")?.sendActions(for: .valueChanged)
+                            wait({ !self.viewControlPending && (self.viewPresentation?.camera.fov ?? 0) > 0 }) {
+                                check((control("perspective") as? UISwitch)?.isOn == true, "Perspective switch is stale")
+                                control("perspective")?.sendActions(for: .valueChanged)
+                                wait({ !self.viewControlPending && self.viewPresentation?.camera.fov == 0 }) {
+                                    check(self.keyboardTop == nil, "View popup opened a keyboard")
+                                    unchanged(); capture("panel"); finish()
+                                }
+                            }
+                        }
+                    }
+                }
+                return
+            }
+            let (run, ready, verify) = steps[index]
+            run()
+            wait({ !self.viewControlPending && ready() }) { verify(); unchanged(); step(index + 1) }
+        }
+        wait({ self.viewPresentation != nil && self.state != nil && self.pending.isEmpty }) {
+            original = self.state
+            let openingState = self.viewPresentation, openingFrame = self.canvas.frame
+            self.showViewControls()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                check(self.viewControlsPopover != nil, "View popup did not open")
+                check(self.viewPresentation == openingState && self.canvas.frame == openingFrame, "opening View changed the camera or viewport")
+                check(self.keyboardTop == nil, "opening View raised a keyboard")
+                capture("opened")
+                step(0)
+            }
+        }
+    }
+
+    func checkInlineDimensionsOnDevice() {
+        let expected = generation
+        let commands: [(String, [String: Any])] = [
+            ("file.new", [:]),
+            ("sketch.create", ["plane": "XY"]),
+            ("sketch.rectangle.two_point", ["p0": [-30, -20], "p1": [30, 20]]),
+            ("tool.set", ["tool": "select"]),
+            ("view.fit", [:])
+        ]
+        func step(_ index: Int) {
+            guard active, generation == expected else { return }
+            guard index < commands.count else {
+                browserOpen = false; inspectorOpen = false; relayoutPanels()
+                print("Inline dimension fixture READY: tap a sketch edge, then its number")
+                if ProcessInfo.processInfo.arguments.contains("--inline-dimension-check-run") { verifyInlineDimensionsOnDevice() }
+                return
+            }
+            let (command, params) = commands[index]
+            session.command(command, params: params) { result in
+                switch result {
+                case .failure(let error): self.showFailure(error)
+                case .success: step(index + 1)
+                }
+            }
+        }
+        step(0)
+    }
+
+    /// Exercises the actual UIKit editor and native transactions; contact grammar
+    /// is checked separately by the deterministic tracker/viewport tests.
+    private func verifyInlineDimensionsOnDevice() {
+        let expected = generation
+        func wait(_ stage: String, remaining: Int = 100, until condition: @escaping () -> Bool, then action: @escaping () -> Void) {
+            guard active, generation == expected else { return }
+            if condition() { action(); return }
+            guard remaining > 0 else { print("Inline dimension check FAIL: " + stage); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                wait(stage, remaining: remaining - 1, until: condition, then: action)
+            }
+        }
+        func capture(_ stage: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                guard let data = image.pngData() else { print("Inline dimension check FAIL: image encoding"); return }
+                try data.write(to: directory.appendingPathComponent("inline-dimension-" + stage + ".png"), options: .atomic)
+            } catch { print("Inline dimension check FAIL: \(error)") }
+        }
+        func selectEdge(_ next: @escaping () -> Void) {
+            guard let sketch = state?.sketch, let curve = sketch.curves.first else { print("Inline dimension check FAIL: missing edge"); return }
+            session.selectEntity(["type": "sketch_curve", "id": curve.id, "sketch": sketch.id], additive: false) { result in
+                switch result {
+                case .failure(let error): print("Inline dimension check FAIL: \(error)")
+                case .success:
+                    wait("edge annotation", until: { self.sketchAnnotations.values.contains { $0.selected && !$0.driven } }, then: next)
+                }
+            }
+        }
+        func openEditor(_ next: @escaping () -> Void) {
+            wait("available dimension value", until: { self.sketchAnnotations.values.contains { $0.selected && self.annotationEditable($0) } }) {
+                guard let annotation = self.sketchAnnotations.values.first(where: { $0.selected && self.annotationEditable($0) }) else { return }
+                self.canvas.onDimensionTap?(annotation.id)
+                wait("focused popover", until: { self.inlineNumericEditor != nil && self.editor?.field.isFirstResponder == true }, then: next)
+            }
+        }
+        func hasDimension(_ expression: String) -> Bool {
+            state?.sketch?.constraints.filter(\.dimension).count == 1 &&
+                state?.sketch?.constraints.contains { $0.dimension && $0.expression == expression } == true
+        }
+        func checkUndoRedo() {
+            run("edit.undo")
+            wait("undo", until: { self.state?.sketch?.constraints.contains(where: \.dimension) == false }) {
+                self.run("edit.redo")
+                wait("redo", until: { hasDimension("80 mm") }) {
+                    selectEdge {
+                        openEditor {
+                            capture("editor")
+                            print("Inline dimension check PASS: focused UIKit popover, native Apply, repeat edit, Preview/Cancel, Undo/Redo; physical contacts unverified")
+                        }
+                    }
+                }
+            }
+        }
+        wait("rectangle fixture", until: { self.state?.sketch?.curves.count == 4 }) {
+            selectEdge {
+                capture("selected")
+                openEditor {
+                    guard let editor = self.editor, let range = editor.field.selectedTextRange,
+                          editor.field.offset(from: range.start, to: range.end) == (editor.field.text ?? "").utf16.count else {
+                        print("Inline dimension check FAIL: expression was not selected"); return
+                    }
+                    capture("initial-editor")
+                    editor.field.insertText("80 mm"); editor.onApply?(editor.field.text ?? "")
+                    wait("apply", until: { !self.numericEditing && hasDimension("80 mm") && self.sketchAnnotations.values.contains { abs($0.value - 80) < 0.001 } }) {
+                        capture("applied")
+                        selectEdge {
+                            openEditor {
+                                guard let editor = self.editor else { return }
+                                editor.field.insertText("100 mm"); editor.onPreview?(editor.field.text ?? "")
+                                wait("preview", until: { !editor.busy && self.sketchAnnotations.values.contains { abs($0.value - 100) < 0.001 } }) {
+                                    editor.onCancel?()
+                                    wait("cancel", until: { !self.numericEditing && hasDimension("80 mm") }) { checkUndoRedo() }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func checkBrowserOnDevice() {
+        compactChrome = true; leftBrowser = true; appearance = 2
+        originExpanded = false
+        configureChrome(); applyAppearance()
+        func capture(_ name: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+                guard let data = image.pngData() else { print("Browser check FAIL: image encoding"); return }
+                try data.write(to: directory.appendingPathComponent("browser-check-" + name + ".png"), options: .atomic)
+                print("Browser check CAPTURE \(name)")
+            } catch { print("Browser check FAIL: \(error)") }
+        }
+        func eye(_ row: WorkspaceRow) -> WorkspaceButton? {
+            guard let index = visibleRows.firstIndex(where: { $0.id == row.id }),
+                  let cell = table.cellForRow(at: IndexPath(row: index, section: 1)),
+                  let controls = cell.accessoryView as? UIStackView else { return nil }
+            return controls.arrangedSubviews.compactMap { $0 as? WorkspaceButton }.first
+        }
+        browserCheckWorkspace = { [weak self] value in
+            guard let self, value.rows.contains(where: { $0.label == "Frame" }) else { return }
+            self.browserCheckWorkspace = nil
+            self.browserButton.sendActions(for: .touchUpInside)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                guard let self, self.active, let frame = self.layout?.browser,
+                      let row = self.visibleRows.first(where: { $0.id == "body:Post" }), let button = eye(row) else {
+                    print("Browser check FAIL: browser or eye unavailable"); return
+                }
+                var issues: [String] = []
+                for cell in self.table.visibleCells where cell.accessibilityIdentifier?.hasPrefix("workspace-row-") == true {
+                    guard let content = cell.contentConfiguration as? UIListContentConfiguration else { issues.append("missing content"); continue }
+                    if content.image == nil || content.secondaryText != nil { issues.append("missing icon or extra subtitle") }
+                }
+                for control in [self.top, self.railScroll, self.browserButton, self.historyActions, self.featureHistory] where control.frame.intersects(frame) {
+                    issues.append("overlapping chrome")
+                }
+                let menu = self.browserMenu(row)
+                if !menu.children.contains(where: { $0.title == BrowserText.text("rename") }) { issues.append("missing long-press Rename") }
+                if !menu.children.contains(where: { $0.title == BrowserText.text("move_to_folder") }) { issues.append("missing folder move") }
+                print("Browser check ROWS \(issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; "))")
+                capture("dark")
+                self.browserCheckWorkspace = { [weak self] value in
+                    guard let self, let hidden = value.rows.first(where: { $0.id == row.id }), hidden.browser?.visible == false else { return }
+                    self.browserCheckWorkspace = nil
+                    print("Browser check HIDE PASS")
+                    capture("hidden")
+                    self.browserCheckWorkspace = { [weak self] value in
+                        guard let self, value.rows.first(where: { $0.id == row.id })?.browser?.visible == true else { return }
+                        self.browserCheckWorkspace = nil
+                        self.appearance = 1; self.applyAppearance(); self.table.reloadData()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            capture("light")
+                            self.appearance = 2; self.applyAppearance(); self.table.reloadData()
+                            print("Browser check SHOW PASS")
+                            self.checkBrowserSearchOnDevice(capture: capture)
+                        }
+                    }
+                    eye(hidden)?.sendActions(for: .touchUpInside)
+                }
+                button.sendActions(for: .touchUpInside)
+            }
+        }
+        session.command("browser.group", params: ["folder": "bodies", "name": "Frame", "items": ["Base"]])
+    }
+
+    /// Extends the existing disposable browser driver through production search,
+    /// table selection and eye controls. Never loads or saves a library design.
+    private func checkBrowserSearchOnDevice(capture: @escaping (String) -> Void) {
+        var issues: [String] = []
+        func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
+        func query(_ text: String) {
+            browserSearchField.text = text; browserSearchField.sendActions(for: .editingChanged)
+            view.layoutIfNeeded(); table.layoutIfNeeded()
+        }
+        func columns() {
+            var eyeX: CGFloat?
+            for cell in table.visibleCells {
+                guard let controls = cell.accessoryView as? UIStackView else { continue }
+                controls.layoutIfNeeded()
+                check(controls.bounds.width == BrowserRowColumns.width, "missing reserved columns")
+                check(controls.arrangedSubviews.count == 2, "missing trailing slot")
+                guard let eye = controls.arrangedSubviews.first as? WorkspaceButton else { continue }
+                let frame = eye.convert(eye.bounds, to: table)
+                if let x = eyeX { check(abs(frame.minX - x) < 1, "eye column drifts") } else { eyeX = frame.minX }
+                check(frame.width >= 44 && frame.height >= 44, "small eye target")
+                if let disclosure = controls.arrangedSubviews.last {
+                    check(!frame.intersects(disclosure.convert(disclosure.bounds, to: table)), "overlapping targets")
+                }
+            }
+        }
+        guard let original = state, let folder = original.rows.first(where: { $0.label == "Frame" }) else {
+            print("Browser search check FAIL: missing fixture"); return
+        }
+        let oldCategory = traitCollection.preferredContentSizeCategory
+        var savedCollapsed: Set<String> = []
+        var savedOffset: CGFloat = 0
+        func afterLayout(_ action: @escaping () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self = self] in
+                guard let self, self.active else { return }
+                self.view.layoutIfNeeded(); self.table.layoutIfNeeded(); action()
+            }
+        }
+        func finishSelection(_ value: WorkspaceState) {
+            let selection = value.selection
+            cancelKey()
+            check(!browserSearchOpen && !textEntryActive, "Escape did not dismiss search")
+            check(collapsed == savedCollapsed && state?.selection == selection, "dismiss changed explicit selection or expansion")
+            check(currentBrowserRow("body:Post", document: "stale", revision: value.geometry_revision) == nil, "stale document accepted")
+            check(currentBrowserRow("body:Post", document: value.document_id, revision: value.geometry_revision &+ 1) == nil, "stale revision accepted")
+            pending = "test"
+            check(currentBrowserRow("body:Post", document: value.document_id, revision: value.geometry_revision) == nil, "busy browser accepted action")
+            pending = ""
+            traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
+            afterLayout {
+                let originalFrame = self.table.frame
+                for width: CGFloat in [260, 320] {
+                    self.table.frame.size.width = width; self.table.reloadData(); self.table.layoutIfNeeded(); columns()
+                }
+                self.table.frame = originalFrame; self.table.reloadData()
+                afterLayout {
+                    columns(); capture("large-text")
+                    self.traitOverrides.preferredContentSizeCategory = oldCategory
+                    self.rebuildMenus(); self.view.setNeedsLayout(); self.table.reloadData()
+                    afterLayout {
+                        self.appearance = 1; self.applyAppearance(); self.table.reloadData()
+                        self.browserFindButton.sendActions(for: .touchUpInside); query("post")
+                        self.browserSearchField.resignFirstResponder()
+                        afterLayout {
+                            capture("search-light")
+                            print("Browser search check \(issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")); complete")
+                        }
+                    }
+                }
+            }
+        }
+        // Include references and allow real UIKit reuse/trait/layout passes to
+        // settle before capturing; rapid same-turn snapshots include old cells.
+        originInBrowser = true; originExpanded = true; updateRows(); view.setNeedsLayout()
+        afterLayout {
+            columns(); capture("aligned")
+            self.collapsed.insert(folder.id); self.updateRows()
+            savedCollapsed = self.collapsed; savedOffset = self.table.contentOffset.y
+            self.browserFindButton.sendActions(for: .touchUpInside)
+            check(self.browserSearchField.isFirstResponder && self.textEntryActive, "search has no text ownership")
+            check(!WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: self.textEntryActive, numericEditActive: false), "search permits document shortcuts")
+            query("BASE")
+            check(self.visibleRows.contains(where: { $0.id == "body:Base" }) && self.visibleRows.contains(where: { $0.id == folder.id }), "collapsed ancestor not revealed")
+            check(!self.visibleRows.contains(where: { $0.id == "body:Post" }), "unrelated result remains")
+            check(self.collapsed == savedCollapsed && self.state?.selection == original.selection, "typing changed selection or expansion")
+            check(self.state?.geometry_revision == original.geometry_revision && self.state?.can_undo == original.can_undo, "search changed document")
+            self.browserSearchField.resignFirstResponder()
+            afterLayout {
+                columns(); capture("search"); query("not-present-in-fixture")
+                check(self.visibleRows.isEmpty && self.visibleOriginRows.isEmpty && self.browserMessage.text == BrowserText.text("no_matches"), "no-results state missing")
+                afterLayout {
+                    capture("no-results"); query("")
+                    check(self.collapsed == savedCollapsed && !self.visibleRows.contains(where: { $0.id == "body:Base" }), "clear failed to restore collapse")
+                    check(abs(self.table.contentOffset.y - savedOffset) < 1, "clear failed to restore scroll")
+                    query("post")
+                    check(self.visibleRows.filter { self.browserName($0).localizedCaseInsensitiveContains("post") }.count == 2, "match count loses feature/body identities")
+                    afterLayout {
+                        columns(); capture("search-post")
+                        guard let index = self.visibleRows.firstIndex(where: { $0.id == "body:Post" }) else { print("Browser search check FAIL: missing result"); return }
+                        func selectPost() {
+                            guard let row = self.visibleRows.firstIndex(where: { $0.id == "body:Post" }) else { return }
+                            self.browserCheckWorkspace = { [weak self = self] value in
+                                guard let self, value.selection.contains(where: { $0.type == "body" && $0.name == "Post" }) else { return }
+                                self.browserCheckWorkspace = nil; afterLayout { finishSelection(value) }
+                            }
+                            self.tableView(self.table, didSelectRowAt: IndexPath(row: row, section: 1))
+                        }
+                        func tapEye() {
+                            guard let row = self.visibleRows.firstIndex(where: { $0.id == "body:Post" }),
+                                  let controls = self.table.cellForRow(at: IndexPath(row: row, section: 1))?.accessoryView as? UIStackView,
+                                  let button = controls.arrangedSubviews.first as? WorkspaceButton else {
+                                issues.append("filtered eye missing"); return
+                            }
+                            button.sendActions(for: .touchUpInside)
+                        }
+                        self.browserCheckWorkspace = { [weak self = self] hidden in
+                            guard let self, hidden.rows.first(where: { $0.id == "body:Post" })?.browser?.visible == false else { return }
+                            self.browserCheckWorkspace = nil
+                            check(hidden.rows.first(where: { $0.id == "body:Base" })?.browser?.visible == true, "filtered eye changed another body")
+                            check(self.visibleRows.contains(where: { $0.id == "body:Post" }), "visibility removed search result")
+                            self.browserCheckWorkspace = { [weak self = self] shown in
+                                guard let self, let row = shown.rows.first(where: { $0.id == "body:Post" }), row.browser?.visible == true,
+                                      let rename = row.browser?.rename else { return }
+                                self.browserCheckWorkspace = nil
+                                self.browserCheckWorkspace = { [weak self = self] renamed in
+                                    guard let self, renamed.rows.contains(where: { $0.kind == "body" && $0.label == "Rail" }) else { return }
+                                    self.browserCheckWorkspace = nil
+                                    check(!self.visibleRows.contains(where: { $0.id == row.id }), "rename left stale search result")
+                                    self.browserCheckWorkspace = { [weak self = self] restored in
+                                        guard let self, restored.rows.first(where: { $0.id == row.id })?.label == "Post" else { return }
+                                        self.browserCheckWorkspace = nil
+                                        check(self.visibleRows.contains(where: { $0.id == row.id }), "undo failed to restore search identity")
+                                        afterLayout { selectPost() }
+                                    }
+                                    self.session.command("edit.undo")
+                                }
+                                var params = rename.params.mapValues(\.value); params["name"] = "Rail"
+                                self.session.command(rename.command, params: params)
+                            }
+                            afterLayout { tapEye() }
+                        }
+                        // The filtered index differs from the original tree row.
+                        check(index != original.rows.firstIndex(where: { $0.id == "body:Post" }), "fixture did not exercise filtered indexing")
+                        tapEye()
+                    }
+                }
+            }
+        }
+    }
+
+    /// Opt-in disposable fixture: actual UIKit buttons and engine selection,
+    /// with native chrome captures. Adapter/GPU tests check model highlights.
+    func checkHistoryOnDevice() {
+        let expected = generation
+        var finished = false
+        func button(_ id: String, in parent: UIView) -> UIControl? {
+            if parent.accessibilityIdentifier == id { return parent as? UIControl }
+            return parent.subviews.compactMap { button(id, in: $0) }.first
+        }
+        func capture(_ stage: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+                guard let data = image.pngData() else { print("History check FAIL: image encoding"); return }
+                try data.write(to: directory.appendingPathComponent("history-check-" + stage + ".png"), options: .atomic)
+                print("History check CAPTURE \(stage)")
+            } catch { print("History check FAIL: \(error)") }
+        }
+        func scrubHistory(_ index: Int = 0) {
+            let paths = [[2, 1], [2, 0, 1], [0, 2, 3], [2, 0], [1, 3]]
+            guard index < paths.count else {
+                finished = true
+                print("History check PASS: icon-only, toggle, selection, arrows, scrub routing, reverse drag, empty stage and final lift")
+                return
+            }
+            let path = paths[index]
+            guard let position = path.last else { return }
+            historyCheckWorkspace = { [weak self] value in
+                guard let self, self.active, self.generation == expected,
+                      value.modelling?.activeFeatureCount == position, !self.featureHistory.isScrubbing else { return }
+                self.historyCheckWorkspace = nil
+                let bodies = position == 0 ? 0 : (position == 1 ? 1 : 2)
+                guard value.rows.filter({ $0.kind == "body" }).count == bodies else {
+                    finished = true; print("History check FAIL: scrub geometry at stage \(position)"); return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    capture("scrub-" + String(index) + "-stage-" + String(position))
+                    scrubHistory(index + 1)
+                }
+            }
+            guard featureHistory.developmentScrub(path) else {
+                finished = true; historyCheckWorkspace = nil; print("History check FAIL: scrub route unavailable"); return
+            }
+        }
+        func navigate(_ index: Int = 0) {
+            let steps = [("back", 2, 2), ("back", 1, 1), ("forward", 2, 2), ("forward", 3, 2)]
+            guard index < steps.count else {
+                scrubHistory()
+                return
+            }
+            let (direction, position, bodies) = steps[index]
+            guard let control = button("workspace-history-" + direction, in: featureHistory), control.isEnabled else {
+                finished = true; print("History check FAIL: unavailable transport \(direction)"); return
+            }
+            historyCheckWorkspace = { [weak self] value in
+                guard let self, self.active, self.generation == expected, value.modelling?.activeFeatureCount == position else { return }
+                self.historyCheckWorkspace = nil
+                guard value.rows.filter({ $0.kind == "body" }).count == bodies else {
+                    finished = true; print("History check FAIL: incorrect geometry at stage \(position)"); return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    capture("stage-" + String(position)); navigate(index + 1)
+                }
+            }
+            control.sendActions(for: .touchUpInside)
+        }
+        func start(_ value: WorkspaceState) {
+            guard let feature = value.modelling?.timeline.first,
+                  let toggle = button("workspace-feature-history-toggle", in: featureHistory) else {
+                print("History check FAIL: history controls unavailable"); return
+            }
+            guard !historyExpanded && !featureHistory.expanded else { print("History check FAIL: must start collapsed"); return }
+            capture("collapsed")
+            toggle.sendActions(for: .touchUpInside); view.layoutIfNeeded()
+            guard historyExpanded, featureHistory.expanded,
+                  let item = button("workspace-history-feature-" + String(feature.id), in: featureHistory) else {
+                print("History check FAIL: feature strip did not expand"); return
+            }
+            guard (item as? UIButton)?.configuration?.title == nil else { print("History check FAIL: visible feature name"); return }
+            guard toggle.frame.maxX >= featureHistory.bounds.width - 8 else { print("History check FAIL: toggle left the right edge"); return }
+            assemblyCheckBegan = { [weak self] result in
+                guard let self, self.active, self.generation == expected, case .success = result,
+                      self.modellingFeature == feature.id else { print("History check FAIL: feature editor did not open"); return }
+                capture("selected")
+                self.assemblyCheckCancelled = { [weak self] _ in
+                    guard let self, self.active, self.generation == expected else { return }
+                    toggle.sendActions(for: .touchUpInside)
+                    guard !self.historyExpanded else { print("History check FAIL: did not collapse"); return }
+                    toggle.sendActions(for: .touchUpInside)
+                    self.browserButton.sendActions(for: .touchUpInside)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+                        guard let self, self.active, self.generation == expected else { return }
+                        capture("browser")
+                        navigate()
+                    }
+                }
+                self.closePanels()
+            }
+            item.sendActions(for: .primaryActionTriggered)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
+            guard !finished else { return }
+            self?.historyCheckWorkspace = nil
+            print("History check FAIL: timed out")
+        }
+        if let state { start(state) }
+        else {
+            historyCheckWorkspace = { [weak self] value in
+                self?.historyCheckWorkspace = nil; start(value)
+            }
+            session.refreshWorkspace()
+        }
+    }
+
+    /// Disposable native workflow: real history buttons, UIMenu actions and the
+    /// same revision-checked confirmation closure used by the destructive alert.
+    func checkHistoryActionsOnDevice() {
+        let expected = generation
+        let deadline = ProcessInfo.processInfo.systemUptime + 30
+        var finished = false
+        func fail(_ message: String) { finished = true; historyDeleteConfirmation = nil; print("History actions FAIL: \(message)") }
+        func wait(_ name: String, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+            guard !finished, active, generation == expected else { return }
+            if ready() { next(); return }
+            guard ProcessInfo.processInfo.systemUptime < deadline else { fail("timeout: " + name); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(name, until: ready, then: next) }
+        }
+        func item(_ id: UInt64) -> UIButton? {
+            func find(_ view: UIView) -> UIButton? {
+                if view.accessibilityIdentifier == "workspace-history-feature-" + String(id) { return view as? UIButton }
+                return view.subviews.compactMap(find).first
+            }
+            return find(featureHistory)
+        }
+        func capture(_ stage: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let target: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: target.bounds).image { _ in target.drawHierarchy(in: target.bounds, afterScreenUpdates: true) }
+                guard let data = image.pngData() else { fail("image encoding"); return }
+                try data.write(to: directory.appendingPathComponent("history-actions-" + stage + ".png"), options: .atomic)
+            } catch { fail(String(describing: error)) }
+        }
+        wait("fixture", until: { self.state?.modelling?.timeline.count == 3 }) {
+            guard let features = self.state?.modelling?.timeline, features.count == 3 else { fail("fixture timeline"); return }
+            let base = features[0].id, post = features[1].id, sketch = features[2].id
+            func editSketch() {
+                item(sketch)?.sendActions(for: .primaryActionTriggered)
+                wait("sketch editor", until: { self.state?.sketch?.id == sketch }) {
+                    capture("edit-sketch")
+                    self.run("sketch.finish")
+                    wait("finish sketch", until: { self.state?.sketch == nil && self.pending.isEmpty }) {
+                        finished = true
+                        print("History actions PASS: tap edits original feature, Apply, future-feature edit, anchored Delete sheet retains icon without editor/keyboard, confirmation, undo and sketch editing")
+                    }
+                }
+            }
+            func deletePost() {
+                guard let control = item(post), self.featureHistory.showActions(for: post, source: control) else { fail("missing held-feature actions"); return }
+                wait("delete menu", until: {
+                    guard let sheet = self.presentedViewController as? UIAlertController else { return false }
+                    return sheet.preferredStyle == .actionSheet && !sheet.isBeingPresented && sheet.viewIfLoaded?.window != nil
+                }) {
+                    guard let sheet = self.presentedViewController as? UIAlertController, let delete = self.historyMenuDelete,
+                          sheet.actions.contains(where: { $0.style == .destructive && $0.title == ModellingText.text("delete_feature") }),
+                          !self.modellingEditing, self.historyActivation == nil, self.keyboardTop == nil,
+                          item(post) === control, control.configuration?.image != nil else { fail("Delete sheet, icon or focus"); return }
+                    capture("delete-menu")
+                    self.historyMenuDelete = nil
+                    sheet.dismiss(animated: false) { delete() }
+                    confirmDelete()
+                }
+            }
+            func confirmDelete() {
+                wait("delete confirmation", until: {
+                    guard let alert = self.presentedViewController as? UIAlertController else { return false }
+                    return self.historyDeleteConfirmation != nil && !alert.isBeingPresented && alert.viewIfLoaded?.window != nil
+                }) {
+                    guard let alert = self.presentedViewController as? UIAlertController,
+                          alert.actions.contains(where: { $0.style == .destructive }), let confirm = self.historyDeleteConfirmation else { fail("confirmation action"); return }
+                    capture("delete-confirmation")
+                    self.historyDeleteConfirmation = nil
+                    alert.dismiss(animated: false) { confirm() }
+                    wait("delete feature", until: { self.state?.modelling?.timeline.contains(where: { $0.id == post }) == false && self.pending.isEmpty }) {
+                        guard self.state?.rows.filter({ $0.kind == "body" }).count == 1 else { fail("deleted body still visible"); return }
+                        capture("deleted")
+                        self.run("edit.undo")
+                        wait("undo delete", until: { self.state?.modelling?.timeline.contains(where: { $0.id == post }) == true && self.pending.isEmpty }) {
+                            guard self.state?.rows.filter({ $0.kind == "body" }).count == 2 else { fail("undo did not restore geometry"); return }
+                            editSketch()
+                        }
+                    }
+                }
+            }
+            func editFuture() {
+                self.moveHistory(to: 1)
+                wait("rollback", until: { self.state?.modelling?.activeFeatureCount == 1 && self.pending.isEmpty }) {
+                    item(post)?.sendActions(for: .primaryActionTriggered)
+                    wait("future feature editor", until: { self.modellingFeature == post && self.modellingInspector != nil }) {
+                        guard self.state?.modelling?.activeFeatureCount == 2 else { fail("future feature was not rolled forward"); return }
+                        capture("edit-future")
+                        self.closePanels()
+                        wait("cancel future edit", until: { !self.modellingEditing && self.pending.isEmpty }) { deletePost() }
+                    }
+                }
+            }
+            self.historyExpanded = true; self.featureHistory.setExpanded(true); self.relayoutPanels()
+            guard let control = item(base), control.configuration?.image != nil,
+                  !control.showsLargeContentViewer,
+                  !control.interactions.contains(where: { $0 is UILargeContentViewerInteraction }),
+                  control.menu == nil, !control.isContextMenuInteractionEnabled,
+                  control.gestureRecognizers?.contains(where: { $0 is UILongPressGestureRecognizer && $0.cancelsTouchesInView }) == true else {
+                fail("history icon/menu gesture configuration"); return
+            }
+            control.sendActions(for: .primaryActionTriggered)
+            wait("feature editor", until: { self.modellingFeature == base && self.modellingInspector != nil }) {
+                guard let form = self.modellingInspector, form.params["height"] != nil, let revision = self.state?.geometry_revision else { fail("original box inputs"); return }
+                capture("edit-box")
+                var params = form.params; params["height"] = .string("14 mm")
+                form.onApply?(params)
+                wait("apply feature", until: { self.state?.geometry_revision != revision && !self.modellingEditing && self.pending.isEmpty }) {
+                    guard self.state?.modelling?.timeline.map(\.id) == features.map(\.id) else { fail("editing replaced feature IDs"); return }
+                    capture("edited")
+                    editFuture()
+                }
+            }
+        }
+    }
+
+    /// Disposable engine fixture plus actual UIKit input/preview callbacks.
+    /// Layout variants below are synthetic UIKit sizes, not hardware gestures.
+    func checkNumericEntryOnDevice() {
+        let savedAppearance = appearance, savedCompact = compactInspector
+        compactInspector = true
+        var issues: [String] = []
+        var finished = false
+        func find(_ id: String, in root: UIView) -> UIView? {
+            if root.accessibilityIdentifier == id { return root }
+            return root.subviews.lazy.compactMap { find(id, in: $0) }.first
+        }
+        func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
+        func finish() {
+            guard !finished else { return }; finished = true
+            appearance = savedAppearance; compactInspector = savedCompact; applyAppearance()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let report: [String: Any] = ["issues": issues, "passed": issues.isEmpty,
+                    "coverage": "Real UIKit/engine; synthetic text, layout and Return; no physical Pencil/VoiceOver claim"]
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("numeric-entry-check.json"), options: .atomic)
+            } catch { issues.append("report: \(error)") }
+            print("Numeric entry check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+        }
+        func wait(_ name: String, _ ready: @escaping () -> Bool, attempts: Int = 100, then: @escaping () -> Void) {
+            guard !finished else { return }
+            if ready() { then(); return }
+            guard attempts > 0 else { issues.append("timeout: " + name); self.cancelNumeric(); finish(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(name, ready, attempts: attempts - 1, then: then) }
+        }
+        func capture(_ name: String) {
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                try image.pngData()?.write(to: directory.appendingPathComponent("numeric-entry-" + name + ".png"), options: .atomic)
+            } catch { issues.append("capture: \(error)") }
+        }
+        func layoutVariants() {
+            for size in [CGSize(width: 320, height: 300), CGSize(width: 380, height: 500), CGSize(width: 744, height: 1000)] {
+                for category in [UIContentSizeCategory.large, .accessibilityExtraExtraExtraLarge] {
+                    let controller = NumericValueEditorController(expression: "-2 mm + 10 mm", units: "mm", name: WorkspaceStyle.text("radius"))
+                    controller.traitOverrides.preferredContentSizeCategory = category
+                    controller.loadViewIfNeeded(); controller.view.frame = CGRect(origin: .zero, size: size)
+                    controller.view.setNeedsLayout(); controller.view.layoutIfNeeded()
+                    controller.editor.actionFooter.layoutIfNeeded()
+                    for button in [controller.editor.actionFooter.preview, controller.editor.actionFooter.apply, controller.editor.actionFooter.cancel] {
+                        let frame = button.convert(button.bounds, to: controller.view)
+                        check(frame.width >= 44 && frame.height >= 44 && controller.view.bounds.contains(frame), "unreachable action at \(size)/\(category.rawValue): \(frame)")
+                    }
+                    check(controller.editor.field.bounds.height >= 44, "compressed numeric field")
+                }
+            }
+        }
+        func inspectorEntry() {
+            let revision = self.state?.geometry_revision
+            self.beginModelling(operation: "solid.extrude", initialParams: [
+                "profile": .object(["faces": .array([.array([.number(10), .number(4), .number(35)])]), "face_body": .string("Post")]),
+                "distance": .string("10 mm")
+            ])
+            wait("modelling form", { self.modellingInspector != nil }) {
+                guard let form = self.modellingInspector,
+                      let descriptor = form.fields.first(where: { $0.kind == "expression" && InspectorPresentation.isDistance($0.key) }),
+                      let field = find("workspace-model-field-" + descriptor.key, in: form) as? UITextField else {
+                    issues.append("missing inspector expression field"); finish(); return
+                }
+                let raw = field.text
+                _ = field.becomeFirstResponder()
+                wait("inspector numeric popup", { self.modelValueEditor?.editor.panelKeypadVisible == true && self.modelValueEditor?.editor.field.isFirstResponder == true }) {
+                    guard let popup = self.modelValueEditor else { issues.append("missing inspector popup"); finish(); return }
+                    check(popup.parameter == descriptor.key && popup.editor.field.text == raw, "inspector opened the wrong raw expression")
+                    capture("inspector-entry")
+                    popup.editor.actionFooter.preview.sendActions(for: .touchUpInside)
+                    wait("inspector preview", { !popup.editor.busy }) {
+                        check(popup.editor.draft.isValidated && popup.editor.actionFooter.apply.isEnabled, "inspector raw expression failed native Preview")
+                        capture("inspector-preview")
+                        popup.editor.actionFooter.cancel.sendActions(for: .touchUpInside)
+                        wait("inspector cancel", { !self.modellingEditing && self.presentedViewController == nil }) {
+                            check(self.state?.geometry_revision == revision, "cancelling inspector entry changed geometry")
+                            layoutVariants(); finish()
+                        }
+                    }
+                }
+            }
+        }
+        func runStyle(_ style: Int) {
+            guard style < 3 else { inspectorEntry(); return }
+            appearance = style; applyAppearance()
+            let originalCanvas = self.canvas.frame
+            beginNumeric(source: browserButton)
+            wait("editor and embedded number pad", {
+                self.inlineNumericEditor?.editor.field.isFirstResponder == true &&
+                self.inlineNumericEditor?.editor.panelKeypadVisible == true &&
+                self.inlineNumericEditor?.viewIfLoaded?.window != nil
+            }) {
+                guard let controller = self.inlineNumericEditor else { issues.append("missing editor"); finish(); return }
+                let editor = controller.editor, field = editor.field
+                let token = self.numericToken
+                let revision = self.state?.geometry_revision
+                let expectedStyle = style == 1 ? UIUserInterfaceStyle.light : (style == 2 ? .dark : self.traitCollection.userInterfaceStyle)
+                check(controller.traitCollection.userInterfaceStyle == expectedStyle, "popover appearance \(style)")
+                check(find("workspace-embedded-keypad", in: controller.view)?.traitCollection.userInterfaceStyle == expectedStyle, "embedded pad appearance \(style)")
+                check((field.inputView?.bounds.height ?? 0) == 0 && field.inputAccessoryView == nil, "numeric entry opened a separate keyboard")
+                for key in ["7", "8", "9", "⌫", "4", "5", "6", "−", "1", "2", "3", "+", "±", "0", "."] {
+                    guard let button = find("workspace-keypad-" + key, in: controller.view) else { issues.append("missing embedded key " + key); continue }
+                    check(button.bounds.width >= 44 && button.bounds.height >= 44, "compressed embedded key " + key)
+                }
+                check(!editor.actionFooter.apply.isEnabled, "Apply enabled before Preview")
+                check(self.canvas.frame == originalCanvas, "embedded pad resized the Metal viewport")
+                func enter(_ text: String) { field.text = text; field.sendActions(for: .editingChanged) }
+                func selectedOffsets() -> [Int] {
+                    guard let range = field.selectedTextRange else { return [] }
+                    return [field.offset(from: field.beginningOfDocument, to: range.start), field.offset(from: field.beginningOfDocument, to: range.end)]
+                }
+                enter("6 + 6")
+                if let sign = find("workspace-keypad-±", in: controller.view) as? UIControl {
+                    sign.sendActions(for: .touchUpInside)
+                    check(field.text == "-(6 + 6)", "sign key did not negate the whole draft")
+                    sign.sendActions(for: .touchUpInside)
+                    check(field.text == "6 + 6", "sign key did not restore the raw draft")
+                }
+                editor.actionFooter.preview.sendActions(for: .touchUpInside)
+                enter("2 +")
+                if let start = field.position(from: field.beginningOfDocument, offset: 1),
+                   let end = field.position(from: field.beginningOfDocument, offset: 3) { field.selectedTextRange = field.textRange(from: start, to: end) }
+                let selection = selectedOffsets()
+                wait("stale preview", { !editor.busy }) {
+                    check(field.text == "2 +" && field.isFirstResponder && selectedOffsets() == selection, "preview lost draft/caret/focus")
+                    check(!editor.draft.isValidated && !editor.actionFooter.apply.isEnabled, "stale preview enabled Apply")
+                    capture("stale-\(style)")
+                    editor.actionFooter.preview.sendActions(for: .touchUpInside)
+                    wait("invalid expression", { !editor.busy }) {
+                        check(field.text == "2 +" && !editor.draft.isValidated && !editor.message.isHidden, "invalid expression lost text or feedback")
+                        capture("invalid-\(style)")
+                        enter("-2 mm + 10 mm")
+                        editor.actionFooter.preview.sendActions(for: .touchUpInside)
+                        wait("units and negative terms", { !editor.busy }) {
+                            check(editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "valid units/negative terms did not validate")
+                            check(field.text == "-2 mm + 10 mm" && field.isFirstResponder, "valid preview changed expression/focus")
+                            let frame = editor.actionFooter.convert(editor.actionFooter.bounds, to: controller.view)
+                            check(controller.view.bounds.contains(frame), "keyboard covered numeric actions")
+                            capture("valid-\(style)")
+                            if ProcessInfo.processInfo.arguments.contains("--numeric-entry-hold-\(style)") {
+                                print("Numeric entry READY for physical display inspection: style \(style), disposable preview, no library design")
+                                return
+                            }
+                            if let mode = find("workspace-expression-keyboard", in: controller.view) as? UIControl {
+                                let text = field.text, selection = selectedOffsets()
+                                mode.sendActions(for: .touchUpInside)
+                                check(field.inputView == nil && field.text == text && field.isFirstResponder && selectedOffsets() == selection, "ABC switch lost text/caret/focus")
+                                if let accessory = field.inputAccessoryView,
+                                   let numeric = find("workspace-expression-keyboard", in: accessory) as? UIControl { numeric.sendActions(for: .touchUpInside) }
+                                check(editor.panelKeypadVisible && field.inputView != nil && field.text == text && selectedOffsets() == selection, "123 switch lost text/caret")
+                            } else { issues.append("missing keyboard switch") }
+                            _ = editor.textFieldShouldReturn(field)
+                            check(!field.isFirstResponder && self.numericToken == token && self.state?.geometry_revision == revision, "Return committed or cancelled geometry")
+                            field.becomeFirstResponder()
+                            if let done = find("workspace-expression-done", in: controller.view) as? UIControl { done.sendActions(for: .touchUpInside) }
+                            check(!editor.panelKeypadVisible, "Done left the embedded pad open")
+                            check(!field.isFirstResponder && self.numericToken == token && self.state?.geometry_revision == revision, "Done committed or cancelled geometry")
+                            editor.actionFooter.cancel.sendActions(for: .touchUpInside)
+                            wait("cancel", { self.numericToken == nil && self.inlineNumericEditor == nil && self.presentedViewController == nil }) {
+                                check(self.state?.geometry_revision == revision, "Cancel changed authoritative geometry")
+                                runStyle(style + 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        session.command("select.entity", params: ["entity": ["type": "body", "name": "Post"]]) { result in
+            guard case .success = result else { issues.append("fixture selection failed"); finish(); return }
+            wait("radius selection", { self.state?.radius != nil }) { runStyle(0) }
+        }
+    }
+
     /// Actual UIKit regression for controls reparented between text/floating
     /// layouts. Foundation rectangle tests cannot observe retained scroll state.
     func checkChromeOnDevice() {
         struct Report: Encodable {
             let compact: Bool
             let appearance: Int
+            let useBottomSafeArea: Bool
             let issues: [String]
             let frames: [String: [Double]]
         }
         let savedCompact = compactChrome
         let savedAppearance = appearance
+        let savedBottomSafeArea = useBottomSafeArea
         let expected = generation
-        let variants = [(false, 1), (true, 1), (false, 2), (true, 2)]
+        let variants = [false, true].flatMap { bottom in
+            [(false, 1, bottom), (true, 1, bottom), (false, 2, bottom), (true, 2, bottom)]
+        }
         var reports: [Report] = []
         func step(_ index: Int) {
             guard active, generation == expected else { return }
@@ -2246,6 +4387,7 @@ private extension FoundationController {
                 let restoreDark = ProcessInfo.processInfo.arguments.contains("--chrome-check-restore-dark")
                 compactChrome = restoreDark ? true : savedCompact
                 appearance = restoreDark ? 2 : savedAppearance
+                useBottomSafeArea = savedBottomSafeArea
                 if restoreDark {
                     UserDefaults.standard.set(true, forKey: "SolidCraft.workspace.compactChrome")
                     UserDefaults.standard.set(2, forKey: "SolidCraft.workspace.appearance")
@@ -2261,7 +4403,7 @@ private extension FoundationController {
                 return
             }
             canvas.cancelInput()
-            compactChrome = variants[index].0; appearance = variants[index].1
+            compactChrome = variants[index].0; appearance = variants[index].1; useBottomSafeArea = variants[index].2
             applyAppearance(); configureChrome(); updateSubtitle(); updateAvailability(); rebuildMenus()
             view.layoutIfNeeded()
             // Check after UIKit completes the reparenting/layout turn, rather
@@ -2271,24 +4413,39 @@ private extension FoundationController {
                 self.view.layoutIfNeeded()
                 var issues: [String] = []
                 var frames: [String: [Double]] = [:]
+                let bounds = self.workspace.bounds
+                let safe = self.workspace.convert(self.view.safeAreaLayoutGuide.layoutFrame, from: self.view)
+                let chrome = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: bounds, useBottomSafeArea: self.useBottomSafeArea)
+                for (name, frame) in [("safeArea", safe), ("chrome", chrome), ("header", self.top.frame), ("status", self.status.frame), ("history", self.featureHistory.frame)] {
+                    frames[name] = [frame.minX, frame.minY, frame.width, frame.height].map(Double.init)
+                }
+                if abs(self.featureHistory.frame.maxY - (chrome.maxY - 8)) > 0.5 {
+                    issues.append("history does not use the available bottom space")
+                }
                 if self.compactChrome {
-                    let bounds = self.workspace.bounds
                     let canvas = self.canvas.frame
                     frames["canvas"] = [canvas.minX, canvas.minY, canvas.width, canvas.height].map(Double.init)
                     frames["workspace"] = [bounds.minX, bounds.minY, bounds.width, bounds.height].map(Double.init)
                     if canvas.minY != bounds.minY || canvas.maxY != bounds.maxY {
                         issues.append("viewport does not fill top/bottom system-indicator space")
                     }
-                    let safe = self.workspace.convert(self.view.safeAreaLayoutGuide.layoutFrame, from: self.view)
-                    if !safe.contains(self.top.frame) || !safe.contains(self.status.frame) {
-                        issues.append("floating chrome escaped the safe area")
+                    let headerBounds = self.topStripHeaderEnabled ? bounds : safe
+                    if !headerBounds.contains(self.top.frame) || !chrome.contains(self.status.frame) {
+                        issues.append("floating chrome escaped its available bounds")
+                    }
+                    if self.top.frame != self.layout?.topBar {
+                        issues.append("document header does not match its resolved placement")
+                    }
+                    if self.top.frame.minY < safe.minY &&
+                        (self.top.frame.minX < bounds.minX + 240 || self.top.frame.maxX > bounds.maxX - 240) {
+                        issues.append("raised document header overlaps the system-indicator margins")
                     }
                     for y in [bounds.minY + 1, bounds.maxY - 1] {
                         if self.workspace.hitTest(CGPoint(x: bounds.midX, y: y), with: nil) !== self.canvas {
                             issues.append("viewport edge lost its native input surface")
                         }
                     }
-                    for (name, button, host) in [("document", self.documentActionsButton, self.topScroll),
+                    for (name, button, host) in [("document", self.documentActionsButton, self.top),
                                                   ("view", self.viewButton, self.navigationScroll),
                                                   ("fit", self.fitButton, self.navigationScroll),
                                                   ("projection", self.projectionButton, self.navigationScroll),
@@ -2299,10 +4456,28 @@ private extension FoundationController {
                         if visible.width < 43 || visible.height < 43 || button.configuration?.image == nil {
                             issues.append(name + " lost its visible icon/touch region")
                         }
+                        if button.isEnabled {
+                            for x in [button.bounds.minX + 2, button.bounds.midX, button.bounds.maxX - 2] {
+                                for y in [button.bounds.minY + 2, button.bounds.midY, button.bounds.maxY - 2] {
+                                    let point = button.convert(CGPoint(x: x, y: y), to: self.view.window)
+                                    let hit = self.view.window?.hitTest(point, with: nil)
+                                    if hit !== button && hit?.isDescendant(of: button) != true {
+                                        issues.append(name + " has an obstructed touch region")
+                                    }
+                                }
+                            }
+                        }
                     }
                     if self.browserButton.frame != self.layout?.browserAccess { issues.append("floating browser frame was changed by Auto Layout") }
+                    do {
+                        let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                        let capture = UIGraphicsImageRenderer(bounds: bounds).image { _ in
+                            self.view.drawHierarchy(in: self.view.bounds, afterScreenUpdates: true)
+                        }
+                        if let png = capture.pngData() { try png.write(to: directory.appendingPathComponent("workspace-chrome-\(index).png"), options: .atomic) }
+                    } catch { issues.append("chrome capture failed: \(error)") }
                 }
-                reports.append(Report(compact: self.compactChrome, appearance: self.appearance, issues: issues, frames: frames))
+                reports.append(Report(compact: self.compactChrome, appearance: self.appearance, useBottomSafeArea: self.useBottomSafeArea, issues: issues, frames: frames))
                 step(index + 1)
             }
         }
@@ -2330,6 +4505,14 @@ private extension FoundationController {
         assemblyCheckWrite("START actual UIKit controller / native CAD / Metal; synthetic controller actions, no physical Pencil claim")
         assemblyCheckWrite("LOG \(assemblyCheckLog?.path ?? "unavailable")")
         assemblyCheckArmWatchdog()
+        if ProcessInfo.processInfo.arguments.contains("--compact-inspector-check") {
+            checkCompactInspectorOnDevice()
+            return
+        }
+        if ProcessInfo.processInfo.arguments.contains("--face-extrude-check") {
+            checkFaceExtrusionOnDevice()
+            return
+        }
         // Only an explicit DEBUG launch flag replaces the disposable launch
         // fixture. The save path is unique and cannot overwrite a user's design.
         let commands: [(String, [String: Any])] = [
@@ -2346,6 +4529,225 @@ private extension FoundationController {
             ("solid.box", ["length": 110, "width": 4, "height": 3, "corner": [-5, -32, -3], "body_name": "Fixed guide"])
         ]
         assemblyCheckCommands(commands, index: 0) { [weak self] in self?.assemblyCheckStep(0) }
+    }
+
+    /// Disposable engine fixture, actual UIKit layout/actions and native captures.
+    /// No project-library design or saved preference is changed by this driver.
+    func checkCompactInspectorOnDevice() {
+        let savedCompact = compactInspector, savedAppearance = appearance
+        let fixture: [String: Any] = ["profile": ["faces": [[10, 10, 20]], "face_body": "Inspector stock"], "distance": "5 mm"]
+        func find(_ id: String, in root: UIView) -> UIView? {
+            if root.accessibilityIdentifier == id { return root }
+            return root.subviews.lazy.compactMap { find(id, in: $0) }.first
+        }
+        func capture(_ name: String) {
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+                if let data = image.pngData() { try data.write(to: directory.appendingPathComponent("compact-inspector-" + name + ".png"), options: .atomic) }
+            } catch { assemblyCheckFail("inspector capture: \(error)") }
+        }
+        func verifyFooter(_ stage: String) -> Bool {
+            view.layoutIfNeeded()
+            for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+                guard let button = find(id, in: inspectorPanel), !button.isDescendant(of: inspectorScroll) else {
+                    assemblyCheckFail("\(stage): action still scrolls"); return false
+                }
+                let frame = button.convert(button.bounds, to: workspace)
+                guard inspectorPanel.frame.contains(frame), frame.width >= 44, frame.height >= 44,
+                      frame.maxY <= (keyboardTop.map { workspace.convert(CGPoint(x: 0, y: $0), from: view).y } ?? workspace.bounds.maxY) else {
+                    assemblyCheckFail("\(stage): action clipped or below keyboard: \(frame)"); return false
+                }
+            }
+            assemblyCheckWrite("PASS \(stage): persistent 44pt actions inside panel and above keyboard")
+            return true
+        }
+        func largeTextLayouts(_ model: ModellingState) -> Bool {
+            for width: CGFloat in [320, 380] {
+                let host = UIViewController()
+                host.traitOverrides.preferredContentSizeCategory = .accessibilityExtraExtraExtraLarge
+                host.loadViewIfNeeded(); host.view.frame = CGRect(x: 0, y: 0, width: width, height: 600)
+                let panel = WorkspacePanel(title: "Extrude", onClose: {})
+                let form = ModellingInspector(state: model)
+                panel.frame = host.view.bounds; host.view.addSubview(panel)
+                panel.setFooter(form.footer)
+                let scroll = UIScrollView(); panel.content.addSubview(scroll); scroll.addSubview(form)
+                form.translatesAutoresizingMaskIntoConstraints = false
+                NSLayoutConstraint.activate([
+                    form.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
+                    form.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -16),
+                    form.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
+                    form.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -12),
+                    form.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32)
+                ])
+                host.view.layoutIfNeeded(); scroll.frame = panel.content.bounds
+                panel.setNeedsLayout(); panel.layoutIfNeeded(); form.footer.layoutIfNeeded()
+                for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+                    guard let action = find(id, in: panel) else { assemblyCheckFail("large-text action missing"); return false }
+                    let frame = action.convert(action.bounds, to: panel)
+                    guard panel.bounds.contains(frame), frame.width >= 44, frame.height >= 44 else {
+                        assemblyCheckFail("large-text footer clipped at width \(width): \(frame)"); return false
+                    }
+                }
+            }
+            assemblyCheckWrite("PASS synthetic UIKit inspector layouts at widths 320/380 and accessibility XXXL; actions retained")
+            return true
+        }
+        func legacy() {
+            assemblyCheckCancelled = { [weak self] _ in
+                guard let self else { return }
+                self.compactInspector = false
+                self.assemblyCheckBegin("solid.extrude", params: fixture) { _ in
+                    guard let form = self.modellingInspector, !form.compact, form.footer.isDescendant(of: self.inspectorScroll) else {
+                        self.assemblyCheckFail("previous inspector preference"); return
+                    }
+                    self.view.layoutIfNeeded(); capture("legacy")
+                    self.assemblyCheckWrite("PASS previous inspector: scrolling footer and original field order retained")
+                    self.assemblyCheckCancelled = { _ in
+                        self.compactInspector = savedCompact; self.appearance = savedAppearance; self.applyAppearance()
+                        self.assemblyCheckWrite("PASS complete; no library project changed; hardware Pencil/VoiceOver unverified")
+                        self.assemblyCheckRunning = false; self.assemblyCheckTicket &+= 1
+                        self.assemblyCheckSignal?.cancel(); self.assemblyCheckSignal = nil
+                    }
+                    self.cancelModelling()
+                }
+            }
+            cancelModelling()
+        }
+        compactInspector = true; appearance = 2; applyAppearance()
+        let commands: [(String, [String: Any])] = [
+            ("file.new", ["name": "Compact inspector runtime"]),
+            ("solid.box", ["length": 40, "width": 30, "height": 20, "body_name": "Inspector stock"]),
+            ("view.isometric", [:]), ("view.fit", [:])
+        ]
+        assemblyCheckCommands(commands, index: 0) { [weak self] in
+            guard let self else { return }
+            self.view.layoutIfNeeded()
+            let canvasFrame = self.canvas.frame
+            self.assemblyCheckBegin("solid.extrude", params: fixture) { _ in
+                guard let form = self.modellingInspector,
+                      let apply = find("workspace-model-apply", in: self.inspectorPanel) as? UIButton,
+                      !apply.isEnabled, verifyFooter("initial") else { self.assemblyCheckFail("unvalidated Apply enabled"); return }
+                self.view.layoutIfNeeded()
+                guard self.canvas.frame == canvasFrame else { self.assemblyCheckFail("opening inspector resized Metal canvas"); return }
+                for id in ["workspace-model-field-profile", "workspace-model-field-distance", "workspace-model-inline-operation-0", "workspace-model-inline-operation-3"] {
+                    guard let input = find(id, in: self.inspectorPanel), self.inspectorScroll.bounds.contains(input.convert(input.bounds, to: self.inspectorScroll)) else {
+                        self.assemblyCheckFail("primary input requires scrolling: \(id)"); return
+                    }
+                }
+                self.assemblyCheckWrite("PASS primary source, distance and boolean choices visible without scrolling; canvas unchanged")
+                guard let summary = find("workspace-model-summary-profile", in: form) as? UILabel, summary.text == "Inspector stock" else {
+                    self.assemblyCheckFail("reference summary exposed command JSON or invented a face label"); return
+                }
+                self.assemblyCheckEvaluate(commit: false) { model in
+                    guard apply.isEnabled else { self.assemblyCheckFail("matching preview did not enable Apply"); return }
+                    self.assemblyCheckWaitForFrame(model, preview: true, stage: "compact-inspector") {
+                        capture("dark")
+                        self.appearance = 1; self.applyAppearance(); self.view.layoutIfNeeded(); capture("light")
+                        for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+                            guard let button = find(id, in: self.inspectorPanel) as? UIButton, button.configuration?.image == nil else {
+                                self.assemblyCheckFail("appearance refresh restored footer artwork/wrapping"); return
+                            }
+                        }
+                        self.appearance = 2; self.applyAppearance()
+                        guard let distance = find("workspace-model-field-distance", in: form) as? UITextField else { self.assemblyCheckFail("distance field"); return }
+                        distance.text = "5 mm +"; distance.sendActions(for: .editingChanged)
+                        guard !apply.isEnabled, form.params["distance"] == .string("5 mm +") else { self.assemblyCheckFail("edited raw expression reused preview"); return }
+                        form.beginContextRefresh()
+                        guard !apply.isEnabled else { self.assemblyCheckFail("reference refresh reused preview"); return }
+                        form.contextRefreshDiscarded()
+                        self.assemblyCheckWrite("PASS raw edit/reference refresh invalidate Apply")
+                        let popupEntry = form.onEditValue
+                        form.onEditValue = nil // Exercise the retained direct/full-keyboard field path.
+                        guard distance.becomeFirstResponder() else { self.assemblyCheckFail("distance did not accept keyboard focus"); return }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                            guard form.textEntryActive, let keyboard = self.keyboardTop else {
+                                self.assemblyCheckFail("keyboard focus or frame notification missing"); return
+                            }
+                            self.assemblyCheckWrite("PASS actual field focus; observed keyboard boundary y=\(keyboard)")
+                            guard verifyFooter("keyboard") else { return }
+                            capture("keyboard"); form.endEditing(true); form.onEditValue = popupEntry
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                form.editExpression("distance", expression: "5 mm")
+                                guard let subtract = find("workspace-model-inline-operation-3", in: form) as? UIButton else {
+                                    self.assemblyCheckFail("Subtract button missing"); return
+                                }
+                                self.assemblyCheckEvaluated = { result, commit in
+                                    guard !commit, case .success(let next) = result, next.valid == true,
+                                          next.params?["operation"] == .string("cut"), apply.isEnabled else {
+                                        self.assemblyCheckFail("operation change did not validate the current Subtract draft"); return
+                                    }
+                                    self.assemblyCheckWaitForFrame(next, preview: true, stage: "compact-inspector-subtract") {
+                                        capture("subtract")
+                                        self.assemblyCheckWrite("PASS real Subtract action previews with engine-owned direction and explicit override")
+                                        guard largeTextLayouts(next) else { return }
+                                        legacy()
+                                    }
+                                }
+                                subtract.sendActions(for: .touchUpInside)
+                                guard !apply.isEnabled, form.params["_auto_subtract"] == .bool(false) else {
+                                    self.assemblyCheckFail("operation change reused validation or dropped explicit override"); return
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func checkFaceExtrusionOnDevice() {
+        let commands: [(String, [String: Any])] = [
+            ("file.new", ["name": "Face extrusion inline runtime"]),
+            ("solid.box", ["length": 40, "width": 30, "height": 20, "body_name": "Inline stock"]),
+            ("view.isometric", [:]), ("view.fit", [:])
+        ]
+        assemblyCheckCommands(commands, index: 0) { [weak self] in
+            self?.assemblyCheckBegin("solid.extrude", params: ["profile": ["faces": [[10, 10, 20]], "face_body": "Inline stock"], "distance": "5 mm"]) { [weak self] _ in
+                self?.assemblyCheckEvaluate(commit: false) { [weak self] model in
+                    self?.assemblyCheckWaitForFrame(model, preview: true, stage: "face-inline-new") { [weak self] in self?.checkFaceSubtractButton() }
+                }
+            }
+        }
+    }
+
+    func checkFaceSubtractButton() {
+        func button(in view: UIView) -> UIButton? {
+            if view.accessibilityIdentifier == "workspace-model-inline-operation-3" { return view as? UIButton }
+            return view.subviews.lazy.compactMap { button(in: $0) }.first
+        }
+        guard let form = modellingInspector, let subtract = button(in: form), subtract.menu == nil, subtract.isEnabled else {
+            assemblyCheckFail("Subtract is not an inline button"); return
+        }
+        assemblyCheckEvaluated = { [weak self] result, commit in
+            guard let self else { return }
+            guard case .success(let model) = result, !commit, model.valid == true,
+                  model.params?["operation"] == .string("cut"), model.params?["direction"] == .string("negative") else {
+                self.assemblyCheckFail("Tapping Subtract did not automatically preview an inward cut"); return
+            }
+            self.assemblyCheckWrite("PASS inline Subtract button automatically previewed a negative 5 mm cut")
+            self.assemblyCheckWaitForFrame(model, preview: true, stage: "face-inline-subtract") { [weak self] in
+                guard let self else { return }
+                self.inspectorOpen = false; self.relayoutPanels(); self.editModelValue()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    guard let self, let editor = self.modelValueEditor, button(in: editor.view) != nil else {
+                        self?.assemblyCheckFail("On-model distance editor has no inline Subtract button"); return
+                    }
+                    self.assemblyCheckWaitForFrame(model, preview: true, stage: "face-inline-distance-editor") { [weak self, weak editor] in
+                        guard let self, let editor else { self?.assemblyCheckFail("Inline editor closed before Apply"); return }
+                        self.assemblyCheckEvaluated = { [weak self] result, commit in
+                            guard let self else { return }
+                            guard case .success = result, commit else { self.assemblyCheckFail("Inline Subtract Apply failed"); return }
+                            self.assemblyCheckWrite("PASS inline face Subtract Apply; production callbacks and Metal frames")
+                            self.assemblyCheckRunning = false; self.assemblyCheckTicket &+= 1
+                            self.assemblyCheckSignal?.cancel(); self.assemblyCheckSignal = nil
+                        }
+                        editor.editor.onApply?(editor.editor.field.text ?? "")
+                    }
+                }
+            }
+        }
+        subtract.sendActions(for: .touchUpInside)
     }
 
     func assemblyCheckWrite(_ message: String) {
@@ -2638,6 +5040,6 @@ private extension FoundationController {
 }
 #endif
 
-private enum SketchText {
+enum SketchText {
     static func text(_ key: String) -> String { NativeText.value("ui.ipados.sketch." + key) }
 }

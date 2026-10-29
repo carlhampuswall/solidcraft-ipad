@@ -24,7 +24,11 @@ final class MetalCanvas: UIView, UIGestureRecognizerDelegate, UIPencilInteractio
     override class var layerClass: AnyClass { CAMetalLayer.self }
     var metalLayer: CAMetalLayer? { layer as? CAMetalLayer }
     var onResize: (() -> Void)?
+    var onAppearanceChange: (() -> Void)?
     var onInput: ((InputSample) -> Void)?
+    var dimensionAt: ((CGPoint) -> String?)?
+    var onDimensionTap: ((String) -> Void)?
+    private var dimensionTaps = DimensionTapTracker()
     private var buttons: [ObjectIdentifier: UInt8] = [:]
     private var identities: [ObjectIdentifier: UInt64] = [:]
     private var nextIdentity: UInt64 = 1
@@ -53,6 +57,9 @@ final class MetalCanvas: UIView, UIGestureRecognizerDelegate, UIPencilInteractio
         metalLayer?.pixelFormat = .bgra8Unorm
         metalLayer?.framebufferOnly = true
         metalLayer?.isOpaque = true
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (canvas: MetalCanvas, _: UITraitCollection) in
+            canvas.onAppearanceChange?()
+        }
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:)))
         hover.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         hover.cancelsTouchesInView = false
@@ -187,10 +194,27 @@ final class MetalCanvas: UIView, UIGestureRecognizerDelegate, UIPencilInteractio
         sample.camera_epoch = cameraEpoch
         sample.document_id = documentID
         sample.display_preview = displayingPreview
+        var dimension: String?
+        if let documentID, let geometryRevision, let viewportEpoch, let cameraEpoch {
+            let context = DimensionTapTracker.Context(document: documentID, geometry: geometryRevision, viewport: viewportEpoch, camera: cameraEpoch)
+            let point = CGPoint(x: sample.x_points, y: sample.y_points)
+            switch sample.phase {
+            case .began:
+                let target = sample.button == 0 && !sample.shift ? dimensionAt?(point) : nil
+                sample.sketch_annotation = target
+                dimensionTaps.begin(id: sample.id, point: point, target: target, context: context)
+            case .moved: dimensionTaps.move(id: sample.id, point: point)
+            case .ended, .cancelled:
+                dimension = dimensionTaps.end(id: sample.id, point: point, context: context, cancelled: sample.phase == .cancelled)
+            default: break
+            }
+        }
         onInput?(sample)
+        if let dimension { onDimensionTap?(dimension) }
     }
 
     func cancelInput() {
+        dimensionTaps.cancel()
         resetHistoryGestures()
         fingerOrigins.removeAll()
         identities.removeAll(); buttons.removeAll()
@@ -201,6 +225,7 @@ final class MetalCanvas: UIView, UIGestureRecognizerDelegate, UIPencilInteractio
     override func didMoveToWindow() {
         super.didMoveToWindow()
         if window == nil { cancelInput() }
+        else { onAppearanceChange?() }
     }
 
     @objc private func hovered(_ recognizer: UIHoverGestureRecognizer) {

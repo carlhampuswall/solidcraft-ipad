@@ -1,0 +1,27 @@
+{
+  "en": {
+    "ui.ipados.workspace.drag_continuous": "Continuous",
+    "ui.ipados.workspace.drag_resolution": "Drag resolution",
+    "ui.ipados.workspace.drag_resolution_invalid": "Use zero for continuous movement, or a drag resolution from 0.001 to 10 mm."
+  },
+  "de": {
+    "ui.ipados.workspace.drag_continuous": "Stufenlos",
+    "ui.ipados.workspace.drag_resolution": "Schrittweite beim Ziehen",
+    "ui.ipados.workspace.drag_resolution_invalid": "Für stufenlose Bewegung null oder eine Schrittweite von 0,001 bis 10 mm verwenden."
+  },
+  "ja": {
+    "ui.ipados.workspace.drag_continuous": "連続",
+    "ui.ipados.workspace.drag_resolution": "ドラッグの刻み幅",
+    "ui.ipados.workspace.drag_resolution_invalid": "連続移動には 0、刻み幅には 0.001～10 mm を指定してください。"
+  },
+  "ko": {
+    "ui.ipados.workspace.drag_continuous": "연속",
+    "ui.ipados.workspace.drag_resolution": "드래그 간격",
+    "ui.ipados.workspace.drag_resolution_invalid": "연속 이동에는 0을, 드래그 간격에는 0.001~10 mm를 사용하세요."
+  },
+  "zh": {
+    "ui.ipados.workspace.drag_continuous": "连续",
+    "ui.ipados.workspace.drag_resolution": "拖动步长",
+    "ui.ipados.workspace.drag_resolution_invalid": "使用 0 进行连续移动，或使用 0.001 至 10 mm 的拖动步长。"
+  }
+}

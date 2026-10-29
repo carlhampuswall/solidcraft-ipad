@@ -80,17 +80,25 @@ impl Viewport {
                     Some(Value::Bool(value)) => Some(*value),
                     _ => return Err(error("bad_params", "ui.ipados.sketch.reference_visibility_boolean")),
                 };
-                if let Some(item) = params.get("item") {
+                let range = if let Some(group) = params.get("group") {
+                    if params.get("item").is_some() {
+                        return Err(error("bad_params", "ui.ipados.sketch.reference_unknown"));
+                    }
+                    match group.as_str() {
+                        Some("axes") => 1..4,
+                        Some("planes") => 4..7,
+                        _ => return Err(error("bad_params", "ui.ipados.sketch.reference_unknown")),
+                    }
+                } else if let Some(item) = params.get("item") {
                     let index = item
                         .as_str()
                         .and_then(|name| ITEMS.iter().position(|item| *item == name))
                         .ok_or_else(|| error("bad_params", "ui.ipados.sketch.reference_unknown"))?;
-                    if let Some(value) = self.origin.overrides.get_mut(index) {
-                        *value = visible;
-                    }
+                    index..index + 1
                 } else {
-                    self.origin.overrides.fill(visible);
-                }
+                    0..ITEMS.len()
+                };
+                self.origin.overrides.get_mut(range).ok_or_else(|| error("bad_params", "ui.ipados.sketch.reference_unknown"))?.fill(visible);
                 self.origin.refresh_visibility();
                 self.selection.retain(|s| match s {
                     Sel::Plane { .. } | Sel::Axis { .. } => false,

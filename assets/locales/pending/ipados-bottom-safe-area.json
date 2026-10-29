@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.workspace.use_bottom_safe_area": "Extend UI to bottom edge",
+    "ui.ipados.workspace.use_bottom_safe_area_help": "Use the bottom safe area for controls. Turn off to restore the previous spacing."
+  },
+  "de": {
+    "ui.ipados.workspace.use_bottom_safe_area": "Bedienelemente bis zum unteren Rand",
+    "ui.ipados.workspace.use_bottom_safe_area_help": "Den unteren sicheren Bereich für Bedienelemente nutzen. Deaktivieren, um den bisherigen Abstand wiederherzustellen."
+  },
+  "ja": {
+    "ui.ipados.workspace.use_bottom_safe_area": "UIを画面下端まで広げる",
+    "ui.ipados.workspace.use_bottom_safe_area_help": "下部のセーフエリアにも操作ボタンを配置します。オフにすると以前の余白に戻ります。"
+  },
+  "ko": {
+    "ui.ipados.workspace.use_bottom_safe_area": "UI를 화면 하단까지 확장",
+    "ui.ipados.workspace.use_bottom_safe_area_help": "하단 안전 영역에도 컨트롤을 배치합니다. 끄면 이전 간격으로 돌아갑니다."
+  },
+  "zh": {
+    "ui.ipados.workspace.use_bottom_safe_area": "将界面延伸至底部边缘",
+    "ui.ipados.workspace.use_bottom_safe_area_help": "在底部安全区域内放置控件。关闭后恢复原来的间距。"
+  }
+}

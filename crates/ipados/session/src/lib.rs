@@ -4,7 +4,9 @@
 
 mod assembly;
 mod assembly_references;
+mod browser;
 mod editing;
+mod feature_selection;
 mod input;
 mod modelling;
 mod origin;
@@ -75,6 +77,9 @@ pub struct NativeMeshInstance {
 
 pub struct SceneSnapshot {
     pub scene: Arc<Scene>,
+    /// Display-only operation colours and material context. Picking, volume and
+    /// accepted documents continue to use the evaluated result above.
+    pub preview_scene: Option<Arc<PreviewScene>>,
     pub picks: PickScene,
     pub bounds: Aabb3,
     pub document_id: String,
@@ -85,6 +90,7 @@ pub struct SceneSnapshot {
     pub volume_mm3: f64,
     pub radius_handle: Option<RadiusHandle>,
     pub feature_ids: Vec<u64>,
+    pub(crate) feature_feedback: std::collections::BTreeMap<u64, feature_selection::FeatureFeedback>,
     pub sketch: Option<SketchSnapshot>,
     pub sketch_plane: Option<solidcraft_engine::geom::Plane>,
     pub construction_planes: Vec<(String, solidcraft_engine::geom::Plane)>,
@@ -92,6 +98,12 @@ pub struct SceneSnapshot {
     pub occurrences: Vec<Vec<u64>>,
     pub joint_frames: Vec<solidcraft_engine::doc::Mat>,
     pub instances: Vec<NativeMeshInstance>,
+}
+
+pub struct PreviewScene {
+    pub scene: Arc<Scene>,
+    /// Empty names are non-pickable preview tool/context meshes.
+    pub names: Vec<String>,
 }
 
 /// The only mutable CAD document/session owner. Camera/input live in `Viewport` so
@@ -270,6 +282,7 @@ impl SessionAdapter {
                 .collect(),
             radius_handle: self.radius_handle(),
             feature_ids: self.session.doc.features.iter().map(|f| f.id).collect(),
+            feature_feedback: self.feature_feedback(&world),
             sketch: self.sketch_snapshot(),
             sketch_plane: view::open_sketch_plane(&self.session),
             construction_planes: world
@@ -283,6 +296,7 @@ impl SessionAdapter {
                 })
                 .collect(),
             body_count: scene.meshes.len(),
+            preview_scene: None,
             scene: Arc::new(scene),
             picks,
             bounds,

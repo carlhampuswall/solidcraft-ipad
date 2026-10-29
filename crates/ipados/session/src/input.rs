@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use solidcraft_engine::{Sel, geom::Vec3};
 
-use crate::{AdapterError, RadiusHandle, SceneSnapshot, ToolEvent, ToolOperation, ToolPhase, ToolWork, Viewport, error};
+use crate::{AdapterError, PreparedTool, RadiusHandle, SceneSnapshot, ToolEvent, ToolOperation, ToolPhase, ToolWork, Viewport, error};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -62,6 +62,9 @@ pub struct InputEvent {
     pub geometry_revision: Option<u64>,
     #[serde(default)]
     pub consumed: bool,
+    /// Native label bounds can exceed the fallback point-based hit target.
+    #[serde(default)]
+    pub sketch_annotation: Option<String>,
     #[serde(default)]
     pub shift: bool,
     /// 0 primary, 1 secondary orbit, 2 middle pan.
@@ -79,6 +82,7 @@ enum Owner {
     Tool,
     SketchTool,
     Pointer,
+    ModelDismiss,
     Suppressed,
 }
 struct Contact {
@@ -91,6 +95,7 @@ struct Contact {
     moved: bool,
     button: u8,
     revision: Option<u64>,
+    model_token: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -108,6 +113,7 @@ struct Drag {
     state: EditState,
     anchor: Vec3,
     anchor_radius: f64,
+    preview_version: Option<u64>,
 }
 
 #[derive(Default)]
@@ -125,6 +131,7 @@ pub(crate) struct Contacts {
     pub tool_event: Option<ToolEvent>,
     pub tool_revision: u64,
     pub radius_tool: bool,
+    dismissed_model_token: Option<u64>,
 }
 
 impl Contacts {
@@ -163,8 +170,11 @@ impl Contacts {
         self.preview = None;
         // Camera movement invalidates a stationary selection candidate as well:
         // lifting later must not pick whatever the camera moved underneath it.
-        for c in self.items.values_mut().filter(|c| c.owner == Owner::PencilCandidate) {
-            c.moved = true;
+        for c in self.items.values_mut() {
+            c.model_token = None;
+            if matches!(c.owner, Owner::PencilCandidate | Owner::ModelDismiss) {
+                c.moved = true;
+            }
         }
         if let Some(d) = &mut self.drag {
             if d.state == EditState::Committing {
@@ -173,6 +183,7 @@ impl Contacts {
             }
             d.state = EditState::Suspended;
             d.work.version = d.work.version.saturating_add(1);
+            d.preview_version = Some(d.work.version);
             self.pending = None;
             self.event(ToolPhase::Suspend, None);
         }
@@ -192,7 +203,7 @@ impl Contacts {
             "navigation":self.navigating,"edit":self.drag.as_ref().map(|d|d.state),
             "radius":self.drag.as_ref().and_then(|d|match &d.work.operation {ToolOperation::Radius{radius,..}=>Some(*radius),_=>None}),"tool_pending":self.pending.is_some(),
             "tool":if self.sketch.active() {self.sketch.tool.as_str()} else if self.radius_tool {"post_radius"} else {"select"},"tool_event":self.tool_event,
-            "sketch":self.sketch.diagnostic()})
+            "sketch":self.sketch.diagnostic(),"dismissed_model_token":self.dismissed_model_token})
     }
 }
 
@@ -208,6 +219,7 @@ impl InputEvent {
             || self.altitude.is_some_and(|a| !a.is_finite() || !(0.0..=std::f64::consts::FRAC_PI_2).contains(&a))
             || self.azimuth.is_some_and(|a| !a.is_finite() || a.abs() > std::f64::consts::TAU)
             || self.document_id.as_ref().is_some_and(|id| id.len() > 128)
+            || self.sketch_annotation.as_ref().is_some_and(|id| id.len() > 256)
             || (self.x_points * self.scale - self.x_pixels).abs() > 0.01
             || (self.y_points * self.scale - self.y_pixels).abs() > 0.01
             || (self.id == 0 && matches!(self.phase, InputPhase::Began | InputPhase::Moved | InputPhase::Ended))
@@ -302,12 +314,37 @@ impl Viewport {
                 edit.preview = Some(model);
                 edit.last_preview = None;
             }
+            if let Some(drag) = &mut self.contacts.drag {
+                drag.preview_version = Some(work.version);
+            }
             if self.contacts.drag.as_ref().is_some_and(|d| !self.contacts.items.contains_key(&d.contact)) {
                 self.contacts.drag = None;
             }
         } else {
             self.contacts.preview = Some(model);
         }
+        self.changed();
+        true
+    }
+    /// Show completed geometry during continuous movement without validating an
+    /// older proposal or moving the handle back from the latest actual sample.
+    pub fn publish_model_progress(&mut self, work: &ToolWork, model: Arc<SceneSnapshot>) -> bool {
+        let ToolOperation::Modelling { token, .. } = &work.operation else { return false };
+        let Some(drag) = &mut self.contacts.drag else { return false };
+        if self.updating
+            || work.commit
+            || drag.state != EditState::Dragging
+            || drag.work.interaction != work.interaction
+            || work.version >= drag.work.version
+            || drag.preview_version.is_some_and(|version| work.version <= version)
+            || !self.contacts.items.contains_key(&drag.contact)
+            || !self.model.as_ref().is_some_and(|m| m.document_id == work.document_id && m.geometry_revision == work.geometry_revision)
+        {
+            return false;
+        }
+        let Some(edit) = self.modelling.as_mut().filter(|edit| edit.token == *token && edit.preview.is_none()) else { return false };
+        edit.last_preview = Some(model);
+        drag.preview_version = Some(work.version);
         self.changed();
         true
     }
@@ -330,6 +367,30 @@ impl Viewport {
                 edit.handle = handle;
             }
         }
+    }
+    /// Publish one evaluated proposal, including inferred form values, before
+    /// returning to the host. A final preview retires its drag, so its parameters
+    /// must not be checked against that retired work a second time.
+    pub fn publish_tool_preview(&mut self, prepared: PreparedTool) -> bool {
+        let work = &prepared.work;
+        if !self.tool_is_current(work) || work.commit {
+            return false;
+        }
+        self.publish_model_tool_details(work, prepared.reply, prepared.feedback, prepared.handle);
+        if !self.publish_preview(work, prepared.model) {
+            return false;
+        }
+        if let Some(params) = prepared.model_params {
+            if let Some(edit) = &mut self.modelling {
+                edit.params = params.clone();
+            }
+            if let Some(drag) = &mut self.contacts.drag
+                && let ToolOperation::Modelling { params: current, .. } = &mut drag.work.operation
+            {
+                *current = params;
+            }
+        }
+        true
     }
     pub fn complete_tool(&mut self, work: &ToolWork, model: Arc<SceneSnapshot>) -> bool {
         if !self.tool_is_current(work) || !work.commit {
@@ -459,7 +520,8 @@ impl Viewport {
             // A completed modelling contact may still have a preview in flight.
             // The new interaction supersedes that ticket without waiting for CAD.
             self.contacts.pending = None;
-            self.contacts.drag = Some(Drag { contact: e.id, anchor, anchor_radius: h.distance, work, state: EditState::Candidate });
+            self.contacts.drag =
+                Some(Drag { contact: e.id, anchor, anchor_radius: h.distance, work, state: EditState::Candidate, preview_version: None });
             self.contacts.event(ToolPhase::Begin, Some(anchor));
             return true;
         }
@@ -482,7 +544,7 @@ impl Viewport {
             commit: false,
         };
         self.select(Some(Sel::Body { name: h.body.clone() }), false);
-        self.contacts.drag = Some(Drag { contact: e.id, anchor, anchor_radius: h.radius, work, state: EditState::Candidate });
+        self.contacts.drag = Some(Drag { contact: e.id, anchor, anchor_radius: h.radius, work, state: EditState::Candidate, preview_version: None });
         self.contacts.event(ToolPhase::Begin, Some(anchor));
         if self.contacts.navigating {
             self.contacts.suspend();
@@ -549,6 +611,15 @@ impl Viewport {
                 .as_ref()
                 .and_then(|e| e.handle.as_ref())
                 .map_or_else(|| d.anchor_radius + (world - d.anchor).dot(plane.x) / factor, |h| h.proposal(d.anchor, world, d.anchor_radius));
+            // Quantise the proposed parameter, never the contact position. Keep
+            // the original anchor so sub-step motion accumulates without drift.
+            let linear = self.modelling.as_ref().and_then(|edit| edit.handle.as_ref()).is_none_or(|handle| !handle.angular && handle.units == "mm");
+            let radius = if linear && self.drag_step_mm > 0. {
+                let scale = 1. / self.drag_step_mm;
+                (radius * scale).round() / scale
+            } else {
+                radius
+            };
             match &mut d.work.operation {
                 ToolOperation::Radius { radius: current, .. } => {
                     let radius = radius.clamp(0.5, 50.);
@@ -568,6 +639,9 @@ impl Viewport {
                         return;
                     }
                     handle.set_parameter(params, radius);
+                    if self.automatic_subtract && params.get("_auto_subtract").is_none() && params["operation"] == "new" {
+                        params["_auto_subtract"] = json!(true);
+                    }
                     if handle.angular {
                         d.anchor = world;
                         d.anchor_radius = radius;
@@ -700,7 +774,9 @@ impl Viewport {
                     InputSource::Finger => Owner::Navigation,
                     InputSource::Pencil if valid => Owner::PencilCandidate,
                     InputSource::Indirect
-                        if (!self.numeric_active() && (!e.display_preview || self.direct_handles && valid && self.modelling.is_some()))
+                        if (!self.numeric_active()
+                            && (!e.display_preview
+                                || valid && self.modelling.is_some() && (self.direct_handles || self.cancel_tools_on_dismiss)))
                             || e.button != 0 =>
                     {
                         Owner::Pointer
@@ -725,9 +801,36 @@ impl Viewport {
                 && e.display_preview
                 && self.modelling.as_ref().is_some_and(|e| e.preview.is_some() || e.last_preview.is_some())
             {
-                owner = Owner::Suppressed;
+                owner = if self.cancel_tools_on_dismiss { Owner::ModelDismiss } else { Owner::Suppressed };
             }
-            if owner == Owner::PencilCandidate && self.begin_sketch_input(&e, point) {
+            // A second finger turns a direct geometry grab into ordinary two-finger
+            // navigation. Reject any in-flight sketch preview before rebasing both.
+            if owner == Owner::Navigation
+                && let Some(contact) = self.contacts.sketch.geometry_contact()
+                && self.contacts.items.get(&contact).is_some_and(|c| c.source == InputSource::Finger && c.owner == Owner::SketchTool)
+            {
+                self.cancel_sketch_input();
+                if let Some(contact) = self.contacts.items.get_mut(&contact) {
+                    contact.owner = Owner::Navigation;
+                }
+            }
+            if valid
+                && e.button == 0
+                && self.contacts.items.is_empty()
+                && matches!(owner, Owner::PencilCandidate | Owner::Navigation | Owner::Pointer)
+                && self.begin_dimension_drag(&e, point)
+            {
+                owner = Owner::SketchTool;
+            }
+            if (owner == Owner::PencilCandidate
+                || valid
+                    && e.button == 0
+                    && self.contacts.items.is_empty()
+                    && matches!(owner, Owner::Navigation | Owner::Pointer)
+                    && self.contacts.sketch.tool == "select"
+                    && self.direct_handles)
+                && self.begin_sketch_input(&e, point)
+            {
                 owner = Owner::SketchTool;
             }
             self.contacts.items.insert(
@@ -742,6 +845,7 @@ impl Viewport {
                     moved: owner == Owner::PencilCandidate && self.contacts.navigating,
                     button: e.button,
                     revision: e.geometry_revision,
+                    model_token: if valid { self.modelling.as_ref().map(|edit| edit.token) } else { None },
                 },
             );
             if owner == Owner::Navigation {
@@ -766,6 +870,7 @@ impl Viewport {
         let start = c.start;
         let button = c.button;
         let revision = c.revision;
+        let model_token = c.model_token;
         let distance = (point[0] - c.start[0]).hypot(point[1] - c.start[1]);
         let moved = c.moved || distance > 5.0;
         let elapsed = e.timestamp - c.began;
@@ -778,6 +883,19 @@ impl Viewport {
             c.moved = moved;
         }
         if matches!(e.phase, InputPhase::Ended | InputPhase::Cancelled) {
+            // A handle gets first refusal for dragging, but a stationary Pencil
+            // or pointer tap still selects the visible source underneath it.
+            // Never pick source topology through an evaluated preview.
+            let handle_tap = owner == Owner::Tool
+                && !moved
+                && !e.display_preview
+                && matches!(e.source, InputSource::Pencil | InputSource::Indirect)
+                && self.modelling.as_ref().is_some_and(|edit| edit.preview.is_none() && edit.last_preview.is_none())
+                && self
+                    .contacts
+                    .drag
+                    .as_ref()
+                    .is_some_and(|drag| drag.state == EditState::Candidate && matches!(drag.work.operation, ToolOperation::Modelling { .. }));
             // End coordinates are actual samples too; never commit the last prediction.
             if owner == Owner::Tool {
                 if !camera_current {
@@ -795,7 +913,7 @@ impl Viewport {
                     self.cancel_sketch_input();
                 } else {
                     if e.phase == InputPhase::Ended {
-                        self.update_sketch_input(&e, point);
+                        self.update_sketch_input(&e, point, moved);
                     }
                     self.end_sketch_input(&e, moved);
                 }
@@ -807,11 +925,47 @@ impl Viewport {
                     self.contacts.finish_navigation();
                 }
             }
+            // A stationary primary tap on empty *displayed* space dismisses the
+            // provisional form. Use body picking independent of the selection
+            // filter, and the visible preview rather than hidden source faces.
+            // Stale/consumed contacts and navigation never dismiss an edit.
+            if self.cancel_tools_on_dismiss
+                && self.model_active()
+                && model_token.is_some()
+                && model_token == self.modelling.as_ref().map(|edit| edit.token)
+                && e.phase == InputPhase::Ended
+                && !e.consumed
+                && !moved
+                && button == 0
+                && (matches!(owner, Owner::Navigation | Owner::PencilCandidate | Owner::Pointer | Owner::ModelDismiss) || handle_tap)
+                && camera_current
+                && revision == e.geometry_revision
+                && revision.is_some()
+                && self.model.as_ref().is_some_and(|m| Some(m.geometry_revision) == revision)
+                && !self.updating
+                && !self.contacts.navigating
+                && let Some(pixel) = self.metrics.pixel(point)
+                && let Some(model) = self.display_model()
+                && model.picks.pick(&self.camera, self.vp(), self.metrics, pixel, crate::PickFilter::Body).is_none()
+                && model.picks.pick_profile(&self.camera, self.vp(), self.metrics, pixel).is_none()
+                && self.pick_reference(point).is_none()
+            {
+                let token = self.modelling.as_ref().map(|edit| edit.token);
+                self.cancel_model();
+                self.select(None, false);
+                self.contacts.dismissed_model_token = token;
+                self.changed();
+                return Ok(true);
+            }
             if e.phase == InputPhase::Ended
                 && !moved
                 && button == 0
                 && (matches!(owner, Owner::PencilCandidate | Owner::Pointer)
-                    || (owner == Owner::Navigation && (self.origin.choosing || self.pick_reference(point).is_some())))
+                    || handle_tap
+                    || (owner == Owner::Navigation
+                        && (self.origin.choosing
+                            || self.modelling.as_ref().is_some_and(|edit| edit.selection_field.is_some())
+                            || self.pick_reference(point).is_some())))
                 && camera_current
                 && self.metrics.pixel(point).is_some()
                 && revision == e.geometry_revision
@@ -821,7 +975,11 @@ impl Viewport {
                 && self.model.as_ref().is_some_and(|m| Some(m.geometry_revision) == revision)
                 && !self.contacts.navigating
             {
-                self.select(self.pick(point, revision), self.multiple || e.shift);
+                let hit = self.pick(point, revision);
+                // Accumulate real picks, while an ordinary empty-space tap
+                // clears the set without requiring a trip through Tools.
+                let add = e.shift || self.multiple && hit.is_some();
+                self.select(hit, add);
             }
             self.changed();
             return Ok(!matches!(owner, Owner::Ui | Owner::Suppressed));
@@ -831,7 +989,13 @@ impl Viewport {
         }
         match owner {
             Owner::Tool => self.update_tool(&e, point, moved),
-            Owner::SketchTool => self.update_sketch_input(&e, point),
+            Owner::SketchTool => {
+                if !camera_current || revision != e.geometry_revision {
+                    self.cancel_sketch_input();
+                } else {
+                    self.update_sketch_input(&e, point, moved);
+                }
+            }
             Owner::Navigation => {
                 let fingers = self.contacts.fingers();
                 let pencil = self.contacts.items.values().any(|c| c.source == InputSource::Pencil && c.owner != Owner::Ui);

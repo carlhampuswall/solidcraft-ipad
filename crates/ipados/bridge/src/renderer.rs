@@ -189,7 +189,7 @@ impl NativeRenderer {
         let scopes = scopes(&self.device);
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("SolidCraft iPadOS frame") });
         self.renderer.prepare(&self.device, &self.queue, &mut encoder, &frame);
-        let background = snapshot.model.scene.background.map_or(wgpu::Color::TRANSPARENT, |(top, _)| {
+        let background = snapshot.background.map_or(wgpu::Color::TRANSPARENT, |(top, _)| {
             let [r, g, b] =
                 if self.config.format.is_srgb() { [top.0, top.1, top.2].map(solidcraft_render::surface::srgb8_to_linear) } else { top.f() };
             wgpu::Color { r, g, b, a: 1.0 }
@@ -356,8 +356,10 @@ pub(crate) fn model_geometry(snapshot: &RenderSnapshot, key: u64) -> Result<(Gpu
 }
 
 pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: &mut NativeMeshCache) -> Result<(GpuScene, ModelBodies), String> {
-    let source = &snapshot.model.scene;
-    let names = snapshot.model.picks.body_names();
+    let (source, names) = match &snapshot.model.preview_scene {
+        Some(preview) => (&preview.scene, preview.names.clone()),
+        None => (&snapshot.model.scene, snapshot.model.picks.body_names()),
+    };
     let mut fallback = solidcraft_render::Scene::default();
     let mut fallback_names = Vec::new();
     let mut shared = Vec::new();
@@ -368,7 +370,8 @@ pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: 
         let instance = snapshot.model.instances.get(index).filter(|instance| &instance.body == body);
         let rows =
             instance.map(|instance| std::array::from_fn::<_, 3, _>(|row| std::array::from_fn::<_, 4, _>(|col| instance.transform[col][row] as f32)));
-        let eligible = !snapshot.model.occurrences.is_empty()
+        let eligible = snapshot.model.preview_scene.is_none()
+            && !snapshot.model.occurrences.is_empty()
             && !mesh.glass()
             && mesh.face_colors.is_empty()
             && rows.as_ref().is_some_and(|rows| rows.iter().flatten().all(|v| v.is_finite()));
@@ -512,7 +515,8 @@ pub(crate) fn highlight_geometry(snapshot: &RenderSnapshot, bodies: &ModelBodies
 pub fn capture_feedback(snapshot: &RenderSnapshot, capturer: &solidcraft_gpu::capture::Capturer, width: u32, height: u32) -> Result<Vec<u8>, String> {
     let (model, bodies) = model_geometry(snapshot, 1)?;
     let highlight = highlight_geometry(snapshot, &bodies);
+    let source = snapshot.model.preview_scene.as_ref().map_or(&snapshot.model.scene, |preview| &preview.scene);
     capturer
-        .rgba_viewport(&snapshot.model.scene, &snapshot.camera, [width, height], model, highlight, (snapshot.hover_tint, snapshot.selection_tint))
+        .rgba_viewport(source, &snapshot.camera, [width, height], model, highlight, (snapshot.hover_tint, snapshot.selection_tint))
         .map_err(|e| e.to_string())
 }

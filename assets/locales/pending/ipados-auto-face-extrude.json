@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.workspace.extrude_on_face_selection": "Extrude on face selection",
+    "ui.ipados.workspace.extrude_on_face_selection_help": "Open Extrude when selecting a face. Turn off to select faces without opening a tool."
+  },
+  "de": {
+    "ui.ipados.workspace.extrude_on_face_selection": "Bei Flächenauswahl extrudieren",
+    "ui.ipados.workspace.extrude_on_face_selection_help": "Extrudieren beim Auswählen einer Fläche öffnen. Deaktivieren, um Flächen ohne Werkzeug zu wählen."
+  },
+  "ja": {
+    "ui.ipados.workspace.extrude_on_face_selection": "面の選択時に押し出しを開始",
+    "ui.ipados.workspace.extrude_on_face_selection_help": "面を選択すると押し出しを開きます。オフにするとツールを開かずに面を選択できます。"
+  },
+  "ko": {
+    "ui.ipados.workspace.extrude_on_face_selection": "면 선택 시 돌출 시작",
+    "ui.ipados.workspace.extrude_on_face_selection_help": "면을 선택하면 돌출을 엽니다. 끄면 도구를 열지 않고 면을 선택할 수 있습니다."
+  },
+  "zh": {
+    "ui.ipados.workspace.extrude_on_face_selection": "选择面时打开拉伸",
+    "ui.ipados.workspace.extrude_on_face_selection_help": "选择面时打开拉伸工具。关闭后可选择面而不打开工具。"
+  }
+}

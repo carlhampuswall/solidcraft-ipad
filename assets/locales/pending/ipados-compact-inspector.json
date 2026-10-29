@@ -1,0 +1,11 @@
+{
+  "en": {
+    "ui.ipados.inspector.change": "Change",
+    "ui.ipados.inspector.collapsed": "Collapsed",
+    "ui.ipados.inspector.compact_inspector": "Compact operation inspector",
+    "ui.ipados.inspector.expanded": "Expanded",
+    "ui.ipados.inspector.expression_help": "Expression help",
+    "ui.ipados.inspector.more_options": "More options",
+    "ui.ipados.inspector.selected_input": "Selected input"
+  }
+}

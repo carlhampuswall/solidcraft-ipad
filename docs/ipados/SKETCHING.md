@@ -115,14 +115,17 @@ plane previews its resolved world plane and planar camera; **Create on this
 plane** commits the original native plane reference. Cancel returns the previous
 view. Selecting an existing sketch in Model exposes **Edit sketch**. The active
 sketch name, actual solver state and native closed-profile count appear in
-Properties; **Finish sketch** remains available for open or under-constrained
-geometry. **Delete sketch** is a separate explicit action with a warning that
+Properties; the floating document header has a labelled **Finish sketch** button
+that stays visible while the tool rail scrolls, including for open or
+under-constrained geometry. The text workspace retains its labelled rail action.
+**Delete sketch** is a separate explicit action with a warning that
 native `timeline.delete` also removes dependent features.
 
-The **Part browser > Origin references** group lists the origin point, X/Y/Z axes
-and XY/XZ/YZ planes with an eye control and Visible/Hidden readout for each.
-The group's eye menu and **View > Origin references** also offer Show all, Hide
-all and **Automatic during sketch creation**. Automatic is the default: references
+**Views > Visibility** groups Grid lines, Origin point, X/Y/Z axes and XY/XZ/YZ
+planes. Grid lines have a separate saved toggle in both 3D and sketch views.
+The menu also offers Show all, Hide all and **Automatic during sketch creation**
+for origin references. **Origin controls in Model** restores the optional browser
+rows and their eye controls. Automatic is the default: references
 appear while choosing a sketch plane and hide when the chooser is cancelled or
 the sketch starts. The active sketch retains its own planar axes/grid. Explicit
 Show/Hide choices override automatic visibility, including while choosing a
@@ -135,15 +138,16 @@ orientation triad remains an orientation aid. Visible evaluated construction
 planes also appear as 3D targets while choosing a sketch plane.
 
 Changes a default: yes — origin references default to visibility only during
-sketch-plane selection. **Origin references > Show all origin references** retains
+sketch-plane selection. **Views > Visibility > Show all origin references** retains
 the previous always-visible setting. Disable **Tools > Select sketch planes in
 3D** for the previous plane menu. Cancel (including Escape and lifecycle suspension) restores
 the pre-chooser camera and never creates a feature. Only **Create on this plane**
 executes `sketch.create` and adds one native undo step.
 
 Native viewport commands: `view.choose_sketch_plane {}` starts the interactive
-picker; `view.origin {visible:bool|null,item?:O|X|Y|Z|XY|XZ|YZ}` updates guide visibility
-(`null` restores automatic visibility for the item or all items);
+picker; `view.origin {visible:bool|null,item?:O|X|Y|Z|XY|XZ|YZ,group?:axes|planes}`
+updates guide visibility (`null` restores automatic visibility for the item,
+group or all items; `item` and `group` are mutually exclusive);
 `view.cancel_plane {}` restores the previous view. These are presentation commands,
 not additions to the engine's CAD registry. Snapshot `origin` reports visibility
 and choosing state; `reference_labels` carries native identities and view-local
@@ -169,14 +173,56 @@ selected entities/constraints calls `sketch.delete`. Geometric indicators use
 bounded selection-sensitive screen-space lanes; dimension annotation labels
 reflect native measurements and distinguish references with parentheses.
 
+In Select, tap a sketch edge, then the small length or radius beside it to enter
+an exact size in a popover anchored at the value. The numeric keypad opens with
+the current expression selected; the keyboard switch supports units, arithmetic
+and parameter names. Preview and Cancel preserve the committed sketch. Apply
+creates one native dimension or edits the existing driving parameter, with one
+undo step. Existing endpoint, radius and diameter dimensions are reused;
+parenthesised reference values remain read-only. A drag continues moving the
+annotation rather than opening the editor. Multi-touch navigation, cancellation,
+display changes and suspension cannot turn an interrupted contact into an edit.
+The DEBUG `--inline-dimension-check` launch flag prepares a disposable rectangle
+for physical tap, numeric-entry and drag checks without opening a library project.
+Tools > **Tap dimensions to edit** disables inline entry and restores selecting
+labels without opening the editor; the native preference is saved across launches.
+With `--inline-dimension-check-run` also supplied, the bounded DEBUG driver checks
+real UIKit focus/selection, Apply, reopening, Preview/Cancel and Undo/Redo. This
+passed on the physical iPad on 2026-10-29, alongside 144 session and 28 bridge tests,
+the native layout harness, Clippy, wasm compilation and device builds. The real
+iPad popover/keypad was visually inspected. The driver uses synthetic control
+actions; physical tap, Pencil and VoiceOver coverage remain unverified.
+
 **Dimension** opens the shared expression transaction for the chosen supported
 type. The initial expression is retained, units and parameter references are
 parsed upstream, and Preview/Apply/Cancel have the Step 5 contract. **Place
 dimension with Pencil** instead places a measured dimension at a Pencil-selected
 annotation location; select it and **Edit driving expression** for a precise
-value. Move / handles drags native points/curves or dimension text. Annotation
-movement uses `sketch.dimension_text`, independently of its value. Reference
-dimensions have no driving-expression button.
+value. In Select or Move / handles, drag a dimension label directly with touch,
+Pencil or a primary pointer. The label retains the grab offset; its extension
+lines and arrows follow throughout the preview while their measured endpoints
+stay attached to the sketch. Annotation movement uses `sketch.dimension_text`,
+independently of its value, and commits one undo step. Cancel or navigation
+discards the provisional placement. Reference dimensions support the same drag
+and have no driving-expression button. A selected undimensioned edge's measured
+length/radius can also be moved; its placement stays in the current session and
+creates no constraint or history entry. Both readouts use upstream dimension
+layout for their text, lines and arrows.
+
+In Select, drag sketch points or edges directly with Pencil, touch or a primary
+pointer. The existing `sketch.drag` solver keeps fixed geometry and driving
+constraints intact, allowing only the sketch's remaining freedom. Selecting
+several entities moves them as a group. A tap toggles selection; movement within
+five display points creates no geometry proposal. A completed drag adds one undo
+step; cancellation discards the preview. A second finger cancels a touch geometry
+drag and rebases both contacts for pan/zoom. Empty-space finger drags still pan.
+Disable **Tools > On-model editing handles** to restore Select's previous
+selection/navigation behaviour; **Move / handles** remains available for Pencil
+drags. This extends the existing saved handle preference without changing CAD
+commands or the native file format.
+
+Changes a default: yes — Select directly drags sketch geometry; the previous
+behaviour remains behind **Tools > On-model editing handles**.
 
 Snapping and automatic relationships have independent Tools-menu switches;
 Shift suppresses both for a placement. Current target and whether it represents

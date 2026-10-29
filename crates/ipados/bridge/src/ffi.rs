@@ -137,16 +137,22 @@ impl Entry {
         }
         let prepared = adapter.prepare_tool(work.clone());
         let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
-        if self.closed.load(Ordering::Acquire) || !viewport.tool_is_current(&work) {
+        if self.closed.load(Ordering::Acquire) {
             return Ok(json!({"discarded":true}));
+        }
+        if !viewport.tool_is_current(&work) {
+            // A moving contact can advance faster than scratch CAD evaluates.
+            // Keep displaying progress from that same live interaction while
+            // the latest proposal remains pending and cannot enable Apply.
+            let progressed = prepared.ok().is_some_and(|prepared| viewport.publish_model_progress(&work, prepared.model));
+            return Ok(json!({"discarded":!progressed,"progressed":progressed}));
         }
         let result = match prepared {
             Ok(prepared) if work.commit => adapter.accept_tool(prepared).map(|model| {
                 viewport.complete_tool(&work, model);
             }),
             Ok(prepared) => {
-                viewport.publish_model_tool_details(&work, prepared.reply, prepared.feedback, prepared.handle);
-                viewport.publish_preview(&work, prepared.model);
+                viewport.publish_tool_preview(prepared);
                 Ok(())
             }
             Err(failure) => Err(failure),
@@ -298,7 +304,11 @@ impl Entry {
             let token = token.ok_or_else(|| error("bad_params", "A modelling edit token is required."))?;
             let edit = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.model_edit(token)?;
             match action {
-                "selection" => self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.fail_model(token)?,
+                "selection" => self
+                    .viewport
+                    .lock()
+                    .map_err(|_| error("lock", "viewport lock poisoned"))?
+                    .select_model_inputs(token, params.as_ref().and_then(|params| params["field"].as_str()))?,
                 "inspect" => {
                     let selection = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.selection().to_vec();
                     let updated = adapter.refresh_model(&edit, &selection, params)?;

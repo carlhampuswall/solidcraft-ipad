@@ -1,0 +1,7 @@
+{
+  "en": { "ui.ipados.extrude.automatic_subtract": "Automatically subtract inward extrusions" },
+  "de": { "ui.ipados.extrude.automatic_subtract": "Extrusionen nach innen automatisch abziehen" },
+  "ja": { "ui.ipados.extrude.automatic_subtract": "内向きの押し出しを自動で減算" },
+  "ko": { "ui.ipados.extrude.automatic_subtract": "안쪽 돌출 자동 빼기" },
+  "zh": { "ui.ipados.extrude.automatic_subtract": "向内拉伸时自动减去" }
+}

@@ -1,0 +1,67 @@
+{
+  "en": {
+    "ui.ipados.modelling_form.choose_from_list": "Choose from list",
+    "ui.ipados.modelling_form.negative": "Negative",
+    "ui.ipados.modelling_form.positive": "Positive",
+    "ui.ipados.modelling_form.remove_selection": "Remove {name} from selection",
+    "ui.ipados.modelling_form.reorder": "Reorder {name}",
+    "ui.ipados.modelling_form.select_bodies": "Select bodies",
+    "ui.ipados.modelling_form.select_in_model": "Select in model",
+    "ui.ipados.modelling_form.select_inputs": "Select inputs",
+    "ui.ipados.modelling_form.selection_count": "{count} selected",
+    "ui.ipados.modelling_form.symmetric": "Symmetric",
+    "ui.ipados.modelling_form.target_bodies": "Target bodies"
+  },
+  "de": {
+    "ui.ipados.modelling_form.choose_from_list": "Aus Liste wählen",
+    "ui.ipados.modelling_form.negative": "Negativ",
+    "ui.ipados.modelling_form.positive": "Positiv",
+    "ui.ipados.modelling_form.remove_selection": "{name} aus der Auswahl entfernen",
+    "ui.ipados.modelling_form.reorder": "{name} neu anordnen",
+    "ui.ipados.modelling_form.select_bodies": "Körper auswählen",
+    "ui.ipados.modelling_form.select_in_model": "Im Modell auswählen",
+    "ui.ipados.modelling_form.select_inputs": "Eingaben auswählen",
+    "ui.ipados.modelling_form.selection_count": "{count} ausgewählt",
+    "ui.ipados.modelling_form.symmetric": "Symmetrisch",
+    "ui.ipados.modelling_form.target_bodies": "Zielkörper"
+  },
+  "ja": {
+    "ui.ipados.modelling_form.choose_from_list": "リストから選択",
+    "ui.ipados.modelling_form.negative": "負方向",
+    "ui.ipados.modelling_form.positive": "正方向",
+    "ui.ipados.modelling_form.remove_selection": "{name} を選択から外す",
+    "ui.ipados.modelling_form.reorder": "{name} の順序を変更",
+    "ui.ipados.modelling_form.select_bodies": "ボディを選択",
+    "ui.ipados.modelling_form.select_in_model": "モデル内で選択",
+    "ui.ipados.modelling_form.select_inputs": "入力を選択",
+    "ui.ipados.modelling_form.selection_count": "{count} 個選択済み",
+    "ui.ipados.modelling_form.symmetric": "対称",
+    "ui.ipados.modelling_form.target_bodies": "対象ボディ"
+  },
+  "ko": {
+    "ui.ipados.modelling_form.choose_from_list": "목록에서 선택",
+    "ui.ipados.modelling_form.negative": "음의 방향",
+    "ui.ipados.modelling_form.positive": "양의 방향",
+    "ui.ipados.modelling_form.remove_selection": "선택에서 {name} 제거",
+    "ui.ipados.modelling_form.reorder": "{name} 순서 변경",
+    "ui.ipados.modelling_form.select_bodies": "바디 선택",
+    "ui.ipados.modelling_form.select_in_model": "모델에서 선택",
+    "ui.ipados.modelling_form.select_inputs": "입력 선택",
+    "ui.ipados.modelling_form.selection_count": "{count}개 선택됨",
+    "ui.ipados.modelling_form.symmetric": "대칭",
+    "ui.ipados.modelling_form.target_bodies": "대상 바디"
+  },
+  "zh": {
+    "ui.ipados.modelling_form.choose_from_list": "从列表中选择",
+    "ui.ipados.modelling_form.negative": "负向",
+    "ui.ipados.modelling_form.positive": "正向",
+    "ui.ipados.modelling_form.remove_selection": "从选择中移除 {name}",
+    "ui.ipados.modelling_form.reorder": "调整 {name} 的顺序",
+    "ui.ipados.modelling_form.select_bodies": "选择实体",
+    "ui.ipados.modelling_form.select_in_model": "在模型中选择",
+    "ui.ipados.modelling_form.select_inputs": "选择输入",
+    "ui.ipados.modelling_form.selection_count": "已选择 {count} 个",
+    "ui.ipados.modelling_form.symmetric": "对称",
+    "ui.ipados.modelling_form.target_bodies": "目标实体"
+  }
+}

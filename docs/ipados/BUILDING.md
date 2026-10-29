@@ -62,9 +62,34 @@ cargo +1.95.0 run --locked --profile ci -p solidcraft-ipados-bridge \
   --example render_proof -- /tmp/solidcraft-ipados-render-proof.png
 ```
 
+For canvas appearance evidence, append `--appearance` to that command. It writes
+`-light.png`, `-dark.png`, `-grid-hidden.png`, `-grid-restored.png` and
+`-restored.png`, checks the dark background pixels, and verifies that toggling
+the grid and returning to Light restore their original images. This uses a
+representative resolved native colour on the Mac GPU. On a physical iPad, also
+check Appearance > Dark, Light and System, including a system appearance change
+while the workspace is open; the canvas should follow the surrounding controls.
+Check **Views > Visibility** for grid, origin point, axes and plane toggles, and
+relaunch to confirm that the grid and reference preferences persist.
+
 The example uses real commands, rebuilds/tessellates the document and draws it
 with the shared GPU capture/viewport pipelines. It requires an accessible GPU;
 no CPU fallback is substituted for this proof.
+
+For Pencil selection evidence, append `--edge-selection`. It compares two taps
+in the previous single-selection mode with the default Multiple mode, captures
+two selected faces and two selected edges, then uses both edges in one Fillet and
+verifies the analytic resulting volume. The `-before.png`, `-faces-selected.png`,
+`-selected.png` and `-filleted.png` captures use the macOS GPU and synthetic Pencil
+events; physical Pencil input still requires an iPad check. On an iPad, also turn
+off **Tools → Multiple**, relaunch and verify that single selection is restored.
+
+For split-cylinder selection evidence, use `--cylinder-selection` for walls or
+`--cylinder-edge-selection` for circular rims. Both capture independent outer
+and inner selections as `-outer.png` and `-inner.png`, verifying that each tap
+selects both native kernel pieces. These are macOS GPU captures with synthetic
+Pencil events. On an iPad, check hover and tap on either half of each rim,
+toggle it off from the other half, and confirm the other rims stay separate.
 
 Affected Clippy (`--no-deps` for the two adapter packages),
 `cargo +1.95.0 fmt --all -- --check`, `cargo +1.95.0 xtask ci`,
@@ -175,6 +200,11 @@ macOS; it does not boot a simulator or launch UIKit. On a separately authorised
 physical iPad, Debug `--workspace-check` exercises the new bridge workflow with
 synthetic calls and logs assertions. Actual interface taps, keyboard, Pencil,
 VoiceOver and screenshot inspection remain the manual checklist in [UI.md](UI.md).
+Debug `--tool-dismissal-check` uses a disposable launch fixture and production
+joint forms to check Close, Properties toggle, browser replacement, empty-space
+input and the legacy hide/reopen preference. It writes `tool-dismissal-check.json`
+in the app's Documents directory. Input is synthetic; library projects are neither
+loaded nor autosaved by this diagnostic.
 Rebuild both Rust and Swift after adapter protocol changes; ABI 3 symbols remain
 unchanged. Current observed results and the inherited full-CI blocker are in HANDOFF.
 
@@ -190,6 +220,18 @@ draws/dimensions/reopens a rectangle, changes its width, undoes/redoes and check
 native profile area. It is compiled but has not been run on a device. It neither
 launches automatically nor substitutes for human UI/Pencil verification.
 
+DEBUG `--sketch-toolbar-check` uses a disposable sketch and the production UIKit
+controls. It checks icon titles and touch sizes after state refreshes, header
+completion visibility while the rail scrolls, text/floating layout switches,
+Light/Dark appearance, line/spline tools, and tapping **Finish sketch** to exit.
+It writes `sketch-toolbar-check.json` and five `sketch-toolbar-<index>.png`
+captures in Documents without opening or autosaving a library project.
+Physical iPad verification on 2026-10-29 passed all five variants and actual
+button completion; the captured UIKit screenshots were inspected in both
+appearances. The native harness passed 550 adaptive cases and icon validation,
+and unsigned/signed device builds passed. This scoped host change does not
+claim a full Rust workspace CI run or physical Pencil verification.
+
 For reproducible Mac GPU model/feedback evidence (no UIKit or device):
 
 ```sh
@@ -198,9 +240,27 @@ cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
 ```
 
 This exercises actual synthetic Pencil rectangle creation, driving dimensions,
-reopening, width preview/commit and undo/redo, checks native area and writes five
-PNG captures. Native UILabel dimension text and workspace chrome require UIKit;
+reopening, width preview/commit and undo/redo, checks native area and writes eight
+PNG captures. The final three show dimension arrows before, during and after a
+direct touch drag, with the measured length and grab offset verified. Native
+dimension text and workspace chrome require UIKit;
 they are not part of these offscreen model captures.
+
+For direct sketch geometry movement in Select:
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-sketch-drag.png --sketch-drag
+```
+
+This captures `-before.png`, `-previous.png`, `-preview.png` and `-committed.png`.
+It compares the saved handle preference's previous Select behaviour with direct
+dragging, verifies a selected rectangle translates by (20, 15) mm while retaining
+its constraints and closed profile, and checks that one Undo restores it. The
+session regressions cover free points/edges, selected groups on a YZ plane,
+partial/fixed constraints, taps and jitter, cancellation, returning to the start,
+two-finger navigation and the previous preference setting. These are synthetic
+input and macOS GPU checks; physical iPad gestures remain separate verification.
 
 
 ## Step 7 modelling checks

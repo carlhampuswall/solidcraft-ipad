@@ -5,8 +5,90 @@ use solidcraft_ipados_session::{InputEvent, InputPhase, InputSource, SessionAdap
 use solidcraft_render::{Scene, SceneLine, SceneMesh};
 use std::sync::Arc;
 
+/// Capture the native appearance override with real engine geometry. Dark RGB
+/// represents a resolved UIKit semantic surface; UIKit itself needs a device.
+fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.fixture()?);
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let mut light = None;
+    let mut dark = None;
+    for (stage, color, visible) in [
+        ("light", json!(null), true),
+        ("dark", json!([28, 28, 30]), true),
+        ("grid-hidden", json!([28, 28, 30]), false),
+        ("grid-restored", json!([28, 28, 30]), true),
+        ("restored", json!(null), true),
+    ] {
+        let grid = if color.is_null() { json!(null) } else { json!([[45, 45, 47], [62, 62, 65]]) };
+        view.command("view.background", &json!({"color":color,"grid":grid}))?;
+        view.command("view.grid", &json!({"visible":visible}))?;
+        let snapshot = view.snapshot().ok_or("missing appearance scene")?;
+        let line = |l: &SceneLine| SceneLine { points: l.points.clone(), color: l.color, alpha: l.alpha, width: l.width, on_top: l.on_top };
+        let scene = Scene {
+            // NativeRenderer clears uniformly to the scene's top colour.
+            background: snapshot.background.map(|(top, _)| (top, top)),
+            radius: snapshot.model.bounds.diagonal() + snapshot.camera.half_height() * 2.,
+            meshes: snapshot
+                .model
+                .scene
+                .meshes
+                .iter()
+                .map(|m| SceneMesh { mesh: m.mesh.clone(), color: m.color, face_colors: m.face_colors.clone(), opacity: m.opacity })
+                .collect(),
+            lines: snapshot.model.scene.lines.iter().chain(&snapshot.guides.lines).map(line).collect(),
+            grid: snapshot.guides.grid.iter().map(line).collect(),
+            ..Scene::default()
+        };
+        let rgba = capturer.rgba(&scene, &snapshot.camera, 960, 640)?;
+        if stage == "light" {
+            light = Some(rgba.clone());
+        }
+        if stage == "dark" {
+            dark = Some(rgba.clone());
+        }
+        if stage == "grid-hidden" && (dark.as_ref() == Some(&rgba) || !snapshot.guides.grid.is_empty()) {
+            return Err("Grid toggle did not hide the rendered grid".into());
+        }
+        if stage == "grid-restored" && dark.as_ref() != Some(&rgba) {
+            return Err("Grid toggle did not restore the original dark rendering".into());
+        }
+        // Grid lines can cross the corners; check a substantial background area.
+        let dark_matches = color.is_null() || rgba.chunks_exact(4).filter(|pixel| pixel[..3] == [28, 28, 30]).count() > 960 * 640 / 4;
+        if stage == "restored" && light.as_ref() != Some(&rgba) {
+            return Err("Light did not restore the original rendering".into());
+        }
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        let png = solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding failed")?;
+        std::fs::write(&path, png)?;
+        if !dark_matches {
+            return Err(format!("dark background pixels do not match native colour; inspect {path}").into());
+        }
+        println!("{stage}: {} triangles; {path}", capturer.last_stats().triangles);
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--appearance") {
+        return appearance_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--history") {
+        return history_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--edge-selection") {
+        return edge_selection_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--cylinder-selection") {
+        return cylinder_selection_proof(&destination, false);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--cylinder-edge-selection") {
+        return cylinder_selection_proof(&destination, true);
+    }
     if std::env::args().nth(2).as_deref() == Some("--continuous-resize") {
         return continuous_resize_proof(&destination);
     }
@@ -25,8 +107,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--sketch") {
         return sketch_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--sketch-drag") {
+        return sketch_drag_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--modelling") {
         return modelling_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--face-extrude") {
+        return face_extrude_proof(&destination);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--subtract-selection") {
+        return subtract_selection_proof(&destination);
     }
     if std::env::args().nth(2).as_deref() == Some("--assemblies") {
         return assembly_proof(&destination);
@@ -48,7 +139,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Capture the same model/guides; shared meshes are retained, not re-tessellated.
         let line = |l: &SceneLine| SceneLine { points: l.points.clone(), color: l.color, alpha: l.alpha, width: l.width, on_top: l.on_top };
         let mut scene = Scene {
-            background: snapshot.model.scene.background,
+            background: snapshot.background,
             radius: snapshot.model.bounds.diagonal() + snapshot.camera.half_height() * 2.0,
             grid: snapshot.guides.grid.iter().map(line).collect(),
             ..Scene::default()
@@ -112,6 +203,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 altitude: None,
                 geometry_revision: Some(snapshot.geometry_revision),
                 consumed: false,
+                sketch_annotation: None,
                 shift: false,
                 button: 0,
                 scroll: 0.0,
@@ -160,6 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             altitude: None,
             geometry_revision: Some(sphere.geometry_revision),
             consumed: false,
+            sketch_annotation: None,
             shift: false,
             button: 0,
             scroll: 0.0,
@@ -174,6 +267,184 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = destination.replace(".png", "-sphere.png");
     std::fs::write(&path, png)?;
     println!("selected smooth sphere uses model GPU vertices: {path}");
+    Ok(())
+}
+
+/// Actual Pencil picks and native feedback on the inside and outside of a sleeve.
+fn cylinder_selection_proof(destination: &str, edges: bool) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"}))?;
+    engine.execute("solid.cylinder", json!({"radius":6,"height":22,"base":[0,0,-1],"operation":"cut","targets":["Sleeve"]}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("select.filter", &json!({"filter":if edges { "edge" } else { "face" }}))?;
+    view.command("view.navigate", &json!({"direction":[0.8,0.6,0.8]}))?;
+    let frame = view.snapshot().ok_or("cylinder selection frame")?;
+    let back = frame.camera.back();
+    let radial = solidcraft_ipados_session::WorldPoint::new(back.x, back.y, 0.).normalized().ok_or("cylinder radial direction")?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    for (stage, location) in [
+        ("outer", radial * 10. + solidcraft_ipados_session::WorldPoint::Z * if edges { 20. } else { 10. }),
+        ("inner", radial * -6. + solidcraft_ipados_session::WorldPoint::Z * if edges { 20. } else { 17. }),
+    ] {
+        view.command("select.clear", &json!({}))?;
+        let projected = view.command("view.project", &json!({"point":location}))?;
+        let x = projected["points"][0].as_f64().ok_or("cylinder pick x")?;
+        let y = projected["points"][1].as_f64().ok_or("cylinder pick y")?;
+        let diagnostic = view.diagnostic();
+        for phase in [InputPhase::Began, InputPhase::Ended] {
+            view.input(serde_json::from_value(json!({
+                "source":"pencil","phase":phase,"id":1,"x_points":x,"y_points":y,"x_pixels":x,"y_pixels":y,"scale":1.,"timestamp":1.,
+                "viewport_epoch":diagnostic["viewport_epoch"],"camera_epoch":diagnostic["camera_epoch"],
+                "document_id":diagnostic["document_id"],"geometry_revision":diagnostic["geometry_revision"]
+            }))?)?;
+        }
+        if view.selection().len() != 2 {
+            return Err(format!("{stage} selection did not include both kernel pieces").into());
+        }
+        let snapshot = view.snapshot().ok_or("selected cylinder frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("cylinder selection PNG")?)?;
+        println!("{stage}: {} selected {}; {path}", view.selection().len(), if edges { "edges" } else { "faces" });
+    }
+    Ok(())
+}
+
+/// Compare the former face-only default with an Auto Pencil edge pick, then
+/// consume that exact native edge selection in a real fillet operation.
+fn edge_selection_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    if view.diagnostic()["filter"] != "auto" {
+        return Err("initial selection filter excludes edges".into());
+    }
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("edge selection frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("edge selection PNG")?)?;
+        println!("{stage}: {path}");
+        Ok(())
+    };
+    let tap = |view: &mut Viewport, point: [f64; 3]| -> Result<(), Box<dyn std::error::Error>> {
+        let projection = view.command("view.project", &json!({"point":point}))?;
+        let x = projection["points"][0].as_f64().ok_or("pick x")?;
+        let y = projection["points"][1].as_f64().ok_or("pick y")?;
+        let frame = view.diagnostic();
+        for (phase, timestamp) in [(InputPhase::Began, 1.), (InputPhase::Ended, 1.1)] {
+            view.input(InputEvent {
+                source: InputSource::Pencil,
+                phase,
+                id: 1,
+                x_points: x,
+                y_points: y,
+                x_pixels: x,
+                y_pixels: y,
+                scale: 1.,
+                timestamp,
+                azimuth: None,
+                predicted: false,
+                display_preview: false,
+                sequence: 0,
+                viewport_epoch: frame["viewport_epoch"].as_u64(),
+                camera_epoch: frame["camera_epoch"].as_u64(),
+                document_id: frame["document_id"].as_str().map(str::to_string),
+                pressure: None,
+                altitude: None,
+                geometry_revision: frame["geometry_revision"].as_u64(),
+                consumed: false,
+                sketch_annotation: None,
+                shift: false,
+                button: 0,
+                scroll: 0.,
+            })?;
+        }
+        Ok(())
+    };
+    // Capture the old replacement behaviour and the default accumulated edge
+    // and face highlights using the same engine geometry and actual renderer.
+    let edges = [[20., 0., 10.], [20., 20., 10.]];
+    for (multiple, filter, kind, points, count, stage) in [
+        (false, "auto", "edge", edges, 1, "before"),
+        (true, "face", "face", [[20., 10., 10.], [10., 0., 10.]], 2, "faces-selected"),
+        (true, "auto", "edge", edges, 2, "selected"),
+    ] {
+        view.command("select.clear", &json!({}))?;
+        view.command("select.multiple", &json!({"enabled":multiple}))?;
+        view.command("select.filter", &json!({"filter":filter}))?;
+        for point in points {
+            tap(&mut view, point)?;
+        }
+        if view.selection().len() != count
+            || view.diagnostic()["selection"].as_array().is_none_or(|items| items.iter().any(|item| item["type"] != kind))
+        {
+            return Err(format!("{stage} Pencil taps did not retain {count} {kind} selections").into());
+        }
+        capture(&view, stage)?;
+    }
+    let edit = engine.begin_model(9001, Some("solid.fillet"), None, view.selection())?;
+    view.begin_model(edit.clone())?;
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    view.finish_model(edit.token, Some(engine.accept_model(&edit, prepared)?))?;
+    // Use native body measurement rather than the coarser display tessellation.
+    let measurement = engine.execute("inspect.measure", json!({"bodies":["Block"]}))?.value;
+    let volume = measurement["bodies"][0]["volume_mm3"].as_f64().ok_or("fillet volume")?;
+    let expected = 8_000. - 2. * (1. - std::f64::consts::PI / 4.) * 20.;
+    if (volume - expected).abs() > 0.1 {
+        return Err(format!("selected-edge fillet has incorrect volume: {volume}").into());
+    }
+    capture(&view, "filleted")?;
+    println!("PASS: Pencil taps retain two edges or faces; both edges consumed by one Fillet; volume {volume:.3} mm³. macOS GPU only.");
+    Ok(())
+}
+
+/// Real feature selection through the native viewport and highlight renderer.
+/// UIKit chrome is captured separately on a physical iPad.
+fn history_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.fixture()?;
+    engine.execute("solid.fillet", json!({"edges":[[20,-15,5]],"radius":2,"body":"Base","name":"Base round"}))?;
+    let workspace = engine.workspace(&[], false, false);
+    let timeline = workspace["modelling"]["timeline"].as_array().ok_or("feature timeline unavailable")?;
+    let features: Vec<_> = timeline.iter().map(|f| f["id"].as_u64().ok_or("feature identity unavailable")).collect::<Result<_, _>>()?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let before = view.snapshot().ok_or("history scene unavailable")?;
+    let plain = solidcraft_ipados_bridge::renderer::capture_feedback(&before, &capturer, 960, 640)?;
+    std::fs::write(destination.replace(".png", "-unselected.png"), solidcraft_render::png(960, 640, plain.clone()).ok_or("PNG")?)?;
+    for (index, name) in ["base", "post", "sketch", "fillet"].into_iter().enumerate() {
+        let id = features.get(index).ok_or("missing fixture feature")?;
+        view.command("select.entity", &json!({"entity":{"type":"feature","id":id},"additive":false}))?;
+        let snapshot = view.snapshot().ok_or("selected history scene unavailable")?;
+        if !Arc::ptr_eq(&before.model, &snapshot.model) || before.camera != snapshot.camera {
+            return Err("feature selection changed model/camera".into());
+        }
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        if rgba == plain {
+            return Err(format!("{name} feature produced no visible highlight").into());
+        }
+        let path = destination.replace(".png", &format!("-{name}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("history {name}: selected {:?}; {path}", snapshot.selected_bodies);
+    }
+    view.command("select.clear", &json!({}))?;
+    let snapshot = view.snapshot().ok_or("cleared history scene unavailable")?;
+    if solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)? != plain {
+        return Err("clearing history selection did not restore the original rendering".into());
+    }
     Ok(())
 }
 
@@ -227,6 +498,7 @@ fn profile_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
             altitude: None,
             geometry_revision: frame["geometry_revision"].as_u64(),
             consumed: false,
+            sketch_annotation: None,
             shift: false,
             button: 0,
             scroll: 0.,
@@ -347,8 +619,16 @@ fn origin_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     capture(&view, "xy-manual-visible")?;
     view.command("view.origin", &json!({"visible":false}))?;
     capture(&view, "hidden")?;
+    view.command("view.origin", &json!({"group":"planes","visible":true}))?;
+    capture(&view, "all-planes")?;
+    view.command("view.origin", &json!({"group":"planes","visible":false}))?;
+    view.command("view.origin", &json!({"group":"axes","visible":true}))?;
+    capture(&view, "all-axes")?;
+    view.command("view.origin", &json!({"group":"axes","visible":false}))?;
+    view.command("view.origin", &json!({"item":"O","visible":true}))?;
+    capture(&view, "origin-point")?;
     println!(
-        "PASS: native origin guide geometry, individual visibility, existing plane selection and reversible preview; macOS GPU only, no UIKit/device claim"
+        "PASS: native origin guide geometry, individual/group visibility, solid origin dot, existing plane selection and reversible preview; macOS GPU only, no UIKit/device claim"
     );
     Ok(())
 }
@@ -545,20 +825,19 @@ fn continuous_resize_proof(destination: &str) -> Result<(), Box<dyn std::error::
     let sketch = engine.execute("sketch.create", json!({"plane":"XY"}))?.value["sketch"].as_u64().ok_or("sketch")?;
     engine.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]}))?;
     engine.execute("sketch.finish", json!({}))?;
-    engine.execute("solid.extrude", json!({"sketch":sketch,"distance":"10 mm"}))?;
-    let feature = engine.workspace(&[], false, false)["modelling"]["timeline"]
-        .as_array()
-        .and_then(|r| r.last())
-        .and_then(|r| r["id"].as_u64())
-        .ok_or("extrusion")?;
+    let selection = [serde_json::from_value(json!({"type":"feature","id":sketch}))?];
     let mut view = Viewport::default();
     view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
     view.begin_update(1);
     view.install(1, engine.snapshot()?);
     view.command("view.exit_planar", &json!({}))?;
     view.command("view.home", &json!({}))?;
-    let edit = engine.begin_model(901, None, Some(feature), &[])?;
-    view.begin_model(edit)?;
+    let edit = engine.begin_model(901, Some("solid.extrude"), None, &selection)?;
+    view.begin_model(edit.clone())?;
+    let initial = engine.prepare_model(&edit, edit.params.clone(), false)?;
+    view.publish_model(901, &initial)?;
+    view.command("view.fit", &json!({}))?;
+    view.command("view.navigate", &json!({"motion":"zoom","factor":1.5}))?;
     let start = view.diagnostic()["handle_point"].as_array().ok_or("handle")?.clone();
     let capturer = solidcraft_gpu::capture::Capturer::headless()?;
     let capture = |view: &Viewport, label: &str| -> Result<(), Box<dyn std::error::Error>> {
@@ -584,15 +863,28 @@ fn continuous_resize_proof(destination: &str) -> Result<(), Box<dyn std::error::
     send(&mut view, "ended", 10., 2.)?;
     send(&mut view, "began", 10., 3.)?;
     for (index, depth) in [15., 20., 12.].into_iter().enumerate() {
-        send(&mut view, "moved", depth, 4. + index as f64)?;
+        let time = 4. + index as f64;
+        send(&mut view, "moved", depth, time)?;
         let work = view.take_tool_work().ok_or("lost continuous resize contact")?;
+        let prepared = engine.prepare_tool(work.clone())?;
+        // New actual input arrives before scratch geometry completes. Display
+        // that completed pose without rewinding/validating the newer proposal.
+        send(&mut view, "moved", depth + 1., time + 0.1)?;
+        if !view.publish_model_progress(&work, prepared.model) || view.diagnostic()["model_value"]["valid"] != false {
+            return Err("continuous movement lost preview progress or enabled Apply".into());
+        }
+        let edit = view.model_edit(901)?;
+        view.update_model(engine.refresh_model(&edit, &selection, None)?)?;
+        capture(&view, &format!("progress{depth}"))?;
+        send(&mut view, "moved", depth, time + 0.2)?;
+        let work = view.take_tool_work().ok_or("inspection released the new extrusion handle")?;
         let prepared = engine.prepare_tool(work.clone())?;
         view.publish_model_tool_details(&work, prepared.reply, prepared.feedback, prepared.handle);
         if !view.publish_preview(&work, prepared.model) {
             return Err("resize preview rejected".into());
         }
         let edit = view.model_edit(901)?;
-        view.update_model(engine.refresh_model(&edit, &[], None)?)?;
+        view.update_model(engine.refresh_model(&edit, &selection, None)?)?;
         capture(&view, &format!("depth{depth}"))?;
     }
     send(&mut view, "ended", 12., 8.)?;
@@ -601,7 +893,7 @@ fn continuous_resize_proof(destination: &str) -> Result<(), Box<dyn std::error::
     if !view.publish_preview(&work, prepared.model) {
         return Err("final resize preview rejected".into());
     }
-    if (engine.snapshot()?.volume_mm3 - 12_000.).abs() > 1e-6 {
+    if engine.snapshot()?.volume_mm3.abs() > 1e-6 {
         return Err("a handle sample changed the authoritative document".into());
     }
     let edit = view.model_edit(901)?;
@@ -612,8 +904,148 @@ fn continuous_resize_proof(destination: &str) -> Result<(), Box<dyn std::error::
     }
     capture(&view, "applied12")?;
     println!(
-        "PASS: tap/re-grab, one continuous Pencil contact 10→15→20→12 mm, preview/inspection, explicit Apply. Synthetic input, macOS GPU; physical Pencil unverified."
+        "PASS: new extrusion, tap/re-grab, one continuous Pencil contact 10→15→20→12 mm with in-flight motion, displayed progress/inspection, explicit Apply. Synthetic input, macOS GPU; physical Pencil unverified."
     );
+    Ok(())
+}
+
+fn subtract_selection_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.box", json!({"length":40,"width":30,"height":20,"body_name":"Stock"}))?;
+    engine.execute("solid.box", json!({"corner":[55,0,0],"length":20,"width":30,"height":20,"body_name":"Other"}))?;
+    let sketch = engine.execute("sketch.create", json!({"plane":"XY","offset":20}))?.value["sketch"].as_u64().ok_or("sketch")?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[10,8],"p1":[30,22]}))?;
+    engine.execute("sketch.finish", json!({}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("subtract frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("{stage}: {:.3} mm³; {path}", snapshot.model.volume_mm3);
+        Ok(())
+    };
+    let send = |view: &mut Viewport, point: serde_json::Value, phase: &str, time: f64| -> Result<(), Box<dyn std::error::Error>> {
+        let projected = view.command("view.project", &json!({"point":point}))?;
+        let context = view.diagnostic();
+        view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":91,"timestamp":time,
+            "x_points":projected["points"][0],"y_points":projected["points"][1],"x_pixels":projected["pixels"][0],"y_pixels":projected["pixels"][1],"scale":1,
+            "geometry_revision":context["geometry_revision"],"document_id":context["document_id"],"viewport_epoch":context["viewport_epoch"],
+            "camera_epoch":context["camera_epoch"],"display_preview":context["preview"]}))?)?;
+        Ok(())
+    };
+    capture(&view, "before")?;
+    let edit = engine.begin_model(788, Some("solid.extrude"), None, &[serde_json::from_value(json!({"type":"feature","id":sketch}))?])?;
+    view.begin_model(edit)?;
+    view.select_model_inputs(788, Some("targets"))?;
+    send(&mut view, json!([5, 5, 20]), "began", 1.)?;
+    send(&mut view, json!([5, 5, 20]), "ended", 1.1)?;
+    let edit = engine.refresh_model(&view.model_edit(788)?, view.selection(), None)?;
+    if edit.params["targets"] != json!(["Stock"]) || edit.params["profile"]["sketch"] != sketch {
+        return Err("target pick replaced extrusion source".into());
+    }
+    view.update_model(edit.clone())?;
+    capture(&view, "target-picked")?;
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
+    view.publish_model(788, &preview)?;
+    let start = view.diagnostic()["handle_point"].clone();
+    send(&mut view, start.clone(), "began", 2.)?;
+    let mut inward = start;
+    inward[2] = json!(15.);
+    send(&mut view, inward.clone(), "moved", 3.)?;
+    let work = view.take_tool_work().ok_or("inward drag work")?;
+    let prepared = engine.prepare_tool(work.clone())?;
+    view.publish_tool_preview(prepared);
+    capture(&view, "automatic-subtract")?;
+    send(&mut view, inward, "ended", 4.)?;
+    let edit = view.model_edit(788)?;
+    if edit.params["operation"] != "cut" {
+        return Err("inward drag did not select Subtract".into());
+    }
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    let model = engine.accept_model(&edit, prepared)?;
+    if (model.volume_mm3 - 34600.).abs() > 1e-5 {
+        return Err("automatic cut volume".into());
+    }
+    view.finish_model(788, Some(model))?;
+    capture(&view, "applied")?;
+    Ok(())
+}
+
+fn face_extrude_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Stock"}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    let faces = engine.execute("model.faces", json!({"body":"Stock"}))?.value;
+    let top = faces["faces"]
+        .as_array()
+        .ok_or("faces")?
+        .iter()
+        .find(|face| face["plane_normal"][2].as_f64().is_some_and(|normal| normal > 0.999))
+        .ok_or("top face")?;
+    let selection = [serde_json::from_value(json!({"type":"face","body":"Stock","index":top["index"],"point":top["point"]}))?];
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("face extrusion frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("{stage}: {:.3} mm³; {path}", snapshot.model.volume_mm3);
+        Ok(())
+    };
+    capture(&view, "before")?;
+    let edit = engine.begin_model(771, Some("solid.extrude"), None, &selection)?;
+    let mut params = edit.params.clone();
+    params["distance"] = json!("5 mm");
+    params["operation"] = json!("join");
+    let edit = engine.refresh_model(&edit, &selection, Some(params))?;
+    view.begin_model(edit.clone())?;
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
+    if (preview.model.volume_mm3 - 18_000.).abs() > 1e-5 {
+        return Err("face extrusion preview did not add 5 mm".into());
+    }
+    view.publish_model(771, &preview)?;
+    if view.diagnostic()["model_value"].is_null() {
+        return Err("face extrusion preview has no distance handle".into());
+    }
+    capture(&view, "preview")?;
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    view.finish_model(771, Some(engine.accept_model(&edit, prepared)?))?;
+    capture(&view, "applied")?;
+    for (token, operation, direction, volume) in
+        [(772, "new", "positive", 18_000.), (773, "intersect", "negative", 6000.), (774, "cut", "negative", 6000.)]
+    {
+        let mut engine = SessionAdapter::new();
+        engine.execute("solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Stock"}))?;
+        view.begin_update(token);
+        view.install(token, engine.snapshot()?);
+        let edit = engine.begin_model(token, Some("solid.extrude"), None, &selection)?;
+        let mut params = edit.params.clone();
+        params["distance"] = json!("5 mm");
+        params["operation"] = json!(operation);
+        params["direction"] = json!(direction);
+        let edit = engine.refresh_model(&edit, &selection, Some(params))?;
+        view.begin_model(edit.clone())?;
+        let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
+        if (preview.model.volume_mm3 - volume).abs() > 1e-5 {
+            return Err(format!("{operation} preview produced the wrong volume").into());
+        }
+        view.publish_model(token, &preview)?;
+        capture(&view, operation)?;
+        let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+        view.finish_model(token, Some(engine.accept_model(&edit, prepared)?))?;
+    }
     Ok(())
 }
 
@@ -763,6 +1195,7 @@ fn input_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
             document_id: report["document_id"].as_str().map(str::to_string),
             geometry_revision: projected["geometry_revision"].as_u64(),
             consumed: false,
+            sketch_annotation: None,
             shift: false,
             button: 0,
             scroll: 0.0,
@@ -837,6 +1270,79 @@ fn input_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Actual adapter input, solver, history and GPU capture on macOS. These are
 /// synthetic samples, not UIKit screenshots or evidence of Pencil hardware.
+fn sketch_drag_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[10,20],"p1":[50,50],"connect":false}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("view.navigate", &json!({"motion":"zoom","factor":2.0}))?;
+    let original_model = engine.snapshot()?;
+    let original = original_model.sketch.as_ref().ok_or("no sketch")?;
+    for curve in &original.sketch.curves {
+        view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":curve.id,"sketch":original.id},"additive":true}))?;
+    }
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, label: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("no sketch frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{label}: {path}");
+        Ok(())
+    };
+    capture(&view, "before")?;
+    for (enabled, contact) in [(false, 1), (true, 2)] {
+        view.command("view.tool_handles", &json!({"enabled":enabled}))?;
+        for (phase, point) in [("began", [10., 20., 0.]), ("moved", [30., 35., 0.]), ("ended", [30., 35., 0.])] {
+            let p = view.command("view.project", &json!({"point":point}))?;
+            view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":contact,
+                "x_points":p["points"][0],"y_points":p["points"][1],"x_pixels":p["pixels"][0],"y_pixels":p["pixels"][1],
+                "scale":1,"timestamp":contact as f64,"geometry_revision":p["geometry_revision"]}))?)?;
+            if let Some(work) = view.take_tool_work() {
+                if !enabled {
+                    return Err("legacy Select unexpectedly moved geometry".into());
+                }
+                let prepared = engine.prepare_tool(work.clone())?;
+                if work.commit {
+                    if !view.complete_tool(&work, engine.accept_tool(prepared)?) {
+                        return Err("sketch drag commit rejected".into());
+                    }
+                } else {
+                    if !view.publish_preview(&work, prepared.model) {
+                        return Err("sketch drag preview rejected".into());
+                    }
+                    capture(&view, "preview")?;
+                }
+            }
+        }
+        capture(&view, if enabled { "committed" } else { "previous" })?;
+    }
+    let moved_model = engine.snapshot()?;
+    let moved = moved_model.sketch.as_ref().ok_or("no moved sketch")?;
+    for point in original.sketch.points.iter().filter(|p| p.id != "origin") {
+        let index = moved.sketch.resolve_point(&point.id).ok_or("lost sketch point")?;
+        let at = moved.sketch.point(index).ok_or("lost sketch position")?;
+        if (at.x - point.pos.x - 20.).hypot(at.y - point.pos.y - 15.) > 1e-6 {
+            return Err("selected rectangle did not translate together".into());
+        }
+    }
+    if !moved.solved || moved.profiles != 1 || moved.sketch.constraints != original.sketch.constraints {
+        return Err("drag did not preserve the solved profile and constraints".into());
+    }
+    engine.execute("edit.undo", json!({}))?;
+    if engine.snapshot()?.sketch.as_ref().ok_or("no undo sketch")?.sketch != original.sketch {
+        return Err("one undo did not restore the sketch".into());
+    }
+    println!(
+        "PASS: Select drags a selected rectangle by (20,15) mm, preserves constraints/profile, and undoes once. Synthetic Pencil and macOS GPU; physical iPad input unverified."
+    );
+    Ok(())
+}
+
 fn sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = SessionAdapter::new();
     engine.execute("sketch.create", json!({"plane":"XY","name":"Sketch proof"}))?;
@@ -907,8 +1413,39 @@ fn sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
         view.install(generation, engine.snapshot()?);
         capture(&view, label)?;
     }
+    view.command("tool.set", &json!({"tool":"select"}))?;
+    view.command("select.entity", &json!({"entity":{"type":"sketch_constraint","id":dimension}}))?;
+    capture(&view, "dimension-before")?;
+    let annotations = view.diagnostic()["annotations"].clone();
+    let annotation = annotations.as_array().and_then(|rows| rows.iter().find(|row| row["id"] == dimension)).ok_or("missing dimension annotation")?;
+    let x = annotation["points"][0].as_f64().ok_or("missing annotation x")?;
+    let y = annotation["points"][1].as_f64().ok_or("missing annotation y")?;
+    for (phase, dx, dy, time) in [("began", 5.0, 4.0, 10.0), ("moved", 45.0, 64.0, 10.1), ("ended", 45.0, 64.0, 10.2)] {
+        view.input(serde_json::from_value(json!({"source":"finger","phase":phase,"id":40,
+            "x_points":x+dx,"y_points":y+dy,"x_pixels":x+dx,"y_pixels":y+dy,"scale":1,"timestamp":time,
+            "geometry_revision":view.snapshot().ok_or("missing drag frame")?.geometry_revision}))?)?;
+        if let Some(work) = view.take_tool_work() {
+            let prepared = engine.prepare_tool(work.clone())?;
+            if work.commit {
+                if !view.complete_tool(&work, engine.accept_tool(prepared)?) {
+                    return Err("dimension drag commit failed".into());
+                }
+            } else if !view.publish_preview(&work, prepared.model) {
+                return Err("dimension drag preview failed".into());
+            }
+            capture(&view, if work.commit { "dimension-moved" } else { "dimension-preview" })?;
+        }
+    }
+    let moved = view.diagnostic()["annotations"].clone();
+    let annotation = moved.as_array().and_then(|rows| rows.iter().find(|row| row["id"] == dimension)).ok_or("missing moved annotation")?;
+    if (annotation["points"][0].as_f64().ok_or("missing moved x")? - x - 40.0).abs() > 1e-6
+        || (annotation["points"][1].as_f64().ok_or("missing moved y")? - y - 60.0).abs() > 1e-6
+        || (annotation["value"].as_f64().ok_or("missing moved value")? - 60.0).abs() > 1e-6
+    {
+        return Err("dimension drag changed its grab offset or measured value".into());
+    }
     println!(
-        "PASS: synthetic Pencil rectangle; actual driving dimensions, reopen, width preview/commit, native closed profile area1800, undo/redo. macOS GPU only; UIKit/Pencil hardware unverified."
+        "PASS: synthetic Pencil rectangle; actual driving dimensions, reopen, width preview/commit, native closed profile area1800, undo/redo, direct touch dimension drag with arrows and unchanged length. macOS GPU only; UIKit/Pencil hardware unverified."
     );
     Ok(())
 }

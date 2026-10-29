@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.workspace.use_top_safe_area": "Use top strip for document header",
+    "ui.ipados.workspace.use_top_safe_area_help": "Raise the header alongside system indicators when space permits. Turn off to restore the previous spacing."
+  },
+  "de": {
+    "ui.ipados.workspace.use_top_safe_area": "Dokumentkopf im oberen Bereich anzeigen",
+    "ui.ipados.workspace.use_top_safe_area_help": "Den Dokumentkopf neben den Systemanzeigen platzieren, wenn genug Platz ist. Deaktivieren, um den bisherigen Abstand wiederherzustellen."
+  },
+  "ja": {
+    "ui.ipados.workspace.use_top_safe_area": "書類ヘッダーを上部に配置",
+    "ui.ipados.workspace.use_top_safe_area_help": "スペースがある場合、ヘッダーをシステム表示の横に配置します。オフにすると以前の余白に戻ります。"
+  },
+  "ko": {
+    "ui.ipados.workspace.use_top_safe_area": "문서 헤더를 상단 영역에 배치",
+    "ui.ipados.workspace.use_top_safe_area_help": "공간이 있으면 헤더를 시스템 표시 옆으로 올립니다. 끄면 이전 간격으로 돌아갑니다."
+  },
+  "zh": {
+    "ui.ipados.workspace.use_top_safe_area": "在顶部区域显示文档标题栏",
+    "ui.ipados.workspace.use_top_safe_area_help": "空间允许时，将标题栏上移至系统指示器旁。关闭后恢复原来的间距。"
+  }
+}

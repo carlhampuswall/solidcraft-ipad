@@ -8,6 +8,116 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        // Boolean presentation follows typed options, never labels or truthy strings.
+        let booleanOptions: [PresentationJSON] = [.bool(false), .bool(true)]
+        for options in [booleanOptions, Array(booleanOptions.reversed())] {
+            for value in [false, true] {
+                try require(ModellingFormPresentation.booleanValue(kind: "choice", options: options, selected: .bool(value)) == value,
+                            "boolean control changed its typed value or depended on option order")
+            }
+        }
+        for selected: PresentationJSON? in [nil, .null, .string("false"), .integer(0)] {
+            try require(ModellingFormPresentation.booleanValue(kind: "choice", options: booleanOptions, selected: selected) == nil,
+                        "non-boolean selection was coerced into a switch")
+        }
+        let otherOptions: [[PresentationJSON]] = [[], [.bool(false)], [.bool(true), .bool(true)],
+            [.string("false"), .string("true")], [.integer(0), .integer(1)], [.bool(false), .null],
+            [.bool(false), .bool(true), .null]]
+        for options in otherOptions {
+            try require(ModellingFormPresentation.booleanValue(kind: "choice", options: options, selected: .bool(false)) == nil,
+                        "a switch hid an option or replaced a non-boolean choice")
+        }
+        for kind in ["reference", "references", "inline_choice", "text"] {
+            try require(ModellingFormPresentation.booleanValue(kind: kind, options: booleanOptions, selected: .bool(true)) == nil,
+                        "boolean options replaced another field's presentation contract")
+        }
+        // Reordering retains opaque references exactly, including IDs beyond Double precision.
+        let opaqueReference = PresentationJSON.object(["feature": .unsignedInteger(UInt64.max),
+            "profiles": .array([.object(["curves": .array([.string("edge-2"), .string("edge-1")])])])])
+        let references: [PresentationJSON] = [.string("Body2"), opaqueReference, .string("Body1")]
+        try require(ModellingFormPresentation.removing(at: 1, from: references) == [.string("Body2"), .string("Body1")],
+                    "removing a reference changed the remaining order")
+        try require(ModellingFormPresentation.removing(at: 0, from: [opaqueReference]) == [], "last reference could not be removed")
+        try require(ModellingFormPresentation.moving(from: 0, to: 2, in: references) == [opaqueReference, .string("Body1"), .string("Body2")],
+                    "moving down swapped distant inputs instead of retaining their order")
+        try require(ModellingFormPresentation.moving(from: 2, to: 0, in: references) == [.string("Body1"), .string("Body2"), opaqueReference],
+                    "moving up changed opaque reference content or intervening order")
+        try require(ModellingFormPresentation.moving(from: 1, to: 1, in: references) == references, "moving to the same position changed the list")
+        for index in [Int.min, -1, references.count, Int.max] {
+            try require(ModellingFormPresentation.removing(at: index, from: references) == nil, "invalid removal index was accepted")
+            try require(ModellingFormPresentation.moving(from: index, to: 0, in: references) == nil, "invalid move source was accepted")
+            try require(ModellingFormPresentation.moving(from: 0, to: index, in: references) == nil, "invalid move destination was accepted")
+        }
+        try require(ModellingFormPresentation.removing(at: 0, from: []) == nil &&
+                    ModellingFormPresentation.moving(from: 0, to: 0, in: []) == nil, "empty reference list accepted an index")
+        try require(references == [.string("Body2"), opaqueReference, .string("Body1")], "reference presentation mutated the original draft")
+        try require(DragResolution.restored(nil) == 0.1, "drag resolution must default to 0.1 mm")
+        try require(DragResolution.restored(.nan) == 0.1 && DragResolution.restored(-1) == 0.1, "invalid saved drag resolution")
+        for step in DragResolution.options { try require(DragResolution.restored(step) == step, "saved drag resolution was not restored") }
+        for (value, expected) in [(12.34, 12.3), (12.36, 12.4), (-12.36, -12.4)] {
+            try require(abs(DragResolution.snapped(value, units: "mm", step: 0.1) - expected) < 1e-10, "slider resolution failed")
+        }
+        try require(DragResolution.snapped(12.3456, units: "mm", step: 0) == 12.3456, "continuous slider behaviour changed")
+        try require(DragResolution.snapped(12.3456, units: "deg", step: 0.1) == 12.3456, "length resolution changed an angle")
+        try require(DragResolution.snapped(12.3456, units: "", step: 0.1) == 12.3456, "length resolution changed a unitless slider")
+        try require(WorkspaceSelectionFilter(storedValue: nil) == .auto, "new workspaces exclude edges from Pencil selection")
+        try require(WorkspaceSelectionFilter(storedValue: "unknown") == .auto, "invalid saved selection filter did not fall back to Auto")
+        for filter in WorkspaceSelectionFilter.allCases {
+            try require(WorkspaceSelectionFilter(storedValue: filter.rawValue) == filter, "saved selection filter was not restored")
+        }
+        func dismissFaceExtrude(_ selection: [String], automatic: Bool = true, committing: Bool = false) -> Bool {
+            FaceExtrudeTrigger<String>.shouldDismiss(automatic: automatic, committing: committing,
+                                                     selection: selection, isFace: { $0.hasPrefix("face:") })
+        }
+        try require(dismissFaceExtrude([]), "deselecting the last face left automatic Extrude active")
+        try require(dismissFaceExtrude(["edge:1"]), "switching away from faces left automatic Extrude active")
+        try require(!dismissFaceExtrude(["face:top"]), "a remaining face dismissed automatic Extrude")
+        try require(!dismissFaceExtrude([], automatic: false), "deselection cancelled a manually opened tool")
+        try require(!dismissFaceExtrude([], committing: true), "deselection interrupted Apply")
+        var faceExtrude = FaceExtrudeTrigger<String>()
+        func selectionReport(_ selection: [String], enabled: Bool = true, idle: Bool = true,
+                             document: String = "part", revision: UInt64 = 1) -> Bool {
+            faceExtrude.update(document: document, revision: revision, selection: selection,
+                               enabled: enabled, idle: idle, isFace: { $0.hasPrefix("face:") })
+        }
+        try require(!selectionReport([]), "initial workspace opened Extrude")
+        try require(selectionReport(["face:top"]), "selecting a face did not activate Extrude")
+        try require(!selectionReport(["face:top"]), "a refresh reopened Extrude after cancellation")
+        try require(selectionReport(["face:top", "face:side"]), "adding a face did not activate Extrude")
+        try require(!selectionReport(["face:top"]), "deselecting a face opened Extrude")
+        for selection in [[], ["edge:1"], ["vertex:1"], ["body:1"], ["feature:1"], ["profile:1"], ["face:top", "edge:1"]] {
+            try require(!selectionReport(selection), "non-face or mixed selection opened Extrude")
+        }
+        try require(!selectionReport(["face:top"], enabled: false), "legacy preference opened Extrude")
+        try require(!selectionReport(["face:top"]), "enabling the preference reopened an existing selection")
+        _ = selectionReport([])
+        try require(!selectionReport(["face:top"], idle: false), "face selection interrupted another interaction")
+        try require(!selectionReport(["face:top"]), "a blocked selection opened Extrude after its interaction ended")
+        try require(!selectionReport(["face:side"], revision: 2), "geometry publication opened Extrude")
+        try require(!selectionReport(["face:top"], document: "other", revision: 2), "document replacement opened Extrude")
+        _ = selectionReport([], document: "other", revision: 2)
+        try require(selectionReport(["face:top"], document: "other", revision: 2), "reselecting a face did not reopen Extrude")
+        let dimensionContext = DimensionTapTracker.Context(document: "sketch", geometry: 1, viewport: 2, camera: 3)
+        let dimensionPoint = CGPoint(x: 100, y: 80)
+        var dimensionTap = DimensionTapTracker()
+        dimensionTap.begin(id: 1, point: dimensionPoint, target: "edge:l1", context: dimensionContext)
+        try require(dimensionTap.end(id: 1, point: dimensionPoint, context: dimensionContext, cancelled: false) == "edge:l1", "dimension tap did not open its original target")
+        dimensionTap.begin(id: 1, point: dimensionPoint, target: "edge:l1", context: dimensionContext)
+        try require(dimensionTap.end(id: 1, point: CGPoint(x: 105.5, y: 80), context: dimensionContext, cancelled: false) == nil,
+                    "a short committed dimension drag also opened the editor")
+        for interruption in ["drag", "return", "multitouch", "cancel", "display", "suspend", "edge"] {
+            dimensionTap.cancel()
+            dimensionTap.begin(id: 1, point: dimensionPoint, target: interruption == "edge" ? nil : "dimension:d1", context: dimensionContext)
+            if interruption == "drag" || interruption == "return" { dimensionTap.move(id: 1, point: CGPoint(x: 107, y: 80)) }
+            if interruption == "multitouch" {
+                dimensionTap.begin(id: 2, point: dimensionPoint, target: nil, context: dimensionContext)
+                _ = dimensionTap.end(id: 2, point: dimensionPoint, context: dimensionContext, cancelled: false)
+            }
+            if interruption == "suspend" { dimensionTap.cancel() }
+            let context = interruption == "display" ? DimensionTapTracker.Context(document: "sketch", geometry: 1, viewport: 2, camera: 4) : dimensionContext
+            let end = interruption == "drag" ? CGPoint(x: 107, y: 80) : dimensionPoint
+            try require(dimensionTap.end(id: 1, point: end, context: context, cancelled: interruption == "cancel") == nil, "\(interruption) opened a dimension editor")
+        }
         // A busy display lane must preserve the Pencil contact through a burst
         // of actual samples, including its final lift, without an input.cancel.
         func pencil(_ phase: InputSample.Phase, _ sequence: UInt64) -> InputSample {
@@ -42,9 +152,25 @@ struct WorkspaceChecks {
         guard let reversingToken, let reverseBatch = reversing.take(token: reversingToken) else { throw NSError(domain: "InputChecks", code: 2) }
         try require(!reverseBatch.cancelled && reverseBatch.samples.contains(where: { $0.x_points == 500 }), "coalescing lost a direction reversal")
         try require(reverseBatch.samples.last?.x_points == 0, "reverse drag lost its final actual position")
+        let hovering = InputMailbox()
+        let hoverToken = hovering.append(pencil(.hover, 1))
+        _ = hovering.append(pencil(.began, 2))
+        for sequence in UInt64(3)...1000 { _ = hovering.append(pencil(.hover, sequence)) }
+        _ = hovering.append(pencil(.ended, 1001))
+        guard let hoverToken, let hoverBatch = hovering.take(token: hoverToken) else { throw NSError(domain: "InputChecks", code: 3) }
+        try require(!hoverBatch.cancelled && hoverBatch.samples.count <= 128, "hover backlog cancelled a tap or exceeded the buffer bound")
+        try require(hoverBatch.samples.filter { $0.phase != .hover }.map(\.phase) == [.began, .ended], "hover backlog lost tap boundaries")
+        try require(zip(hoverBatch.samples, hoverBatch.samples.dropFirst()).allSatisfy { $0.sequence < $1.sequence }, "hover eviction reordered input")
+        let fullContacts = InputMailbox()
+        let fullToken = fullContacts.append(pencil(.began, 1))
+        for sequence in UInt64(2)...128 { _ = fullContacts.append(pencil(.scroll, sequence)) }
+        _ = fullContacts.append(pencil(.hover, 129))
+        guard let fullToken, let fullBatch = fullContacts.take(token: fullToken) else { throw NSError(domain: "InputChecks", code: 3) }
+        try require(!fullBatch.cancelled && fullBatch.samples.count == 128 && fullBatch.samples.first?.phase == .began,
+                    "incoming hover cancelled a full queue of authoritative input")
         let uncertain = InputMailbox()
         let uncertainToken = uncertain.append(pencil(.began, 1))
-        for sequence in UInt64(2)...130 { _ = uncertain.append(pencil(.hover, sequence)) }
+        for sequence in UInt64(2)...130 { _ = uncertain.append(pencil(.scroll, sequence)) }
         guard let uncertainToken, let uncertainBatch = uncertain.take(token: uncertainToken) else { throw NSError(domain: "InputChecks", code: 3) }
         try require(uncertainBatch.cancelled, "uncompressible input must retain conservative cancellation")
         let staleInputToken = mailbox.append(pencil(.began, 1002))
@@ -169,6 +295,26 @@ struct WorkspaceChecks {
                 cases += 1
             }
         }
+        // The browser starts at its button's top-left and shifts the chrome to
+        // its right. Handedness still controls the modelling/navigation rails.
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 834, height: 1140), CGSize(width: 600, height: 420)] {
+            for largeText in [false, true] {
+                for railRight in [false, true] {
+                    let closed = WorkspaceLayout.resolve(size: size, browser: false, inspector: false, railRight: railRight, largeText: largeText)
+                    let opened = WorkspaceLayout.resolve(size: size, browser: true, inspector: false, railRight: railRight, largeText: largeText)
+                    guard let browser = opened.browser else { throw NSError(domain: "BrowserChecks", code: 1) }
+                    try require(browser.minX == closed.browserAccess.minX && browser.minY == closed.browserAccess.minY, "browser does not open from its button")
+                    for frame in [opened.rail, opened.topBar, opened.navigation, opened.history, opened.browserAccess, opened.status] {
+                        try require(!frame.intersects(browser), "browser covers adjacent workspace controls")
+                    }
+                    try require(opened.canvas == closed.canvas, "unpinned browser changes picking coordinates")
+                    let legacy = WorkspaceLayout.resolve(size: size, browser: true, inspector: false, railRight: railRight, largeText: largeText, leftBrowser: false)
+                    try require(legacy.browser?.minY == legacy.rail.minY, "legacy anchored browser preference was lost")
+                    try require(legacy.canvas == closed.canvas, "legacy browser changes the viewport")
+                    cases += 1
+                }
+            }
+        }
         // Floating panels must not resize the viewport. Only an explicitly
         // pinned wide browser consumes content width; closing it restores it.
         for size in [CGSize(width: 1194, height: 790), CGSize(width: 1024, height: 700),
@@ -203,15 +349,36 @@ struct WorkspaceChecks {
                 try require(frame.width.isFinite && frame.height.isFinite && frame.width >= 0 && frame.height >= 0, "invalid floating drawable")
             }
         }
-        // The viewport fills space behind system indicators; controls retain
-        // their safe, keyboard-reduced bounds, including with a pinned browser.
+        // Bottom controls use the home-indicator area by default. Top/side
+        // insets, the keyboard boundary and the previous spacing remain usable.
         for size in [CGSize(width: 1366, height: 1024), CGSize(width: 1194, height: 834), CGSize(width: 834, height: 1194),
                      CGSize(width: 600, height: 420), CGSize(width: 390, height: 844)] {
             for keyboard in [false, true] {
                 let viewport = CGRect(x: 0, y: 0, width: size.width, height: size.height - (keyboard ? 300 : 0))
                 let safe = CGRect(x: 12, y: 24, width: size.width - 24, height: size.height - 44)
-                let chrome = CGRect(x: safe.minX, y: safe.minY, width: safe.width,
+                let oldChrome = CGRect(x: safe.minX, y: safe.minY, width: safe.width,
                                     height: max(0, min(safe.maxY, viewport.maxY) - safe.minY))
+                let chrome = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: viewport)
+                try require(chrome.minX == safe.minX && chrome.minY == safe.minY && chrome.width == safe.width,
+                            "bottom extension changed top/side system insets")
+                try require(chrome.maxY == viewport.maxY, "bottom safe area is still reserved for chrome")
+                let restored = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: viewport, useBottomSafeArea: false)
+                try require(restored == oldChrome, "bottom spacing preference does not restore the previous bounds")
+                for available in [chrome, restored] {
+                    for compactChrome in [false, true] {
+                        for historyExpanded in [false, true] {
+                            let layout = WorkspaceLayout.resolve(size: available.size, browser: true, inspector: true,
+                                railRight: false, largeText: false, compactChrome: compactChrome, historyExpanded: historyExpanded)
+                                .placed(in: available, viewport: viewport)
+                            try require(layout.featureHistory.maxY == available.maxY - 8,
+                                        "history does not use the available bottom space")
+                            try require(layout.featureHistory.intersects(safe) && viewport.contains(layout.featureHistory),
+                                        "history escaped the window/keyboard boundary")
+                            try require(layout.topBar.minY >= safe.minY, "header moved under the status bar")
+                            cases += 1
+                        }
+                    }
+                }
                 for railRight in [false, true] {
                     for largeText in [false, true] {
                         let closed = WorkspaceLayout.resolve(size: chrome.size, browser: false, inspector: false,
@@ -224,7 +391,7 @@ struct WorkspaceChecks {
                                         "panel leaves top or bottom viewport strips")
                             try require(viewport.contains(layout.canvas), "placed viewport escaped window/keyboard bounds")
                             for frame in [layout.topBar, layout.status, layout.rail, layout.navigation, layout.history, layout.browserAccess] + [layout.browser, layout.inspector].compactMap({ $0 }) {
-                                try require(chrome.contains(frame), "full-window layout moved controls under system indicators")
+                                try require(chrome.contains(frame), "full-window layout moved controls outside usable bounds")
                             }
                             if panel.1, chrome.width >= (largeText ? 1180 : 1000), let browser = layout.browser {
                                 try require(!layout.canvas.intersects(browser), "full-window expansion covers pinned browser")
@@ -235,13 +402,186 @@ struct WorkspaceChecks {
                 }
             }
         }
+        // Only the floating header may enter the centre of the status strip.
+        // Its full touch target and all other chrome/viewport frames survive.
+        for width: CGFloat in [600, 834, 1194, 1366] {
+            for topInset: CGFloat in [0, 24, 50, 80] {
+                for largeText in [false, true] {
+                    for browser in [false, true] {
+                        let viewport = CGRect(x: 0, y: 0, width: width, height: 700)
+                        let chrome = CGRect(x: 0, y: topInset, width: width, height: 700 - topInset)
+                        let source = WorkspaceLayout.resolve(size: chrome.size, browser: browser, inspector: true,
+                            railRight: false, largeText: largeText)
+                        let old = source.placed(in: chrome, viewport: viewport)
+                        let raised = source.placed(in: chrome, viewport: viewport, useTopSafeArea: true)
+                        let fits = !largeText && topInset >= 20 && topInset <= 64 &&
+                            old.topBar.minX >= 240 && old.topBar.maxX <= viewport.maxX - 240
+                        if fits {
+                            try require(raised.topBar.minY == 4 && raised.topBar.minY < chrome.minY,
+                                        "header did not use the available upper strip")
+                        } else {
+                            try require(raised.topBar == old.topBar, "crowded or accessibility header entered system UI")
+                        }
+                        try require(raised.topBar.size == old.topBar.size && raised.topBar.minX == old.topBar.minX,
+                                    "raising the header changed its content or touch bounds")
+                        try require(viewport.contains(raised.topBar), "raised header escaped the window")
+                        try require(raised.canvas == old.canvas && raised.status == old.status && raised.rail == old.rail &&
+                            raised.navigation == old.navigation && raised.browser == old.browser && raised.inspector == old.inspector &&
+                            raised.history == old.history && raised.featureHistory == old.featureHistory && raised.browserAccess == old.browserAccess,
+                                    "raising the header moved other controls or rebased rendering/picking")
+                        for frame in [raised.rail, raised.navigation, raised.browserAccess] + [raised.browser, raised.inspector].compactMap({ $0 }) {
+                            try require(!raised.topBar.intersects(frame), "raised header covers another control")
+                        }
+                        let legacy = WorkspaceLayout.resolve(size: chrome.size, browser: browser, inspector: true,
+                            railRight: false, largeText: largeText, compactChrome: false)
+                        try require(legacy.placed(in: chrome, viewport: viewport, useTopSafeArea: true).topBar ==
+                            legacy.placed(in: chrome, viewport: viewport).topBar, "top strip preference changed the docked toolbar")
+                        cases += 1
+                    }
+                }
+            }
+        }
         let numericPanel = WorkspaceLayout.resolve(size: CGSize(width: 1194, height: 790), browser: false, inspector: true,
                                                    railRight: false, largeText: false, inspectorContentHeight: 500, navigationContentHeight: 146)
         try require(numericPanel.inspector?.height == 500, "simple numeric editor became a full-height inspector")
         try require(numericPanel.navigation.height == 146, "navigation surface retains unused permanent space")
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 744, height: 790), CGSize(width: 500, height: 400)] {
+            for right in [false, true] {
+                for large in [false, true] {
+                    let closed = WorkspaceLayout.resolve(size: size, browser: false, inspector: false, railRight: right, largeText: large)
+                    let opened = WorkspaceLayout.resolve(size: size, browser: false, inspector: true, railRight: right, largeText: large,
+                                                         inspectorContentHeight: 620, inspectorPreferredWidth: 380)
+                    try require(closed.canvas == opened.canvas, "compact inspector changed the Metal picking/camera bounds")
+                    if let panel = opened.inspector {
+                        try require(CGRect(origin: .zero, size: size).contains(panel), "compact inspector escaped a narrow/keyboard-reduced window")
+                        try require(panel.width <= 380, "compact inspector exceeded its requested readable width")
+                    }
+                }
+            }
+        }
         try require(WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: false, numericEditActive: false), "document shortcuts unavailable at rest")
         try require(!WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: true, numericEditActive: false), "text undo routes to document")
         try require(!WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: false, numericEditActive: true), "numeric draft permits unrelated history action")
+        // Scrubbing snaps in content coordinates and preserves the final Pencil
+        // position when evaluation is slower than the incoming drag samples.
+        let centres: [CGFloat] = [30, 78, 126]
+        for (x, position) in [(CGFloat(-100), 0), (8, 0), (31, 1), (80, 2), (140, 3), (1000, 3)] {
+            try require(HistoryScrubGeometry.position(at: x, centres: centres) == position, "history drag snapped to the wrong feature gap")
+            try require(HistoryScrubGeometry.position(at: x + 200, centres: centres.map { $0 + 200 }) == position, "scroll offset changed the dragged feature boundary")
+        }
+        try require(HistoryScrubGeometry.position(at: .nan, centres: centres) == nil, "nonfinite marker contact was accepted")
+        try require(HistoryScrubGeometry.position(at: 10, centres: []) == nil, "empty history exposed a draggable boundary")
+        try require(HistoryScrubGeometry.position(at: 10, centres: [30, 20]) == nil, "unordered feature frames were accepted")
+        var scrub = HistoryScrubQueue()
+        scrub.begin(at: 3); scrub.move(to: 2)
+        guard let firstScrub = scrub.next() else { throw NSError(domain: "HistoryScrub", code: 1) }
+        scrub.move(to: 1); scrub.move(to: 0); scrub.end()
+        try require(scrub.next() == nil, "a drag queued multiple concurrent evaluations")
+        scrub.complete(firstScrub, succeeded: true)
+        guard let finalScrub = scrub.next() else { throw NSError(domain: "HistoryScrub", code: 2) }
+        try require(finalScrub.position == 0, "Pencil lift lost its latest requested history position")
+        try require(!scrub.complete(firstScrub, succeeded: true), "an old completion accepted a second time")
+        scrub.complete(finalScrub, succeeded: true)
+        try require(scrub.active, "marker stopped tracking before the authoritative workspace acknowledged it")
+        scrub.acknowledge(0)
+        try require(!scrub.active, "final marker position never settled")
+        // Reversing to the starting position must still run after a slower
+        // earlier request, even if the cached workspace still reports that start.
+        scrub.begin(at: 3); scrub.move(to: 1)
+        guard let reverse = scrub.next() else { throw NSError(domain: "HistoryScrub", code: 3) }
+        scrub.move(to: 3); scrub.end(); scrub.complete(reverse, succeeded: true); scrub.acknowledge(3)
+        guard let returnToStart = scrub.next() else { throw NSError(domain: "HistoryScrub", code: 4) }
+        try require(returnToStart.position == 3, "stale workspace echo discarded the final reverse drag")
+        scrub.cancel(); scrub.begin(at: 0); scrub.move(to: 2)
+        guard let replacement = scrub.next() else { throw NSError(domain: "HistoryScrub", code: 5) }
+        try require(!scrub.complete(returnToStart, succeeded: true) && scrub.inFlight == replacement, "completion from a cancelled document moved its replacement")
+        scrub.complete(replacement, succeeded: false)
+        try require(!scrub.active && scrub.next() == nil, "failed timeline command continued the drag")
+        // Decode the existing Rust viewport projection, including automatic
+        // effective visibility; every subset must advertise the correct action.
+        for mask in 0..<128 {
+            let visible = (0..<7).map { mask & (1 << $0) != 0 }
+            let json = try JSONSerialization.data(withJSONObject: ["result": [
+                "origin": ["visible": visible, "choosing": mask % 2 == 0],
+                "grid": ["visible": true], "planar": false, "camera": ["fov": 0]
+            ]])
+            let projection = try JSONDecoder().decode(ViewControlsPresentation.Envelope.self, from: json).result
+            let expected: ViewControlsPresentation.Visibility = mask == 0 ? .none : (mask == 127 ? .all : .some)
+            try require(projection.visibility == expected, "reference master lost an effective mixed state")
+            try require(projection.masterTarget == (mask != 127), "reference master must show every mixed or hidden set")
+            for (index, item) in ["O", "X", "Y", "Z", "XY", "XZ", "YZ"].enumerated() {
+                try require(projection.originVisible(item) == visible[index], "individual reference did not match the master source")
+            }
+            try require(projection.grid.visible, "reference projection changed the independent grid")
+            cases += 1
+        }
+        // Selected View buttons follow the actual camera, including orbit and
+        // roll away from a standard orientation, rather than the last button.
+        let orientations: [(String, Double, Double)] = [
+            ("front", 0, 0), ("back", .pi, 0), ("left", .pi / 2, 0), ("right", -.pi / 2, 0),
+            ("top", 0, .pi / 2 - 0.000001), ("bottom", 0, -.pi / 2 + 0.000001),
+            ("isometric", -.pi / 4, 0.6154797086703874)
+        ]
+        for (name, yaw, pitch) in orientations {
+            for fov in [0.0, 0.6] {
+                let cameraJSON = try JSONSerialization.data(withJSONObject: ["fov": fov, "yaw": yaw + 2 * Double.pi, "pitch": pitch, "roll": 0])
+                let camera = try JSONDecoder().decode(ViewControlsPresentation.Camera.self, from: cameraJSON)
+                try require(camera.standardView == name, "View selection does not match native camera orientation")
+                cases += 1
+            }
+        }
+        for values in [["fov": 0.0, "yaw": 0.3, "pitch": 0.2, "roll": 0.0],
+                       ["fov": 0.0, "yaw": 0.0, "pitch": 0.0, "roll": 0.2], ["fov": 0.0]] {
+            let json = try JSONSerialization.data(withJSONObject: values)
+            let camera = try JSONDecoder().decode(ViewControlsPresentation.Camera.self, from: json)
+            try require(camera.standardView == nil, "free-orbit or unavailable camera falsely selected a standard View")
+        }
+        // Long translations and Dynamic Type enlarge just the labelled controls.
+        let ordinaryViewLayout = WorkspaceLayout.resolve(size: CGSize(width: 1194, height: 790), browser: false,
+            inspector: false, railRight: false, largeText: false, historyToggleWidth: 112, viewButtonSize: CGSize(width: 96, height: 52))
+        let largeViewLayout = WorkspaceLayout.resolve(size: CGSize(width: 1194, height: 790), browser: false,
+            inspector: false, railRight: false, largeText: false, historyToggleWidth: 220, viewButtonSize: CGSize(width: 180, height: 52))
+        try require(ordinaryViewLayout.rail == largeViewLayout.rail && ordinaryViewLayout.canvas == largeViewLayout.canvas &&
+                    ordinaryViewLayout.topBar == largeViewLayout.topBar && ordinaryViewLayout.browserAccess == largeViewLayout.browserAccess,
+                    "View/History labels moved the left rail, document header or rendering coordinates")
+        try require(largeViewLayout.featureHistory.width == 220 && largeViewLayout.viewAccess.width == 180 &&
+                    largeViewLayout.navigation.width == ordinaryViewLayout.navigation.width,
+                    "label sizing discarded measured text width or widened the navigation icons")
+        // History starts as one touch target. Its expanded strip stays above the
+        // keyboard, clear of chrome, and never rebases the floating Metal view.
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 834, height: 1140),
+                     CGSize(width: 390, height: 420), CGSize(width: 320, height: 240)] {
+            for compactChrome in [false, true] {
+                for largeText in [false, true] {
+                    for railRight in [false, true] {
+                        for browser in [false, true] {
+                            let closed = WorkspaceLayout.resolve(size: size, browser: browser, inspector: !browser,
+                                railRight: railRight, largeText: largeText, compactChrome: compactChrome)
+                            let opened = WorkspaceLayout.resolve(size: size, browser: browser, inspector: !browser,
+                                railRight: railRight, largeText: largeText, compactChrome: compactChrome, historyExpanded: true)
+                            let bounds = CGRect(origin: .zero, size: size)
+                            try require(closed.featureHistory.width == 112 && closed.featureHistory.height >= 44, "collapsed history does not fit its text and icon")
+                            try require(opened.featureHistory.width >= size.width - 16, "expanded history does not expose the full strip")
+                            for layout in [closed, opened] {
+                                try require(bounds.contains(layout.featureHistory), "history escaped the keyboard-reduced window")
+                                if compactChrome {
+                                    try require(bounds.contains(layout.viewAccess), "View escaped the available window")
+                                    for other in [layout.topBar, layout.navigation, layout.browserAccess, layout.rail] {
+                                        try require(!layout.viewAccess.intersects(other), "standalone View overlaps other chrome: size=\(size) railRight=\(railRight) browser=\(browser) expanded=\(layout.featureHistory.width > 112) view=\(layout.viewAccess) other=\(other)")
+                                    }
+                                    try require(layout.viewAccess.maxY <= layout.navigation.minY, "View is not above the navigation controls")
+                                }
+                                for frame in [layout.topBar, layout.rail, layout.navigation, layout.history, layout.status] + [layout.browser, layout.inspector].compactMap({ $0 }) {
+                                    try require(!frame.intersects(layout.featureHistory), "history covers chrome: size=\(size) floating=\(compactChrome) large=\(largeText) railRight=\(railRight) browser=\(browser) frame=\(frame) history=\(layout.featureHistory)")
+                                }
+                            }
+                            if compactChrome { try require(opened.canvas == closed.canvas, "expanding history changed rendering/picking coordinates") }
+                            cases += 1
+                        }
+                    }
+                }
+            }
+        }
         try require(!WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: true, textEntryActive: false), "dismissal tap can reach viewport")
         try require(!WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: false, textEntryActive: true), "typing leaves viewport active")
         try require(WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: false, textEntryActive: false), "viewport unavailable at rest")
@@ -283,6 +623,22 @@ struct WorkspaceChecks {
         let roundTrip = try JSONDecoder().decode([String: PresentationJSON].self, from: exactJSON)
         try require(roundTrip == draft && PresentationJSON.parameter("target.feature", in: roundTrip) == .unsignedInteger(UInt64.max), "native integer reference did not round-trip")
         try require(draft != definition, "changed expressions could reuse old preview eligibility")
+        // Preview validation follows the exact draft revision. UIKit owns raw
+        // text and selection; the policy never parses or normalises expressions.
+        var numericDraft = NumericDraftValidation()
+        try require(!numericDraft.isValidated, "an unpreviewed numeric draft enabled Apply")
+        let originalNumericRevision = numericDraft.revision
+        numericDraft.changed() // a fast edit while the first preview is pending
+        try require(!numericDraft.complete(revision: originalNumericRevision, valid: true), "an older preview validated newer numeric input")
+        try require(!numericDraft.isValidated, "a stale numeric preview enabled Apply")
+        let currentNumericRevision = numericDraft.revision
+        try require(numericDraft.complete(revision: currentNumericRevision, valid: true) && numericDraft.isValidated, "the current numeric preview did not enable Apply")
+        numericDraft.changed() // edit away, then back to exactly the original text
+        numericDraft.changed()
+        try require(!numericDraft.complete(revision: currentNumericRevision, valid: true) && !numericDraft.isValidated, "retyping old text reused its earlier validation")
+        try require(numericDraft.complete(revision: numericDraft.revision, valid: false) && !numericDraft.isValidated, "invalid expression enabled Apply")
+        try require(numericDraft.complete(revision: numericDraft.revision, valid: true) && numericDraft.isValidated, "correcting an invalid expression did not recover validation")
+        try require(!numericDraft.complete(revision: originalNumericRevision, valid: false) && numericDraft.isValidated, "a stale error removed newer validation")
         // This is the native model bridge envelope shape: real profile-selection
         // payloads, expression text, nullable feature IDs and ordered input arrays.
         // The production response decoder is generic only over the workspace body.
@@ -294,7 +650,20 @@ struct WorkspaceChecks {
         try require(model.fields?.map(\.kind) == ["reference", "expression", "choice", "references"], "modelling input field kinds were lost")
         try require(model.fields?.first?.options?.first?.value == model.params?["profile"], "real profile reference did not match its option")
         try require(model.params?["distance"] == .string("height / 2") && model.fields?[1].units == "mm", "expression or units were changed")
+        let operationJSON = Data(#"{"key":"operation","label":"Operation","kind":"inline_choice","options":[{"label":"New Body","value":"new"},{"label":"Union","value":"join"},{"label":"Intersect","value":"intersect"},{"label":"Subtract","value":"cut"}]}"#.utf8)
+        let operation = try JSONDecoder().decode(ModellingResponse<ModelWorkspace>.Field.self, from: operationJSON)
+        let allFields = (model.fields ?? []) + [operation]
+        let ordered = InspectorPresentation.orderedFields(allFields, compact: true)
+        try require(ordered.map(\.key) == ["profile", "distance", "operation", "direction", "sections"], "compact Extrude hid or reordered additional references")
+        try require(ordered[2].options?.map(\.value) == [.string("new"), .string("join"), .string("intersect"), .string("cut")], "boolean presentation changed the engine's option IDs/order")
+        try require(InspectorPresentation.orderedFields(allFields, compact: false).map(\.key) == ["operation", "profile", "distance", "direction", "sections"], "previous inspector ordering is unavailable")
+        try require(InspectorPresentation.choiceIcon(field: "operation", value: .string("new_body")) == "body", "feature edits lost the distinct New Body icon")
+        try require(InspectorPresentation.choiceIcon(field: "other", value: .string("cut")) == nil, "operation artwork was assigned to an unrelated choice")
         try require(model.workspace.modelling.timeline.first?.id == 7 && model.workspace.modelling.parameters.first?.expression == "20 mm", "feature history or named parameters were lost")
+        try require(model.workspace.modelling.activeFeatureCount == 1, "older timeline payload lost its end-position fallback")
+        let rolledHistory = Data(#"{"tools":[],"timeline":[{"id":7,"name":"Sketch","kind":"Sketch","order":0,"suppressed":false}],"position":0,"parameters":[]}"#.utf8)
+        let history = try JSONDecoder().decode(ModellingPresentation.self, from: rolledHistory)
+        try require(history.activeFeatureCount == 0 && history.timeline.count == 1, "rollback position must preserve future feature icons")
         let finishedModelJSON = Data(#"{"ok":true,"result":{"token":null,"valid":true,"committed":true,"workspace":{"modelling":{"tools":[],"timeline":[],"parameters":[]}},"viewport":{}}}"#.utf8)
         let finishedModel = try JSONDecoder().decode(ModelEnvelope.self, from: finishedModelJSON).result
         try require(finishedModel.token == nil && finishedModel.fields == nil && finishedModel.params == nil, "completed model response requires an active form")
@@ -376,6 +745,46 @@ struct WorkspaceChecks {
         do { _ = try ProjectLibrary.stageImport(oversized); throw ProjectLibrary.failure("accepted_oversized") }
         catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_oversized", "oversized import bypassed its limit") }
         try require(ProjectLibrary.importExtensions.contains("step") && ProjectLibrary.importExtensions.contains("stp") && !ProjectLibrary.importExtensions.contains("exe"), "import extension contract changed")
+        let browserNodes = [
+            BrowserSearchNode(id: "root", parent: nil, name: "SolidCraft"),
+            BrowserSearchNode(id: "bodies", parent: "root", name: "Bodies"),
+            BrowserSearchNode(id: "folder", parent: "bodies", name: "Frame"),
+            BrowserSearchNode(id: "a:Post", parent: "folder", name: "Póst"),
+            BrowserSearchNode(id: "b:Post", parent: "bodies", name: "Post"),
+            BrowserSearchNode(id: "other", parent: "bodies", name: "Base")
+        ]
+        let closed: Set<String> = ["bodies", "folder"]
+        let ordinaryBrowser = BrowserSearchProjection.make(nodes: browserNodes, query: "", collapsed: closed)
+        try require(ordinaryBrowser.ids == ["root", "bodies"], "unfiltered browser ignores stored collapsed state")
+        let found = BrowserSearchProjection.make(nodes: browserNodes, query: "  POST  ", collapsed: closed)
+        try require(found.ids == ["root", "bodies", "folder", "a:Post", "b:Post"], "find loses order, ancestor context or duplicate occurrence identities")
+        try require(found.matches == ["a:Post", "b:Post"], "find counts context or loses case/diacritic matches")
+        try require(BrowserSearchProjection.make(nodes: browserNodes, query: "frame", collapsed: closed).ids == ["root", "bodies", "folder"], "matching folder incorrectly includes unrelated descendants")
+        try require(BrowserSearchProjection.make(nodes: browserNodes, query: "missing", collapsed: closed).ids.isEmpty, "no-results still shows unrelated roots")
+        try require(BrowserSearchProjection.make(nodes: browserNodes, query: "   ", collapsed: closed).ids == ordinaryBrowser.ids, "whitespace query fails to restore tree")
+        let renamedBrowser = browserNodes.filter { $0.id != "a:Post" }.map {
+            BrowserSearchNode(id: $0.id, parent: $0.parent, name: $0.id == "b:Post" ? "Rail" : $0.name)
+        }
+        try require(BrowserSearchProjection.make(nodes: renamedBrowser, query: "post", collapsed: closed).matches.isEmpty, "renamed/deleted row remains in results")
+        try require(BrowserSearchProjection.make(nodes: browserNodes, query: "post", collapsed: closed).ids == found.ids, "undo/refresh does not recover original identities")
+        let cycle = [BrowserSearchNode(id: "a", parent: "b", name: "post"), BrowserSearchNode(id: "b", parent: "a", name: "post")]
+        try require(BrowserSearchProjection.make(nodes: cycle, query: "post", collapsed: []).ids.isEmpty, "malformed browser cycle invented a root")
+        let largeTree = [BrowserSearchNode(id: "root", parent: nil, name: "Root")] + (0..<10000).map {
+            BrowserSearchNode(id: String($0), parent: "root", name: "Part \($0)")
+        }
+        try require(BrowserSearchProjection.make(nodes: largeTree, query: "part 9999", collapsed: ["root"]).ids == ["root", "9999"], "large-tree search lost identity or collapsed ancestor")
+        for width: CGFloat in [200, 280, 320, 380] {
+            for height: CGFloat in [44, 56, 90] {
+                let bounds = CGRect(x: 0, y: 0, width: width, height: height)
+                let eye = BrowserRowColumns.eye(in: bounds), disclosure = BrowserRowColumns.disclosure(in: bounds)
+                try require(bounds.contains(eye) && bounds.contains(disclosure) && !eye.intersects(disclosure), "browser eye/disclosure targets overlap or clip")
+                try require(eye.width == 44 && eye.height == 44 && disclosure.width == 44 && BrowserRowColumns.width == 88, "browser controls lost fixed touch columns")
+            }
+        }
+        let bookmark = BrowserScrollBookmark(id: "a:Post", displacement: -8, fallback: 100)
+        try require(bookmark.restoredY(rowY: 320, maximum: 500) == 312, "search restoration lost row-relative scroll")
+        try require(bookmark.restoredY(rowY: nil, maximum: 50) == 50, "deleted scroll anchor not clamped")
+        try require(bookmark.restoredY(rowY: 0, maximum: 500) == 0, "scroll restoration escaped top")
         print("Workspace layout/focus/command decoding checks PASS: \(cases) adaptive cases; no simulator or device launch")
     }
 }

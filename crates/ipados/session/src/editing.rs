@@ -82,6 +82,7 @@ pub struct PreparedTool {
     pub reply: Value,
     pub feedback: Vec<String>,
     pub handle: Option<crate::modelling::ModelHandle>,
+    pub model_params: Option<Value>,
 }
 
 impl SessionAdapter {
@@ -143,7 +144,11 @@ impl SessionAdapter {
     pub fn prepare_tool(&self, work: ToolWork) -> Result<PreparedTool, AdapterError> {
         self.validate_tool(&work)?;
         if let ToolOperation::Modelling { token, operation, feature, params } = &work.operation {
-            let edit = self.begin_model(*token, Some(operation), *feature, &[])?;
+            let mut edit = self.begin_model(*token, Some(operation), *feature, &[])?;
+            // A handle sample is already the viewport's current form. Rebuilding
+            // its metadata must not compare inferred targets with creation defaults
+            // and mistake them for a newly submitted target-list edit.
+            edit.params = params.clone();
             let prepared = self.prepare_model(&edit, params.clone(), false)?;
             return Ok(PreparedTool {
                 work,
@@ -152,6 +157,7 @@ impl SessionAdapter {
                 reply: prepared.reply,
                 feedback: prepared.feedback,
                 handle: prepared.handle,
+                model_params: Some(prepared.params),
             });
         }
         let commands = work.commands();
@@ -193,7 +199,7 @@ impl SessionAdapter {
         }
         let model = scratch.snapshot()?;
         let transaction = if work.commit { Some(self.session.scratch().compute_commands(&commands, None)?) } else { None };
-        Ok(PreparedTool { work, model, transaction, reply: Value::Null, feedback: Vec::new(), handle: None })
+        Ok(PreparedTool { work, model, transaction, reply: Value::Null, feedback: Vec::new(), handle: None, model_params: None })
     }
 
     /// The bridge checks the interaction ticket while holding the viewport lock before

@@ -1,0 +1,32 @@
+{
+  "en": {
+    "ui.ipados.browser.dismiss_find": "Dismiss model search",
+    "ui.ipados.browser.find": "Find in model",
+    "ui.ipados.browser.match_count": "{count} matches",
+    "ui.ipados.browser.no_matches": "No matching items"
+  },
+  "de": {
+    "ui.ipados.browser.dismiss_find": "Modellsuche schließen",
+    "ui.ipados.browser.find": "Im Modell suchen",
+    "ui.ipados.browser.match_count": "{count} Treffer",
+    "ui.ipados.browser.no_matches": "Keine passenden Elemente"
+  },
+  "ja": {
+    "ui.ipados.browser.dismiss_find": "モデル検索を閉じる",
+    "ui.ipados.browser.find": "モデル内を検索",
+    "ui.ipados.browser.match_count": "{count} 件一致",
+    "ui.ipados.browser.no_matches": "一致する項目がありません"
+  },
+  "ko": {
+    "ui.ipados.browser.dismiss_find": "모델 검색 닫기",
+    "ui.ipados.browser.find": "모델에서 찾기",
+    "ui.ipados.browser.match_count": "일치 항목 {count}개",
+    "ui.ipados.browser.no_matches": "일치하는 항목 없음"
+  },
+  "zh": {
+    "ui.ipados.browser.dismiss_find": "关闭模型搜索",
+    "ui.ipados.browser.find": "在模型中查找",
+    "ui.ipados.browser.match_count": "{count} 个匹配项",
+    "ui.ipados.browser.no_matches": "没有匹配项"
+  }
+}

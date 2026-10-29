@@ -59,10 +59,10 @@ impl ViewportMetrics {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PickFilter {
+    #[default]
     Auto,
     Body,
     Occurrence,
-    #[default]
     Face,
     Edge,
     Vertex,
@@ -93,6 +93,45 @@ impl PickScene {
     /// In the same order as Scene::meshes, including occurrence-qualified engine names.
     pub fn body_names(&self) -> Vec<String> {
         self.bodies.iter().map(|b| b.name.clone()).collect()
+    }
+
+    /// Match desktop surface and circular-rim selection across kernel splits.
+    /// Keep the original pick first, including the placement point tools consume.
+    pub(crate) fn grouped_selection(&self, selection: &Sel) -> Vec<Sel> {
+        let (Sel::Face { body, index, .. } | Sel::Edge { body, index, .. }) = selection else { return vec![selection.clone()] };
+        let Some(body_mesh) = self.bodies.iter().find(|candidate| &candidate.name == body) else { return vec![selection.clone()] };
+        let mesh = &body_mesh.mesh;
+        if matches!(selection, Sel::Edge { .. }) {
+            let mut rim = mesh.circular_rim(*index);
+            rim.sort_by_key(|edge| usize::from(edge != index));
+            return rim
+                .into_iter()
+                .filter_map(|edge| {
+                    if edge == *index {
+                        return Some(selection.clone());
+                    }
+                    let points = mesh.edges.get(edge)?;
+                    Some(Sel::Edge { body: body.clone(), index: edge, point: *points.get(points.len() / 2)? })
+                })
+                .collect();
+        }
+        let mut patch = mesh.surface_patch(*index);
+        patch.sort_by_key(|face| usize::from(face != index));
+        patch
+            .into_iter()
+            .filter_map(|face| {
+                if face == *index {
+                    return Some(selection.clone());
+                }
+                mesh.triangles.iter().zip(&mesh.tri_face).find_map(|(triangle, id)| {
+                    if *id as usize != face {
+                        return None;
+                    }
+                    let [a, b, c] = mesh.tri(triangle)?;
+                    Some(Sel::Face { body: body.clone(), index: face, point: (a + b + c) / 3. })
+                })
+            })
+            .collect()
     }
 
     pub(crate) fn new(scene: &Scene, names: Vec<String>, bounds: Aabb3) -> Result<Self, AdapterError> {

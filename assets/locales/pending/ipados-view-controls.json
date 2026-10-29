@@ -1,0 +1,37 @@
+{
+  "en": {
+    "ui.ipados.view.grid": "Grid",
+    "ui.ipados.view.individual_references": "Individual references",
+    "ui.ipados.view.origin_subtitle": "Axes, planes & origin",
+    "ui.ipados.view.some_visible": "Some visible",
+    "ui.ipados.view.standard_views": "Standard views"
+  },
+  "de": {
+    "ui.ipados.view.grid": "Raster",
+    "ui.ipados.view.individual_references": "Einzelne Referenzen",
+    "ui.ipados.view.origin_subtitle": "Achsen, Ebenen und Ursprung",
+    "ui.ipados.view.some_visible": "Teilweise sichtbar",
+    "ui.ipados.view.standard_views": "Standardansichten"
+  },
+  "ja": {
+    "ui.ipados.view.grid": "グリッド",
+    "ui.ipados.view.individual_references": "個別の参照",
+    "ui.ipados.view.origin_subtitle": "軸、平面、原点",
+    "ui.ipados.view.some_visible": "一部を表示",
+    "ui.ipados.view.standard_views": "標準ビュー"
+  },
+  "ko": {
+    "ui.ipados.view.grid": "그리드",
+    "ui.ipados.view.individual_references": "개별 참조",
+    "ui.ipados.view.origin_subtitle": "축, 평면 및 원점",
+    "ui.ipados.view.some_visible": "일부 표시",
+    "ui.ipados.view.standard_views": "표준 뷰"
+  },
+  "zh": {
+    "ui.ipados.view.grid": "网格",
+    "ui.ipados.view.individual_references": "单独的参考",
+    "ui.ipados.view.origin_subtitle": "轴、平面与原点",
+    "ui.ipados.view.some_visible": "部分可见",
+    "ui.ipados.view.standard_views": "标准视图"
+  }
+}

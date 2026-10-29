@@ -1,0 +1,11 @@
+{
+  "en": {
+    "ui.ipados.numeric_entry.change_sign": "Change sign",
+    "ui.ipados.numeric_entry.full_keyboard": "ABC",
+    "ui.ipados.numeric_entry.full_keyboard_label": "Full expression keyboard",
+    "ui.ipados.numeric_entry.help": "Expression help",
+    "ui.ipados.numeric_entry.numeric_keyboard": "123",
+    "ui.ipados.numeric_entry.numeric_keyboard_label": "Numeric keypad",
+    "ui.ipados.numeric_entry.preview_required": "Preview required"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "en": {
+    "ui.ipados.workspace.axes": "Axes",
+    "ui.ipados.workspace.grid": "Grid lines",
+    "ui.ipados.workspace.origin_in_model": "Origin controls in Model",
+    "ui.ipados.workspace.planes": "Planes",
+    "ui.ipados.workspace.visibility": "Visibility"
+  },
+  "de": {
+    "ui.ipados.workspace.axes": "Achsen",
+    "ui.ipados.workspace.grid": "Rasterlinien",
+    "ui.ipados.workspace.origin_in_model": "Ursprungssteuerung im Modell",
+    "ui.ipados.workspace.planes": "Ebenen",
+    "ui.ipados.workspace.visibility": "Sichtbarkeit"
+  },
+  "ja": {
+    "ui.ipados.workspace.axes": "軸",
+    "ui.ipados.workspace.grid": "グリッド線",
+    "ui.ipados.workspace.origin_in_model": "モデルに原点の操作を表示",
+    "ui.ipados.workspace.planes": "平面",
+    "ui.ipados.workspace.visibility": "表示"
+  },
+  "ko": {
+    "ui.ipados.workspace.axes": "축",
+    "ui.ipados.workspace.grid": "격자선",
+    "ui.ipados.workspace.origin_in_model": "모델에 원점 컨트롤 표시",
+    "ui.ipados.workspace.planes": "평면",
+    "ui.ipados.workspace.visibility": "표시"
+  },
+  "zh": {
+    "ui.ipados.workspace.axes": "坐标轴",
+    "ui.ipados.workspace.grid": "网格线",
+    "ui.ipados.workspace.origin_in_model": "在模型中显示原点控件",
+    "ui.ipados.workspace.planes": "基准面",
+    "ui.ipados.workspace.visibility": "可见性"
+  }
+}

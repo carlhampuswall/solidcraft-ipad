@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.workspace.all_axes": "Alle Achsen",
+    "ui.ipados.workspace.all_planes": "Alle Ebenen"
+  },
+  "en": {
+    "ui.ipados.workspace.all_axes": "All axes",
+    "ui.ipados.workspace.all_planes": "All planes"
+  },
+  "ja": {
+    "ui.ipados.workspace.all_axes": "すべての軸",
+    "ui.ipados.workspace.all_planes": "すべての平面"
+  },
+  "ko": {
+    "ui.ipados.workspace.all_axes": "모든 축",
+    "ui.ipados.workspace.all_planes": "모든 평면"
+  },
+  "zh": {
+    "ui.ipados.workspace.all_axes": "所有轴",
+    "ui.ipados.workspace.all_planes": "所有平面"
+  }
+}

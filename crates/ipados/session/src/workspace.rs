@@ -115,6 +115,7 @@ impl SessionAdapter {
                     json!({"diagnostics":[failure.message],"active_component":self.session.active_component,"active_name":self.session.doc.name,"active_path":[],"tools":[],"actions":[]})
                 }
             };
+            self.organise_browser(&mut rows);
             self.workspace_cache =
                 Some(WorkspaceCache { revision: self.geometry_revision, document_id: self.session.document_id.clone(), rows, assembly });
         }

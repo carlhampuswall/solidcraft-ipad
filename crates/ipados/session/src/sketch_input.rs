@@ -5,8 +5,9 @@ use serde_json::{Value, json};
 use solidcraft_engine::{
     Sel,
     geom::{Vec2, Vec3},
-    sketch::Shape,
+    sketch::{ConstraintKind, CurveKind, Shape, Sketch},
 };
+use std::collections::BTreeMap;
 
 use crate::{AdapterError, InputEvent, InputPhase, SceneSnapshot, ToolOperation, ToolWork, Viewport, error};
 
@@ -14,6 +15,19 @@ use crate::{AdapterError, InputEvent, InputPhase, SceneSnapshot, ToolOperation, 
 struct Placement {
     at: Vec2,
     argument: Value,
+}
+
+/// Associate a displayed size with its source edge without inferring a second
+/// parameter model. Point-to-point dimensions may reference a line's endpoints.
+fn dimension_on_curve(sk: &Sketch, kind: &ConstraintKind, index: usize) -> bool {
+    match *kind {
+        ConstraintKind::Length { l, .. } => l == index,
+        ConstraintKind::Radius { c, .. } | ConstraintKind::Diameter { c, .. } => c == index,
+        ConstraintKind::Distance { p, q, .. } | ConstraintKind::DistanceX { p, q, .. } | ConstraintKind::DistanceY { p, q, .. } => {
+            matches!(sk.curves.get(index).map(|c| &c.kind), Some(CurveKind::Line { a, b }) if (*a == p && *b == q) || (*a == q && *b == p))
+        }
+        _ => false,
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -32,6 +46,10 @@ pub(crate) struct SketchInput {
     work: Option<ToolWork>,
     after: Option<Placement>,
     moving: Option<(String, Vec2, Vec<String>)>,
+    tap_selection: Option<Sel>,
+    moving_dimension: Option<(String, Vec2)>,
+    moving_measurement: Option<(String, Vec2)>,
+    measurement_positions: BTreeMap<(String, u64, String), Vec2>,
     dimension: Option<Value>,
     suppressed: bool,
     pub snap: Option<Snap>,
@@ -50,6 +68,10 @@ impl Default for SketchInput {
             work: None,
             after: None,
             moving: None,
+            tap_selection: None,
+            moving_dimension: None,
+            moving_measurement: None,
+            measurement_positions: BTreeMap::new(),
             dimension: None,
             suppressed: false,
             snap: None,
@@ -62,6 +84,9 @@ impl Default for SketchInput {
 impl SketchInput {
     pub fn active(&self) -> bool {
         self.tool.starts_with("sketch.")
+    }
+    pub(crate) fn geometry_contact(&self) -> Option<u64> {
+        self.moving.as_ref().and(self.contact)
     }
     pub fn dimension(&mut self, selection: &[Sel], params: &Value) -> Result<(), AdapterError> {
         let entities: Vec<_> = selection
@@ -88,6 +113,9 @@ impl SketchInput {
         self.work = None;
         self.after = None;
         self.moving = None;
+        self.tap_selection = None;
+        self.moving_dimension = None;
+        self.moving_measurement = None;
         self.snap = None;
     }
     pub fn current(&self, work: &ToolWork) -> bool {
@@ -136,6 +164,9 @@ impl SketchInput {
         self.contact = None;
         self.work = None;
         self.moving = None;
+        self.tap_selection = None;
+        self.moving_dimension = None;
+        self.moving_measurement = None;
         self.snap = None;
     }
 }
@@ -199,8 +230,73 @@ impl Viewport {
         Ok(())
     }
 
+    /// Dimension text is a direct handle in Select and Move. Its original position
+    /// and the contact anchor are distinct, so grabbing off-centre never jumps.
+    pub(crate) fn begin_dimension_drag(&mut self, event: &InputEvent, screen: [f64; 2]) -> bool {
+        let state = &self.contacts.sketch;
+        if !matches!(state.tool.as_str(), "select" | "sketch.move") || state.contact.is_some() || state.work.is_some() || self.contacts.navigating {
+            return false;
+        }
+        let annotations = self.sketch_annotations();
+        let Some(annotation) = annotations.as_array().and_then(|annotations| {
+            annotations
+                .iter()
+                .filter_map(|annotation| {
+                    let position = annotation.get("points")?.as_array()?;
+                    let distance = (position.first()?.as_f64()? - screen[0]).hypot(position.get(1)?.as_f64()? - screen[1]);
+                    let hit = event.sketch_annotation.as_ref().map_or(distance <= 22.0, |id| annotation["id"].as_str() == Some(id));
+                    hit.then_some((distance, annotation))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, annotation)| annotation)
+        }) else {
+            return false;
+        };
+        let Some(id) = annotation["id"].as_str().map(str::to_owned) else { return false };
+        let Some(snapshot) = self.model.as_ref().and_then(|m| m.sketch.as_ref()) else { return false };
+        let measurement = id.strip_prefix("edge:");
+        let (frame, text, selection) = if let Some(curve) = measurement {
+            let Some((index, kind, _)) = self.selected_measurement(snapshot) else { return false };
+            if snapshot.sketch.curves.get(index).is_none_or(|c| c.id != curve) {
+                return false;
+            }
+            let Some(frame) = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, &kind) else { return false };
+            (frame, self.measurement_text(snapshot, curve, &kind), Sel::SketchCurve { id: curve.into(), sketch: Some(snapshot.id) })
+        } else {
+            let Some(constraint) = snapshot.sketch.constraints.iter().find(|c| c.id == id) else { return false };
+            let Some(frame) = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, &constraint.kind) else { return false };
+            (frame, constraint.text, Sel::SketchConstraint { id: id.clone() })
+        };
+        let Some(world) = self.plane_point(screen, snapshot.plane) else { return false };
+        let local = snapshot.plane.to_local(world);
+        let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
+        let text = solidcraft_engine::sketch::dim_layout(&frame, text, unit, Vec2::ZERO).text;
+        let Some(interaction) = self.contacts.next_interaction.checked_add(1) else { return false };
+        self.contacts.next_interaction = interaction;
+        if !self.is_selected(&selection) {
+            self.select(Some(selection), self.multiple || event.shift);
+        }
+        let state = &mut self.contacts.sketch;
+        state.cancel();
+        state.contact = Some(event.id);
+        if let Some(curve) = measurement {
+            state.moving_measurement = Some((curve.into(), text));
+        } else {
+            state.moving_dimension = Some((id, text));
+        }
+        let placement = Placement { at: local, argument: json!([local.x, local.y]) };
+        state.points.push(placement.clone());
+        state.cursor = Some(placement);
+        true
+    }
+
     pub(crate) fn begin_sketch_input(&mut self, event: &InputEvent, screen: [f64; 2]) -> bool {
-        if !self.contacts.sketch.active() || self.contacts.sketch.work.as_ref().is_some_and(|w| w.commit) || self.contacts.navigating {
+        let direct = self.contacts.sketch.tool == "select" && self.direct_handles;
+        if (!self.contacts.sketch.active() && !direct)
+            || self.contacts.sketch.contact.is_some()
+            || self.contacts.sketch.work.as_ref().is_some_and(|w| w.commit)
+            || self.contacts.navigating
+        {
             return false;
         }
         let Some(snapshot) = self.model.as_ref().and_then(|m| m.sketch.as_ref()) else {
@@ -210,11 +306,14 @@ impl Viewport {
             return false;
         };
         let local = snapshot.plane.to_local(world);
-        if matches!(self.contacts.sketch.tool.as_str(), "sketch.move" | "sketch.trim" | "sketch.extend") {
+        if direct || matches!(self.contacts.sketch.tool.as_str(), "sketch.move" | "sketch.trim" | "sketch.extend") {
             let Some(selection) = self.pick_sketch(screen) else {
                 return false;
             };
-            let modifying = self.contacts.sketch.tool != "sketch.move";
+            if direct && !matches!(selection, Sel::SketchPoint { .. } | Sel::SketchCurve { .. }) {
+                return false;
+            }
+            let modifying = matches!(self.contacts.sketch.tool.as_str(), "sketch.trim" | "sketch.extend");
             let entity = match &selection {
                 Sel::SketchPoint { id } if modifying => {
                     let Some(point) = snapshot.sketch.resolve_point(id) else {
@@ -228,15 +327,20 @@ impl Viewport {
                 Sel::SketchPoint { id } | Sel::SketchCurve { id, .. } | Sel::SketchConstraint { id } => id.clone(),
                 _ => return false,
             };
+            let grouped = self.is_selected(&selection) || self.multiple || event.shift;
             let with = self
                 .selection
                 .iter()
                 .filter_map(|s| match s {
-                    Sel::SketchCurve { id, .. } | Sel::SketchPoint { id } if id != &entity => Some(id.clone()),
+                    Sel::SketchCurve { id, .. } | Sel::SketchPoint { id } if grouped && id != &entity => Some(id.clone()),
                     _ => None,
                 })
                 .collect();
-            if !self.selection.contains(&selection) {
+            if direct {
+                // A tap still toggles selection. Wait for actual movement before
+                // selecting the grabbed entity for a drag of the current group.
+                self.contacts.sketch.tap_selection = Some(selection);
+            } else if !self.is_selected(&selection) {
                 self.select(Some(selection), self.multiple || event.shift);
             }
             self.contacts.sketch.moving = Some((entity, local, with));
@@ -256,9 +360,17 @@ impl Viewport {
         true
     }
 
-    pub(crate) fn update_sketch_input(&mut self, event: &InputEvent, screen: [f64; 2]) {
+    pub(crate) fn update_sketch_input(&mut self, event: &InputEvent, screen: [f64; 2], moved: bool) {
         if self.contacts.sketch.contact != Some(event.id) || self.contacts.navigating || self.updating {
             return;
+        }
+        if self.contacts.sketch.moving.is_some() && !moved {
+            return;
+        }
+        if let Some(selection) = self.contacts.sketch.tap_selection.take()
+            && !self.is_selected(&selection)
+        {
+            self.select(Some(selection), self.multiple || event.shift);
         }
         let Some(snapshot) = self.model.as_ref().and_then(|m| m.sketch.as_ref()) else {
             return;
@@ -269,7 +381,9 @@ impl Viewport {
         };
         let placement = self.sketch_placement(snapshot.plane.to_local(world), event.shift);
         self.contacts.sketch.cursor = Some(placement);
-        if let Err(_failure) = self.queue_sketch(false) {
+        if self.contacts.sketch.moving_measurement.is_none()
+            && let Err(_failure) = self.queue_sketch(false)
+        {
             // Incomplete/degenerate candidates have no command proposal. The last valid
             // evaluated preview stays visible until another valid placement or cancellation.
         }
@@ -284,6 +398,24 @@ impl Viewport {
             self.cancel_sketch_input();
             return;
         }
+        if let Some((curve, _)) = self.contacts.sketch.moving_measurement.clone() {
+            if moved
+                && let Some(model) = &self.model
+                && let Some(snapshot) = &model.sketch
+                && let Some((_, kind, _)) = self.selected_measurement(snapshot)
+                && let Some(text) = self.measurement_text(snapshot, &curve, &kind)
+            {
+                let key = (model.document_id.clone(), snapshot.id, curve);
+                // Presentation-only measurements never create a driving constraint
+                // or history entry. Keep this session cache bounded.
+                if self.contacts.sketch.measurement_positions.len() >= 256 && !self.contacts.sketch.measurement_positions.contains_key(&key) {
+                    self.contacts.sketch.measurement_positions.pop_first();
+                }
+                self.contacts.sketch.measurement_positions.insert(key, text);
+            }
+            self.cancel_sketch_input();
+            return;
+        }
         self.contacts.sketch.contact = None;
         let anchored = self.contacts.sketch.started_with_anchor;
         let tool = self.contacts.sketch.tool.as_str();
@@ -291,10 +423,15 @@ impl Viewport {
             let _ = self.queue_sketch(true);
             return;
         }
-        if tool == "sketch.move" {
+        if self.contacts.sketch.moving.is_some() || self.contacts.sketch.moving_dimension.is_some() {
             if moved {
-                let _ = self.queue_sketch(true);
+                if self.queue_sketch(true).is_err() {
+                    self.cancel_sketch_input();
+                }
             } else {
+                if let Some(selection) = self.contacts.sketch.tap_selection.take() {
+                    self.select(Some(selection), self.multiple || event.shift);
+                }
                 self.cancel_sketch_input();
             }
             return;
@@ -342,58 +479,63 @@ impl Viewport {
         };
         let nonzero = first.at.dist(last.at) > 0.0;
         let mut after = None;
-        let command = match state.tool.as_str() {
-            "sketch.move" => {
-                let (entity, from, with) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select geometry to move"))?;
-                if *from == last.at {
-                    return Err(error("sketch", "No movement"));
+        let command = if let Some((dimension, text)) = &state.moving_dimension {
+            let at = *text + (last.at - first.at);
+            ("sketch.dimension_text".into(), json!({"dimension":dimension,"at":[at.x,at.y]}))
+        } else {
+            match state.tool.as_str() {
+                "select" | "sketch.move" => {
+                    let (entity, from, with) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select geometry to move"))?;
+                    if *from == last.at {
+                        return Err(error("sketch", "No movement"));
+                    }
+                    if snapshot.sketch.constraints.iter().any(|c| &c.id == entity && c.kind.is_dimension()) {
+                        ("sketch.dimension_text".into(), json!({"dimension":entity,"at":[last.at.x,last.at.y]}))
+                    } else {
+                        ("sketch.drag".into(), json!({"entity":entity,"from":[from.x,from.y],"to":[last.at.x,last.at.y],"with":with,"live":!commit}))
+                    }
                 }
-                if snapshot.sketch.constraints.iter().any(|c| &c.id == entity && c.kind.is_dimension()) {
-                    ("sketch.dimension_text".into(), json!({"dimension":entity,"at":[last.at.x,last.at.y]}))
-                } else {
-                    ("sketch.drag".into(), json!({"entity":entity,"from":[from.x,from.y],"to":[last.at.x,last.at.y],"with":with,"live":!commit}))
+                "sketch.dimension" => {
+                    let mut proposal = state.dimension.clone().ok_or_else(|| error("sketch", "Select entities to dimension"))?;
+                    proposal["text_at"] = json!([last.at.x, last.at.y]);
+                    ("sketch.dimension".into(), proposal)
                 }
-            }
-            "sketch.dimension" => {
-                let mut proposal = state.dimension.clone().ok_or_else(|| error("sketch", "Select entities to dimension"))?;
-                proposal["text_at"] = json!([last.at.x, last.at.y]);
-                ("sketch.dimension".into(), proposal)
-            }
-            "sketch.trim" | "sketch.extend" => {
-                let (entity, _, _) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select a curve"))?;
-                (state.tool.clone(), json!({"curve":entity,"at":[last.at.x,last.at.y]}))
-            }
-            "sketch.line" if nonzero => {
-                let id = format!("ipad_line_{}_{}", model.geometry_revision, self.contacts.next_interaction);
-                after = Some(Placement { at: last.at, argument: json!(format!("{id}.end")) });
-                ("sketch.line".into(), json!({"points":[arg(first),arg(last)],"ids":[id],"infer":automatic,"connect":automatic}))
-            }
-            "sketch.rectangle.two_point" if first.at.x != last.at.x && first.at.y != last.at.y => {
-                ("sketch.rectangle.two_point".into(), json!({"p0":[first.at.x,first.at.y],"p1":[last.at.x,last.at.y],"connect":automatic}))
-            }
-            "sketch.circle.center" if nonzero => {
-                let mut params = json!({"center":arg(first),"radius":first.at.dist(last.at),"connect":automatic});
-                if automatic && last.argument.is_string() {
-                    params["through"] = last.argument.clone();
+                "sketch.trim" | "sketch.extend" => {
+                    let (entity, _, _) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select a curve"))?;
+                    (state.tool.clone(), json!({"curve":entity,"at":[last.at.x,last.at.y]}))
                 }
-                ("sketch.circle.center".into(), params)
-            }
-            "sketch.arc.three_point" if state.points.len() >= 2 => {
-                let second = state.points.get(1).ok_or_else(|| error("sketch", "Place arc end"))?;
-                let through = if commit { state.points.get(2).unwrap_or(last) } else { last };
-                ("sketch.arc.three_point".into(), json!({"start":arg(first),"end":arg(second),"through":arg(through),"connect":automatic}))
-            }
-            "sketch.spline.fit_point" => {
-                let mut points = state.points.clone();
-                if !commit && points.last().is_none_or(|p| p.at != last.at) {
-                    points.push(last.clone());
+                "sketch.line" if nonzero => {
+                    let id = format!("ipad_line_{}_{}", model.geometry_revision, self.contacts.next_interaction);
+                    after = Some(Placement { at: last.at, argument: json!(format!("{id}.end")) });
+                    ("sketch.line".into(), json!({"points":[arg(first),arg(last)],"ids":[id],"infer":automatic,"connect":automatic}))
                 }
-                if points.len() < 2 {
-                    return Err(error("sketch", "Place another spline point"));
+                "sketch.rectangle.two_point" if first.at.x != last.at.x && first.at.y != last.at.y => {
+                    ("sketch.rectangle.two_point".into(), json!({"p0":[first.at.x,first.at.y],"p1":[last.at.x,last.at.y],"connect":automatic}))
                 }
-                ("sketch.spline.fit_point".into(), json!({"points":points.iter().map(arg).collect::<Vec<_>>(),"connect":automatic}))
+                "sketch.circle.center" if nonzero => {
+                    let mut params = json!({"center":arg(first),"radius":first.at.dist(last.at),"connect":automatic});
+                    if automatic && last.argument.is_string() {
+                        params["through"] = last.argument.clone();
+                    }
+                    ("sketch.circle.center".into(), params)
+                }
+                "sketch.arc.three_point" if state.points.len() >= 2 => {
+                    let second = state.points.get(1).ok_or_else(|| error("sketch", "Place arc end"))?;
+                    let through = if commit { state.points.get(2).unwrap_or(last) } else { last };
+                    ("sketch.arc.three_point".into(), json!({"start":arg(first),"end":arg(second),"through":arg(through),"connect":automatic}))
+                }
+                "sketch.spline.fit_point" => {
+                    let mut points = state.points.clone();
+                    if !commit && points.last().is_none_or(|p| p.at != last.at) {
+                        points.push(last.clone());
+                    }
+                    if points.len() < 2 {
+                        return Err(error("sketch", "Place another spline point"));
+                    }
+                    ("sketch.spline.fit_point".into(), json!({"points":points.iter().map(arg).collect::<Vec<_>>(),"connect":automatic}))
+                }
+                _ => return Err(error("sketch", "Place the next distinct point")),
             }
-            _ => return Err(error("sketch", "Place the next distinct point")),
         };
         let version = state.work.as_ref().map_or(1, |w| w.version.saturating_add(1));
         let work = ToolWork {
@@ -418,6 +560,9 @@ impl Viewport {
             return placement;
         };
         if suppressed
+            || self.contacts.sketch.moving.is_some()
+            || self.contacts.sketch.moving_dimension.is_some()
+            || self.contacts.sketch.moving_measurement.is_some()
             || !self.contacts.sketch.snapping
             || snapshot.sketch.view.no_snap
             || matches!(self.contacts.sketch.tool.as_str(), "sketch.trim" | "sketch.extend" | "sketch.dimension" | "sketch.move")
@@ -570,9 +715,16 @@ impl Viewport {
             }
         };
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        for c in &snapshot.sketch.constraints {
-            if let Some(frame) = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, &c.kind) {
-                let layout = solidcraft_engine::sketch::dim_layout(&frame, c.text, unit, Vec2::ZERO);
+        let measurement = self.selected_measurement(snapshot).and_then(|(index, kind, _)| {
+            let curve = snapshot.sketch.curves.get(index)?;
+            let text = self.measurement_text(snapshot, &curve.id, &kind);
+            Some((kind, text))
+        });
+        for (kind, text) in
+            snapshot.sketch.constraints.iter().map(|c| (&c.kind, c.text)).chain(measurement.as_ref().map(|(kind, text)| (kind, *text)))
+        {
+            if let Some(frame) = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, kind) {
+                let layout = solidcraft_engine::sketch::dim_layout(&frame, text, unit, Vec2::ZERO);
                 for line in layout.lines {
                     scene.lines.push(solidcraft_render::SceneLine {
                         points: line.into_iter().map(|p| snapshot.plane.to_world(p)).collect(),
@@ -646,12 +798,45 @@ impl Viewport {
                 _ => {}
             }
         }
-        for point in &self.contacts.sketch.points {
-            marker(scene, snapshot.plane.to_world(point.at));
+        if self.contacts.sketch.moving_dimension.is_none() && self.contacts.sketch.moving_measurement.is_none() {
+            for point in &self.contacts.sketch.points {
+                marker(scene, snapshot.plane.to_world(point.at));
+            }
         }
         if let Some(snap) = &self.contacts.sketch.snap {
             marker(scene, snapshot.plane.to_world(snap.at));
         }
+    }
+
+    fn selected_measurement(&self, snapshot: &crate::sketching::SketchSnapshot) -> Option<(usize, ConstraintKind, &'static str)> {
+        let [Sel::SketchCurve { id, sketch }] = self.selection.as_slice() else { return None };
+        if sketch.is_some_and(|id| id != snapshot.id) {
+            return None;
+        }
+        let sk = &snapshot.sketch;
+        let index = sk.curve_index(id)?;
+        if sk.constraints.iter().any(|c| dimension_on_curve(sk, &c.kind, index)) {
+            return None;
+        }
+        let (kind, dimension) = match sk.curves.get(index)?.kind {
+            CurveKind::Line { .. } => (ConstraintKind::Length { l: index, value: 0.0 }, "length"),
+            CurveKind::Circle { .. } | CurveKind::Arc { .. } => (ConstraintKind::Radius { c: index, value: 0.0 }, "radius"),
+            _ => return None,
+        };
+        Some((index, kind, dimension))
+    }
+
+    fn measurement_text(&self, snapshot: &crate::sketching::SketchSnapshot, curve: &str, kind: &ConstraintKind) -> Option<Vec2> {
+        let state = &self.contacts.sketch;
+        if let Some((id, text)) = &state.moving_measurement
+            && id == curve
+            && let (Some(first), Some(last)) = (state.points.first(), state.cursor.as_ref())
+        {
+            let frame = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, kind)?;
+            return Some(solidcraft_engine::sketch::encode_text(&frame, *text + (last.at - first.at)));
+        }
+        let model = self.model.as_ref()?;
+        state.measurement_positions.get(&(model.document_id.clone(), snapshot.id, curve.into())).copied()
     }
 
     pub(crate) fn sketch_annotations(&self) -> Value {
@@ -659,15 +844,49 @@ impl Viewport {
             return json!([]);
         };
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        json!(snapshot.sketch.constraints.iter().filter_map(|c|{
-            let frame=solidcraft_engine::sketch::dim_frame(&snapshot.sketch,&c.kind)?;
-            let layout=solidcraft_engine::sketch::dim_layout(&frame,c.text,unit,Vec2::ZERO);
-            let position=crate::picking::project(self.vp(),snapshot.plane.to_world(layout.text),self.metrics.pixels())?;
-            let value=solidcraft_engine::sketch::measure_dimension(&snapshot.sketch,&c.kind)?;
-            Some(json!({"id":c.id,"points":[position[0]/self.metrics.scale+self.metrics.origin_points[0],position[1]/self.metrics.scale+self.metrics.origin_points[1]],
-                "value":if c.kind.is_angle(){value.to_degrees()}else{value},"units":if c.kind.is_angle(){"deg"}else{"mm"},"driven":c.driven,
-                "selected":self.selection.iter().any(|s|matches!(s,Sel::SketchConstraint{id} if id==&c.id))}))
-        }).collect::<Vec<_>>())
+        let sk = &snapshot.sketch;
+        let present = |id: &str, kind: &ConstraintKind, text, entity: Sel, dimension: Option<&str>, driven, selected| {
+            let frame = solidcraft_engine::sketch::dim_frame(sk, kind)?;
+            let layout = solidcraft_engine::sketch::dim_layout(&frame, text, unit, Vec2::ZERO);
+            let position = crate::picking::project(self.vp(), snapshot.plane.to_world(layout.text), self.metrics.pixels())?;
+            let value = solidcraft_engine::sketch::measure_dimension(sk, kind)?;
+            Some(
+                json!({"id":id,"points":[position[0]/self.metrics.scale+self.metrics.origin_points[0],position[1]/self.metrics.scale+self.metrics.origin_points[1]],
+                "value":if kind.is_angle(){value.to_degrees()}else{value},"units":if kind.is_angle(){"deg"}else{"mm"},"driven":driven,
+                "selected":selected,"entity":entity,"dimension_type":dimension}),
+            )
+        };
+        let selected_curve = match self.selection.as_slice() {
+            [Sel::SketchCurve { id, sketch }] if sketch.is_none_or(|id| id == snapshot.id) => sk.curve_index(id),
+            _ => None,
+        };
+        let mut annotations: Vec<_> = sk
+            .constraints
+            .iter()
+            .filter_map(|c| {
+                let selected = self.selection.iter().any(|s| matches!(s, Sel::SketchConstraint { id } if id == &c.id))
+                    || selected_curve.is_some_and(|index| dimension_on_curve(sk, &c.kind, index));
+                present(&c.id, &c.kind, c.text, Sel::SketchConstraint { id: c.id.clone() }, None, c.driven, selected)
+            })
+            .collect();
+        // An undimensioned selected edge has a read-only measurement until Apply.
+        // The descriptor uses upstream measurement/layout; only sketch.dimension
+        // creates a constraint, through the existing numeric transaction.
+        if let Some((index, kind, dimension)) = self.selected_measurement(snapshot)
+            && let Some(curve) = sk.curves.get(index)
+            && let Some(annotation) = present(
+                &format!("edge:{}", curve.id),
+                &kind,
+                self.measurement_text(snapshot, &curve.id, &kind),
+                Sel::SketchCurve { id: curve.id.clone(), sketch: Some(snapshot.id) },
+                Some(dimension),
+                false,
+                true,
+            )
+        {
+            annotations.push(annotation);
+        }
+        json!(annotations)
     }
 
     fn visible_glyphs(&self) -> Vec<(String, String, Vec2)> {

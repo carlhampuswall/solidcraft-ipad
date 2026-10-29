@@ -16,7 +16,7 @@ parameters the handlers actually read rather than assuming schema completeness.
 
 | Checkpoint / tool | Implemented native binding | Current presentation scope |
 | --- | --- | --- |
-| 7A Extrude | `solid.extrude`: sketch/profile, distance, direction, through_all, operation, targets | Native classified region, including its holes; positive, negative or symmetric total distance and Through All; new body, join, cut and intersect. Explicit target list for Boolean modes. |
+| 7A Extrude | `solid.extrude`: sketch/profile or faces/face_body, distance, direction, through_all, operation, targets | Native classified region, including its holes, or selected planar body faces; positive, negative or symmetric total distance and Through All; new body, join, cut and intersect. Explicit target list for Boolean modes. |
 | 7A Fillet | `solid.fillet`: edges, radius, body, type, `fit:exact` | Multiple actual B-rep edges; constant-radius, chord and supported curvature modes; real kernel preview and later input edit. No automatic radius reduction. |
 | 7A Chamfer | `solid.chamfer`: edges, distance, distance2/angle, body | Multiple actual B-rep edges with equal, two-distance or angle creation; stored native numeric inputs remain editable. |
 | 7A Feature editing | `timeline.inspect`, `timeline.edit`, `parameters.change` | Original feature ID and order retained; full definition preserved; expressions loaded through the native input parameter rows. |
@@ -68,6 +68,79 @@ classify material. The selected region remains associated with its source sketch
 and document/geometry revision. Region labels include the sketch and region area.
 Internal holes use the native profile representation.
 
+Extrude also accepts a selected planar face, or up to 256 coplanar, equally
+oriented faces of one body. Selecting a face while Select is idle automatically
+opens the existing Extrude form with that selection as its source. **Tools →
+Extrude on face selection** defaults to on and persists in UserDefaults
+(`SolidCraft.workspace.extrudeOnFaceSelection`); turn it off to keep selection-only
+behaviour. Active tools, sketch-plane picking and ongoing edits retain input.
+Cancelling the form leaves it closed until a new face is selected; ordinary
+refreshes, document replacement and geometry updates do not reopen it.
+
+The native workspace harness checks those selection transitions and the legacy
+preference. For a disposable physical-device smoke check, launch DEBUG with
+`--viewport-check --viewport-check-hold-face --auto-face-extrude-check`. The
+existing synthetic Pencil driver stops after selecting a face; the production
+controller must log `Automatic face extrude check PASS` and display Extrude.
+This checks the native input path, without claiming physical Pencil testing.
+On 2026-10-29 this check passed on the connected physical iPad: the synthetic tap
+selected Base face 5 and opened the production form with Base's face as its
+source. Unsigned/signed builds, the native workspace harness and nine existing
+face-extrusion tests passed. The unmodified device framebuffer capture retains
+the existing OS orientation/clipping issue documented in HANDOFF.md.
+
+Faces can also be selected before opening the tool or through **Select in
+viewport**. The source chooser includes the selected faces alongside sketch
+regions. Switching sources retains distance, direction, operation and targets.
+Choose either sketch regions or body faces for one native extrusion. Curved,
+noncoplanar and mixed-body face sets report errors before acceptance.
+The adapter sends the upstream `faces` and `face_body` parameters; the engine
+creates the linked face-boundary sketch and owns the parametric relationships.
+Face-source distance handles resolve against the unchanged source body so a
+Join preview cannot shift their starting plane. Apply, Cancel and undo use the
+same transaction path as sketch extrusions. The operation menu offers **New
+Body**, **Union**, **Intersect** and **Subtract** when creating or editing an
+extrusion. All four are visible inline in the inspector and on-model distance
+editor, and tapping one refreshes the actual geometry preview. New Body remains
+the initial operation. A face source preselects its
+own body as the Boolean target, and that automatic target follows reselection
+onto another body. Explicit alternative target selections remain editable.
+Union adds the extruded material; Intersect keeps its overlap with the target;
+Subtract removes that overlap. Selecting Intersect or Subtract on a face points
+the extrusion inward; selecting New Body or Union points it outward. This also
+applies when editing an extrusion attached to a body face. A subsequent explicit
+direction change is retained, and a symmetric extent stays symmetric. Signed
+distance expressions retain their meaning when the direction is chosen.
+
+Extrusion previews show the operation's material meaning: amber is a new body,
+green is material added by Union, blue is the kept Intersect result against faded
+original material, and translucent red is Subtract's removed material over the
+actual remaining body. Operation feedback in the editor explains the colours.
+These display scenes use the engine's world-space New Body tool and Boolean
+result; they do not change picking, volume, undo or saved appearances. Accepted
+models have no preview scene. Navigation reuses the immutable preview upload.
+
+The opt-in DEBUG `--face-extrude-check --assembly-check-pause` driver uses the
+existing native callback/frame barriers on a disposable box. It taps the real
+inline Subtract button, checks the resulting inward preview, opens the distance
+editor to verify its inline choices, and applies through its normal callback.
+Stages are `face-inline-new`, `face-inline-subtract` and
+`face-inline-distance-editor`; capture with `devicectl device capture screenshot`
+and send SIGUSR1 to continue using the device workflow in BUILDING.md.
+
+Face-extrusion regression coverage lives in the existing session tests under
+`modelling_face_extrusion`. It checks selection before and after opening the
+tool, source switching, measured material changes, handles, body scope,
+invalid inputs, cancellation, history and native save/reopen. To capture a
+40 × 30 × 10 mm block before, during and after a 5 mm face extrusion on the Mac
+GPU, plus the New Body, Intersect and Subtract results (without launching an
+iPad app or simulator), run:
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-face-extrude.png --face-extrude
+```
+
 Pencil selection uses existing native `Sel` body, face and edge references. An
 edge index is only a current-revision input to the upstream constructor, which
 stores its native persistent names/reference information; no GPU or tessellation
@@ -77,7 +150,34 @@ removes a provisional solid before acquiring more inputs, so the displayed
 source and its picker agree. Tool-first forms
 can refresh eligible selections through the same bridge interaction.
 
-Join, cut, intersect and drilling require explicit native target bodies. The
+Each extrusion source and target field has its own **Select in viewport** action.
+Target picking temporarily resolves whole bodies regardless of the saved selection
+filter, accepts Pencil, stationary finger and primary pointer taps, and preserves
+the source profile and entered expressions. Multiple targets can be picked or
+toggled individually. Preview publication ends the temporary selection mode.
+
+Dragging a new extrusion into existing visible material automatically chooses
+Subtract and scopes it to the intersected bodies. Pulling back out restores New
+Body. Detection runs on the engine worker using native world-space profile regions
+and meshes, with the actual result evaluated by `solid.extrude`. Explicit operation
+choices override automatic mode. **Tools > Automatically subtract inward
+extrusions**, stored as `SolidCraft.workspace.automaticSubtract`, restores the
+earlier manual-only behavior when disabled; the viewport setting is
+`view.automatic_subtract {"enabled":false}`. This user-requested default is enabled.
+Choosing Subtract on a sketch profile also points toward selected stock when only
+one direction enters it. Explicit direction changes and symmetric extents remain
+available. Automatic scope and selection state are provisional and are never
+saved in a design.
+
+Verification for this correction: 165 session and 28 bridge tests, all-targets
+Clippy with warnings denied, adapter wasm compilation, 550 native presentation
+cases and unsigned device compilation passed. The host GPU proof
+`render_proof /tmp/solidcraft-subtract.png --subtract-selection` captures a real
+viewport target pick, automatic inward cut preview and accepted pocket. It measures
+36,000 → 34,600 mm³ and keeps the separate adjacent body unchanged. These are Mac
+GPU captures; physical iPad touch behavior still needs device verification.
+
+Manual join, cut, intersect and drilling require explicit native target bodies. The
 adapter refuses an empty target set instead of using the engine's broader
 automatic scope. Combine separately identifies its target and tools, and exposes
 the engine's retain/consume behaviour. No automatic unrelated body consumption

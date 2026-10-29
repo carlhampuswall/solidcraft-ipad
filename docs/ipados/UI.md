@@ -19,9 +19,33 @@ saves first; current projects cannot be deleted. Imports can open as a separate
 project or insert geometry into the current one. Export offers STEP, SolidCraft,
 STL, OBJ and 3MF through Files. See INTERFACES.md for ownership and limits.
 
+On iPadOS 26 and later, the floating document header moves up into the centre of
+the top status strip when it fits, retaining its full height and menu touch area.
+It leaves 240 points at each end for system indicators and window controls.
+Narrow windows, a browser that shifts the header too close to an edge,
+accessibility-sized headers, and older iPadOS versions retain the safe-area
+placement. The rest of the chrome and the Metal viewport do not move.
+Changes a default: yes — **Tools → Use top strip for document header** is enabled;
+turning it off restores the previous header position
+(`SolidCraft.workspace.useTopSafeArea`).
+
+The floating header hosts its folder button directly, with a full 44-point
+touch target. It does not wrap that single control in a scroll view: UIKit's
+scroll-edge effect could blur the icon when the header occupied the top strip.
+The text layout retains its scrolling action bar. The opt-in `--chrome-check`
+also checks native hit testing across the visible controls and captures the
+floating header in Light and Dark appearances.
+Physical iPad verification on 2026-10-29 passed all eight text/floating,
+Light/Dark and bottom-spacing variants, including nine native hit-test points
+per visible enabled control. Captures show the folder icon without the blur,
+and a real pointer click opens its Projects/Save/Import/Export menu. The unsigned
+and signed device builds and 550-case Foundation layout harness passed.
+
 The floating viewport fills the entire app window, including the space behind
-the status and home indicators. Only the controls are inset to the safe area;
-there are no reserved black bands above or below the model. The workspace itself
+the status and home indicators. Apart from the document header described above,
+controls retain the top and side safe-area insets and use the bottom safe area by
+default, leaving only their normal edge spacing.
+There are no reserved black bands above or below the model. The workspace itself
 also fills the window, so the extended viewport remains a real native input
 surface. Pinned browsers retain their horizontal reservation. The keyboard still
 reduces the usable viewport height through the existing resize/cancellation path.
@@ -30,8 +54,11 @@ The 52-point tool rail (56 for accessibility text) contains icon-first controls
 with at least 44-point interaction regions. Modelling groups expose the actual
 native-supported create, modify, pattern/mirror and assembly forms. Additional
 native-supported operations remain reachable in the create menu. Sketch editing
-replaces these with Line, Rectangle, Circle, Arc, Spline, Trim, overflow tools,
-Finish chain and Finish sketch. Constraints, dimensions and construction appear
+replaces these with Line, Rectangle, Circle, Arc, Spline, Trim, overflow tools and
+Finish chain. A labelled **Finish sketch** button occupies its own row in the
+document header, outside the scrolling rail. Cancelling a segment retains its
+icon-only presentation after state refreshes and plane-picker cancellation.
+Constraints, dimensions and construction appear
 in the opposite rail only while sketching. Constraint menu eligibility and
 dimension types come from `eligible_constraints` / `eligible_dimensions`; the UI
 does not decide geometry compatibility or construct new constraint semantics.
@@ -56,10 +83,17 @@ overlay its edges. This is a layout measurement, not a claim that every pixel is
 uncovered. Short numeric transactions use a 320 × 500-point floating editor,
 bounded by available height; larger forms and keyboard-reduced windows scroll.
 Preview validation, Apply/Cancel and original feature/occurrence identity remain
-owned by the existing session and forms.
+owned by the existing session and forms. Closing Properties or tapping empty
+viewport space now cancels a modelling/assembly draft and restores the normal
+tool rail. Camera drags and taps on geometry keep the draft active. **Tools →
+Cancel tools when dismissed** can be disabled to restore the earlier behaviour
+of hiding the form while retaining its draft. The form's explicit Select action
+still hides the panel to collect references.
 
-`WorkspaceLayout.resolve` uses safe-area display points, window size, Dynamic
-Type, keyboard intersection and visible control counts. `placed(in:viewport:)`
+`WorkspaceLayout.chromeBounds` retains top/side insets and extends the available
+control height to the window bottom, bounded by the keyboard.
+`WorkspaceLayout.resolve` uses these display points, window size, Dynamic
+Type, keyboard intersection and measured stack content heights. `placed(in:viewport:)`
 translates chrome into window coordinates and extends the floating canvas to the
 window edges. It shrinks or scrolls
 chrome instead of introducing fixed screenshot dimensions. Actual canvas changes
@@ -72,6 +106,118 @@ Native labels, values, selected/disabled traits, pointer tooltips and the large
 content viewer retain meaning when labels are visually collapsed. Menus and
 forms show text. Icon selection does not depend on colour alone. Physical
 VoiceOver and simultaneous Pencil/finger coverage still require human checks.
+
+## Compact operation inspector
+
+Modelling and assembly forms use the panel header for their operation or edited
+feature title. The scrolling body retains the Rust-authored descriptor fields
+and raw expressions. A reference summary offers **Change**, including the
+existing viewport selection action. Unknown references show a selected-input
+label rather than command JSON. Numeric fields have one label; Extrude's distance
+is emphasised. **Expression help** discloses the existing syntax instructions.
+
+Extrude presents source, distance and operation first. Its two-by-two operation
+choices preserve the engine's option values and order: New Body, Union,
+Intersect, Subtract. They use the existing `body`, `combine`, `intersect` and
+`cut` masters through `WorkspaceIcon`, with text, a selected surface and a
+checkmark. The canonical Cut master is a scissors cue, so the visible Subtract
+label remains essential; no generated cube/subtraction artwork is shipped.
+Direction, through-all, targets and all other descriptor fields remain available
+under **More options**. Reference order and the automatic-subtract/explicit-override
+rules still belong to Rust.
+
+Preview status and Cancel/Preview/Apply occupy a persistent panel footer outside
+the scroll view. The actions stack vertically when their labels cannot fit
+across, including larger text and narrow windows. Detailed engine feedback
+scrolls with the body. Apply still
+requires a matching validated parameter set; editing, reference inspection and
+operation changes invalidate it. The async generation/document/token checks,
+preview mailbox and atomic engine acceptance are unchanged. Compact forms request
+380 points of width, bounded by available space. The floating Metal canvas retains
+its bounds when the inspector opens; the existing keyboard resize path remains.
+
+Changes a default: yes — **Tools → Compact operation inspector** is enabled
+(`SolidCraft.workspace.compactInspector`). Turning it off before starting a form
+restores the previous repeated headings, field order and scrolling actions. The
+setting is unavailable while a modelling draft is active.
+
+`--compact-inspector-check` is an opt-in DEBUG physical-device diagnostic. It
+uses a disposable in-memory model and verifies primary-field visibility,
+persistent action targets, matching-preview eligibility, raw-text/reference
+invalidation, keyboard bounds, canvas invariance and the previous preference.
+It writes `Documents/compact-inspector-{dark,light,keyboard,legacy,subtract}.png` using the
+actual UIKit hierarchy. The app-window captures exclude separate system keyboard
+windows. This does not establish hardware Pencil, VoiceOver or palm-rejection
+coverage. No library project or saved preference is changed by the diagnostic.
+
+2026-10-29 verification: the unsigned and existing-profile signed builds, native
+layout harness, locale/icon/asset/container checks, 18 extrusion tests and five
+subtract tests pass. The physical diagnostic passes primary-field visibility,
+canvas invariance, Apply invalidation, real Subtract-button preview, Light/Dark
+refresh and legacy layout. Actual field focus and the observed keyboard/accessory
+boundary (782 points on the 834-point landscape window) retain the footer above
+that boundary. Synthetic UIKit inspector layouts at widths 320/380 and
+accessibility XXXL retain all action targets. Corrected native captures were
+inspected. Local evidence is in `target/task1-inspector/`; the normal saved Test
+document was restored afterwards. Full software-keyboard visual coverage and
+hardware Pencil/VoiceOver remain separate follow-ups.
+
+## Numeric expression entry
+
+Numeric entry follows the approved keypad reference: the popup contains its own
+four-by-four number pad, a large outlined raw-expression field, field name and
+native source context, a compact units/parentheses/ABC row, framed expression
+help and one persistent Cancel/Preview/Apply row. Done is a key in that pad and
+only dismisses input. The number pad is a UIKit view inside the popup; numeric
+mode does not open a separate software-keyboard area or resize the Metal canvas.
+ABC explicitly opens full text entry for parameters, functions and additional
+operators; its 123 accessory returns to the embedded pad. The same text field
+retains caret, selection and native text undo through both modes. The sign key
+wraps the complete raw expression in a unary-minus expression and can restore
+that same draft with a second tap; only Rust evaluates it.
+
+Tapping a compact inspector expression field opens this same popup, as do the
+existing on-model values and sketch dimensions. The stable workspace retains the
+original source/annotation rectangle when underlying form fields are rebuilt.
+The legacy inspector preference retains direct full-keyboard text entry. The
+popup keeps its actions outside the scrolling body and adapts to narrow windows,
+keyboard entry and Dynamic Type. Keys have at least 44-point targets. Optional
+native operation choices remain under its help disclosure.
+
+The saved System/Light/Dark choice reaches the presentation environment and
+input views. Semantic colours and scoped keypad styles leave menus, browser and
+rail appearance alone. New Extrude and Offset Face distance descriptors publish
+the engine Length kind's default unit, so Swift does not infer units from labels
+or parse expressions. Other fields retain their native unit metadata.
+
+Preview leaves text editable and validates only its captured draft revision.
+Typing during evaluation, including editing away and back to identical text,
+keeps Apply disabled until a matching Preview completes. Errors appear beside the
+retained draft. Done and Return leave the transaction provisional; accepting a
+validated operation disables Close/Cancel and keypad edits until completion.
+The existing Rust tokens, context checks, scratch evaluation and atomic
+acceptance still own geometry and history.
+
+2026-10-29 verification: native layout/focus/decoder checks (678 adaptive cases),
+canonical icons, pending locale lists, UI containers and unsigned/existing-profile
+device builds pass. All 169 session and 28 bridge tests pass, as do affected
+Clippy with warnings denied and workspace formatting. The existing face-extrusion
+regression also checks the native distance-unit metadata. DEBUG
+`--numeric-entry-check` uses a disposable fixture and covers actual in-panel
+keys, sign edits, units, native Preview/Cancel, invalid expressions, rapid edits
+and stale completion, retained focus/selection, ABC/123, Done/Return without
+geometry changes, viewport invariance and opening the original Extrude Distance
+field from its inspector. It also checks offscreen UIKit layouts at 320x300,
+380x500 and 744x1000 with normal and accessibility XXXL text. Those sizes are
+synthetic, not physical rotation or multitasking observations.
+
+Actual native captures include the complete embedded pad and were inspected in
+light/dark and invalid/stale states. Final reports, captures and logs are local
+ignored files in `target/task-2-embedded-pad/`. The earlier
+`target/task-2-numeric-entry/` captures describe the superseded keyboard-area
+implementation. Hands-on Pencil, VoiceOver and hardware-keyboard input remain
+unverified. No simulator was used, and this scoped change does not claim a full
+workspace CI run. Diagnostic fixtures never load or autosave library designs.
 
 ## Canonical icon bridge
 
@@ -111,7 +257,13 @@ existing `SolidCraft.workspace.appearance` value is retained. Rail side and
 two-/three-finger history gesture preferences are unchanged. Pinning and diagnostic
 visibility are transient native presentation preferences, never CAD data.
 
-## Rendering integration still required
+Changes a default: yes — bottom controls now use the bottom safe area.
+**Tools → Extend UI to bottom edge** off restores the former safe-area spacing
+(`SolidCraft.workspace.useBottomSafeArea`). The preference is saved between
+launches and applies to floating and text layouts, collapsed/expanded history,
+panels and on-canvas model value placement. Keyboard bounds still take priority.
+
+## Viewport appearance and visibility
 
 The supplied assembly screenshot was produced by the opt-in DEBUG
 `--assembly-check` fixture and its explicit `view.top` command. It is the real
@@ -119,23 +271,24 @@ shared shaded/depth-tested renderer. It is not a temporary drawing or a second
 2D CAD engine. The normal fixture is shown in an actual shaded 3D view on the
 physical iPad with body highlighting and native picking.
 
-Two platform presentation decisions explain the remaining white/dense-grid look:
-`SessionAdapter::snapshot` calls `view::scene_with_guides`, which uses the shared
-light `Palette::DEFAULT`; `Viewport::guides` always builds a grid with that palette.
-`NativeRenderer` clears using the scene background. Native UIKit appearance cannot
-correct those decisions. This UI branch deliberately leaves the owner-controlled
-rendering and session files intact. It does not simulate a dark viewport with a
-tinted overlay or advertise unsupported display settings.
+The native host passes resolved semantic surface and separator colours through
+`view.background`. Dark mode uses dark gray grid lines, with slightly stronger
+major lines. Light mode restores the shared original palette. Only guide buffers
+refresh when their appearance changes; CAD meshes retain their existing uploads.
 
-The integrator/rendering owner should provide a display-only appearance/guide
-seam in session `lib.rs` / `viewport.rs` and bridge `renderer.rs` if needed:
-reuse `view::scene_with_palette_and_guides` and canonical theme tokens, keep mesh
-buffers/revisions, picking, camera and transaction ownership intact, suppress the
-ordinary 3D grid by default, and retain the planar grid/axes during sketching.
-Wire `applyAppearance` to that seam through `NativeSession` only after its contract
-is reviewed. Theme/grid changes must not dirty the document, change geometry
-revision, retessellate CAD, or accept/cancel a draft. Verify shared shading/edges,
-depth and face/edge highlights in both themes on the combined candidate.
+**Views > Visibility** groups Grid lines, Origin point, X/Y/Z axes and XY/XZ/YZ
+planes. **All axes** and **All planes** toggle each group independently, leaving
+the origin point and the other group unchanged. A partially visible group has a
+mixed checkmark; tapping it shows every member. The grid toggle applies in both
+3D and sketch views, defaults to on and
+persists between launches. Reference controls retain their existing individual,
+show-all, hide-all and automatic-during-sketch-creation settings. They have moved
+out of the Model panel; **Origin controls in Model** restores the previous browser
+rows. Both menu and optional rows use the same saved reference visibility.
+
+Theme and grid changes do not dirty the document, change geometry revision,
+retessellate CAD, move the camera or accept/cancel a draft. Physical iPad checks
+should verify menu states, persisted visibility and System/Light/Dark switching.
 
 ## Verification and integration
 
@@ -153,8 +306,13 @@ then read `Documents/workspace-chrome-check.json` from the app container. It che
 actual visible icon/touch frames after UIKit layout, including the reparented
 browser button and retained scroll offsets. It also checks that the actual
 canvas fills the top/bottom window edges, that edge hit tests reach the canvas,
-and that header/status controls stay safe. It does not merely repeat the
-Foundation policy calculation. Four physical cases pass. The optional
+and that status/history use the requested bottom spacing. It does not merely
+repeat the Foundation policy calculation. All eight physical combinations of
+text/floating, light/dark and both bottom spacing preferences pass for the bottom
+extension. The report is `target/ipados-bottom-edge-chrome-landscape.json`;
+the unsigned and signed build logs are `target/ipados-bottom-edge-{unsigned,device}.log`.
+On this iPad the extension recovers 25 points beneath the former safe-area bound.
+The optional
 `--chrome-check-restore-dark` restores compact/dark preferences after this check;
 without that flag it restores the preferences present at launch. This mode never
 authors CAD or synthesizes Pencil input. It caught a runtime reparenting issue;
@@ -220,16 +378,21 @@ Native presentation preferences use UserDefaults keys
 
 ## Presentation mapping and browser
 
-The Part browser includes an expandable **Origin references** group with the
-origin point, X/Y/Z axes and XY/XZ/YZ planes. Each row and its eye button toggle
-the reference's saved visibility without selecting or changing CAD geometry.
-The group eye menu (also available in View) offers Show all, Hide all and reset
+**Views > Visibility** contains the origin point, X/Y/Z axes and XY/XZ/YZ planes,
+alongside Grid lines. **Origin controls in Model** optionally restores an
+expandable **Origin references** group in the browser; each row and its eye button
+toggle the same saved visibility without selecting or changing CAD geometry.
+The Visibility menu offers Show all, Hide all and reset
 to **Automatic during sketch creation**. With no saved override, references are
 hidden during ordinary modelling and temporarily appear in the sketch-plane
 chooser. Cancel/creation restores normal visibility; active sketch axes remain
 part of the sketch guides. Explicit per-item choices survive app relaunch and
 take precedence over automatic visibility. These rows are native presentation
 controls, separate from the authoritative document rows and their parent IDs.
+
+The origin point uses the renderer's solid dot, with no letter O or button fill
+covering it. Its transparent 44-point native touch target retains the **Origin
+point** VoiceOver label and selects the existing native vertex at world zero.
 
 
 `session/src/workspace.rs` caches rows by document ID and geometry revision.
@@ -244,6 +407,19 @@ or joint selection type is invented. Face/edge/vertex picks mark the containing
 body. Browser and Pencil share bounded selection and multi-selection. Ordinary
 updates retain row identities; document replacement clears expansion state.
 Empty/loading/error/retry states are present.
+
+Pencil selection defaults to Auto so body edges and vertices can be picked
+directly alongside faces. **Tools → Filter** is a saved presentation preference
+(`SolidCraft.workspace.selectionFilter`); choosing Face restores the previous
+face-only behaviour. Invalid or missing saved filters fall back to Auto. This
+preference changes neither model geometry nor document history.
+
+**Multiple** starts enabled and is saved in
+`SolidCraft.workspace.multipleSelection`. The Tools menu and Properties control
+share that preference: disable it to restore single-selection replacement.
+Successive canvas picks accumulate; tapping a selected item removes it, while an
+ordinary empty-space tap or Clear clears the set. The full edge/face set reaches
+the existing modelling forms and engine commands.
 
 | Visible action | Integration |
 | --- | --- |
@@ -400,3 +576,187 @@ The macOS Foundation harness covers library identity, safe deletion, bounded
 staging and names; Rust tests cover native/STEP persistence, transactional failure
 and autosave/preview isolation. Unsigned compilation is separate from the manual
 UIKit/Files provider and physical-device checklist above.
+## Feature history
+
+The small History button at the bottom right starts collapsed on each workspace
+launch. Tap it to show the full-width, horizontally scrollable feature strip;
+tap its history icon at the right edge to collapse it. Navigation arrows stay on
+the left and feature icons fill the space between the arrows and toggle. Features
+appear as canonical icons in
+engine order, with names retained only for tooltips and accessibility labels.
+Suppression and selection retain their visual and accessibility states.
+The strip keeps its current selection when collapsed and reopened. Empty designs
+show an empty-history message when expanded. Selection is disabled while an edit,
+plane choice or command owns the workspace.
+
+The backward/forward arrows execute the shared `timeline.roll_to` command one
+feature at a time. A blue divider marks the current history position; future
+features are dimmed. Press and hold Back or Forward to jump to the beginning or
+end. Tapping a future feature first advances the marker to include it, then
+selects and edits it. Navigation is disabled during sketch or provisional editing. The
+viewer displays the evaluated model at the marker, including an empty model at
+the beginning. Existing inspector edits invalidate the downstream evaluations;
+stepping forward or returning to the end rebuilds the later features from those
+new inputs. Native save/reopen retains the shared marker and complete timeline.
+
+Grab the blue history divider with Pencil or a finger and drag horizontally to
+scrub between features. Its grab region extends around the thin line without
+intercepting neighbouring feature taps. Dragging snaps at feature boundaries and
+holding at either edge scrolls a long strip. The marker follows the requested
+position while the existing activity status reports computation. One
+`timeline.roll_to` evaluation runs at a time; intermediate samples coalesce to
+the latest boundary, including the final position on lift. The authoritative
+workspace acknowledges that position before scrubbing settles. VoiceOver users
+can adjust the marker with increment/decrement actions.
+
+Collapsing the strip, resizing, switching documents, starting an edit or
+suspending the app cancels queued drag targets. An engine command already
+dispatched may finish through the normal command path. No alternative undo
+stack, evaluator, camera or document state is introduced.
+
+Tapping a feature uses the same `select.entity` path as the model browser, waits
+for the matching workspace state, then opens its existing native feature editor.
+Sketch icons reopen the original sketch with `sketch.edit`. Apply retains the
+feature identity and uses the shared evaluator; Cancel discards the draft.
+Press and hold an icon for **Delete feature**. Deletion uses the existing
+dependency warning and revision-checked confirmation, followed by
+`timeline.delete`; Undo restores the feature and its geometry. An action from an
+old document's menu cannot act on a replacement document.
+
+Both surfaces reflect the viewport's feature IDs. Solid features highlight the current
+bodies they created or modified, including placed component bodies. A modifying
+feature such as a fillet highlights its current body. Sketch selection outlines
+the solved source curves, including a consumed sketch; explicit item, folder and
+occurrence visibility still applies. Construction features receive geometric
+feedback. Clearing selection removes the highlights. Selection reuses the model
+upload and leaves the document, camera and undo stack intact. History navigation
+uses the engine's existing saved marker and undo semantics.
+
+The native layout harness includes collapsed/expanded history with both chrome
+styles, both rail sides, large text, the browser and keyboard-reduced windows.
+`--history-check` is an opt-in DEBUG launch diagnostic on a physical iPad. It
+uses a disposable fixture, presses the real toggle and feature buttons, checks
+selection feedback, steps backward/forward and checks the visible body counts.
+It writes `Documents/history-check-{collapsed,selected,browser,stage-1,stage-2,stage-3}.png`.
+It does not load or autosave a library design. The render proof's `--history`
+mode independently captures real GPU feedback for a box, cylinder, sketch and
+fillet, checks visible pixel changes and exact restoration after clearing.
+
+2026-10-29 verification: 406 native layout/focus/decoder cases and canonical icon
+checks pass; 135 session and 28 bridge tests pass. The unsigned and existing-profile
+device builds pass. The physical iPad diagnostic and GPU proof pass; their actual
+captures were inspected. No simulator was used. Logs are local ignored output in
+`target/ipados-feature-history-*.log`.
+
+The subsequent marker-drag update passes the Foundation snapping, reversed drag,
+pending-evaluation coalescing, final-lift and stale-completion checks. Unsigned
+and existing-profile device builds pass. The physical DEBUG diagnostic also
+passes the production coordinate/queue/command route for backwards, reversed and
+forwards scrubbing, including the empty stage and final full model. Its captures
+are inspected separately from hardware contact: it does not synthesize a Pencil
+gesture. Hands-on Pencil feel and long-strip edge scrolling remain unverified.
+Local logs use `target/ipados-history-scrub-*.log`.
+
+`--history-actions-check` is an opt-in disposable device workflow for tapping an
+existing box, applying a height edit without replacing its ID, opening a future
+feature's editor, invoking the native Delete menu action and the same destructive
+confirmation closure, undoing deletion, and reopening/finishing the original
+sketch. It writes local `Documents/history-actions-*.png` captures. It does not
+load, replace or autosave a library design, or synthesize a hardware long press.
+The 2026-10-29 device run passes these editing/deletion/Undo checks. The unsigned
+and existing-profile native builds, 550 native layout/focus/decoder cases,
+canonical icon checks, pending locale lists and UI container checks pass. Local
+build/runtime logs are `target/ipados-history-actions-*.log`.
+
+History feature buttons use UIKit's semantic primary action for Edit and an
+explicit cancelling long-press recognizer for an anchored Delete/Cancel action
+sheet. Native button context-menu previews were reproduced hiding the feature
+icon and raising the keyboard without displaying Delete on the physical iPad.
+History items do not install that preview or the competing large-content viewer.
+Their accessible name remains, with a custom Delete action for VoiceOver. The
+history-actions diagnostic checks that the sheet retains the icon without opening
+the editor or keyboard, then exercises the existing dependency confirmation,
+deletion and Undo. Its calls alone do not verify a physical long press.
+
+2026-10-29 history hold fix verification: 678 native checks and icon validation,
+unsigned and existing-profile signed device builds, and the physical
+`--history-actions-check` pass. A 1.1-second pointer hold through Device Hub on
+the connected iPad also shows the anchored Delete action with its feature icon
+still visible and no software keyboard; outside dismissal restores the normal
+strip. This is remote pointer input, not a Pencil/finger hardware claim. The
+device diagnostic capture is local `target/history-longpress-check/delete-menu.png`.
+Normal app launch was restored after the disposable-model check.
+
+## View controls and History labels
+
+The separate View button shows its name and canonical chevron above the right
+navigation controls (mirrored with handedness). Crowded windows place it below
+the document header to keep both controls readable. Its View-only popover follows
+the approved reference: a heading and Fit model row; Front/Back, Left/Right and
+Top/Bottom pairs; a full-width Isometric choice; then Perspective, Grid and
+Origin references switch rows and an Individual references disclosure. Standard
+view selection is read from the actual Rust camera orientation and clears after
+free orbit or roll. Opening the panel executes no command and preserves the
+Metal view frame. All actions use the existing viewport command routes, including
+the conditionally applicable planar-exit action. No text input or native
+UIButton context menu is used by this panel.
+
+Grid remains independent of Origin references. The latter includes **Axes,
+planes & origin**: all visible hides all seven references; none or a mixed set
+shows all. Mixed visibility shows **Some visible**, a neutral switch track and
+a minus indicator, and announces the mixed value through VoiceOver. The native
+host reads effective visibility, grid and projection from the existing Rust
+viewport diagnostic, including automatic plane-choice visibility. Saved overrides
+change only after command success. Edits and pending commands disable the
+corresponding controls.
+
+Individual references opens a second page in the same popover and retains the
+origin point, per-axis and per-plane switches, axes/planes groups, Show all/Hide
+all, Automatic, and the origin-in-model preference. Back returns to the View page.
+All labels are localized; semantic colors, Dynamic Type and scrollable contents
+retain light/dark and narrow-window support. The tool menus, model browser and
+left rail retain their existing presentation. The History toggle keeps its
+canonical rollback icon and localized label, measured width and original
+timeline handlers; the separate hold fix is documented above.
+
+The opt-in DEBUG argument `--view-controls-check` uses a disposable fixture,
+restores visibility preferences and never opens or autosaves a library design.
+It checks the actual panel buttons/switches, all/none/mixed and automatic
+visibility, Grid independence, camera-derived standard selection, Perspective,
+busy/failed commands, unchanged document/history/selection, and opening without
+a keyboard or viewport/camera changes. It writes
+`Documents/view-controls-{opened,none,all,mixed,panel}.png` for inspection.
+The Foundation harness covers all 128 effective reference subsets, camera
+selection including free orbit/roll, and adaptive label/control placement.
+
+2026-10-29 reference-panel correction: 692 native harness cases and canonical
+icon checks, pending locale lists, UI-container checks, unsigned device build and
+existing-profile signed build pass. The final physical `--view-controls-check`
+passes real button/switch dispatch, effective visibility/mixed/automatic states,
+Grid independence, busy/failure preservation, standard-view selection and
+projection changes. Opening preserves the camera, Metal frame and native
+document/history/selection, and raises no keyboard. Actual physical captures
+`target/task3-view-panel/{opened,none,all,mixed,panel}.png` were inspected against
+the reference; remote pointer opening also displays the full panel without the
+old native-menu keyboard issue. Hardware Pencil/finger and hands-on VoiceOver
+coverage remain separate from these UIKit/remote-pointer checks. Saved visibility
+preferences and the normal Test document were restored after the disposable run.
+
+## Grouped modelling options
+
+The compact inspector keeps its source, operation and persistent action footer.
+More options presents secondary choices in native grouped rows. Exact Boolean
+choices use switches; direction choices keep their Rust values and use localized
+labels. Target bodies appear as compact named rows with a remove control and,
+when order can change, a contextual reorder menu. The single selection menu
+offers unselected bodies and viewport selection. Busy previews disable discrete
+controls; generation checks reject events from a superseded form.
+
+The Foundation harness covers typed Boolean recognition and ordered reference
+edits. The DEBUG-only `--grouped-inspector-check` fixture exercises the current
+compact UIKit panel without changing a library project. Supply a fresh
+`--grouped-inspector-run=<UUID>`; accept evidence only when the run matches and
+the report ends with `PASS complete`. It checks menu actions, busy recovery,
+stale controls, target callbacks and normal/accessibility layouts at 320/380pt.
+This synthetic device check does not establish physical Pencil or VoiceOver
+coverage.

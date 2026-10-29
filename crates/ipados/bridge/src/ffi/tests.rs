@@ -597,54 +597,74 @@ fn modelling_sketch(id: u64) -> u64 {
 #[test]
 fn modelling_extrusion_drag_survives_preview_publication_and_form_inspection() {
     let _serial = isolated_registry();
-    let id = sc_session_create();
-    let sketch = modelling_sketch(id);
-    engine_command(id, "solid.extrude", json!({"sketch":sketch,"distance":"10 mm","body_name":"Block"}));
-    let design = engine_command(id, "document.inspect", json!({}));
-    let feature = design["timeline"].as_array().unwrap().iter().find(|feature| feature["type"] == "ExtrudeFeature").unwrap()["id"].as_u64().unwrap();
-    let history = design["undo"].clone();
-    view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
-    view_request(id, json!({"kind":"command","command":"view.exit_planar","params":{}}));
-    view_request(id, json!({"kind":"command","command":"view.home","params":{}}));
-    view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
-    assert_eq!(request(id, &json!({"kind":"model","action":"begin","feature":feature}).to_string()), 0, "{}", response(id));
-    let token = response(id)["result"]["token"].as_u64().unwrap();
-    let start = response(id)["result"]["viewport"]["handle_point"].as_array().unwrap().clone();
-    let input = |phase: &str, depth: f64, time: f64| {
-        let mut world = start.clone();
-        world[2] = json!(depth);
-        let projected = view_request(id, json!({"kind":"command","command":"view.project","params":{"point":world}}));
-        let viewport = view_request(id, json!({"kind":"snapshot"}))["result"].clone();
-        view_request(
-            id,
-            json!({"kind":"input","event":{
-                "source":"pencil","phase":phase,"id":91,"timestamp":time,
-                "x_points":projected["result"]["points"][0],"y_points":projected["result"]["points"][1],
-                "x_pixels":projected["result"]["pixels"][0],"y_pixels":projected["result"]["pixels"][1],"scale":2,
-                "geometry_revision":viewport["geometry_revision"],"document_id":viewport["document_id"],
-                "viewport_epoch":viewport["viewport_epoch"],"camera_epoch":viewport["camera_epoch"],"display_preview":viewport["preview"]
-            }}),
-        )
-    };
-    assert_eq!(input("began", 10.0, 1.0)["result"]["handled"], true);
-    for (index, depth) in [15.0, 20.0, 12.0].into_iter().enumerate() {
-        input("moved", depth, 2.0 + index as f64);
+    for creating in [false, true] {
+        let id = sc_session_create();
+        let sketch = modelling_sketch(id);
+        if !creating {
+            engine_command(id, "solid.extrude", json!({"sketch":sketch,"distance":"10 mm","body_name":"Block"}));
+        }
+        let design = engine_command(id, "document.inspect", json!({}));
+        let feature = design["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|feature| feature["type"] == "ExtrudeFeature")
+            .and_then(|feature| feature["id"].as_u64());
+        let history = design["undo"].clone();
+        view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
+        view_request(id, json!({"kind":"command","command":"view.exit_planar","params":{}}));
+        view_request(id, json!({"kind":"command","command":"view.home","params":{}}));
+        view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
+        assert_eq!(
+            request(id, &json!({"kind":"model","action":"begin","feature":feature,"operation":creating.then_some("solid.extrude")}).to_string()),
+            0,
+            "{}",
+            response(id)
+        );
+        let token = response(id)["result"]["token"].as_u64().unwrap();
+        if creating {
+            let params = response(id)["result"]["params"].clone();
+            assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":params}).to_string()), 0, "{}", response(id));
+            view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
+        }
+        let start = view_request(id, json!({"kind":"snapshot"}))["result"]["handle_point"].as_array().unwrap().clone();
+        let input = |phase: &str, depth: f64, time: f64| {
+            let mut world = start.clone();
+            world[2] = json!(depth);
+            let projected = view_request(id, json!({"kind":"command","command":"view.project","params":{"point":world}}));
+            let viewport = view_request(id, json!({"kind":"snapshot"}))["result"].clone();
+            view_request(
+                id,
+                json!({"kind":"input","event":{
+                    "source":"pencil","phase":phase,"id":91,"timestamp":time,
+                    "x_points":projected["result"]["points"][0],"y_points":projected["result"]["points"][1],
+                    "x_pixels":projected["result"]["pixels"][0],"y_pixels":projected["result"]["pixels"][1],"scale":2,
+                    "geometry_revision":viewport["geometry_revision"],"document_id":viewport["document_id"],
+                    "viewport_epoch":viewport["viewport_epoch"],"camera_epoch":viewport["camera_epoch"],"display_preview":viewport["preview"]
+                }}),
+            )
+        };
+        assert_eq!(input("began", 10.0, 1.0)["result"]["handled"], true);
+        for (index, depth) in [15.0, 20.0, 12.0].into_iter().enumerate() {
+            input("moved", depth, 2.0 + index as f64);
+            assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
+            assert_eq!(response(id)["result"]["worked"], true, "the same contact must keep producing previews");
+            assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token}).to_string()), 0, "{}", response(id));
+            let result = response(id)["result"].clone();
+            assert_eq!(result["viewport"]["input"]["edit"], "dragging", "inspection must preserve the active handle");
+            assert!((result["viewport"]["preview_volume_mm3"].as_f64().unwrap() - 1200.0 * depth).abs() < 1e-5);
+        }
+        input("ended", 12.0, 6.0);
         assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
-        assert_eq!(response(id)["result"]["worked"], true, "the same contact must keep producing previews");
-        assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token}).to_string()), 0, "{}", response(id));
-        let result = response(id)["result"].clone();
-        assert_eq!(result["viewport"]["input"]["edit"], "dragging", "inspection must preserve the active handle");
-        assert!((result["viewport"]["preview_volume_mm3"].as_f64().unwrap() - 1200.0 * depth).abs() < 1e-5);
+        let entry = lookup(id).unwrap();
+        let source_volume = if creating { 0. } else { 12_000. };
+        assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - source_volume).abs() < 1e-6);
+        let params = entry.viewport.lock().unwrap().model_edit(token).unwrap().params;
+        assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":params}).to_string()), 0, "{}", response(id));
+        assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 14_400.0).abs() < 1e-5);
+        assert_eq!(engine_command(id, "document.inspect", json!({}))["undo"], history.as_u64().unwrap() + 1);
+        assert_eq!(sc_session_destroy(id), 0);
     }
-    input("ended", 12.0, 6.0);
-    assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
-    let entry = lookup(id).unwrap();
-    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 12_000.0).abs() < 1e-6);
-    let params = entry.viewport.lock().unwrap().model_edit(token).unwrap().params;
-    assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":params}).to_string()), 0, "{}", response(id));
-    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 14_400.0).abs() < 1e-5);
-    assert_eq!(engine_command(id, "document.inspect", json!({}))["undo"], history.as_u64().unwrap() + 1);
-    assert_eq!(sc_session_destroy(id), 0);
 }
 
 #[test]
@@ -769,9 +789,11 @@ fn modelling_inspect_refreshes_parameters_and_invalidates_previous_preview() {
     assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":params}).to_string()), 0);
     assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token}).to_string()), 0);
     assert_eq!(response(id)["result"]["valid"], true);
-    assert_eq!(request(id, &json!({"kind":"model","action":"selection","token":token}).to_string()), 0);
+    assert_ne!(request(id, &json!({"kind":"model","action":"selection","token":token,"params":{"field":"distance"}}).to_string()), 0);
+    assert_eq!(request(id, &json!({"kind":"model","action":"selection","token":token,"params":{"field":"targets"}}).to_string()), 0);
     assert_eq!(response(id)["result"]["valid"], false);
     assert_eq!(response(id)["result"]["viewport"]["preview"], false, "selection reveals the same source scene used by picking");
+    assert!(response(id)["result"]["handle"].is_null(), "selection must not be intercepted by the distance handle");
     assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":params}).to_string()), 0);
     assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token}).to_string()), 0);
     let mut changed = response(id)["result"]["params"].clone();

@@ -84,6 +84,8 @@ struct SketchAnnotationPresentation: Decodable {
     let units: String
     let driven: Bool
     let selected: Bool
+    let entity: WorkspaceEntity
+    let dimension_type: String?
 }
 struct SketchConstraintIndicator: Decodable { let id: String; let name: String; let points: [Double]; let selected: Bool }
 struct ReferenceLabelPresentation: Decodable {
@@ -102,6 +104,25 @@ struct WorkspaceRow: Decodable {
     let entity: WorkspaceEntity?
     let selected: Bool
     let assembly: AssemblyRowPresentation?
+    let browser: BrowserRowPresentation?
+}
+
+struct BrowserRowPresentation: Decodable {
+    struct Command: Decodable {
+        let command: String
+        let params: [String: PresentationJSON]
+    }
+    let icon: String
+    let localised: Bool?
+    let container: Bool?
+    let visible: Bool?
+    let drawn: Bool?
+    let visibility: [String: PresentationJSON]?
+    let rename: Command?
+    let component: UInt64?
+    let folder: String?
+    let group: UInt64?
+    let key: String?
 }
 
 struct WorkspaceTool: Decodable {
@@ -196,8 +217,10 @@ final class NativeSession {
     var onSketchAnnotations: (([SketchAnnotationPresentation]) -> Void)?
     var onConstraintIndicators: (([SketchConstraintIndicator]) -> Void)?
     var onReferenceLabels: (([ReferenceLabelPresentation]) -> Void)?
+    var onViewPresentation: ((ViewControlsPresentation) -> Void)?
     var onModelValue: ((ModelValuePresentation?) -> Void)?
     var onToolWorkCompleted: (() -> Void)?
+    var onModelDismissed: ((UInt64) -> Void)?
     private let engine = DispatchQueue(label: "SolidCraft.engine", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private let display = DispatchQueue(label: "SolidCraft.viewport", qos: .userInteractive, autoreleaseFrequency: .workItem)
     private let state = BridgeState()
@@ -259,7 +282,8 @@ final class NativeSession {
             if let activity { commandActivities.insert(activity); publishActivityStatus() }
             queue.async { [weak self, state] in
                 do {
-                    _ = try state.request(data, lane: lane)
+                    let reply = try state.request(data, lane: lane)
+                    let viewPresentation = isView ? (try? JSONDecoder().decode(ViewControlsPresentation.Envelope.self, from: reply).result) : nil
                     // Some viewport controls (Finish spline and saved snapping)
                     // enqueue real CAD work without another Pencil sample.
                     if isView && command.hasPrefix("tool.") { self?.drainToolWork() }
@@ -267,6 +291,7 @@ final class NativeSession {
                         guard let self, self.alive else { return }
                         if let activity { self.commandActivities.remove(activity); self.publishActivityStatus() }
                         if !command.hasPrefix("view.") { self.refreshWorkspace() }
+                        if let viewPresentation { self.onViewPresentation?(viewPresentation) }
                         completion?(.success(()))
                         self.redraw()
                     }
@@ -588,6 +613,8 @@ final class NativeSession {
     }
 
     private func observeWorkspaceContext(_ viewport: BridgeState.ViewportReport) {
+        if let view = viewport.viewPresentation { onViewPresentation?(view) }
+        if let token = viewport.input?.dismissed_model_token { onModelDismissed?(token) }
         onSketchInput?(viewport.input?.sketch)
         let changed = lastWorkspaceDocument != viewport.document_id
             || lastWorkspaceRevision != viewport.geometry_revision
@@ -864,7 +891,8 @@ final class NativeSession {
         onFrame = nil
         onStatus = nil
         onWorkspace = nil; onProjectChange = nil
-        onSketchInput = nil; onSketchAnnotations = nil; onConstraintIndicators = nil; onReferenceLabels = nil; onModelValue = nil
+        onModelDismissed = nil
+        onSketchInput = nil; onSketchAnnotations = nil; onConstraintIndicators = nil; onReferenceLabels = nil; onViewPresentation = nil; onModelValue = nil
         // Engine work finishes before the display queue releases the retained layer/handle.
         engine.async { [state, lifecycle, display] in
             display.async { lifecycle.exclusive { state.close() } }
@@ -1254,6 +1282,9 @@ final class NativeSession {
             do {
                 if isTap {
                     let filter = String(command.dropFirst(4))
+                    if ProcessInfo.processInfo.arguments.contains("--auto-face-extrude-check") {
+                        _ = try state.request(Data("{\"kind\":\"command\",\"command\":\"select.clear\",\"params\":{}}".utf8), lane: .viewport)
+                    }
                     _ = try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": "select.filter", "params": ["filter": filter]]), lane: .viewport)
                     let project = try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": "view.project", "params": params]), lane: .viewport)
                     let projected = try JSONDecoder().decode(DevelopmentProjection.self, from: project).result
@@ -1423,11 +1454,19 @@ private final class BridgeState {
     }
     struct ViewportReport: Decodable {
         typealias Entity = WorkspaceEntity
-        struct Input: Decodable { let tool: String; let edit: String?; let sketch: SketchInputPresentation? }
+        struct Input: Decodable { let tool: String; let edit: String?; let sketch: SketchInputPresentation?; let dismissed_model_token: UInt64? }
         let input: Input?
         let annotations: [SketchAnnotationPresentation]?
         let constraint_indicators: [SketchConstraintIndicator]?
         let reference_labels: [ReferenceLabelPresentation]?
+        let origin: ViewControlsPresentation.Origin?
+        let grid: ViewControlsPresentation.Grid?
+        let planar: Bool?
+        let camera: ViewControlsPresentation.Camera?
+        var viewPresentation: ViewControlsPresentation? {
+            guard let origin, let grid, let planar, let camera else { return nil }
+            return ViewControlsPresentation(origin: origin, grid: grid, planar: planar, camera: camera)
+        }
         let model_value: ModelValuePresentation?
         let selection: [Entity]
         let hover: Entity?

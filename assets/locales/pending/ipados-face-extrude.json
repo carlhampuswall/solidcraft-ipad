@@ -1,0 +1,16 @@
+{
+  "en": {
+    "ui.ipados.face_extrude.choose_source": "Choose a sketch region or up to 256 coplanar faces of one body to extrude.",
+    "ui.ipados.face_extrude.intersect": "Intersect",
+    "ui.ipados.face_extrude.mixed_sources": "Choose sketch regions or body faces for this extrusion, then clear the other selection.",
+    "ui.ipados.face_extrude.new_body": "New Body",
+    "ui.ipados.face_extrude.preview_intersect": "Intersect preview: blue material is kept; faded material is discarded.",
+    "ui.ipados.face_extrude.preview_new": "New Body preview: amber material becomes a separate body.",
+    "ui.ipados.face_extrude.preview_subtract": "Subtract preview: transparent red material is removed.",
+    "ui.ipados.face_extrude.preview_union": "Union preview: green material is added to the target body.",
+    "ui.ipados.face_extrude.same_body": "Choose coplanar faces from one body at a time.",
+    "ui.ipados.face_extrude.source": "Sketch region or planar faces",
+    "ui.ipados.face_extrude.subtract": "Subtract",
+    "ui.ipados.face_extrude.union": "Union"
+  }
+}
