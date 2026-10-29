@@ -3418,6 +3418,10 @@ private extension FoundationController {
                 for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
                     let action = try find(id, in: panel, as: UIButton.self), frame = action.convert(action.bounds, to: panel)
                     try require(!action.isDescendant(of: scroll) && panel.bounds.contains(frame) && frame.width >= 44 && frame.height >= 44, name + ": persistent action clipped")
+                    if let label = action.titleLabel {
+                        let unwrapped = label.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude))
+                        try require(label.bounds.width + 0.5 >= unwrapped.width, name + ": action title wrapped into narrow columns")
+                    }
                 }
                 let offset = disclosure.convert(disclosure.bounds, to: scroll).minY - 12
                 scroll.setContentOffset(CGPoint(x: 0, y: min(max(0, offset), max(0, scroll.contentSize.height - scroll.bounds.height))), animated: false)

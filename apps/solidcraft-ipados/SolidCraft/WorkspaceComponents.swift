@@ -1304,14 +1304,35 @@ private final class InspectorActionRow: UIStackView {
         super.init(frame: .zero)
         buttons.forEach(addArrangedSubview)
         spacing = 8; distribution = .fillEqually
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (row: InspectorActionRow, _: UITraitCollection) in
+            row.setNeedsLayout()
+        }
     }
     required init(coder: NSCoder) { super.init(coder: coder) }
     override func layoutSubviews() {
         let needed = arrangedSubviews.reduce(CGFloat(0)) { $0 + max(44, $1.intrinsicContentSize.width) }
             + CGFloat(max(0, arrangedSubviews.count - 1)) * spacing
-        let direction: NSLayoutConstraint.Axis = needed > bounds.width ? .vertical : .horizontal
+        let direction: NSLayoutConstraint.Axis = traitCollection.preferredContentSizeCategory.isAccessibilityCategory || needed > bounds.width ? .vertical : .horizontal
         if axis != direction { axis = direction; invalidateIntrinsicContentSize() }
         super.layoutSubviews()
+    }
+}
+
+private final class InspectorReferenceHeading: UIStackView {
+    init(title: UILabel, count: UILabel) {
+        super.init(frame: .zero)
+        addArrangedSubview(title); addArrangedSubview(count)
+        updateLayout()
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (heading: InspectorReferenceHeading, _: UITraitCollection) in
+            heading.updateLayout()
+        }
+    }
+    required init(coder: NSCoder) { super.init(coder: coder) }
+    private func updateLayout() {
+        let large = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+        axis = large ? .vertical : .horizontal
+        alignment = large ? .leading : .firstBaseline
+        spacing = large ? 4 : 8
     }
 }
 
@@ -1812,7 +1833,8 @@ final class ModellingInspector: UIStackView {
         let count = WorkspaceStyle.label(.caption1, secondary: true)
         count.text = ModellingFormText.text("selection_count").replacingOccurrences(of: "{count}", with: String(values.count))
         count.setContentHuggingPriority(.required, for: .horizontal)
-        let heading = UIStackView(arrangedSubviews: [title, count]); heading.axis = .horizontal; heading.spacing = 8; heading.alignment = .firstBaseline
+        let heading = InspectorReferenceHeading(title: title, count: count)
+        heading.accessibilityIdentifier = "workspace-model-reference-" + field.key + "-heading"
         stack.addArrangedSubview(heading); stack.setCustomSpacing(8, after: heading)
         let group = ModellingFormGroup()
         stack.addArrangedSubview(group); fieldViews.append(group); discreteFieldViews.append(group)
