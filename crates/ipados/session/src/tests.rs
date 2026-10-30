@@ -74,6 +74,7 @@ fn viewport_background_rejects_invalid_channels_without_changing_appearance() {
 #[test]
 fn viewport_grid_toggle_preserves_references_camera_model_and_history_in_3d_and_sketch_views() {
     let (mut adapter, mut viewport) = proof();
+    viewport.command("view.grid", &json!({"visible":true,"integrated_axes":false})).unwrap();
     viewport.command("view.origin", &json!({"visible":true})).unwrap();
     let before = viewport.snapshot().unwrap();
     let diagnostic = viewport.diagnostic();
@@ -103,6 +104,192 @@ fn viewport_grid_toggle_preserves_references_camera_model_and_history_in_3d_and_
         assert_eq!(viewport.diagnostic()["grid"]["visible"], true);
     }
     assert_eq!(adapter.session.undo.len(), history);
+}
+
+#[test]
+fn viewport_integrated_axes_follow_the_visible_grid_plane_and_world_up_axis() {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    let model = view.snapshot().unwrap().model.clone();
+    assert_eq!(view.diagnostic()["grid"]["integrated_axes"], true);
+    for (up, standard, expected) in [
+        (solidcraft_render::UpAxis::Z, "view.isometric", [true, true, false]),
+        (solidcraft_render::UpAxis::Z, "view.top", [true, true, false]),
+        (solidcraft_render::UpAxis::Z, "view.front", [true, false, true]),
+        (solidcraft_render::UpAxis::Z, "view.right", [false, true, true]),
+        (solidcraft_render::UpAxis::Y, "view.top", [true, false, true]),
+        (solidcraft_render::UpAxis::Y, "view.front", [true, true, false]),
+        (solidcraft_render::UpAxis::Y, "view.right", [false, true, true]),
+    ] {
+        view.camera.up = up;
+        view.command(standard, &json!({})).unwrap();
+        assert_eq!(
+            view.diagnostic()["origin"]["visible"],
+            json!([false, expected[0], expected[1], expected[2], false, false, false]),
+            "{up:?} {standard}"
+        );
+        let snapshot = view.snapshot().unwrap();
+        for ((axis, color), visible) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(solidcraft_engine::view::Palette::DEFAULT.axes).zip(expected) {
+            let lines: Vec<_> = snapshot.guides.lines.iter().filter(|line| !line.on_top && line.color == color).collect();
+            assert_eq!(!lines.is_empty(), visible, "{up:?} {standard} {axis:?}");
+            if visible {
+                assert!(lines.iter().flat_map(|line| &line.points).all(|point| point.cross(axis).len() < 1e-8));
+                assert!(lines.iter().flat_map(|line| &line.points).any(|point| point.dot(axis) < -1.));
+                assert!(lines.iter().flat_map(|line| &line.points).any(|point| point.dot(axis) > 1.));
+                assert!(lines.iter().any(|line| line.alpha < 1.), "axes fade with the grid");
+                assert!(
+                    !snapshot.guides.grid.iter().any(|line| line.points.iter().all(|point| point.cross(axis).len() < 1e-8)),
+                    "neutral grid must not overdraw the coloured axis"
+                );
+            }
+        }
+        assert!(view.diagnostic()["reference_labels"].as_array().unwrap().is_empty(), "automatic grid lines have no reference labels");
+        assert!(Arc::ptr_eq(&model, &snapshot.model));
+    }
+    assert!(engine.session.undo.is_empty());
+}
+
+#[test]
+fn viewport_integrated_axis_overrides_survive_plane_changes_and_grid_visibility() {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    let before = view.snapshot().unwrap();
+    view.command("view.top", &json!({})).unwrap();
+    assert!(
+        view.pick(point(&view, Vec3::new(-10., 0., 0.)), Some(engine.geometry_revision)).is_none(),
+        "automatic grid guides must not capture empty-space taps"
+    );
+    view.command("view.origin", &json!({"item":"X","visible":false})).unwrap();
+    view.command("view.origin", &json!({"item":"Z","visible":true})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, true, true, false, false, false]));
+    view.command("view.front", &json!({})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, false, true, false, false, false]));
+    view.command("view.grid", &json!({"visible":false})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, false, true, false, false, false]), "explicit Show survives hidden grid");
+    assert!(view.snapshot().unwrap().guides.grid.is_empty());
+    view.command("view.origin", &json!({"item":"Z","visible":null})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!(vec![false; 7]), "automatic axes follow the hidden grid");
+    view.command("view.grid", &json!({"visible":true})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, false, true, false, false, false]));
+    view.command("view.origin", &json!({"item":"X","visible":null})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, true, false, true, false, false, false]));
+    assert!(Arc::ptr_eq(&before.model, &view.snapshot().unwrap().model));
+    assert!(engine.session.undo.is_empty());
+}
+
+#[test]
+fn viewport_integrated_axes_preference_retains_legacy_defaults_and_validates_atomically() {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    view.command("view.grid", &json!({"visible":true,"integrated_axes":false})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!(vec![false; 7]));
+    assert!(view.snapshot().unwrap().guides.lines.iter().all(|line| line.on_top));
+    view.command("view.origin", &json!({"item":"X","visible":true})).unwrap();
+    let snapshot = view.snapshot().unwrap();
+    let axes: Vec<_> = snapshot.guides.lines.iter().filter(|line| !line.on_top).collect();
+    assert_eq!(axes.len(), 1, "legacy explicit axes stay single short positive segments");
+    assert_eq!(axes[0].points, vec![Vec3::ZERO, Vec3::X * 30.]);
+    view.command("view.grid", &json!({"visible":false})).unwrap();
+    assert_eq!(view.diagnostic()["grid"]["integrated_axes"], false, "the existing Grid command preserves the mode");
+    for invalid in [json!(null), json!("true"), json!(0), json!([])] {
+        let before = view.diagnostic();
+        assert!(view.command("view.grid", &json!({"visible":true,"integrated_axes":invalid})).is_err());
+        assert_eq!(view.diagnostic()["grid"], before["grid"], "invalid mode must not change Grid visibility either");
+        assert_eq!(view.diagnostic()["origin"], before["origin"]);
+    }
+    view.command("view.origin", &json!({"visible":null})).unwrap();
+    view.command("view.grid", &json!({"visible":true,"integrated_axes":true})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, true, true, false, false, false, false]));
+    assert!(engine.session.undo.is_empty());
+}
+
+#[test]
+fn viewport_integrated_axes_use_sketch_plane_world_colours_and_keep_offset_local_guides() {
+    use solidcraft_engine::geom::Plane;
+    let offset = Plane::new(Vec3::new(5., 6., 7.), Vec3::Y, Vec3::Z).unwrap();
+    let tilted = Plane::new(Vec3::new(5., 6., 7.), Vec3::new(1., 1., 0.), Vec3::Z).unwrap();
+    for (plane, expected) in [(Plane::XZ, [true, false, true]), (Plane::YZ, [false, true, true]), (offset, [false; 3]), (tilted, [false; 3])] {
+        let mut engine = SessionAdapter::new();
+        engine.execute("sketch.create", json!({"plane":plane})).unwrap();
+        let mut view = Viewport::default();
+        view.set_metrics(metrics(800., 600., 2.)).unwrap();
+        view.begin_update(1);
+        view.install(1, engine.snapshot().unwrap());
+        assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, expected[0], expected[1], expected[2], false, false, false]));
+        let snapshot = view.snapshot().unwrap();
+        let lines: Vec<_> = snapshot.guides.lines.iter().filter(|line| !line.on_top).collect();
+        assert!(!lines.is_empty(), "offset/tilted sketches retain their local grid axes");
+        assert!(lines.iter().flat_map(|line| &line.points).all(|point| plane.height(*point).abs() < 1e-8));
+        for direction in [plane.x, plane.y] {
+            let axis = [Vec3::X, Vec3::Y, Vec3::Z].into_iter().position(|axis| direction.dot(axis).abs() > 1. - 1e-8);
+            if let Some(index) = axis {
+                let matching: Vec<_> =
+                    lines.iter().filter(|line| line.points.iter().all(|point| (*point - plane.origin).cross(direction).len() < 1e-8)).collect();
+                assert!(!matching.is_empty());
+                assert!(
+                    matching.iter().all(|line| line.color == solidcraft_engine::view::Palette::DEFAULT.axes[index]),
+                    "principal sketch axes retain world XYZ colours"
+                );
+            }
+        }
+        assert!(view.diagnostic()["reference_labels"].as_array().unwrap().is_empty());
+        let history = engine.session.undo.len();
+        view.command("view.origin", &json!({"group":"axes","visible":false})).unwrap();
+        assert!(view.snapshot().unwrap().guides.lines.iter().all(|line| line.on_top), "axis toggles also hide local sketch guides");
+        assert_eq!(engine.session.undo.len(), history);
+    }
+}
+
+#[test]
+fn viewport_explicit_integrated_axes_pick_the_negative_and_panned_visible_span() {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    view.command("view.top", &json!({})).unwrap();
+    view.command("view.origin", &json!({"item":"X","visible":true})).unwrap();
+    assert_eq!(view.pick(point(&view, Vec3::new(-10., 0., 0.)), Some(engine.geometry_revision)), Some(Sel::Axis { name: "X".into() }));
+    view.camera.target = Vec3::new(-50., 0., 0.);
+    view.changed();
+    assert_eq!(
+        view.pick(point(&view, Vec3::new(-50., 0., 0.)), Some(engine.geometry_revision)),
+        Some(Sel::Axis { name: "X".into() }),
+        "panned visible axes remain pickable beyond the old positive segment"
+    );
+    view.command("view.origin", &json!({"item":"X","visible":false})).unwrap();
+    assert!(view.pick(point(&view, Vec3::new(-50., 0., 0.)), Some(engine.geometry_revision)).is_none());
+}
+
+#[test]
+fn viewport_integrated_axis_picking_keeps_visible_middles_with_clipped_endpoints() {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    for fov in [0., std::f64::consts::FRAC_PI_4] {
+        view.camera.target = Vec3::ZERO;
+        view.camera.yaw = 0.;
+        view.camera.pitch = 0.21;
+        view.camera.fov = fov;
+        view.command("view.origin", &json!({"item":"Y","visible":true})).unwrap();
+        view.changed();
+        assert_eq!(
+            view.pick(point(&view, Vec3::new(0., -10., 0.)), Some(engine.geometry_revision)),
+            Some(Sel::Axis { name: "Y".into() }),
+            "visible axis middles remain pickable in orthographic and perspective views"
+        );
+    }
 }
 
 fn point(view: &Viewport, world: Vec3) -> [f64; 2] {
@@ -2416,6 +2603,7 @@ fn origin_references_are_automatic_during_sketch_creation_without_changing_saved
     let mut engine = SessionAdapter::new();
     let before = engine.session.doc.clone();
     let mut view = Viewport::default();
+    view.command("view.grid", &json!({"visible":true,"integrated_axes":false})).unwrap();
     view.set_metrics(metrics(800., 600., 2.)).unwrap();
     view.begin_update(1);
     view.install(1, engine.snapshot().unwrap());

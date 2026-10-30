@@ -65,6 +65,20 @@ does not decide geometry compatibility or construct new constraint semantics.
 
 View orientation, Fit, projection and Properties use the existing viewport
 commands. Active sketches omit unavailable 3D orientation/projection actions.
+**Views → Visibility → Axes in grid** is enabled by default. The current XY,
+XZ or YZ grid carries its two world-coloured axes in both directions, fading
+with the grid; the perpendicular axis stays hidden automatically. Sketches use
+their own plane and origin, including offset and tilted local grids. The corner
+orientation triad continues to show XYZ independently. Automatic grid axes have
+no reference labels or hit targets, preserving empty-space selection clearing.
+Individual axis visibility overrides still win: explicit Show exposes the
+selectable engine reference and can show an off-plane axis; Hide suppresses an
+axis even on the current grid. Automatic restores the plane-dependent defaults.
+Hiding the grid hides its automatic axes; explicitly shown references remain.
+Changes a default: yes — turning off **Axes in grid** restores the former hidden
+origin-axis defaults and short positive reference segments
+(`SolidCraft.workspace.integratedGridAxes`). The preference and individual
+overrides persist between launches without changing document history.
 There is no second orientation cube or camera path; the existing native triad
 still describes the real camera. Undo/Redo occupy a small bottom surface and
 retain their existing history availability checks and keyboard/gesture ownership.
