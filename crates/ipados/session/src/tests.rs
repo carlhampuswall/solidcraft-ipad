@@ -2887,6 +2887,8 @@ fn sketch_pencil_rectangle_commits_once_and_cancel_never_removes_previous_geomet
     assert_eq!(engine.session.undo.len(), undo + 1);
     assert_eq!(engine.sketch_snapshot().unwrap().profiles, 1);
     assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 4);
+    assert_eq!(view.diagnostic()["input"]["tool"], "select", "a completed rectangle returns to selection");
+    assert!(view.diagnostic()["numeric_token"].is_null(), "creation does not open a numeric editor");
     sketch_tap(&mut view, 3, [10.0, 10.0]);
     view.command("tool.cancel", &json!({})).unwrap();
     assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 4);
@@ -2896,6 +2898,29 @@ fn sketch_pencil_rectangle_commits_once_and_cancel_never_removes_previous_geomet
     sketch_tap(&mut view, 5, [10.0, 10.0]);
     assert!(view.take_tool_work().is_none(), "tap on anchor must not create a zero-length line");
 }
+#[test]
+fn sketch_rectangle_repeat_preference_keeps_the_previous_creation_behavior() {
+    for repeat in [false, true] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.rectangle.two_point");
+        view.command("tool.repeat_rectangles", &json!({"enabled":repeat})).unwrap();
+        let history = engine.session.undo.len();
+        sketch_tap(&mut view, 1, [10., 10.]);
+        sketch_tap(&mut view, 2, [50., 40.]);
+        assert!(run_tool(&mut engine, &mut view));
+        assert_eq!(view.diagnostic()["input"]["tool"], if repeat { "sketch.rectangle.two_point" } else { "select" });
+        assert_eq!(engine.session.undo.len(), history + 1);
+        assert!(view.selection().is_empty());
+        assert!(view.diagnostic()["numeric_token"].is_null());
+        if repeat {
+            sketch_tap(&mut view, 3, [70., 10.]);
+            sketch_tap(&mut view, 4, [90., 30.]);
+            assert!(run_tool(&mut engine, &mut view));
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 8);
+            assert_eq!(engine.session.undo.len(), history + 2);
+        }
+    }
+}
+
 #[test]
 fn sketch_pencil_chain_native_references_close_profile_and_segment_undo_is_independent() {
     let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
@@ -3014,7 +3039,9 @@ fn sketch_edge_readout_creates_one_dimension_and_reuses_it_for_inline_edits() {
     view.install(2, engine.snapshot().unwrap());
     let history = engine.session.undo.len();
     let original = engine.session.doc.clone();
-    assert!(view.sketch_annotations().as_array().unwrap().is_empty());
+    let initial = view.sketch_annotations();
+    assert_eq!(initial.as_array().unwrap().len(), 1, "a free size is visible before selection");
+    assert_eq!(initial[0]["selected"], false);
     sketch_tap(&mut view, 1, [15., 20.]);
     let readout = view.sketch_annotations()[0].clone();
     assert_eq!(readout["dimension_type"], "length");
@@ -3058,6 +3085,119 @@ fn sketch_edge_readout_creates_one_dimension_and_reuses_it_for_inline_edits() {
 }
 
 #[test]
+fn sketch_free_dimensions_are_visible_without_selection_and_preserve_legacy_preference() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[10,10],"p1":[50,40],"connect":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let history = engine.session.undo.len();
+    let original = engine.session.doc.clone();
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 4, "every free rectangle edge has a size helper");
+    assert!(annotations.as_array().unwrap().iter().all(|a| a["selected"] == false && a["dimension_type"] == "length"));
+    assert!(view.selection().is_empty());
+    assert!(view.diagnostic()["numeric_token"].is_null(), "helpers never automatically open an editor");
+    assert!(engine.sketch_snapshot().unwrap().sketch.constraints.iter().all(|c| !c.kind.is_dimension()));
+    let helper_lines = view.snapshot().unwrap().highlight.lines.len();
+
+    view.command("tool.free_dimensions", &json!({"enabled":false})).unwrap();
+    assert!(view.sketch_annotations().as_array().unwrap().is_empty(), "the preference restores selected-only helpers");
+    assert!(view.snapshot().unwrap().highlight.lines.len() < helper_lines, "hiding helpers also removes their cached arrows and lines");
+    view.command("select.entity", &json!({"entity":annotations[0]["entity"]})).unwrap();
+    assert_eq!(view.sketch_annotations().as_array().unwrap().len(), 1);
+    view.command("tool.free_dimensions", &json!({"enabled":true})).unwrap();
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 4);
+    assert_eq!(annotations.as_array().unwrap().iter().filter(|a| a["selected"] == true).count(), 1);
+    assert!(Arc::ptr_eq(&original, &engine.session.doc), "helpers and their preference cannot modify the design");
+    assert_eq!(engine.session.undo.len(), history);
+}
+
+#[test]
+fn sketch_partial_dimensions_do_not_hide_a_length_that_can_still_change() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[10,10],[40,50]],"ids":["diagonal"],"infer":false,"connect":false})).unwrap();
+    engine.execute("sketch.dimension", json!({"entities":["diagonal"],"type":"horizontal","value":"30 mm"})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 2, "a horizontal distance leaves the diagonal's length free");
+    let helper = annotations.as_array().unwrap().iter().find(|a| a["dimension_type"] == "length").unwrap();
+    let entity: Sel = serde_json::from_value(helper["entity"].clone()).unwrap();
+    let edit = engine.begin_numeric_for(992, &[entity], Some("length")).unwrap();
+    assert!(engine.prepare_numeric(&edit, "60 mm", false).is_ok(), "the free length remains editable");
+}
+
+#[test]
+fn sketch_free_dimensions_hide_indirectly_determined_sizes_while_the_sketch_can_move() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    let rectangle = engine.execute("sketch.rectangle.two_point", json!({"p0":[10,10],"p1":[50,40],"connect":false})).unwrap().value;
+    let bottom = rectangle["sides"]["bottom"].as_str().unwrap();
+    let right = rectangle["sides"]["right"].as_str().unwrap();
+    let sketch_id = engine.session.active_sketch.unwrap();
+    numeric_apply(&mut engine, &curve_selection(sketch_id, bottom), Some("length"), "40 mm");
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let annotations = view.sketch_annotations();
+    let helpers: Vec<_> = annotations.as_array().unwrap().iter().filter(|a| a["dimension_type"].is_string()).collect();
+    assert_eq!(helpers.len(), 2, "a width dimension also determines the opposite side");
+    assert!(helpers.iter().all(|a| (a["value"].as_f64().unwrap() - 30.).abs() < 1e-8));
+    numeric_apply(&mut engine, &curve_selection(sketch_id, right), Some("length"), "30 mm");
+    let snapshot = engine.sketch_snapshot().unwrap();
+    assert!(snapshot.dof > 0, "the sized rectangle remains free to translate");
+    assert_eq!(snapshot.sketch.constraints.iter().filter(|c| c.kind.is_dimension()).count(), 2);
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    let history = engine.session.undo.len();
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 2, "existing dimensions remain visible without redundant helpers");
+    assert!(annotations.as_array().unwrap().iter().all(|a| a["dimension_type"].is_null()));
+    let entity: Sel = serde_json::from_value(annotations[0]["entity"].clone()).unwrap();
+    let edit = engine.begin_numeric(991, &[entity]).unwrap();
+    assert_eq!(edit.units, "mm");
+    assert!(engine.prepare_numeric(&edit, &edit.expression, false).is_ok(), "existing dimensions remain editable");
+    assert_eq!(engine.session.undo.len(), history, "checking a size never adds a constraint");
+}
+
+#[test]
+fn sketch_free_dimensions_hide_lines_between_fixed_points_despite_other_free_geometry() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[10,10],[50,40]],"ids":["anchors"],"infer":false,"connect":false})).unwrap();
+    engine.execute("sketch.constraint.fix", json!({"entity":"anchors","fixed":true})).unwrap();
+    engine.execute("sketch.line", json!({"points":["anchors.start","anchors.end"],"ids":["joined"],"infer":false})).unwrap();
+    engine.execute("sketch.line", json!({"points":[[70,20],[90,35]],"ids":["free"],"infer":false,"connect":false})).unwrap();
+    assert!(engine.sketch_snapshot().unwrap().dof > 0);
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 1);
+    assert_eq!(annotations[0]["id"], "edge:free", "only the line with a free length receives a helper");
+    view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"joined"}})).unwrap();
+    assert_eq!(view.sketch_annotations().as_array().unwrap().len(), 1, "selecting the fixed-size edge cannot reveal a redundant helper");
+}
+
+#[test]
+fn sketch_free_dimensions_offer_circle_and_arc_radii_and_hide_equal_driven_sizes() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("YZ"), "select");
+    engine.execute("sketch.circle.center", json!({"center":[15,15],"radius":10,"id":"circle","connect":false})).unwrap();
+    engine.execute("sketch.arc.three_point", json!({"start":[40,10],"end":[60,10],"through":[50,20],"id":"arc","connect":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 2);
+    assert!(annotations.as_array().unwrap().iter().all(|a| a["dimension_type"] == "radius" && a["selected"] == false));
+    engine.execute("sketch.dimension", json!({"entities":["circle"],"type":"radius","value":"10 mm"})).unwrap();
+    engine.execute("sketch.constraint.equal", json!({"a":"circle","b":"arc"})).unwrap();
+    assert!(engine.sketch_snapshot().unwrap().dof > 0);
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 1, "the circle dimension determines the equal arc radius");
+    assert!(annotations[0]["dimension_type"].is_null());
+    assert_eq!(annotations[0]["driven"], false);
+}
+
+#[test]
 fn sketch_edge_readouts_preserve_radial_and_endpoint_dimensions_and_reference_values() {
     for dimension in ["radius", "diameter", "horizontal", "vertical"] {
         let (mut engine, mut view) = sketch_input_fixture(json!("YZ"), "select");
@@ -3079,12 +3219,16 @@ fn sketch_edge_readouts_preserve_radial_and_endpoint_dimensions_and_reference_va
         view.install(3, engine.snapshot().unwrap());
         view.command("select.entity", &json!({"entity":selection[0]})).unwrap();
         let annotations = view.sketch_annotations();
-        assert_eq!(annotations.as_array().unwrap().len(), 1, "{dimension}: should reuse the existing annotation");
+        assert_eq!(annotations.as_array().unwrap().len(), 2, "{dimension}: a reference dimension leaves the size free");
         assert_eq!(annotations[0]["driven"], true);
         assert_eq!(annotations[0]["selected"], true);
         assert!(annotations[0]["dimension_type"].is_null());
         let entity: Sel = serde_json::from_value(annotations[0]["entity"].clone()).unwrap();
         assert!(engine.begin_numeric(102, &[entity]).is_err(), "reference dimensions remain read-only");
+        assert_eq!(annotations[1]["dimension_type"], if radial { "radius" } else { "length" });
+        assert_ne!(annotations[0]["points"], annotations[1]["points"], "reference and free-size helpers remain separate");
+        let helper: Sel = serde_json::from_value(annotations[1]["entity"].clone()).unwrap();
+        assert!(engine.begin_numeric_for(103, &[helper], annotations[1]["dimension_type"].as_str()).is_ok());
         view.command("select.clear", &json!({})).unwrap();
         assert_eq!(view.sketch_annotations()[0]["selected"], false);
     }
@@ -3169,11 +3313,11 @@ fn sketch_edge_measurement_labels_drag_without_creating_constraints_or_history()
             engine.execute(command, params.clone()).unwrap();
             view.begin_update(2);
             view.install(2, engine.snapshot().unwrap());
-            view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":curve_id}})).unwrap();
             let original = engine.sketch_snapshot().unwrap();
             let history = engine.session.undo.len();
             let annotation = view.diagnostic()["annotations"][0].clone();
             assert_eq!(annotation["id"], format!("edge:{curve_id}"));
+            assert_eq!(annotation["selected"], false, "a helper can be dragged without first selecting its edge");
             let center = [annotation["points"][0].as_f64().unwrap(), annotation["points"][1].as_f64().unwrap()];
             let mut begin = sample(&view, source, InputPhase::Began, 1, [center[0] + 24.0, center[1]], 1.0);
             begin.sketch_annotation = annotation["id"].as_str().map(str::to_owned);

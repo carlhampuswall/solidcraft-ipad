@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use solidcraft_engine::{
     Sel,
     geom::Plane,
-    sketch::{CurveKind, Sketch},
+    sketch::{Analysis, ConstraintKind, CurveKind, Hold, Sketch, measure_dimension, solve_with},
 };
 
 use crate::SessionAdapter;
@@ -17,6 +17,7 @@ pub struct SketchSnapshot {
     pub solved: bool,
     pub dof: usize,
     pub glyphs: Vec<Value>,
+    pub(crate) free_measurements: Vec<(usize, ConstraintKind, &'static str)>,
 }
 
 impl SessionAdapter {
@@ -24,6 +25,53 @@ impl SessionAdapter {
         let id = self.session.active_sketch?;
         let world = self.session.world_state();
         let ss = world.sketch(id)?;
+        // Analyse sizes on the engine worker, once per immutable publication. A
+        // floating rigid shape still has positional freedom, so neither sketch
+        // DOF nor curve_determined alone says whether its length can change.
+        let freedom = if ss.report.point_determined.len() == ss.sketch.points.len() && ss.report.curve_determined.len() == ss.sketch.curves.len() {
+            ss.report.clone()
+        } else {
+            solve_with(&mut ss.sketch.clone(), &Hold::default(), None, Analysis::Freedom, None)
+        };
+        // A plain sketch with only its origin locked can scale freely. Avoid a
+        // separate solve for every edge in large, unconstrained imports.
+        let freely_scalable = ss.sketch.constraints.iter().all(|c| c.driven)
+            && ss.sketch.patterns.is_empty()
+            && ss.sketch.links.is_empty()
+            && ss.sketch.offsets.is_empty()
+            && ss.sketch.freeform_offsets.is_empty()
+            && ss.sketch.wires.is_empty()
+            && ss.sketch.equations.is_empty()
+            && ss.sketch.curves.iter().all(|c| !c.fixed && c.link.is_none())
+            && ss.sketch.locked_points().iter().enumerate().all(|(index, locked)| index == 0 || !locked);
+        let free_measurements = ss
+            .sketch
+            .curves
+            .iter()
+            .enumerate()
+            .filter_map(|(index, curve)| {
+                if !freedom.keeps_orientation() || freedom.dof == 0 || freedom.curve_determined.get(index) == Some(&true) {
+                    return None;
+                }
+                let (mut kind, dimension) = match curve.kind {
+                    CurveKind::Line { .. } => (ConstraintKind::Length { l: index, value: 0.0 }, "length"),
+                    CurveKind::Circle { .. } | CurveKind::Arc { .. } => (ConstraintKind::Radius { c: index, value: 0.0 }, "radius"),
+                    _ => return None,
+                };
+                let value = measure_dimension(&ss.sketch, &kind).filter(|v| v.is_finite() && *v > 0.0)?;
+                match &mut kind {
+                    ConstraintKind::Length { value: size, .. } | ConstraintKind::Radius { value: size, .. } => *size = value,
+                    _ => return None,
+                }
+                if freely_scalable {
+                    return Some((index, kind, dimension));
+                }
+                let mut probe = ss.sketch.clone();
+                probe.add_constraint(kind.clone(), None).ok()?;
+                let report = solve_with(&mut probe, &Hold::default(), None, Analysis::Freedom, None);
+                (report.keeps_orientation() && report.dof < freedom.dof).then_some((index, kind, dimension))
+            })
+            .collect();
         let glyphs = if self.session.model.is_stale() {
             Vec::new()
         } else {
@@ -36,6 +84,7 @@ impl SessionAdapter {
         };
         Some(SketchSnapshot {
             glyphs,
+            free_measurements,
             id,
             name: ss.name.clone(),
             plane: ss.plane,

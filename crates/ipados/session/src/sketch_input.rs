@@ -19,7 +19,7 @@ struct Placement {
 
 /// Associate a displayed size with its source edge without inferring a second
 /// parameter model. Point-to-point dimensions may reference a line's endpoints.
-fn dimension_on_curve(sk: &Sketch, kind: &ConstraintKind, index: usize) -> bool {
+pub(crate) fn dimension_on_curve(sk: &Sketch, kind: &ConstraintKind, index: usize) -> bool {
     match *kind {
         ConstraintKind::Length { l, .. } => l == index,
         ConstraintKind::Radius { c, .. } | ConstraintKind::Diameter { c, .. } => c == index,
@@ -55,6 +55,8 @@ pub(crate) struct SketchInput {
     pub snap: Option<Snap>,
     pub snapping: bool,
     pub automatic: bool,
+    pub free_dimensions: bool,
+    pub repeat_rectangles: bool,
 }
 
 impl Default for SketchInput {
@@ -77,6 +79,8 @@ impl Default for SketchInput {
             snap: None,
             snapping: true,
             automatic: true,
+            free_dimensions: true,
+            repeat_rectangles: false,
         }
     }
 }
@@ -141,13 +145,19 @@ impl SketchInput {
             .map(|(a, b)| json!({"width":(b.at.x-a.at.x).abs(),"height":(b.at.y-a.at.y).abs(),"radius":b.at.dist(a.at)}));
         json!({"points":self.points.iter().map(|p|p.at).collect::<Vec<_>>(),"snap":self.snap,
             "snapping":self.snapping,"auto_constraints":self.automatic,"prompt":prompt,"feedback":feedback,
-            "pending":self.work.is_some(),"tool":self.tool})
+            "pending":self.work.is_some(),"tool":self.tool,"free_dimensions":self.free_dimensions,"repeat_rectangles":self.repeat_rectangles})
     }
     pub fn complete(&mut self, work: &ToolWork, model: &SceneSnapshot) {
         if !self.current(work) {
             return;
         }
         self.points.clear();
+        if self.tool == "sketch.rectangle.two_point"
+            && !self.repeat_rectangles
+            && matches!(&work.operation, ToolOperation::Sketch { commands, .. } if commands.iter().any(|(id, _)| id == "sketch.rectangle.two_point"))
+        {
+            self.tool = "select".into();
+        }
         if self.tool == "sketch.line"
             && let Some(mut next) = self.after.take()
         {
@@ -194,6 +204,16 @@ impl Viewport {
                 } else {
                     self.cancel_interactions();
                     self.contacts.sketch.automatic = enabled;
+                }
+            }
+            "tool.free_dimensions" | "tool.repeat_rectangles" => {
+                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("bad_params", "enabled must be boolean"))?;
+                self.cancel_interactions();
+                if id == "tool.free_dimensions" {
+                    self.contacts.sketch.free_dimensions = enabled;
+                    self.contacts.tool_revision = self.contacts.tool_revision.saturating_add(1);
+                } else {
+                    self.contacts.sketch.repeat_rectangles = enabled;
                 }
             }
             "tool.finish_chain" => {
@@ -256,7 +276,11 @@ impl Viewport {
         let Some(snapshot) = self.model.as_ref().and_then(|m| m.sketch.as_ref()) else { return false };
         let measurement = id.strip_prefix("edge:");
         let (frame, text, selection) = if let Some(curve) = measurement {
-            let Some((index, kind, _)) = self.selected_measurement(snapshot) else { return false };
+            let Some((index, kind, _)) =
+                self.measurements(snapshot).find(|(index, _, _)| snapshot.sketch.curves.get(*index).is_some_and(|c| c.id == curve))
+            else {
+                return false;
+            };
             if snapshot.sketch.curves.get(index).is_none_or(|c| c.id != curve) {
                 return false;
             }
@@ -402,7 +426,8 @@ impl Viewport {
             if moved
                 && let Some(model) = &self.model
                 && let Some(snapshot) = &model.sketch
-                && let Some((_, kind, _)) = self.selected_measurement(snapshot)
+                && let Some((_, kind, _)) =
+                    self.measurements(snapshot).find(|(index, _, _)| snapshot.sketch.curves.get(*index).is_some_and(|c| c.id == curve))
                 && let Some(text) = self.measurement_text(snapshot, &curve, &kind)
             {
                 let key = (model.document_id.clone(), snapshot.id, curve);
@@ -715,13 +740,15 @@ impl Viewport {
             }
         };
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        let measurement = self.selected_measurement(snapshot).and_then(|(index, kind, _)| {
-            let curve = snapshot.sketch.curves.get(index)?;
-            let text = self.measurement_text(snapshot, &curve.id, &kind);
-            Some((kind, text))
-        });
-        for (kind, text) in
-            snapshot.sketch.constraints.iter().map(|c| (&c.kind, c.text)).chain(measurement.as_ref().map(|(kind, text)| (kind, *text)))
+        let measurements: Vec<_> = self
+            .measurements(snapshot)
+            .filter_map(|(index, kind, _)| {
+                let curve = snapshot.sketch.curves.get(index)?;
+                let text = self.measurement_text(snapshot, &curve.id, &kind);
+                Some((kind, text))
+            })
+            .collect();
+        for (kind, text) in snapshot.sketch.constraints.iter().map(|c| (&c.kind, c.text)).chain(measurements.iter().map(|(kind, text)| (kind, *text)))
         {
             if let Some(frame) = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, kind) {
                 let layout = solidcraft_engine::sketch::dim_layout(&frame, text, unit, Vec2::ZERO);
@@ -808,22 +835,21 @@ impl Viewport {
         }
     }
 
-    fn selected_measurement(&self, snapshot: &crate::sketching::SketchSnapshot) -> Option<(usize, ConstraintKind, &'static str)> {
-        let [Sel::SketchCurve { id, sketch }] = self.selection.as_slice() else { return None };
-        if sketch.is_some_and(|id| id != snapshot.id) {
-            return None;
-        }
-        let sk = &snapshot.sketch;
-        let index = sk.curve_index(id)?;
-        if sk.constraints.iter().any(|c| dimension_on_curve(sk, &c.kind, index)) {
-            return None;
-        }
-        let (kind, dimension) = match sk.curves.get(index)?.kind {
-            CurveKind::Line { .. } => (ConstraintKind::Length { l: index, value: 0.0 }, "length"),
-            CurveKind::Circle { .. } | CurveKind::Arc { .. } => (ConstraintKind::Radius { c: index, value: 0.0 }, "radius"),
-            _ => return None,
+    fn measurements<'a>(&self, snapshot: &'a crate::sketching::SketchSnapshot) -> impl Iterator<Item = (usize, ConstraintKind, &'static str)> + 'a {
+        let selected_curve = match self.selection.as_slice() {
+            [Sel::SketchCurve { id, sketch }] if sketch.is_none_or(|id| id == snapshot.id) => snapshot.sketch.curve_index(id),
+            _ => None,
         };
-        Some((index, kind, dimension))
+        let show_all = self.contacts.sketch.free_dimensions;
+        snapshot
+            .free_measurements
+            .iter()
+            .filter(move |(index, _, _)| {
+                show_all
+                    || (selected_curve == Some(*index)
+                        && !snapshot.sketch.constraints.iter().any(|c| dimension_on_curve(&snapshot.sketch, &c.kind, *index)))
+            })
+            .cloned()
     }
 
     fn measurement_text(&self, snapshot: &crate::sketching::SketchSnapshot, curve: &str, kind: &ConstraintKind) -> Option<Vec2> {
@@ -836,7 +862,21 @@ impl Viewport {
             return Some(solidcraft_engine::sketch::encode_text(&frame, *text + (last.at - first.at)));
         }
         let model = self.model.as_ref()?;
-        state.measurement_positions.get(&(model.document_id.clone(), snapshot.id, curve.into())).copied()
+        state.measurement_positions.get(&(model.document_id.clone(), snapshot.id, curve.into())).copied().or_else(|| {
+            if !state.free_dimensions {
+                return None;
+            }
+            let frame = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, kind)?;
+            let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
+            let offset = solidcraft_engine::sketch::default_text_offset(&frame, unit);
+            // Keep the native 44-point label target clear of the edge's own
+            // selection tolerance; showing a helper must not steal geometry drags.
+            let text = offset + offset.normalized().unwrap_or(Vec2::Y) * (14.0 * unit);
+            // A reference or partial dimension can coexist with a free size.
+            // Put the new helper on the opposite side to keep both numbers usable.
+            let index = snapshot.sketch.curve_index(curve)?;
+            Some(if snapshot.sketch.constraints.iter().any(|c| dimension_on_curve(&snapshot.sketch, &c.kind, index)) { -text } else { text })
+        })
     }
 
     pub(crate) fn sketch_annotations(&self) -> Value {
@@ -869,22 +909,23 @@ impl Viewport {
                 present(&c.id, &c.kind, c.text, Sel::SketchConstraint { id: c.id.clone() }, None, c.driven, selected)
             })
             .collect();
-        // An undimensioned selected edge has a read-only measurement until Apply.
+        // Free sizes are presentation-only measurements until Apply.
         // The descriptor uses upstream measurement/layout; only sketch.dimension
         // creates a constraint, through the existing numeric transaction.
-        if let Some((index, kind, dimension)) = self.selected_measurement(snapshot)
-            && let Some(curve) = sk.curves.get(index)
-            && let Some(annotation) = present(
-                &format!("edge:{}", curve.id),
-                &kind,
-                self.measurement_text(snapshot, &curve.id, &kind),
-                Sel::SketchCurve { id: curve.id.clone(), sketch: Some(snapshot.id) },
-                Some(dimension),
-                false,
-                true,
-            )
-        {
-            annotations.push(annotation);
+        for (index, kind, dimension) in self.measurements(snapshot) {
+            if let Some(curve) = sk.curves.get(index)
+                && let Some(annotation) = present(
+                    &format!("edge:{}", curve.id),
+                    &kind,
+                    self.measurement_text(snapshot, &curve.id, &kind),
+                    Sel::SketchCurve { id: curve.id.clone(), sketch: Some(snapshot.id) },
+                    Some(dimension),
+                    false,
+                    selected_curve == Some(index),
+                )
+            {
+                annotations.push(annotation);
+            }
         }
         json!(annotations)
     }

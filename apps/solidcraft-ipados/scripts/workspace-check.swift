@@ -98,6 +98,12 @@ struct WorkspaceChecks {
         _ = selectionReport([], document: "other", revision: 2)
         try require(selectionReport(["face:top"], document: "other", revision: 2), "reselecting a face did not reopen Extrude")
         let dimensionContext = DimensionTapTracker.Context(document: "sketch", geometry: 1, viewport: 2, camera: 3)
+        let wideCaption = CGRect(x: -14, y: 58, width: 100, height: 44)
+        let helperTarget = DimensionTapTracker.hitFrame(wideCaption, helper: true)
+        try require(helperTarget.size == CGSize(width: 44, height: 44) && helperTarget.contains(CGPoint(x: 36, y: 80)),
+                    "a wide free-size caption lost its centred native touch target")
+        try require(!helperTarget.contains(CGPoint(x: 0, y: 80)), "a wide helper caption stole its vertical edge's contact")
+        try require(DimensionTapTracker.hitFrame(wideCaption, helper: false) == wideCaption, "existing dimension targets changed")
         let dimensionPoint = CGPoint(x: 100, y: 80)
         var dimensionTap = DimensionTapTracker()
         dimensionTap.begin(id: 1, point: dimensionPoint, target: "edge:l1", context: dimensionContext)

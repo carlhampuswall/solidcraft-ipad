@@ -198,6 +198,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var directHandles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.directHandles") as? Bool ?? true
     private var automaticSubtract = UserDefaults.standard.object(forKey: "SolidCraft.workspace.automaticSubtract") as? Bool ?? true
     private var inlineDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.inlineDimensions") as? Bool ?? true
+    private var freeDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.freeDimensions") as? Bool ?? true
+    private var repeatRectangles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.repeatRectangles") as? Bool ?? false
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
@@ -399,7 +401,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         canvas.dimensionAt = { [weak self] point in
             guard let self else { return nil }
             return self.annotationLabels.filter { id, label in
-                label.frame.contains(point) && self.sketchAnnotations[id] != nil
+                guard let annotation = self.sketchAnnotations[id] else { return false }
+                return DimensionTapTracker.hitFrame(label.frame, helper: annotation.dimension_type != nil).contains(point)
             }.min { a, b in
                 hypot(a.value.center.x - point.x, a.value.center.y - point.y) < hypot(b.value.center.x - point.x, b.value.center.y - point.y)
             }?.key
@@ -524,6 +527,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.session.command("view.tool_handles", params: ["enabled": self.directHandles])
                 self.session.command("view.automatic_subtract", params: ["enabled": self.automaticSubtract])
                 self.session.command("view.tool_dismissal", params: ["cancel_on_dismiss": self.cancelToolsOnDismiss])
+                self.session.command("tool.free_dimensions", params: ["enabled": self.freeDimensions])
+                self.session.command("tool.repeat_rectangles", params: ["enabled": self.repeatRectangles])
                 self.session.command("select.filter", params: ["filter": self.filter.rawValue])
                 self.session.command("select.multiple", params: ["enabled": self.multiple])
                 for (item, visible) in self.originVisibility {
@@ -2890,6 +2895,30 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             moreActions.insert(UIAction(title: SketchText.text("auto_constraints"), state: sketchInput?.auto_constraints != false ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.run("tool.auto_constraints", params: ["enabled": self.sketchInput?.auto_constraints == false])
             }, at: 1)
+            moreActions.insert(UIAction(title: SketchText.text("free_dimensions"), subtitle: SketchText.text("free_dimensions_help"),
+                                        attributes: numericEditing || modellingEditing ? .disabled : [], state: freeDimensions ? .on : .off) { [weak self] _ in
+                guard let self, !self.numericEditing, !self.modellingEditing else { return }
+                let enabled = !self.freeDimensions
+                self.canvas.cancelInput()
+                self.session.command("tool.free_dimensions", params: ["enabled": enabled]) { [weak self] result in
+                    guard let self, case .success = result else { return }
+                    self.freeDimensions = enabled
+                    UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.freeDimensions")
+                    self.rebuildMenus()
+                }
+            }, at: 2)
+            moreActions.insert(UIAction(title: SketchText.text("repeat_rectangles"), subtitle: SketchText.text("repeat_rectangles_help"),
+                                        attributes: numericEditing || modellingEditing ? .disabled : [], state: repeatRectangles ? .on : .off) { [weak self] _ in
+                guard let self, !self.numericEditing, !self.modellingEditing else { return }
+                let enabled = !self.repeatRectangles
+                self.canvas.cancelInput()
+                self.session.command("tool.repeat_rectangles", params: ["enabled": enabled]) { [weak self] result in
+                    guard let self, case .success = result else { return }
+                    self.repeatRectangles = enabled
+                    UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.repeatRectangles")
+                    self.rebuildMenus()
+                }
+            }, at: 3)
         }
         moreButton.menu = UIMenu(children: moreActions)
         moreButton.showsMenuAsPrimaryAction = true
@@ -3736,20 +3765,36 @@ private extension FoundationController {
     }
 
     func checkInlineDimensionsOnDevice() {
+        print("Inline dimension candidate: " + (Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"))
         let expected = generation
+        freeDimensions = true; repeatRectangles = false; inlineDimensions = true
         let commands: [(String, [String: Any])] = [
             ("file.new", [:]),
             ("sketch.create", ["plane": "XY"]),
-            ("sketch.rectangle.two_point", ["p0": [-30, -20], "p1": [30, 20]]),
-            ("tool.set", ["tool": "select"]),
-            ("view.fit", [:])
+            ("tool.free_dimensions", ["enabled": true]),
+            ("tool.repeat_rectangles", ["enabled": false]),
+            ("tool.set", ["tool": "sketch.rectangle.two_point"])
         ]
         func step(_ index: Int) {
             guard active, generation == expected else { return }
             guard index < commands.count else {
-                browserOpen = false; inspectorOpen = false; relayoutPanels()
-                print("Inline dimension fixture READY: tap a sketch edge, then its number")
-                if ProcessInfo.processInfo.arguments.contains("--inline-dimension-check-run") { verifyInlineDimensionsOnDevice() }
+                session.proposeSketchTransform(command: "sketch.rectangle.two_point", params: ["p0": [-30, -20], "p1": [30, 20], "connect": false], commit: true) { result in
+                    guard self.active, self.generation == expected else { return }
+                    switch result {
+                    case .failure(let error): self.showFailure(error)
+                    case .success:
+                        self.session.command("view.fit") { result in
+                            guard self.active, self.generation == expected else { return }
+                            switch result {
+                            case .failure(let error): self.showFailure(error)
+                            case .success:
+                                self.browserOpen = false; self.inspectorOpen = false; self.relayoutPanels()
+                                print("Inline dimension fixture READY: tap an unselected edge's size helper")
+                                if ProcessInfo.processInfo.arguments.contains("--inline-dimension-check-run") { self.verifyInlineDimensionsOnDevice() }
+                            }
+                        }
+                    }
+                }
                 return
             }
             let (command, params) = commands[index]
@@ -3795,9 +3840,12 @@ private extension FoundationController {
                 }
             }
         }
-        func openEditor(_ next: @escaping () -> Void) {
-            wait("available dimension value", until: { self.sketchAnnotations.values.contains { $0.selected && self.annotationEditable($0) } }) {
-                guard let annotation = self.sketchAnnotations.values.first(where: { $0.selected && self.annotationEditable($0) }) else { return }
+        func openEditor(selectedOnly: Bool = true, _ next: @escaping () -> Void) {
+            func eligible(_ annotation: SketchAnnotationPresentation) -> Bool {
+                self.annotationEditable(annotation) && (selectedOnly ? annotation.selected : annotation.id == "edge:" + (self.state?.sketch?.curves.first?.id ?? ""))
+            }
+            wait("available dimension value", until: { self.sketchAnnotations.values.contains(where: eligible) }) {
+                guard let annotation = self.sketchAnnotations.values.first(where: eligible) else { return }
                 self.canvas.onDimensionTap?(annotation.id)
                 wait("focused popover", until: { self.inlineNumericEditor != nil && self.editor?.field.isFirstResponder == true }, then: next)
             }
@@ -3814,32 +3862,35 @@ private extension FoundationController {
                     selectEdge {
                         openEditor {
                             capture("editor")
-                            print("Inline dimension check PASS: focused UIKit popover, native Apply, repeat edit, Preview/Cancel, Undo/Redo; physical contacts unverified")
+                            print("Inline dimension check PASS: rectangle returns to Select; 4 unselected helpers without automatic editor; direct helper editing; opposite size helper suppressed after dimension; focused UIKit popover, native Apply, repeat edit, Preview/Cancel, Undo/Redo; physical contacts unverified")
                         }
                     }
                 }
             }
         }
-        wait("rectangle fixture", until: { self.state?.sketch?.curves.count == 4 }) {
-            selectEdge {
-                capture("selected")
-                openEditor {
-                    guard let editor = self.editor, let range = editor.field.selectedTextRange,
-                          editor.field.offset(from: range.start, to: range.end) == (editor.field.text ?? "").utf16.count else {
-                        print("Inline dimension check FAIL: expression was not selected"); return
-                    }
-                    capture("initial-editor")
-                    editor.field.insertText("80 mm"); editor.onApply?(editor.field.text ?? "")
-                    wait("apply", until: { !self.numericEditing && hasDimension("80 mm") && self.sketchAnnotations.values.contains { abs($0.value - 80) < 0.001 } }) {
-                        capture("applied")
-                        selectEdge {
-                            openEditor {
-                                guard let editor = self.editor else { return }
-                                editor.field.insertText("100 mm"); editor.onPreview?(editor.field.text ?? "")
-                                wait("preview", until: { !editor.busy && self.sketchAnnotations.values.contains { abs($0.value - 100) < 0.001 } }) {
-                                    editor.onCancel?()
-                                    wait("cancel", until: { !self.numericEditing && hasDimension("80 mm") }) { checkUndoRedo() }
-                                }
+        wait("rectangle fixture and free helpers", until: { self.state?.sketch?.curves.count == 4 && self.state?.active_tool == "select" && self.sketchAnnotations.values.filter { $0.dimension_type != nil }.count == 4 }) {
+            guard self.state?.active_tool == "select", self.state?.selection.isEmpty == true,
+                  self.sketchAnnotations.values.allSatisfy({ !$0.selected }), !self.numericEditing,
+                  self.inlineNumericEditor == nil else {
+                print("Inline dimension check FAIL: rectangle did not return to unselected helpers without an automatic editor"); return
+            }
+            capture("helpers")
+            openEditor(selectedOnly: false) {
+                guard let editor = self.editor, let range = editor.field.selectedTextRange,
+                      editor.field.offset(from: range.start, to: range.end) == (editor.field.text ?? "").utf16.count else {
+                    print("Inline dimension check FAIL: expression was not selected"); return
+                }
+                capture("initial-editor")
+                editor.field.insertText("80 mm"); editor.onApply?(editor.field.text ?? "")
+                wait("apply and opposite helper suppression", until: { !self.numericEditing && hasDimension("80 mm") && self.sketchAnnotations.values.contains { abs($0.value - 80) < 0.001 } && self.sketchAnnotations.values.filter { $0.dimension_type != nil }.count == 2 }) {
+                    capture("applied")
+                    selectEdge {
+                        openEditor {
+                            guard let editor = self.editor else { return }
+                            editor.field.insertText("100 mm"); editor.onPreview?(editor.field.text ?? "")
+                            wait("preview", until: { !editor.busy && self.sketchAnnotations.values.contains { abs($0.value - 100) < 0.001 } }) {
+                                editor.onCancel?()
+                                wait("cancel", until: { !self.numericEditing && hasDimension("80 mm") }) { checkUndoRedo() }
                             }
                         }
                     }

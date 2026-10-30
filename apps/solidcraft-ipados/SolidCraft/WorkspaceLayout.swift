@@ -99,6 +99,13 @@ struct FaceExtrudeTrigger<Selection: Equatable> {
 /// Observe taps without consuming the canvas contact stream used to drag
 /// dimension text. A second contact, movement or stale display cancels entry.
 struct DimensionTapTracker {
+    /// Free-size captions can be wider than their distance from an edge. Keep
+    /// their touch target centred and predictable so long values do not steal
+    /// geometry contacts. Existing dimension captions retain their full target.
+    static func hitFrame(_ frame: CGRect, helper: Bool) -> CGRect {
+        helper ? CGRect(x: frame.midX - 22, y: frame.midY - 22, width: 44, height: 44) : frame
+    }
+
     struct Context: Equatable {
         let document: String
         let geometry: UInt64

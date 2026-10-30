@@ -157,6 +157,8 @@ scratch engine session. No shared source, dependency or file-format change.
 Pencil places points; fingers retain pan/zoom in the editing plane. A first tap
 places an anchor, a second placement completes a line/rectangle/circle. A drag
 from an unanchored first point can complete the two-point primitive on release.
+Creating a rectangle returns to Select. **Tools > Repeat rectangle creation**
+keeps the rectangle tool active for the previous repeated-creation workflow.
 Move events update a scratch preview, never a sampled polyline. Lines retain the
 committed endpoint reference for the next segment; snap to the starting point to
 close. **Finish chain** stops a line chain or commits the fit-point spline.
@@ -173,8 +175,14 @@ selected entities/constraints calls `sketch.delete`. Geometric indicators use
 bounded selection-sensitive screen-space lanes; dimension annotation labels
 reflect native measurements and distinguish references with parentheses.
 
-In Select, tap a sketch edge, then the small length or radius beside it to enter
-an exact size in a popover anchored at the value. The numeric keypad opens with
+Free lengths and radii appear beside eligible sketch geometry without selecting
+an edge first. Sizes determined by constraints or existing dimensions do not
+get another free-size helper. In Select, tap a helper or an existing driving
+dimension to enter an exact size in a popover anchored at the value.
+**Tools > Show free dimension helpers** restores the previous selected-edge-only
+helpers when disabled. Both this preference and repeated rectangle creation are
+saved across launches. Helpers never open the editor automatically.
+The numeric keypad opens with
 the current expression selected; the keyboard switch supports units, arithmetic
 and parameter names. Preview and Cancel preserve the committed sketch. Apply
 creates one native dimension or edits the existing driving parameter, with one

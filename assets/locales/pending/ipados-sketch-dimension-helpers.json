@@ -1,0 +1,32 @@
+{
+  "en": {
+    "ui.ipados.sketch.free_dimensions": "Show free dimension helpers",
+    "ui.ipados.sketch.free_dimensions_help": "Show editable sizes beside sketch geometry that still has a free size. Turn off to show helpers only for the selected edge.",
+    "ui.ipados.sketch.repeat_rectangles": "Repeat rectangle creation",
+    "ui.ipados.sketch.repeat_rectangles_help": "Keep the rectangle tool active after creating a rectangle. Turn off to return to Select."
+  },
+  "ja": {
+    "ui.ipados.sketch.free_dimensions": "未拘束の寸法ヘルパーを表示",
+    "ui.ipados.sketch.free_dimensions_help": "サイズが未拘束のスケッチ形状の横に、編集可能な寸法を表示します。オフにすると、選択したエッジにのみ表示します。",
+    "ui.ipados.sketch.repeat_rectangles": "長方形の作成を繰り返す",
+    "ui.ipados.sketch.repeat_rectangles_help": "長方形を作成した後も長方形ツールを維持します。オフにすると選択ツールに戻ります。"
+  },
+  "zh": {
+    "ui.ipados.sketch.free_dimensions": "显示自由尺寸辅助标注",
+    "ui.ipados.sketch.free_dimensions_help": "在尺寸尚未约束的草图几何体旁显示可编辑尺寸。关闭后，仅显示所选边的辅助标注。",
+    "ui.ipados.sketch.repeat_rectangles": "连续创建矩形",
+    "ui.ipados.sketch.repeat_rectangles_help": "创建矩形后保持矩形工具启用。关闭后，返回选择工具。"
+  },
+  "de": {
+    "ui.ipados.sketch.free_dimensions": "Hilfen für freie Maße anzeigen",
+    "ui.ipados.sketch.free_dimensions_help": "Editierbare Maße neben Skizzengeometrie mit noch freier Größe anzeigen. Deaktivieren, um Hilfen nur für die ausgewählte Kante anzuzeigen.",
+    "ui.ipados.sketch.repeat_rectangles": "Rechteckerstellung wiederholen",
+    "ui.ipados.sketch.repeat_rectangles_help": "Das Rechteckwerkzeug nach dem Erstellen eines Rechtecks aktiv lassen. Deaktivieren, um zur Auswahl zurückzukehren."
+  },
+  "ko": {
+    "ui.ipados.sketch.free_dimensions": "자유 치수 도우미 표시",
+    "ui.ipados.sketch.free_dimensions_help": "크기가 아직 구속되지 않은 스케치 형상 옆에 편집 가능한 치수를 표시합니다. 끄면 선택한 모서리에만 도우미를 표시합니다.",
+    "ui.ipados.sketch.repeat_rectangles": "사각형 생성 반복",
+    "ui.ipados.sketch.repeat_rectangles_help": "사각형을 만든 후에도 사각형 도구를 유지합니다. 끄면 선택 도구로 돌아갑니다."
+  }
+}
