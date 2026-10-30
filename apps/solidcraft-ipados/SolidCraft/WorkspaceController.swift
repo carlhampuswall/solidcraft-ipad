@@ -141,6 +141,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var planeConfirming = false
     private var planeChoosing = false
     private var referenceLabels: [String: WorkspaceButton] = [:]
+    private var latestReferenceLabels: [ReferenceLabelPresentation] = []
     private var showAllConstraints = false
     private var annotationLabels: [String: SketchDimensionControl] = [:]
     private var sketchAnnotations: [String: SketchAnnotationPresentation] = [:]
@@ -208,6 +209,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
     private var legacyOriginPlanes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.legacyOriginPlanes")
+    private var axisLabelsVisible = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.axisLabels")
     private var originVisibility = UserDefaults.standard.dictionary(forKey: "SolidCraft.workspace.originVisibility") as? [String: Bool] ?? [:]
     private static let originItems = ["O", "X", "Y", "Z", "XY", "XZ", "YZ"]
     private static let originAxes = ["X", "Y", "Z"]
@@ -1259,6 +1261,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         panel.onOrigin = { [weak self] in self?.toggleOriginReferences() }
         panel.onReference = { [weak self] item, group, visible in self?.setOriginVisibility(item: item, group: group, visible: visible) }
         panel.onLegacyPlanes = { [weak self] in self?.toggleLegacyOriginPlanes() }
+        panel.onAxisLabels = { [weak self] in
+            guard let self else { return }
+            self.axisLabelsVisible.toggle()
+            UserDefaults.standard.set(self.axisLabelsVisible, forKey: "SolidCraft.workspace.axisLabels")
+            self.showReferenceLabels(self.latestReferenceLabels)
+            self.rebuildViewMenu()
+        }
         panel.onOriginInModel = { [weak self] in self?.toggleOriginInModel() }
         if let popover = panel.popoverPresentationController {
             popover.sourceView = viewButton; popover.sourceRect = viewButton.bounds
@@ -1309,7 +1318,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewButton.menu = nil; viewButton.showsMenuAsPrimaryAction = false
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
-            automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes)
+            automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes,
+            axisLabels: axisLabelsVisible)
     }
 
     private func originCell(_ cell: UITableViewCell, row: Int) -> UITableViewCell {
@@ -2177,6 +2187,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func showReferenceLabels(_ labels: [ReferenceLabelPresentation]) {
+        latestReferenceLabels = labels
+        let labels = labels.filter { axisLabelsVisible || !Self.originAxes.contains($0.name) }
         let retained = Set(labels.map(\.name))
         for name in Array(referenceLabels.keys) where !retained.contains(name) {
             referenceLabels.removeValue(forKey: name)?.removeFromSuperview()
@@ -4113,8 +4125,9 @@ private extension FoundationController {
     private func checkGridAxesOnDevice() {
         let expected = generation
         let savedOrigin = originVisibility, savedGrid = gridVisible, savedAxes = integratedGridAxes
+        let savedAxisLabels = axisLabelsVisible
         let defaults = UserDefaults.standard
-        let keys = ["SolidCraft.workspace.originVisibility", "SolidCraft.workspace.gridVisible", "SolidCraft.workspace.integratedGridAxes"]
+        let keys = ["SolidCraft.workspace.originVisibility", "SolidCraft.workspace.gridVisible", "SolidCraft.workspace.integratedGridAxes", "SolidCraft.workspace.axisLabels"]
         let savedDefaults = keys.map { defaults.object(forKey: $0) }
         let started = Date().timeIntervalSince1970
         let runID = UUID().uuidString
@@ -4152,6 +4165,7 @@ private extension FoundationController {
             if let error { issues.append(error) }
             gridAxesCheckAfterFrame = nil
             originVisibility = savedOrigin; gridVisible = savedGrid; integratedGridAxes = savedAxes
+            axisLabelsVisible = savedAxisLabels; showReferenceLabels(latestReferenceLabels)
             for (key, value) in zip(keys, savedDefaults) { defaults.set(value, forKey: key) }
             session.command("view.origin", params: ["visible": NSNull()])
             for (item, visible) in savedOrigin { session.command("view.origin", params: ["item": item, "visible": visible]) }
@@ -4219,7 +4233,17 @@ private extension FoundationController {
             ("isometric-z", {
                 control("individual-references")?.sendActions(for: .primaryActionTriggered)
                 control("reference-Z")?.sendActions(for: .valueChanged)
-            }, { axes(["X", "Y", "Z"]) }, {}),
+            }, { axes(["X", "Y", "Z"]) }, {
+                check(Self.originAxes.allSatisfy { self.referenceLabels[$0] == nil }, "axis labels visible by default")
+            }),
+            ("axis-labels-shown", { control("axis-labels")?.sendActions(for: .valueChanged) }, { self.axisLabelsVisible }, {
+                check(self.referenceLabels["Z"] != nil, "axis labels preference did not restore the visible Z label")
+                check(defaults.bool(forKey: "SolidCraft.workspace.axisLabels"), "axis labels preference did not persist")
+            }),
+            ("axis-labels-hidden", { control("axis-labels")?.sendActions(for: .valueChanged) }, { !self.axisLabelsVisible }, {
+                check(Self.originAxes.allSatisfy { self.referenceLabels[$0] == nil }, "axis labels preference left visible labels")
+                check(!defaults.bool(forKey: "SolidCraft.workspace.axisLabels"), "hidden axis labels preference did not persist")
+            }),
             ("grid-hidden-explicit", {
                 control("back")?.sendActions(for: .primaryActionTriggered)
                 control("grid")?.sendActions(for: .valueChanged)
@@ -4256,6 +4280,7 @@ private extension FoundationController {
                 self.session.command("view.grid", params: ["visible": true, "integrated_axes": true]) { result in
                     if case .failure(let error) = result { finish(error.description); return }
                     self.gridVisible = true; self.integratedGridAxes = true
+                    self.axisLabelsVisible = false; self.showReferenceLabels(self.latestReferenceLabels)
                     self.showViewControls()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                         guard self.viewControlsPopover != nil else { finish("View panel did not open"); return }

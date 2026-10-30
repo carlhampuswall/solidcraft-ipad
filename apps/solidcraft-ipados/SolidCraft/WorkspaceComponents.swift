@@ -2039,6 +2039,7 @@ final class WorkspaceViewPopover: UIViewController {
     var onReference: ((String?, String?, Bool?) -> Void)?
     var onOriginInModel: (() -> Void)?
     var onLegacyPlanes: (() -> Void)?
+    var onAxisLabels: (() -> Void)?
     private let scroll = UIScrollView()
     private let root = UIStackView()
     private let main = UIStackView()
@@ -2057,6 +2058,7 @@ final class WorkspaceViewPopover: UIViewController {
     private lazy var automatic = ViewOptionButton(SketchText.text("automatic_origin"), id: "automatic", icon: "origin") { [weak self] in self?.onReference?(nil, nil, nil) }
     private lazy var originInModel = ViewSwitchRow(WorkspaceStyle.text("origin_in_model"), id: "origin-in-model", icon: "origin") { [weak self] in self?.onOriginInModel?() }
     private lazy var legacyPlanes = ViewSwitchRow(ViewText.text("legacy_planes"), subtitle: ViewText.text("legacy_planes_help"), id: "legacy-planes", icon: "plane") { [weak self] in self?.onLegacyPlanes?() }
+    private lazy var axisLabels = ViewSwitchRow(ViewText.text("axis_labels"), id: "axis-labels", icon: "axis") { [weak self] in self?.onAxisLabels?() }
     private var references: [String: ViewSwitchRow] = [:]
     private var groups: [String: ViewSwitchRow] = [:]
     private var allActions: [ViewOptionButton] = []
@@ -2131,6 +2133,7 @@ final class WorkspaceViewPopover: UIViewController {
             let button = ViewOptionButton(SketchText.text(visible ? "show_origin" : "hide_origin"), id: visible ? "show-all" : "hide-all", icon: "eye") { [weak self] in self?.onReference?(nil, nil, visible) }
             allActions.append(button); allRow.addArrangedSubview(button)
         }
+        individuals.addArrangedSubview(axisLabels)
         individuals.addArrangedSubview(legacyPlanes)
         individuals.addArrangedSubview(allRow); individuals.addArrangedSubview(automatic); individuals.addArrangedSubview(originInModel)
         showIndividuals(false)
@@ -2152,7 +2155,7 @@ final class WorkspaceViewPopover: UIViewController {
         if view.window != nil { UIAccessibility.post(notification: .layoutChanged, argument: visible ? individuals : main) }
     }
     func render(_ state: ViewControlsPresentation?, cameraEnabled: Bool, referencesEnabled: Bool,
-                inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool) {
+                inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool, axisLabels: Bool) {
         loadViewIfNeeded(); current = state
         fit.render(selected: false, enabled: cameraEnabled)
         fit.contentHorizontalAlignment = .leading
@@ -2183,6 +2186,7 @@ final class WorkspaceViewPopover: UIViewController {
         self.automatic.render(selected: automatic, enabled: referencesEnabled)
         self.originInModel.render(on: originInModel, enabled: true)
         self.legacyPlanes.render(on: legacyPlanes, enabled: referencesEnabled)
+        self.axisLabels.render(on: axisLabels, enabled: true)
         allActions.forEach { $0.render(selected: false, enabled: referencesEnabled) }
         view.setNeedsLayout()
     }

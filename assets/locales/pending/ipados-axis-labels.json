@@ -1,0 +1,17 @@
+{
+  "en": {
+    "ui.ipados.view.axis_labels": "Axis labels"
+  },
+  "de": {
+    "ui.ipados.view.axis_labels": "Achsenbeschriftungen"
+  },
+  "ja": {
+    "ui.ipados.view.axis_labels": "軸ラベル"
+  },
+  "ko": {
+    "ui.ipados.view.axis_labels": "축 레이블"
+  },
+  "zh": {
+    "ui.ipados.view.axis_labels": "坐标轴标签"
+  }
+}
