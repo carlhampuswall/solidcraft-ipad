@@ -1,193 +1,141 @@
-# Independent tasks, integration and iPad testing
+# Shared-directory development and iPad testing
 
-Each task owns implementation, integration and testing through completion. No
-permanent coordinator or background automation is needed. Use the standard-library
-Python helper [task_protocol.py](../../scripts/ipados/task_protocol.py); linked
-worktrees share its task records and resource locks in the Git common directory.
-This is the current workflow authorized by the user on 2026-10-29. The older
-[B/P workstreams](PARALLEL-DEVELOPMENT.md) remain historical provenance.
+The user authorized a return to one shared directory with no project build lock
+on 2026-10-31, after the running tasks finished and merged. The view-menu icons
+(`07c7a664`), two-finger rotation (`4f74b1ab`) and plane appearance (`6aaa4a67`)
+are in local `develop`; their task-specific testing waivers remain recorded.
+This replaces the previous task-worktree/integration/build-slot workflow.
 
-## Authorization and boundaries
+## Work in the primary checkout
 
-The user authorizes separate local worktrees, local commits of each task's own
-reviewed changes and local merges into develop as part of task delivery. This
-is the explicit exception to the general no-commit-without-request instruction.
-Pushes, public PRs, merges into main, upstream integration, history rewrites
-and discarding another task's work still require separate authorization.
-Permanent rules in [UPSTREAM.md](UPSTREAM.md), scoped AGENTS files and required
-checks remain in force. The user explicitly replaced full CI before every
-local task commit/merge with the scoped validation policy below. This does not
-waive failures in a required check or alter upstream/main/release requirements.
+Use `/Users/chw/Documents/ChatGPT/SolidCraft - iPad` on `develop` for new tasks.
+Inspect branch and status first. Local `develop` is authoritative; preserve
+commits ahead of `origin/develop`. Do not create a branch or worktree for each
+task, and do not switch branches while another task is editing or checking.
 
-## Start and work independently
+Tasks may work concurrently on independent files. Inspect existing edits and
+agree ownership before overlapping changes, including shared interfaces. If
+another task owns the same file, wait for that edit or coordinate a handoff;
+do not overwrite its changes. Never auto-stash, reset, clean or broadly stage
+another task's work. A dirty checkout alone does not block independent work.
 
-From the primary checkout, first inspect branch/status/worktrees, then run:
+The user authorizes local commits of each task's own reviewed changes after
+relevant checks pass. Stage explicit owned paths (or reviewed owned hunks when
+a file is shared), inspect the staged diff, and ensure it matches the source
+that was checked. Do not use blanket `git add .` or `git commit -a`. Coordinate
+staging/committing so another task's staged work cannot enter your commit.
+A local commit on `develop` delivers the task; there is no per-task merge or
+second integration gate. Report the commit and actual verification coverage.
 
-    python3 -I scripts/ipados/task_protocol.py start feature-name
+Pushes, public PRs, merges into `main`, upstream integrations, history rewrites
+and discarding another task's work need separate authorization. The permanent
+rules in [UPSTREAM.md](UPSTREAM.md) and scoped AGENTS files remain in force.
 
-The helper creates codex/feature-name and an isolated worktree beneath the
-primary checkout's ignored target/task-worktrees/, from the recorded local
-develop commit. Use the returned absolute worktree path for all further work.
-An explicit new --path is supported. Existing task names, branches and paths
-are never overwritten. Physical iPad verification is required by default.
-For a task with no device impact, explicitly justify opting out:
+## Check a finished batch, not every edit
 
-    python3 -I scripts/ipados/task_protocol.py start tooling-name \
-      --ipad not-needed --reason "Development tooling only; no app behavior changes."
+Implement and review a coherent set of changes first. Run the smallest relevant
+checks once when that batch is ready to commit or hand off. Do not run tests,
+build the app, or install on the iPad after every small edit. A new commit alone
+is not a reason to repeat passing checks on identical source.
 
-Start refuses to branch while the develop checkout has uncommitted work.
-It never captures that work as a baseline. Preserve and attribute the existing
-shared-checkout changes before consolidation; do not auto-stash, reset, clean
-or commit them with a blanket git add. Until consolidation, tasks depending
-on that work are **baseline pending**. An existing independent codex/ worktree
-can register itself with adopt TASK and the same iPad options; this records
-its merge base and never moves or copies its changes.
+- Documentation-only changes need diff/link/content review; they do not need
+  engine tests, an app build or device testing. Changed agent/skill instructions
+  additionally use `cargo +1.95.0 xtask skills`.
+- Changed development tooling uses its relevant tests. Protocol changes use
+  `python3 -I scripts/ipados/test_task_protocol.py`; this needs no app build.
+- Native UI batches use the unsigned device-target build and deterministic
+  workspace harness. Adapter batches additionally use session/bridge tests,
+  affected Clippy and Rust formatting. Add meaningful focused regressions where
+  needed; do not add tests that merely mirror a trivial edit.
+- Shared crates, desktop/web code, dependencies/workspace configuration and
+  unfamiliar areas retain full `cargo +1.95.0 xtask ci` at the completed-batch
+  checkpoint. Full CI is still required for upstream/main/release qualification.
 
-The local develop tip is authoritative for local delivery. The record also
-captures the locally observed origin/develop ref, when present; that is not a
-claim of a fresh fetch. Preserve local commits ahead of the remote. Remote
-synchronization and upstream updates remain separate from task coordination.
+After a failure, fix it and rerun the failed checks and anything affected by the
+fix. After later source changes, rerun only checks whose inputs or behavior were
+affected; do not repeat unrelated suites. Freeze the source and dependencies
+used by a running check, and never switch branches during it. Concurrent edits
+can invalidate results: inspect the changes and recheck affected areas before
+claiming success. Do not relabel partial coverage or an explicit user waiver as
+passing tests. Task-specific waivers apply only to those tasks.
 
-Keep Rust output, Xcode derived data and test evidence inside the task's own
-ignored target/. Do not share build directories or edit another checkout.
-Closely coupled changes should be sequential tasks, or share an agreed API;
-use a dependency note when work requires another task to integrate first.
+The helper is optional convenience for a completed batch, not a background
+watcher or a mandatory step after every change:
 
-## Commit, integrate, then finish
+    python3 -I scripts/ipados/task_protocol.py check --paths \
+      scripts/ipados/task_protocol.py scripts/ipados/test_task_protocol.py
 
-Review the task diff and run the helper's affected-area checks before committing:
+Without `--paths`, it examines all uncommitted and untracked nonignored files;
+prefer explicit owned files when other tasks have edits. Use `--base <commit>`
+for an already committed batch. `--check "command arguments"` adds a relevant
+check without a shell. Direct focused commands are also valid.
 
-    python3 -I scripts/ipados/task_protocol.py check feature-name --wait 60
+Successful helper results are reused for identical working files, check plans
+and environment, including across a commit with unchanged files. Changed inputs
+invalidate reuse; a failed forced rerun invalidates its previous success. Use
+`--force` after changes to installed tools or external/ignored test inputs, or
+when investigating flaky behavior. Explicit `--full` always runs the full gate.
+The conservative whole-checkout fingerprint can reject a check after an
+unrelated edit; review that edit and rerun only the affected direct commands
+rather than blindly repeating the entire batch. Receipts live in the ignored
+Git common directory and contain check results, not environment secrets.
 
-Then stage explicit owned paths and commit locally. Freeze source files during
-checks. Use Python 3.11+ on PATH for repository icon tools; Xcode's Python 3.9
-does not provide their TOML reader. Relevant native build and deterministic
-harness commands are in [BUILDING.md](BUILDING.md). Existing
-user-approved exceptions apply only within their original scope and must be
-reported; a historical failure is not automatically a current exemption.
+## Build directly
 
-From the task's clean worktree and recorded branch:
+Run Cargo, the native build script and other build commands directly. There is
+no project build lock, reservation, queue or integration lock. Independent
+checks and builds may run concurrently. Cargo/Git/Xcode retain their own normal
+locking; never remove their locks or `Cargo.lock` to bypass contention.
 
-    python3 -I scripts/ipados/task_protocol.py integrate feature-name --wait 60 \
-      --check "python3 -I scripts/ipados/test_task_protocol.py"
+Reuse the primary checkout's `target/` and native derived data. Check CPU, memory
+and disk capacity before heavy work and avoid redundant simultaneous builds.
+Commands writing the same native products need coordination to avoid competing
+writes; other independent work can continue. A Rust build plus Xcode packaging
+is one pipeline: avoid replacing its Rust library midway through packaging.
+Use reasonable per-process job limits when needed; there is no global build
+slot. Preserve existing build outputs and test evidence unless cleanup is
+separately authorized.
 
-The optional --check is repeatable for additional affected-area checks. Commands
-are parsed as argument lists, without a shell; use a task-owned script for
-multi-step checks. Validation is selected from the actual changed paths:
+## Reserve the physical iPad only when testing is relevant
 
-- Routine documentation/tooling tasks run repository consistency checks and
-  relevant protocol tests, without the CAD engine suite.
-- Native UI tasks additionally run the unsigned device-target build and
-  deterministic workspace harness. Adapter changes additionally run session
-  and bridge tests and Clippy. Physical-device observations remain separate.
-- Shared crates, desktop/web code, dependency/workspace configuration and
-  unfamiliar paths require full cargo +1.95.0 xtask ci. The conservative
-  fallback prevents a new shared area from silently receiving weaker checks.
-- Before main integration or release qualification, run check TASK --full.
-  These checkpoints retain full CI even for an otherwise narrow task. The
-  helper itself only merges into develop and never publishes a release.
-
-The integration helper:
-
-1. Takes the shared integration lock and checks that develop is clean.
-2. Merges the latest develop into the isolated task when necessary, preserving
-   both histories. It leaves conflicts in the task worktree for review.
-3. Runs the selected affected/full gate and extra checks on the combined candidate. A failed
-   check or source/index change prevents the develop update.
-4. Commits a clean merge candidate only after review and checks, then
-   fast-forwards the clean develop checkout. If develop is not checked out,
-   it updates the ref with a compare-and-swap against the verified base.
-5. Verifies task ancestry and records the integrated candidate SHA and checks.
-
-A conflict or failed check leaves the branch and diagnostic record intact.
-Review both changes, resolve only the necessary conflicts, run the required
-checks before committing the resolution, then retry integrate. If a failed
-check left a merge in progress, finish that reviewed merge first; the helper
-does not silently abort or commit a pre-existing Git operation. No blanket
-ours/theirs, automatic stashing, force-updating occupied branches or resetting
-develop. A moved baseline requires a new combined candidate and checks.
-
-After required device testing (or a justified opt-out), run:
-
-    python3 -I scripts/ipados/task_protocol.py finish feature-name
-
-Finish requires a clean task checkout, its exact verified tip in develop,
-and a passing device session for that tip when required. New task commits
-invalidate completion until integrated and tested again. Report **done** only
-after this command succeeds, with the integrated SHA and coverage. Otherwise
-report **integration pending** or **testing pending** with the blocker. A
-completed implementation or queued resource request alone is not done.
-
-## Reserve the physical iPad
-
-Integrate first and release the integration lock before waiting for the iPad.
-Prepare any signed build in the shared build slot before reserving the device:
-
-    python3 -I scripts/ipados/task_protocol.py build feature-name --wait 60 -- \
-      sh target/build-signed-candidate.sh
-
-Use one reservation for the entire install, launch, test and capture session:
+Physical iPad testing is a relevant acceptance checkpoint for device-dependent
+behavior, not a ritual after every edit. Honor explicit task-specific opt-outs.
+Prepare the signed build directly before reserving the device; a reservation
+covers the complete install, launch, test and capture session:
 
     python3 -I scripts/ipados/task_protocol.py ipad feature-name --wait 60 \
-      --device "$SOLIDCRAFT_DEVICE" --evidence target/ipad-session.txt -- \
-      sh target/test-ipad-candidate.sh
+      --candidate <prepared-commit> --device "$SOLIDCRAFT_DEVICE" \
+      --evidence target/feature-name/ipad-session.txt -- \
+      sh target/feature-name/test-ipad-candidate.sh
 
-The task-owned test script must install this worktree's prepared build, verify the intended
-candidate, run acceptance scenarios, capture evidence, write the named fresh
-nonempty evidence file, and exit successfully only on a pass. The helper exports
-SOLIDCRAFT_CANDIDATE, SOLIDCRAFT_TASK and SOLIDCRAFT_DEVICE; use and record them.
-Existing signing permissions and settings still apply.
+The shared checkout must be clean on the prepared commit. The task-owned script
+must install that build, verify its candidate, run acceptance scenarios, capture
+evidence and write the named fresh nonempty evidence file. The helper exports
+`SOLIDCRAFT_CANDIDATE`, `SOLIDCRAFT_TASK` and `SOLIDCRAFT_DEVICE`. Compilation,
+deterministic tests, synthetic input and physical Pencil observations are
+separate coverage levels; report each honestly. A receipt records the tester's
+result and is not automatic proof of hardware behavior.
 
-For interactive computer-use testing, replace the command after -- with
---hold (before any --). Run it in a live terminal session, wait for
-IPAD RESERVED, keep that process alive while using the UI and writing evidence,
-then send pass or fail followed by a newline to release. EOF, interruption,
-failure, missing/old evidence or changed source cannot record a passing result.
+For interactive testing use `--hold` instead of `--` and a command. Wait for
+`IPAD RESERVED`, keep that process alive through the session and evidence
+capture, then send `pass` or `fail` followed by a newline. EOF, interruption,
+changed source/candidate or missing evidence cannot record a passing result.
 Do not install, launch, terminate, drive or capture the app outside a reservation.
-After release, the next task acquires the device itself.
-
-The device result identifies the tested commit. Related tests can run together
-when that candidate covers their acceptance criteria, but each task must retain
-its own results. Compilation, deterministic harness, synthetic device input and
-physical Pencil observations are separate coverage levels; document each
-honestly. A nonempty evidence file records the tester's result, not an automatic
-proof of hardware behavior. No simulators without an explicit user request.
-
-## Shared state, contention and recovery
+Do not launch simulators without an explicit user request.
 
     python3 -I scripts/ipados/task_protocol.py status
-    python3 -I scripts/ipados/task_protocol.py note feature-name \
-      "Blocked on another-task's committed selection API."
 
-Status lists ownership, worktree/branch/base/tip, validation scope, checks,
-blockers, results and active integration/build/iPad owners. This replaces routine broadcasts. Direct messages are
-for blockers or contract changes within the user's authorization to message the
-other chat. No continuous polling or permanent coordinator.
+Status reports only the iPad reservation. The OS-backed lock is authoritative;
+owner JSON is diagnostic. Direct child commands inherit the reservation until
+they exit, even if the wrapper dies. Never detach device jobs or unlink lock
+files. Waits are bounded to 0–60 seconds; continue independent work on contention.
 
-Locks use OS-backed flock files shared by linked worktrees. They are held by
-the executing task/session, not by a daemon or a timestamp lease. A directly
-launched child inherits the reservation, so killing its wrapper does not free
-the device while that command still runs. Do not launch detached background
-device jobs. Never remove lock files: unlinking them can create two lock owners.
-Owner JSON is diagnostic only and may outlive an interrupted session; the OS
-lock determines whether a resource is busy.
+## Preserved history
 
-Checks acquire one shared build slot. Other heavy builds use the build command.
-Children default to SOLIDCRAFT_TEST_JOBS=2 and CARGO_BUILD_JOBS=2, preserving
-explicit caller overrides. This bounds parallel work without suppressing tests.
-Acquire integration before build when both are needed, and release both before
-requesting the iPad. Do not nest same-task helper commands inside a held iPad
-session; prepare builds first. Check machine load before starting heavy work.
-
-Waits are bounded to 0–60 seconds (default immediate). On contention, keep doing
-independent work and retry when ready. Pending tasks and active owners are
-visible in shared status; resource ordering is not a strict FIFO queue. Separate
-clones/machines do not share locks and need an explicit common device owner.
-All tasks using this checkout must follow the helper protocol; it does not
-intercept arbitrary Git/Xcode commands or reconfigure already-running chats.
-Keep task branches/worktrees until their integrated work and evidence are safe.
-
-Protocol self-tests use temporary Git repositories, fake CI and simulated
-resource holders; they never install or drive the iPad:
-
-    python3 -I scripts/ipados/test_task_protocol.py
+Existing task branches, worktrees, records, lock files and evidence are retained.
+They are historical and do not require new tasks to use the old protocol. The
+helper rejects retired `start`, `adopt`, `build`, `integrate`, `finish` and `note`
+commands with instructions to use this shared workflow. Never delete old work
+or rewrite another task's completion record to make a status display look clean.
+Protocol self-tests use temporary repositories, fake build commands and device
+reservations; they do not run the engine or access a physical iPad.

@@ -5,11 +5,13 @@ description: Use when someone wants to contribute code or documentation to Solid
 
 # Contribute to SolidCraft
 
-For local iPad task commits and merges into develop, the user-approved scoped
-validation policy in [TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md)
-supersedes this skill's full-CI-before-every-commit rule. Shared engine changes
-and main/release checkpoints still require full CI. Upstream PR rules below
-remain unchanged.
+For local development, the user-approved shared-checkout and completed-batch
+policy in [TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md) supersedes
+this skill's per-task branch/worktree, integration and full-CI-before-every-commit
+rules. Work directly on local `develop`, with no project build lock. Check a
+finished batch once and rerun only affected checks; a commit alone does not
+invalidate passing results. Shared engine batches and upstream/main/release
+checkpoints retain full CI. Upstream PR rules below remain unchanged.
 
 Read [CONTRIBUTING.md](../../CONTRIBUTING.md), [AGENTS.md](../../AGENTS.md) (the router
 to the other skills), the [contributor book page](../../docs/book/src/dev/contributing.md),

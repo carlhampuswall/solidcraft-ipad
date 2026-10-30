@@ -1,8 +1,9 @@
 # iPadOS development setup
 
-New tasks follow [TASK-COORDINATION.md](TASK-COORDINATION.md): work independently
-in separate worktrees, reserve integration and iPad access, and merge into
-develop before reporting done.
+New tasks follow [TASK-COORDINATION.md](TASK-COORDINATION.md): use the primary
+shared `develop` directory, build directly without a project build lock, and
+check completed batches once. Commit reviewed owned changes locally; reserve
+physical iPad access when device testing is relevant.
 
 This fork implements a native iPadOS application while keeping future upstream
 updates practical. Completed Steps 1–8, Step 8.5 and later work are consolidated

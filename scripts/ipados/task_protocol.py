@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local task delivery and resource locks. Python standard library; no daemon."""
+"""Shared-checkout batch checks and exclusive physical iPad sessions; no build queue."""
 
 import argparse
 from contextlib import contextmanager
@@ -44,27 +44,27 @@ def slug(value):
 
 
 def check_plan(paths, full=False):
-    """Fail closed on shared or unfamiliar code; scope known iPad-only changes."""
+    """Select checks for a finished batch; shared or unfamiliar code retains full CI."""
     def routine(path):
-        return (
-            path.endswith(".md")
-            or path.startswith(("docs/", "skills/", "scripts/ipados/", "apps/solidcraft-ipados/",
-                                "crates/ipados/", "assets/", "attribution/pending/"))
-        )
+        return path.endswith(".md") or path.startswith((
+            "docs/", "skills/", "scripts/ipados/", "apps/solidcraft-ipados/",
+            "crates/ipados/", "assets/", "attribution/pending/"))
 
     if full or any(not routine(path) for path in paths):
         return "full", [["cargo", "+1.95.0", "xtask", "ci"]]
-    commands = [["cargo", "+1.95.0", "fmt", "--all", "--", "--check"]]
-    commands += [["cargo", "+1.95.0", "xtask", name]
-                 for name in ("assets", "icons", "lists", "skills", "layers", "ui-containers")]
-    commands.append(["cargo", "+1.95.0", "xtask", "licences", "--check"])
-    if any(path.startswith("scripts/ipados/") for path in paths):
+    commands = []
+    if any(path.endswith(".rs") for path in paths):
+        commands.append(["cargo", "+1.95.0", "fmt", "--all", "--", "--check"])
+    if any(Path(path).name == "AGENTS.md" or path.startswith("skills/") for path in paths):
+        commands.append(["cargo", "+1.95.0", "xtask", "skills"])
+    if any(path.startswith(("assets/", "attribution/")) for path in paths):
+        commands += [["cargo", "+1.95.0", "xtask", name] for name in ("assets", "icons", "lists")]
+    if any(path in ("scripts/ipados/task_protocol.py", "scripts/ipados/test_task_protocol.py") for path in paths):
         commands.append([sys.executable, "-I", "scripts/ipados/test_task_protocol.py"])
     rust = any(path.startswith("crates/ipados/") and not path.endswith(".md") for path in paths)
     native = rust or any(
         (path.startswith("apps/solidcraft-ipados/") and not path.endswith(".md"))
-        or path.startswith("assets/locales/pending/ipados-") for path in paths
-    )
+        or path.startswith("assets/locales/pending/ipados-") for path in paths)
     if rust:
         packages = ["-p", "solidcraft-ipados-session", "-p", "solidcraft-ipados-bridge"]
         commands += [
@@ -82,372 +82,206 @@ class Repository:
         self.root = Path(root).resolve()
         self.root = Path(self.git("rev-parse", "--show-toplevel").strip())
         self.common = Path(self.git("rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+        # Preserve the existing iPad lock inode, including for older checkouts.
         self.state = self.common / "solidcraft-tasks"
 
-    def git(self, *args, root=None, check=True):
-        result = subprocess.run(
-            ["git", "-C", str(root or self.root), *args],
-            text=True, capture_output=True,
-        )
-        if check and result.returncode:
+    def git(self, *args):
+        result = subprocess.run(["git", "-C", str(self.root), *args], text=True, capture_output=True)
+        if result.returncode:
             raise ProtocolError(result.stderr.strip() or result.stdout.strip())
-        return result.stdout if check else result
+        return result.stdout
 
-    def sha(self, revision="HEAD", root=None):
-        return self.git("rev-parse", "--verify", "--end-of-options", revision + "^{commit}", root=root).strip()
+    def sha(self, revision="HEAD"):
+        return self.git("rev-parse", "--verify", "--end-of-options", revision + "^{commit}").strip()
 
-    def branch(self, root=None):
-        return self.git("symbolic-ref", "--quiet", "--short", "HEAD", root=root).strip()
-
-    def worktrees(self):
-        result = []
-        for field in self.git("worktree", "list", "--porcelain", "-z").split("\0"):
-            if field.startswith("worktree "):
-                result.append({"path": field[9:]})
-            elif field.startswith("branch "):
-                result[-1]["branch"] = field[7:]
-        return result
-
-    def clean(self, root=None):
-        if self.git("status", "--porcelain", "--untracked-files=all", root=root).strip():
-            raise ProtocolError(f"Checkout has uncommitted work: {root or self.root}. Preserve it; do not auto-stash.")
+    def shared_checkout(self):
+        primary = self.git("worktree", "list", "--porcelain", "-z").split("\0")[0]
+        branch = self.git("symbolic-ref", "--quiet", "--short", "HEAD").strip()
+        if primary != "worktree " + str(self.root) or branch != "develop":
+            raise ProtocolError("Use the primary shared checkout on develop; do not switch another task's branch.")
         for name in ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"):
-            path = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", name, root=root).strip())
+            path = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", name).strip())
             if path.exists():
                 raise ProtocolError(f"Finish or explicitly abandon the existing Git operation: {path}")
 
-    def ancestor(self, older, newer):
-        result = self.git("merge-base", "--is-ancestor", older, newer, check=False)
-        if result.returncode not in (0, 1):
-            raise ProtocolError(result.stderr.strip())
-        return result.returncode == 0
-
-    def develop_checkout(self):
-        matches = [Path(w["path"]) for w in self.worktrees() if w.get("branch") == "refs/heads/develop"]
-        if len(matches) > 1:
-            raise ProtocolError("Multiple develop checkouts; resolve ownership before integrating.")
-        return matches[0] if matches else None
-
     def fingerprint(self):
+        """Hash working files without writing the index; a commit alone doesn't invalidate tests."""
         digest = hashlib.sha256()
-        for value in (self.sha(), self.branch(), self.git("write-tree"),
-                      self.git("diff", "--binary", "HEAD", "--"),
-                      self.git("status", "--porcelain", "--untracked-files=all")):
-            digest.update(value.encode())
-        for name in self.git("ls-files", "--others", "--exclude-standard", "-z").split("\0"):
-            if name:
-                path = self.root / name
-                digest.update(name.encode())
-                digest.update(os.readlink(path).encode() if path.is_symlink() else path.read_bytes())
+        names = self.git("ls-files", "--cached", "--others", "--exclude-standard", "-z").split("\0")
+        for name in sorted(set(names) - {""}):
+            path = self.root / name
+            digest.update(name.encode() + b"\0")
+            if path.is_symlink():
+                content = b"link\0" + os.readlink(path).encode()
+            elif path.is_file():
+                content = b"file\0" + str(path.stat().st_mode & 0o111).encode() + b"\0" + path.read_bytes()
+            elif path.exists():
+                raise ProtocolError(f"Cannot verify non-file input: {name}")
+            else:
+                content = b"deleted\0"
+            digest.update(hashlib.sha256(content).digest())
         return digest.hexdigest()
 
-    def record_path(self, task):
-        return self.state / "tasks" / (slug(task) + ".json")
-
-    def load(self, task):
-        path = self.record_path(task)
-        if not path.exists():
-            raise ProtocolError(f"Unknown task {task}; use start or adopt first.")
-        return json.loads(path.read_text())
-
-    def save(self, record):
-        record["updated"] = now()
-        atomic_json(self.record_path(record["task"]), record)
-
-    def owned(self, task):
-        record = self.load(task)
-        if Path(record["worktree"]).resolve() != self.root or self.branch() != record["branch"]:
-            raise ProtocolError("Run this command in the task's recorded worktree and branch.")
-        return record
+    def check(self, args):
+        self.shared_checkout()
+        base = self.sha(args.base)
+        paths = args.paths
+        if paths is None:
+            paths = self.git("diff", "--name-only", "-z", base, "--").split("\0")
+            paths += self.git("ls-files", "--others", "--exclude-standard", "-z").split("\0")
+        paths = sorted(set(paths) - {""})
+        for path in paths:
+            if Path(path).is_absolute() or ".." in Path(path).parts or path.startswith(":"):
+                raise ProtocolError("Check paths must be literal repository-relative files.")
+        if not paths and not args.full and not args.check:
+            print("No changed paths; no tests run. Use --base or --paths for an already committed batch.")
+            return
+        self.git("--literal-pathspecs", "diff", "--check", base, "--", *paths)
+        scope, commands = check_plan(paths, args.full)
+        commands += [shlex.split(c) for c in args.check]
+        if any(not command for command in commands):
+            raise ProtocolError("Empty check command.")
+        before = self.fingerprint()
+        environment = dict(os.environ)
+        environment.setdefault("SOLIDCRAFT_TEST_JOBS", "2")
+        environment.setdefault("CARGO_BUILD_JOBS", "2")
+        key = hashlib.sha256(json.dumps([before, paths, commands, sorted(environment.items())]).encode()).hexdigest()
+        receipt = self.state / "checks" / (key + ".json")
+        if receipt.exists() and not args.force and not args.full and json.loads(receipt.read_text()).get("passed"):
+            print("Reusing passing checks for identical working files, commands and environment; no tests rerun.")
+            return
+        result = {"fingerprint": before, "paths": paths, "scope": scope, "passed": False, "checks": []}
+        atomic_json(receipt, result)
+        print(f"Validation scope: {scope}; {len(commands)} checks for this batch.", flush=True)
+        for command in commands:
+            completed = subprocess.run(command, cwd=self.root, env=environment)
+            result["checks"].append({"command": command, "exit_code": completed.returncode, "at": now()})
+            atomic_json(receipt, result)
+            if completed.returncode:
+                raise ProtocolError(f"Required check failed ({completed.returncode}): {shlex.join(command)}")
+            self.shared_checkout()
+            if self.fingerprint() != before:
+                raise ProtocolError("Working files changed during verification; review and rerun affected checks.")
+        self.shared_checkout()
+        if self.fingerprint() != before:
+            raise ProtocolError("Working files changed during verification; review and rerun affected checks.")
+        result.update(passed=True, at=now())
+        atomic_json(receipt, result)
+        print("Batch checks passed. Review and commit only owned paths; no integration gate is needed.")
 
     @contextmanager
-    def lock(self, resource, task, wait=0):
+    def ipad_lock(self, task, wait):
         self.state.mkdir(parents=True, exist_ok=True)
-        lockpath = self.state / (resource + ".lock")
         # Never unlink lock files: every contender must lock the same inode.
-        with lockpath.open("a+") as stream:
+        with (self.state / "ipad.lock").open("a+") as stream:
             deadline = time.monotonic() + wait
-            announced = False
             while True:
                 try:
                     fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     break
                 except BlockingIOError:
-                    if not announced:
-                        print(f"Waiting for {resource}; inspect task-protocol status for its owner.", flush=True)
-                        announced = True
                     if time.monotonic() >= deadline:
-                        raise ProtocolError(f"{resource} is busy. Continue independent work, then retry.")
+                        raise ProtocolError("iPad is busy; retry when the other session finishes.")
                     time.sleep(min(0.2, max(0, deadline - time.monotonic())))
-            atomic_json(self.state / (resource + ".owner.json"),
+            atomic_json(self.state / "ipad.owner.json",
                         {"task": task, "pid": os.getpid(), "worktree": str(self.root), "acquired": now()})
-            try:
-                yield stream.fileno()
-            finally:
-                # The owner file is diagnostic only; flock is authoritative.
-                fcntl.flock(stream, fcntl.LOCK_UN)
-
-    def create_record(self, task, ipad, reason, base=None):
-        if self.record_path(task).exists():
-            raise ProtocolError(f"Task {task} already exists; inspect its record instead of replacing it.")
-        branch = self.branch()
-        if not branch.startswith("codex/"):
-            raise ProtocolError("Tasks must use a separate codex/ branch, never develop or main.")
-        if ipad == "not-needed" and not reason:
-            raise ProtocolError("--reason is required when physical iPad testing is not needed.")
-        record = {
-            "version": 1, "task": task, "worktree": str(self.root), "branch": branch,
-            "base": base or self.git("merge-base", "HEAD", "develop").strip(),
-            "tip": self.sha(), "state": "working", "ipad_required": ipad == "required",
-            "ipad_reason": reason, "checks": [], "integrated": None, "verified": None, "device": None, "note": "",
-        }
-        self.save(record)
-        return record
-
-    def start(self, args):
-        with self.lock("integration", args.task, args.wait):
-            if self.record_path(args.task).exists():
-                raise ProtocolError("Task name already registered.")
-            if args.ipad == "not-needed" and not args.reason:
-                raise ProtocolError("--reason is required when physical iPad testing is not needed.")
-            develop = self.develop_checkout()
-            if develop:
-                self.clean(develop)
-            base = self.sha("develop")
-            primary = Path(self.worktrees()[0]["path"])
-            path = Path(args.path).resolve() if args.path else primary / "target/task-worktrees" / args.task
-            if path.exists():
-                raise ProtocolError(f"Worktree path already exists: {path}")
-            self.git("worktree", "add", "-b", "codex/" + args.task, str(path), base)
-            task_repo = Repository(path)
-            record = task_repo.create_record(args.task, args.ipad, args.reason, base)
-            remote = self.git("rev-parse", "--verify", "refs/remotes/origin/develop", check=False)
-            record["observed_origin_develop"] = remote.stdout.strip() if remote.returncode == 0 else None
-            task_repo.save(record)
-            print(json.dumps(record, indent=2))
-
-    def run_checks(self, record, extra, fd, wait, full=False, base=None):
-        self.git("diff", "--check", "develop", "--")
-        base = base or self.git("merge-base", "HEAD", "develop").strip()
-        paths = set(self.git("diff", "--name-only", "-z", base, "--").split("\0"))
-        paths.update(self.git("ls-files", "--others", "--exclude-standard", "-z").split("\0"))
-        paths.discard("")
-        scope, commands = check_plan(sorted(paths), full)
-        commands += [shlex.split(c) for c in extra]
-        record["validation_scope"] = scope
-        record["changed_paths"] = sorted(paths)
-        self.save(record)
-        before = self.fingerprint()
-        checks = []
-        environment = dict(os.environ)
-        environment.setdefault("SOLIDCRAFT_TEST_JOBS", "2")
-        environment.setdefault("CARGO_BUILD_JOBS", "2")
-        if sys.version_info >= (3, 11):
-            environment["PATH"] = str(Path(sys.executable).parent) + os.pathsep + environment.get("PATH", "")
-        print(f"Validation scope: {scope}; {len(commands)} checks.", flush=True)
-        with self.lock("build", record["task"], wait) as build_fd:
-            inherited = (build_fd,) if fd is None else (fd, build_fd)
-            for command in commands:
-                if not command:
-                    raise ProtocolError("Empty check command.")
-                result = subprocess.run(command, cwd=self.root, env=environment, pass_fds=inherited)
-                checks.append({"command": command, "exit_code": result.returncode, "at": now(),
-                               "test_jobs": environment["SOLIDCRAFT_TEST_JOBS"],
-                               "build_jobs": environment["CARGO_BUILD_JOBS"]})
-                record["checks"] = checks
-                self.save(record)
-                if result.returncode:
-                    raise ProtocolError(f"Required check failed ({result.returncode}): {shlex.join(command)}")
-                if self.fingerprint() != before:
-                    raise ProtocolError("Source or index changed during verification; review and rerun checks.")
-
-    def check(self, args):
-        record = self.owned(args.task)
-        record["verified"] = None
-        self.save(record)
-        self.run_checks(record, args.check, None, args.wait, args.full)
-        print("Checks passed. Review, stage only owned paths and commit; integrate before reporting done.")
-
-    def build(self, args):
-        self.owned(args.task)
-        if not args.command:
-            raise ProtocolError("Supply a build command after --.")
-        environment = dict(os.environ)
-        environment.setdefault("CARGO_BUILD_JOBS", "2")
-        environment.setdefault("SOLIDCRAFT_TEST_JOBS", "2")
-        with self.lock("build", args.task, args.wait) as fd:
-            result = subprocess.run(args.command, cwd=self.root, env=environment, pass_fds=(fd,))
-            if result.returncode:
-                raise ProtocolError(f"Build command failed ({result.returncode}).")
-
-    def integrate(self, args):
-        record = self.owned(args.task)
-        self.clean()
-        with self.lock("integration", args.task, args.wait) as fd:
-            old = self.sha("develop")
-            develop = self.develop_checkout()
-            if develop:
-                self.clean(develop)
-            record["verified"] = None
-            self.save(record)
-            # Merge the latest develop into the isolated task, never into a dirty shared checkout.
-            if not self.ancestor(old, self.sha()):
-                result = self.git("merge", "--no-ff", "--no-commit", old, check=False)
-                if result.returncode:
-                    raise ProtocolError("Merge needs review in this task worktree; develop was not changed.\n" + result.stderr.strip())
-            record["state"] = "verifying"
-            self.save(record)
-            self.run_checks(record, args.check, fd, args.wait, args.full, old)
-            verified_tree = self.git("write-tree").strip()
-            merge_head = Path(self.git("rev-parse", "--path-format=absolute", "--git-path", "MERGE_HEAD").strip())
-            if merge_head.exists():
-                self.git("commit", "-m", f"Integrate develop into {record['branch']}")
-            self.clean()
-            tip = self.sha()
-            if self.git("rev-parse", "HEAD^{tree}").strip() != verified_tree:
-                raise ProtocolError("Commit hooks changed the verified tree; rerun integration checks.")
-            if self.sha("develop") != old or self.develop_checkout() != develop:
-                raise ProtocolError("develop or its checkout moved during verification; retry integration.")
-            if develop:
-                self.clean(develop)
-                self.git("merge", "--ff-only", tip, root=develop)
-            else:
-                self.git("update-ref", "refs/heads/develop", tip, old)
-            if not self.ancestor(tip, self.sha("develop")):
-                raise ProtocolError("Task ancestry was not integrated.")
-            record.update(tip=tip, integrated=tip, verified=tip, state="integrated", device=None)
-            record.pop("blocker", None)
-            self.save(record)
-            print(f"Integrated {args.task} into develop at {tip}. Run finish after required device testing.")
+            # Closing our descriptor leaves an inherited child's reservation intact.
+            yield stream.fileno()
 
     def ipad(self, args):
-        record = self.owned(args.task)
-        self.clean()
+        self.shared_checkout()
+        if self.git("status", "--porcelain", "--untracked-files=all").strip():
+            raise ProtocolError("Prepare a clean committed device candidate; preserve other tasks' edits.")
         tip = self.sha()
-        if record["integrated"] != tip or record.get("verified") != tip or not self.ancestor(tip, self.sha("develop")):
-            raise ProtocolError("Integrate the committed task before testing its candidate on the iPad.")
-        command = args.command[1:] if args.command[:1] == ["--"] else args.command
-        if not args.hold and not command:
-            raise ProtocolError("Supply --hold or a command after -- for the complete device session.")
-        if args.hold and command:
-            raise ProtocolError("--hold and a command are alternatives.")
+        if args.candidate and self.sha(args.candidate) != tip:
+            raise ProtocolError("The prepared device candidate must match the current shared checkout.")
+        if bool(args.command) == args.hold:
+            raise ProtocolError("Supply either --hold or a command after -- for the complete device session.")
         evidence = Path(args.evidence).resolve()
         if evidence.exists():
             raise ProtocolError("Use a fresh evidence path so an old result cannot count as this test.")
-        before = self.fingerprint()
-        record["device"] = None
-        self.save(record)
-        with self.lock("ipad", args.task, args.wait) as fd:
+        with self.ipad_lock(args.task, args.wait) as fd:
+            self.shared_checkout()
+            if self.sha() != tip or self.git("status", "--porcelain", "--untracked-files=all").strip():
+                raise ProtocolError("Device candidate changed while waiting for the iPad.")
+            before = self.fingerprint()
+            receipt = self.state / "device-sessions" / (args.task + ".json")
+            atomic_json(receipt, {"candidate": tip, "device": args.device, "passed": False,
+                                  "evidence": str(evidence), "at": now(), "manual": args.hold})
             print(f"IPAD RESERVED: task={args.task} device={args.device} candidate={tip}", flush=True)
             environment = dict(os.environ, SOLIDCRAFT_CANDIDATE=tip, SOLIDCRAFT_TASK=args.task,
                                SOLIDCRAFT_DEVICE=args.device)
             if args.hold:
                 print("Keep this process open through install, test and evidence capture. Type pass or fail to release.", flush=True)
-                verdict = sys.stdin.readline().strip()
-                passed = verdict == "pass"
+                passed = sys.stdin.readline().strip() == "pass"
             else:
-                passed = subprocess.run(command, cwd=self.root, env=environment, pass_fds=(fd,)).returncode == 0
-            if self.fingerprint() != before:
-                raise ProtocolError("Source changed during device testing; no successful test was recorded.")
+                passed = subprocess.run(args.command, cwd=self.root, env=environment, pass_fds=(fd,)).returncode == 0
+            self.shared_checkout()
+            if self.sha() != tip or self.fingerprint() != before:
+                raise ProtocolError("Device candidate changed; no successful test was recorded.")
             passed = passed and evidence.is_file() and evidence.stat().st_size > 0
-            record["device"] = {"candidate": tip, "device": args.device, "passed": passed,
-                                "evidence": str(evidence), "at": now(), "manual": args.hold}
-            self.save(record)
+            atomic_json(receipt,
+                        {"candidate": tip, "device": args.device, "passed": passed,
+                         "evidence": str(evidence), "at": now(), "manual": args.hold})
             if not passed:
                 raise ProtocolError("Device session failed or has no new nonempty evidence file.")
             print("Device result recorded; iPad released.")
 
-    def finish(self, args):
-        record = self.owned(args.task)
-        self.clean()
-        tip = self.sha()
-        if record["integrated"] != tip or record.get("verified") != tip or not self.ancestor(tip, self.sha("develop")):
-            raise ProtocolError("Integration pending: this task tip must be verified and merged into develop.")
-        device = record["device"]
-        if device and not device["passed"]:
-            raise ProtocolError("Testing pending: the last requested iPad session failed.")
-        if record["ipad_required"] and not (device and device["passed"] and device["candidate"] == tip):
-            raise ProtocolError("Testing pending: this integrated candidate needs a passing iPad session.")
-        record["state"] = "done"
-        record.pop("blocker", None)
-        self.save(record)
-        print(f"DONE: {args.task}; verified task {tip} is in develop.")
-
     def status(self):
-        tasks = [json.loads(p.read_text()) for p in sorted((self.state / "tasks").glob("*.json"))]
-        resources = {}
-        self.state.mkdir(parents=True, exist_ok=True)
-        for name in ("integration", "build", "ipad"):
-            with (self.state / (name + ".lock")).open("a+") as stream:
+        busy = False
+        path = self.state / "ipad.lock"
+        if path.exists():
+            with path.open("r") as stream:
                 try:
                     fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(stream, fcntl.LOCK_UN)
-                    resources[name] = {"busy": False}
                 except BlockingIOError:
-                    owner = self.state / (name + ".owner.json")
-                    resources[name] = {"busy": True, "owner": json.loads(owner.read_text()) if owner.exists() else None}
-        print(json.dumps({"resources": resources, "tasks": tasks}, indent=2))
+                    busy = True
+        resource = {"busy": busy}
+        owner = self.state / "ipad.owner.json"
+        if busy and owner.exists():
+            resource["owner"] = json.loads(owner.read_text())
+        print(json.dumps({"workflow": "shared-checkout", "resources": {"ipad": resource}}, indent=2))
 
 
 def parser():
     result = argparse.ArgumentParser(description=__doc__)
     sub = result.add_subparsers(dest="action", required=True)
-    for name in ("start", "adopt", "build", "check", "integrate", "ipad", "finish", "note"):
-        command = sub.add_parser(name)
-        command.add_argument("task", type=slug)
-        if name in ("start", "adopt"):
-            command.add_argument("--ipad", choices=("required", "not-needed"), default="required")
-            command.add_argument("--reason", default="")
-        if name in ("start", "build", "check", "integrate", "ipad"):
-            command.add_argument("--wait", type=float, default=0, help="Wait at most 60 seconds, then retry later.")
-        if name == "start":
-            command.add_argument("--path", help="New worktree path; default: primary checkout target/task-worktrees/TASK")
-        if name in ("check", "integrate"):
-            command.add_argument("--check", action="append", default=[], help="Extra check command, parsed without a shell.")
-            command.add_argument("--full", action="store_true", help="Full CI checkpoint, required before main/releases.")
-        if name == "ipad":
-            command.add_argument("--device", required=True)
-            command.add_argument("--evidence", required=True)
-            command.add_argument("--hold", action="store_true")
-        if name == "note":
-            command.add_argument("text")
+    check = sub.add_parser("check", help="Validate a finished batch once; reuse unchanged passing results.")
+    check.add_argument("--paths", nargs="+", help="Owned repository-relative files; default: all changed files.")
+    check.add_argument("--base", default="HEAD", help="Compare working files with this committed batch baseline.")
+    check.add_argument("--check", action="append", default=[], help="Extra command, parsed without a shell.")
+    check.add_argument("--full", action="store_true", help="Always run full CI for main/releases.")
+    check.add_argument("--force", action="store_true", help="Rerun despite identical passing results.")
+    ipad = sub.add_parser("ipad", help="Reserve a complete physical device session.")
+    ipad.add_argument("task", type=slug)
+    ipad.add_argument("--candidate", help="Expected prepared commit; defaults to HEAD.")
+    ipad.add_argument("--device", required=True)
+    ipad.add_argument("--evidence", required=True)
+    ipad.add_argument("--hold", action="store_true")
+    ipad.add_argument("--wait", type=float, default=0, help="Wait at most 60 seconds.")
     sub.add_parser("status")
     return result
 
 
 def main(argv=None):
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] in ("start", "adopt", "integrate", "finish", "note", "build"):
+        raise ProtocolError("Task worktrees and the build queue are retired. Work directly in the primary develop checkout; "
+                            "run builds directly and use check only for a finished batch.")
     separator = arguments.index("--") if "--" in arguments else len(arguments)
     args = parser().parse_args(arguments[:separator])
-    if separator < len(arguments) and args.action not in ("ipad", "build"):
-        raise ProtocolError("Only ipad/build accept a command after --.")
-    if args.action in ("ipad", "build"):
+    if separator < len(arguments) and args.action != "ipad":
+        raise ProtocolError("Only ipad accepts a command after --.")
+    if args.action == "ipad":
         args.command = arguments[separator + 1:]
-    if hasattr(args, "wait") and not 0 <= args.wait <= 60:
-        raise ProtocolError("--wait must be between 0 and 60 seconds.")
+        if not 0 <= args.wait <= 60:
+            raise ProtocolError("--wait must be between 0 and 60 seconds.")
     repo = Repository()
-    if args.action == "start":
-        repo.start(args)
-    elif args.action == "adopt":
-        with repo.lock("integration", args.task):
-            print(json.dumps(repo.create_record(args.task, args.ipad, args.reason), indent=2))
-    elif args.action == "status":
+    if args.action == "status":
         repo.status()
     else:
-        with repo.lock("task-" + args.task, args.task):
-            try:
-                if args.action == "note":
-                    record = repo.owned(args.task)
-                    record["note"] = args.text
-                    repo.save(record)
-                else:
-                    getattr(repo, args.action)(args)
-            except (ProtocolError, OSError) as error:
-                record = repo.owned(args.task)
-                record["state"] = "pending"
-                record["blocker"] = str(error)
-                repo.save(record)
-                raise
+        getattr(repo, args.action)(args)
     return 0
 
 

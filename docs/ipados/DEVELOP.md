@@ -158,14 +158,15 @@ limitations are not claimed resolved by branch consolidation.
 
 ## Continuing development and upstream updates
 
-Follow [TASK-COORDINATION.md](TASK-COORDINATION.md) for new task isolation,
-completion and serialized local integration into `develop`. Record the approved
+Follow [TASK-COORDINATION.md](TASK-COORDINATION.md) for shared-directory work,
+completed-batch checks and local commits on `develop`. Record the approved
 local `develop` SHA and its relationship to observed `origin/develop`; preserve
 locally integrated work when choosing the baseline. The B/P policy
 remains the historical approval record for the original workstreams; it is not
 an instruction to start new work from the older source after consolidation.
-Use isolated worktrees and coordinate changes to the shared native/session
-interfaces. Preserve the patch ledger and upstream commit ancestry.
+Use the primary checkout without per-task worktrees or a project build lock;
+coordinate overlapping edits and shared native/session interfaces. Preserve
+the patch ledger, old worktrees/evidence and upstream commit ancestry.
 
 Continue reviewed upstream integrations through the fork's `main` using
 [UPSTREAM.md](UPSTREAM.md), then merge the reviewed result into `develop` and

@@ -394,6 +394,7 @@ sh apps/solidcraft-ipados/scripts/build.sh
 The initial full test build was deliberately stopped when free space fell below
 1 GiB. No source/build files were cleaned. The user then freed space; recheck
 `df -h .` before resuming. Preserve `target/step8.5-preservation/`, which contains
-the pre-consolidation recovery archive and Git bundle. Separate task worktrees
-must use separate target/derived-data directories; four simultaneous clean
-native builds need substantially more capacity than one warm checkout.
+the pre-consolidation recovery archive and Git bundle. The older separate task
+worktrees required independent build trees. Current development reuses the
+primary checkout's target/derived data under [TASK-COORDINATION.md](TASK-COORDINATION.md),
+without a project build lock; check completed batches and avoid duplicate builds.

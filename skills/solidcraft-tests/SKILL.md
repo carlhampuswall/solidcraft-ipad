@@ -5,10 +5,11 @@ description: "Use when writing, placing or running tests in SolidCraft: a regres
 
 # Where tests go and how to run them
 
-Local iPad task commits/merges follow the user-approved scoped checks in
-[TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md), superseding the
-full-gate-before-every-commit rule below for those tasks. Shared engine changes
-and main/release checkpoints still require full CI; upstream rules remain.
+Local development follows [TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md),
+superseding the per-commit gate below. Use shared `develop` without a build lock.
+Check a finished batch once, not every edit; rerun only failed/affected checks.
+Reuse unchanged passing results across commits. Shared engine batches and
+upstream/main/release checkpoints retain full CI; upstream rules remain.
 
 The long form is `docs/book/src/dev/testing.md`.
 

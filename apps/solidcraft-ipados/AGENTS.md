@@ -1,8 +1,9 @@
 # Native Apple host scope
 
-Follow [TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md) for isolated
-task worktrees, serialized local integration and physical iPad reservations.
-Merge into develop and verify before reporting done; no permanent coordinator.
+Follow [TASK-COORDINATION.md](../../docs/ipados/TASK-COORDINATION.md): work in the
+primary shared `develop` checkout without task worktrees or a project build lock.
+Check completed batches once, rerun only affected checks, and commit owned paths.
+Keep physical iPad sessions exclusive; no per-task integration gate is needed.
 
 Read `../../docs/ipados/ARCHITECTURE.md` and `../../docs/ipados/UPSTREAM.md` first.
 The Step 2 platform exception and Steps 5–8 workspace/sketch/modelling/assembly

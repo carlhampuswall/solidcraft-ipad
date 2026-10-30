@@ -2,8 +2,10 @@
 
 These are the historical B/P workstream prompts. Completed work is now combined
 on `develop`; [DEVELOP.md](DEVELOP.md) records what actually landed. New tasks
-need an approved current `origin/develop` SHA and ownership plan rather than
-reusing these older starting points automatically.
+follow [TASK-COORDINATION.md](TASK-COORDINATION.md) in the primary shared local
+`develop` checkout, with batch checks and no project build lock. The worktree,
+build-slot and per-commit CI instructions below are historical, not current
+launch instructions.
 
 **Ready for individually authorized parallel development.** Source baseline **B = `c22acd12702cf3a405df01009b8d8662b3d46365`** is committed and accepted under the bounded 2026-10-28 user exception in [KNOWN-UPSTREAM-FAILURES.md](KNOWN-UPSTREAM-FAILURES.md). Only those three unchanged engine failures may remain; all other required checks passed. CI retains its nonzero result and is not described as green. A future task still needs an explicit user launch request; no tasks have been launched and no branch has been pushed by this finalization.
 
