@@ -4069,30 +4069,17 @@ private extension FoundationController {
             }
         }
         func planes() {
-            viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
-            frame("planes-neutral-light") {
-                self.updateAvailability()
-                self.showViewControls(animated: false)
-                wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
-                    control("individual-references")?.sendActions(for: .primaryActionTriggered)
+            self.overrideUserInterfaceStyle = .light
+            control("legacy-planes")?.sendActions(for: .valueChanged)
+            wait({ !self.viewControlPending && self.legacyOriginPlanes }) {
+                require(defaults.bool(forKey: keys[0]), "Legacy plane preference did not persist")
+                frame("planes-legacy-light") {
                     control("legacy-planes")?.sendActions(for: .valueChanged)
-                    wait({ !self.viewControlPending && self.legacyOriginPlanes }) {
-                        require(defaults.bool(forKey: keys[0]), "Legacy plane preference did not persist")
+                    wait({ !self.viewControlPending && !self.legacyOriginPlanes }) {
+                        require(!defaults.bool(forKey: keys[0]), "Neutral plane preference did not persist")
                         self.viewControlsPopover?.dismiss(animated: false); self.viewControlsPopover = nil
-                        frame("planes-legacy-light") {
-                            self.updateAvailability()
-                            self.showViewControls(animated: false)
-                            wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
-                                control("individual-references")?.sendActions(for: .primaryActionTriggered)
-                                control("legacy-planes")?.sendActions(for: .valueChanged)
-                                wait({ !self.viewControlPending && !self.legacyOriginPlanes }) {
-                                    require(!defaults.bool(forKey: keys[0]), "Neutral plane preference did not persist")
-                                    self.viewControlsPopover?.dismiss(animated: false); self.viewControlsPopover = nil
-                                    self.overrideUserInterfaceStyle = .dark
-                                    frame("planes-neutral-dark") { twists(0) }
-                                }
-                            }
-                        }
+                        self.overrideUserInterfaceStyle = .dark
+                        frame("planes-neutral-dark") { twists(0) }
                     }
                 }
             }
@@ -4105,16 +4092,15 @@ private extension FoundationController {
             self.browserOpen = false; self.inspectorOpen = false; self.relayoutPanels()
             commands([("view.isometric", [:]), ("view.fit", [:]), ("view.origin_style", ["legacy": false]),
                       ("view.origin", ["group": "planes", "visible": true])]) {
-                self.updateAvailability()
-                self.showViewControls(animated: false)
-                wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
-                    frame("menu-light") {
-                        inspectIcons()
-                        control("individual-references")?.sendActions(for: .primaryActionTriggered)
-                        self.overrideUserInterfaceStyle = .dark
-                        frame("references-dark") {
+                frame("planes-neutral-light") {
+                    self.updateAvailability()
+                    self.showViewControls(animated: false)
+                    wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
+                        frame("menu-light") {
                             inspectIcons()
-                            self.overrideUserInterfaceStyle = .light; planes()
+                            control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                            self.overrideUserInterfaceStyle = .dark
+                            frame("references-dark") { inspectIcons(); planes() }
                         }
                     }
                 }
