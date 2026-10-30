@@ -66,7 +66,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
     private lazy var modifyButton = WorkspaceButton(WorkspaceStyle.text("modify"), action: {})
     private lazy var patternButton = WorkspaceButton(WorkspaceStyle.text("pattern"), action: {})
-    private lazy var constraintsButton = WorkspaceButton(WorkspaceStyle.text("constraints"), action: {})
+    private lazy var constraintsButton = WorkspaceButton(WorkspaceStyle.text("constraints"), activationEvent: .primaryActionTriggered) { [weak self] in self?.showConstraints() }
     private lazy var dimensionsButton = WorkspaceButton(SketchText.text("dimension"), action: {})
     private lazy var constructionButton = WorkspaceButton(SketchText.text("construction")) { [weak self] in
         guard let self, self.state?.sketch != nil else { return }
@@ -114,6 +114,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var historyCheckWorkspace: ((WorkspaceState) -> Void)?
     private var historyDeleteConfirmation: (() -> Void)?
     private var historyMenuDelete: (() -> Void)?
+    private var constraintMenuActions: [String: () -> Void] = [:]
     private var assemblyCheckBegan: ((Result<ModellingState, BridgeError>) -> Void)?
     private var assemblyCheckEvaluated: ((Result<ModellingState, BridgeError>, Bool) -> Void)?
     private var assemblyCheckCancelled: ((Result<ModellingState, BridgeError>) -> Void)?
@@ -477,6 +478,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkInlineDimensionsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-toolbar-check") {
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--constraints-menu-check") {
+                    self.developmentCheckStarted = true; self.checkConstraintsMenuOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--assembly-check") || ProcessInfo.processInfo.arguments.contains("--face-extrude-check") || ProcessInfo.processInfo.arguments.contains("--compact-inspector-check") {
                     self.developmentCheckStarted = true; self.startAssemblyCheck()
                 } else if ProcessInfo.processInfo.arguments.contains("--tool-dismissal-check") {
@@ -2902,21 +2905,50 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         })
         sketchToolsButton.showsMenuAsPrimaryAction = true
         sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true)
-        let constraints = state?.sketch?.eligible_constraints ?? []
-        constraintsButton.menu = UIMenu(children: ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"].map { key in
-            let action = constraints.first {
-                ($0.params["mode"]?.value as? String ?? String($0.command.split(separator: ".").last ?? "")) == key
-            }
-            return UIAction(title: SketchText.text(key), image: action.flatMap { WorkspaceIcon.command($0.command, traits: traitCollection) },
-                            attributes: action == nil ? .disabled : []) { [weak self] _ in
-                guard let action else { return }; self?.run(action.command, params: action.dictionary)
-            }
-        })
-        constraintsButton.showsMenuAsPrimaryAction = true
         dimensionsButton.menu = UIMenu(children: (state?.sketch?.eligible_dimensions ?? []).map { type in
             UIAction(title: SketchText.text(type), image: WorkspaceIcon.image("dimension", traits: traitCollection)) { [weak self] _ in self?.beginNumeric(dimension: type) }
         })
         dimensionsButton.showsMenuAsPrimaryAction = true
+    }
+
+    private static let constraintChoices = ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"]
+
+    private func constraintAction(_ key: String) -> WorkspaceConstraintAction? {
+        state?.sketch?.eligible_constraints?.first {
+            ($0.params["mode"]?.value as? String ?? String($0.command.split(separator: ".").last ?? "")) == key
+        }
+    }
+
+    private func showConstraints() {
+        guard active, !numericEditing, !modellingEditing, pending.isEmpty,
+              presentedViewController == nil, let context = state, context.sketch != nil else { return }
+        canvas.cancelInput(); view.endEditing(true)
+        // Native UIButton menu previews can raise the software keyboard on iPad.
+        // Use the same text-free anchored sheet as the History actions.
+        let sheet = UIAlertController(title: WorkspaceStyle.text("constraints"), message: nil, preferredStyle: .actionSheet)
+#if DEBUG
+        constraintMenuActions.removeAll()
+#endif
+        for key in Self.constraintChoices {
+            let apply = { [weak self] in
+                guard let self, self.active, !self.numericEditing, !self.modellingEditing, self.pending.isEmpty,
+                      self.state?.document_id == context.document_id,
+                      self.state?.geometry_revision == context.geometry_revision,
+                      self.state?.sketch?.id == context.sketch?.id, self.state?.selection == context.selection,
+                      let action = self.constraintAction(key) else { return }
+                self.run(action.command, params: action.dictionary)
+            }
+#if DEBUG
+            constraintMenuActions[key] = apply
+#endif
+            let choice = UIAlertAction(title: SketchText.text(key), style: .default) { _ in apply() }
+            choice.isEnabled = constraintAction(key) != nil
+            sheet.addAction(choice)
+        }
+        sheet.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
+        sheet.popoverPresentationController?.sourceView = constraintsButton
+        sheet.popoverPresentationController?.sourceRect = constraintsButton.bounds
+        present(sheet, animated: true)
     }
     private var workspaceInterfaceStyle: UIUserInterfaceStyle {
         appearance == 1 ? .light : (appearance == 2 ? .dark : .unspecified)
@@ -3276,6 +3308,115 @@ private extension FoundationController {
             guard index < fixture.count else { browserOpen = false; inspectorOpen = false; check(0); return }
             session.command(fixture[index].0, params: fixture[index].1) { result in
                 guard case .success = result else { issues.append("fixture failed"); report(); return }
+                prepare(index + 1)
+            }
+        }
+        prepare(0)
+    }
+
+    /// Disposable real-engine fixture and production UIKit constraint actions.
+    /// Actual Pencil contact is separate from these synthetic selections.
+    private func checkConstraintsMenuOnDevice() {
+        let expected = generation
+        var issues: [String] = []
+        var finished = false
+        func check(_ value: Bool, _ message: String) { if !value { issues.append(message) } }
+        func capture(_ name: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                if let png = image.pngData() { try png.write(to: directory.appendingPathComponent("constraints-menu-" + name + ".png"), options: .atomic) }
+            } catch { issues.append("capture: \(error)") }
+        }
+        func finish() {
+            guard !finished else { return }; finished = true
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let receipt: [String: Any] = ["passed": issues.isEmpty, "issues": issues,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "at": ISO8601DateFormatter().string(from: Date())]
+                try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("constraints-menu-check.json"), options: .atomic)
+            } catch { print("Constraints menu report failed: \(error)") }
+            print("Constraints menu check " + (issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")))
+        }
+        func wait(_ stage: String, remaining: Int = 100, until condition: @escaping () -> Bool, then next: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if condition() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: next); return }
+            guard remaining > 0 else { issues.append("timed out: " + stage); finish(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(stage, remaining: remaining - 1, until: condition, then: next) }
+        }
+        func verify() {
+            guard let original = state else { issues.append("missing workspace"); finish(); return }
+            let frame = canvas.frame
+            let constraintIDs = original.sketch?.constraints.map(\.id)
+            func unchanged() {
+                check(self.state?.document_id == original.document_id && self.state?.revision == original.revision &&
+                      self.state?.geometry_revision == original.geometry_revision && self.state?.selection == original.selection &&
+                      self.state?.can_undo == original.can_undo && self.state?.can_redo == original.can_redo,
+                      "opening/dismissing changed document, history or selection")
+                check(self.canvas.frame == frame && self.keyboardTop == nil && !self.textEntryActive && !self.numericEditing,
+                      "opening/dismissing changed viewport or raised text input")
+            }
+            func open(_ next: @escaping (UIAlertController) -> Void) {
+                self.constraintsButton.sendActions(for: .primaryActionTriggered)
+                wait("constraint sheet", until: { self.presentedViewController is UIAlertController && self.presentedViewController?.isBeingPresented == false }) {
+                    guard let sheet = self.presentedViewController as? UIAlertController else { return }
+                    check(sheet.preferredStyle == .actionSheet && sheet.textFields == nil, "constraint choices requested text entry")
+                    check(self.constraintsButton.menu == nil && !self.constraintsButton.showsMenuAsPrimaryAction, "native menu preview remains installed")
+                    check(sheet.actions.count == Self.constraintChoices.count + 1, "missing constraint choices or Cancel")
+                    for key in Self.constraintChoices {
+                        check(sheet.actions.first(where: { $0.title == SketchText.text(key) })?.isEnabled == (self.constraintAction(key) != nil), "eligibility mismatch: " + key)
+                    }
+                    unchanged(); next(sheet)
+                }
+            }
+            capture("selected")
+            open { sheet in
+                capture("opened")
+                sheet.dismiss(animated: false) {
+                    unchanged()
+                    open { reopened in
+                        capture("reopened")
+                        guard reopened.actions.first(where: { $0.title == SketchText.text("parallel") })?.isEnabled == true,
+                              let apply = self.constraintMenuActions["parallel"] else { issues.append("Parallel unavailable for two edges"); finish(); return }
+                        reopened.dismiss(animated: false) {
+                            apply()
+                            wait("parallel applied", until: { self.pending.isEmpty && self.state?.sketch?.constraints.count == (constraintIDs?.count ?? 0) + 1 }) {
+                                check(self.state?.sketch?.constraints.contains(where: { $0.name.lowercased() == "parallel" }) == true, "wrong constraint applied")
+                                check(self.keyboardTop == nil && !self.textEntryActive, "applying Parallel raised text input")
+                                capture("applied")
+                                self.run("edit.undo")
+                                wait("undo", until: { self.pending.isEmpty && self.state?.sketch?.constraints.map(\.id) == constraintIDs }) {
+                                    capture("undo"); finish()
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]),
+            ("sketch.line", ["p0": [-20, -10], "p1": [15, -8]]),
+            ("sketch.line", ["p0": [-18, 10], "p1": [20, 15]]), ("tool.set", ["tool": "select"]), ("view.fit", [:])]
+        func prepare(_ index: Int) {
+            guard active, generation == expected, !finished else { return }
+            guard index < fixture.count else {
+                guard let sketch = state?.sketch, sketch.curves.count == 2 else { issues.append("fixture has no two edges"); finish(); return }
+                browserOpen = false; inspectorOpen = false; relayoutPanels()
+                session.selectEntity(["type": "sketch_curve", "id": sketch.curves[0].id, "sketch": sketch.id], additive: false) { result in
+                    guard case .success = result else { issues.append("first edge selection failed"); finish(); return }
+                    self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[1].id, "sketch": sketch.id], additive: true) { result in
+                        guard case .success = result else { issues.append("second edge selection failed"); finish(); return }
+                        wait("two selected edges", until: { self.state?.selection.count == 2 && self.pending.isEmpty }, then: verify)
+                    }
+                }
+                return
+            }
+            session.command(fixture[index].0, params: fixture[index].1) { result in
+                guard case .success = result else { issues.append("fixture command failed: " + fixture[index].0); finish(); return }
                 prepare(index + 1)
             }
         }
