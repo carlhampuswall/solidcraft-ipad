@@ -3426,24 +3426,29 @@ private extension FoundationController {
             }
         }
         let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]),
-            ("sketch.line", ["p0": [-20, -10], "p1": [15, -8]]),
-            ("sketch.line", ["p0": [-18, 10], "p1": [20, 15]]), ("tool.set", ["tool": "select"]), ("view.fit", [:])]
+            ("sketch.line", ["points": [[-20, -10], [15, -8]], "infer": false, "connect": false]),
+            ("sketch.line", ["points": [[-18, 10], [20, 15]], "infer": false, "connect": false]),
+            ("tool.set", ["tool": "select"]), ("view.fit", [:])]
         func prepare(_ index: Int) {
             guard active, generation == expected, !finished else { return }
             guard index < fixture.count else {
-                guard let sketch = state?.sketch, sketch.curves.count == 2 else { issues.append("fixture has no two edges"); finish(); return }
-                browserOpen = false; inspectorOpen = false; relayoutPanels()
-                session.selectEntity(["type": "sketch_curve", "id": sketch.curves[0].id, "sketch": sketch.id], additive: false) { result in
-                    guard case .success = result else { issues.append("first edge selection failed"); finish(); return }
-                    self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[1].id, "sketch": sketch.id], additive: true) { result in
-                        guard case .success = result else { issues.append("second edge selection failed"); finish(); return }
-                        wait("two selected edges", until: { self.state?.selection.count == 2 && self.pending.isEmpty }, then: verify)
+                wait("fixture edges", until: { self.state?.sketch?.curves.count == 2 && self.pending.isEmpty }) {
+                    guard let sketch = self.state?.sketch else { return }
+                    self.browserOpen = false; self.inspectorOpen = false; self.relayoutPanels()
+                    self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[0].id, "sketch": sketch.id], additive: false) { result in
+                        guard case .success = result else { issues.append("first edge selection failed"); finish(); return }
+                        self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[1].id, "sketch": sketch.id], additive: true) { result in
+                            guard case .success = result else { issues.append("second edge selection failed"); finish(); return }
+                            wait("two selected edges", until: { self.state?.selection.count == 2 && self.pending.isEmpty }, then: verify)
+                        }
                     }
                 }
                 return
             }
             session.command(fixture[index].0, params: fixture[index].1) { result in
-                guard case .success = result else { issues.append("fixture command failed: " + fixture[index].0); finish(); return }
+                if case .failure(let error) = result {
+                    issues.append("fixture command failed: " + fixture[index].0 + ": " + error.description); finish(); return
+                }
                 prepare(index + 1)
             }
         }
