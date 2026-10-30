@@ -196,6 +196,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var integratedGridAxes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.integratedGridAxes") as? Bool ?? true
     private var originInBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.originInBrowser") as? Bool ?? false
     private var resetChromeOffsets = false
+    private var twoFingerTwist = UserDefaults.standard.object(forKey: "SolidCraft.workspace.twoFingerTwist") as? Bool ?? true
     private var viewpointOrbit = UserDefaults.standard.object(forKey: "SolidCraft.workspace.viewpointOrbit") as? Bool ?? true
     private var dragStepMM = DragResolution.current
     private var directHandles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.directHandles") as? Bool ?? true
@@ -537,6 +538,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.updateCanvasAppearance()
                 self.session.command("view.grid", params: ["visible": self.gridVisible, "integrated_axes": self.integratedGridAxes])
                 self.session.command("view.touch_orbit", params: ["follows_viewpoint": self.viewpointOrbit])
+                self.session.command("view.touch_twist", params: ["enabled": self.twoFingerTwist])
                 self.session.command("view.drag_precision", params: ["step_mm": self.dragStepMM])
                 self.session.command("view.tool_handles", params: ["enabled": self.directHandles])
                 self.session.command("view.automatic_subtract", params: ["enabled": self.automaticSubtract])
@@ -2806,6 +2808,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.canvas.historyGesturesEnabled, forKey: "SolidCraft.workspace.historyGestures")
             self.rebuildMenus()
         }
+        let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            let enabled = !self.twoFingerTwist
+            self.canvas.cancelInput()
+            self.session.command("view.touch_twist", params: ["enabled": enabled]) { [weak self] result in
+                guard let self, case .success = result else { return }
+                self.twoFingerTwist = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.twoFingerTwist")
+                self.rebuildMenus()
+            }
+        }
         let orbit = UIAction(title: WorkspaceStyle.text("viewpoint_orbit"), attributes: numericEditing || modellingEditing ? .disabled : [], state: viewpointOrbit ? .on : .off) { [weak self] _ in
             guard let self else { return }
             let enabled = !self.viewpointOrbit
@@ -2873,7 +2886,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            historyGestures, orbit, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in

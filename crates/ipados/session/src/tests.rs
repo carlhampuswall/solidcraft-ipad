@@ -1490,7 +1490,7 @@ fn multiple_pencil_edges_reach_fillet_and_chamfer_as_one_undoable_operation() {
 }
 
 #[test]
-fn two_finger_pan_pinch_and_pointer_navigation_never_select_or_edit() {
+fn two_finger_pan_pinch_twist_and_pointer_navigation_never_select_or_edit() {
     let (adapter, mut view) = proof();
     let before = adapter.session.doc.clone();
     for (id, p) in [(1, [300.0, 300.0]), (2, [500.0, 300.0])] {
@@ -1501,6 +1501,7 @@ fn two_finger_pan_pinch_and_pointer_navigation_never_select_or_edit() {
     assert_ne!(cam.target, view.camera.target);
     assert_ne!(cam.distance, view.camera.distance);
     assert_eq!((cam.yaw, cam.pitch), (view.camera.yaw, view.camera.pitch));
+    assert!((view.camera.roll - cam.roll - 30.0_f64.atan2(250.0)).abs() < 1e-10);
     assert!(view.selection.is_empty());
     for (id, p) in [(1, [300.0, 300.0]), (2, [550.0, 330.0])] {
         view.input(event(InputSource::Finger, InputPhase::Cancelled, id, p, 3.0)).unwrap();
@@ -1516,6 +1517,100 @@ fn two_finger_pan_pinch_and_pointer_navigation_never_select_or_edit() {
     assert_ne!(camera.yaw, view.camera.yaw);
     assert!(view.selection.is_empty());
     assert!(Arc::ptr_eq(&before, &adapter.session.doc));
+}
+
+#[test]
+fn two_finger_twist_direction_wrap_planar_and_saved_legacy_preference() {
+    for enabled in [false, true] {
+        for planar in [false, true] {
+            for (start, end) in [(0.0_f64, 0.4_f64), (0.0, -0.4), (3.1, -3.1), (-3.1, 3.1)] {
+                let (adapter, mut view) = proof();
+                let document = adapter.session.doc.clone();
+                let history = (adapter.session.undo.len(), adapter.session.redo.len());
+                view.planar = planar;
+                assert!(view.diagnostic()["touch_twist"]["enabled"].as_bool().unwrap());
+                view.command("view.touch_twist", &json!({"enabled":enabled})).unwrap();
+                let p = |angle: f64| [400.0 + 150.0 * angle.cos(), 300.0 + 150.0 * angle.sin()];
+                // Deliberately reverse contact-id order: either finger can move.
+                view.input(event(InputSource::Finger, InputPhase::Began, 20, [400.0, 300.0], 1.0)).unwrap();
+                view.input(event(InputSource::Finger, InputPhase::Began, 10, p(start), 1.1)).unwrap();
+                let camera = view.camera;
+                view.input(event(InputSource::Finger, InputPhase::Moved, 10, p(end), 2.0)).unwrap();
+                let difference = end - start;
+                let expected = if enabled { difference.sin().atan2(difference.cos()) } else { 0.0 };
+                assert!((view.camera.roll - camera.roll - expected).abs() < 1e-10);
+                assert_eq!((view.camera.yaw, view.camera.pitch), (camera.yaw, camera.pitch));
+                assert!(view.selection.is_empty());
+                assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+                assert_eq!(history, (adapter.session.undo.len(), adapter.session.redo.len()));
+                let camera = view.camera;
+                for (id, p) in [(20, [400.0, 300.0]), (10, p(end))] {
+                    view.input(event(InputSource::Finger, InputPhase::Ended, id, p, 3.0)).unwrap();
+                    assert_eq!(view.camera, camera, "lifting a contact must not rotate the camera");
+                }
+                assert_eq!(view.diagnostic()["input"]["contacts"], 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn two_finger_twist_preserves_anchor_and_rejects_hostile_navigation() {
+    let (_, mut view) = proof();
+    let screen = [300.0, 220.0];
+    let (x, y, _) = view.camera.basis();
+    let pivot = view.plane_point(screen, solidcraft_engine::geom::Plane { origin: view.camera.target, x, y }).unwrap();
+    let camera = view.camera;
+    view.command("view.navigate", &json!({"motion":"roll","angle":0.7,"anchor_points":screen})).unwrap();
+    let after = point(&view, pivot);
+    assert!((after[0] - screen[0]).hypot(after[1] - screen[1]) < 1e-6);
+    assert_eq!((view.camera.yaw, view.camera.pitch, view.camera.distance), (camera.yaw, camera.pitch, camera.distance));
+    let camera = view.camera;
+    for invalid in [json!({}), json!({"enabled":null}), json!({"enabled":1}), json!({"enabled":"true"})] {
+        assert!(view.command("view.touch_twist", &invalid).is_err());
+        assert!(view.two_finger_twist);
+        assert_eq!(view.camera, camera);
+    }
+    for invalid in [
+        json!({"motion":"roll"}),
+        json!({"motion":"roll","angle":null}),
+        json!({"motion":"roll","angle":"1"}),
+        json!({"motion":"roll","angle":4}),
+        json!({"motion":"roll","angle":1e300}),
+        json!({"motion":"roll","angle":0.1,"anchor_points":[1]}),
+        json!({"motion":"roll","angle":0.1,"anchor_points":[0,1e300]}),
+    ] {
+        assert!(view.command("view.navigate", &invalid).is_err());
+        assert_eq!(view.camera, camera);
+    }
+}
+
+#[test]
+fn two_finger_twist_intent_count_transitions_and_close_contacts_do_not_jump() {
+    let (_, mut view) = proof();
+    let camera = view.camera;
+    for (phase, id, point, time) in [
+        (InputPhase::Began, 1, [300.0, 300.0], 1.0),
+        (InputPhase::Began, 2, [500.0, 300.0], 1.1),
+        (InputPhase::Moved, 2, [500.0, 305.0], 1.2), // Below intent threshold.
+        (InputPhase::Began, 3, [400.0, 400.0], 1.3),
+        (InputPhase::Moved, 2, [480.0, 340.0], 1.4), // Three fingers suppress navigation.
+        (InputPhase::Cancelled, 3, [400.0, 400.0], 1.5),
+        (InputPhase::Moved, 2, [480.0, 340.0], 1.6), // Rebased, stationary.
+    ] {
+        view.input(event(InputSource::Finger, phase, id, point, time)).unwrap();
+        assert_eq!(view.camera, camera);
+    }
+    view.input(event(InputSource::Finger, InputPhase::Moved, 2, [460.0, 370.0], 2.0)).unwrap();
+    assert_ne!(view.camera.roll, camera.roll);
+    view.command("input.cancel", &json!({})).unwrap();
+    let camera = view.camera;
+    for (phase, id, p, time) in
+        [(InputPhase::Began, 1, [300.0, 300.0], 3.0), (InputPhase::Began, 2, [310.0, 300.0], 3.1), (InputPhase::Moved, 2, [300.0, 310.0], 3.2)]
+    {
+        view.input(event(InputSource::Finger, phase, id, p, time)).unwrap();
+        assert_eq!(view.camera, camera);
+    }
 }
 
 #[test]

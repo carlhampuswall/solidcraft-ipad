@@ -1901,8 +1901,11 @@ final class ModellingInspector: UIStackView {
 /// This popover contains no text input and dispatches existing viewport commands.
 private final class ViewOptionButton: UIButton {
     private let label: String
-    init(_ title: String, id: String, action: @escaping () -> Void) {
-        label = title
+    private let iconID: String
+    private let disclosure: Bool
+    private let indicator = UIImageView()
+    init(_ title: String, id: String, icon: String, disclosure: Bool = false, action: @escaping () -> Void) {
+        label = title; iconID = icon; self.disclosure = disclosure
         super.init(frame: .zero)
         accessibilityIdentifier = "workspace-view-" + id
         accessibilityLabel = title
@@ -1911,6 +1914,19 @@ private final class ViewOptionButton: UIButton {
         heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         addAction(UIAction { _ in action() }, for: .primaryActionTriggered)
         isPointerInteractionEnabled = true
+        indicator.translatesAutoresizingMaskIntoConstraints = false
+        indicator.contentMode = .scaleAspectFit
+        indicator.isAccessibilityElement = false; indicator.isUserInteractionEnabled = false
+        addSubview(indicator)
+        NSLayoutConstraint.activate([
+            indicator.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            indicator.centerYAnchor.constraint(equalTo: centerYAnchor),
+            indicator.widthAnchor.constraint(equalToConstant: 16),
+            indicator.heightAnchor.constraint(equalToConstant: 16)
+        ])
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (button: ViewOptionButton, _: UITraitCollection) in
+            button.render(selected: button.isSelected, enabled: button.isEnabled)
+        }
         render(selected: false, enabled: true)
     }
     required init?(coder: NSCoder) { nil }
@@ -1919,7 +1935,7 @@ private final class ViewOptionButton: UIButton {
         var style = UIButton.Configuration.plain()
         style.title = label
         style.titleAlignment = .leading
-        style.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+        style.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 34)
         style.baseForegroundColor = WorkspaceStyle.foreground
         style.background.backgroundColor = selected ? WorkspaceStyle.accent.withAlphaComponent(0.16) : WorkspaceStyle.fieldBackground
         style.background.cornerRadius = 8
@@ -1928,10 +1944,13 @@ private final class ViewOptionButton: UIButton {
         style.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { original in
             var attributes = original; attributes.font = UIFont.preferredFont(forTextStyle: .body); return attributes
         }
-        style.image = selected ? UIImage(systemName: "checkmark") : nil
-        style.imagePlacement = .trailing; style.imagePadding = 8
-        style.imageColorTransformer = UIConfigurationColorTransformer { _ in WorkspaceStyle.accent }
+        style.image = WorkspaceIcon.image(iconID, traits: traitCollection, size: 24)
+        style.imagePlacement = .leading; style.imagePadding = 8
         configuration = style
+        indicator.image = disclosure ? WorkspaceIcon.image("chevron_right", traits: traitCollection, size: 16) : UIImage(systemName: "checkmark")
+        indicator.tintColor = WorkspaceStyle.accent
+        indicator.isHidden = !disclosure && !selected
+        indicator.alpha = enabled ? 1 : 0.5
         contentHorizontalAlignment = .fill
         if selected { accessibilityTraits.insert(.selected) } else { accessibilityTraits.remove(.selected) }
     }
@@ -1942,9 +1961,11 @@ private final class ViewSwitchRow: UIButton {
     private let title = WorkspaceStyle.label(.body)
     private let subtitle = WorkspaceStyle.label(.caption1, secondary: true)
     private let mixedMark = WorkspaceStyle.label(.caption1)
+    private let icon = UIImageView()
+    private let iconID: String
     private let detail: String?
-    init(_ label: String, subtitle detail: String? = nil, id: String, action: @escaping () -> Void) {
-        self.detail = detail
+    init(_ label: String, subtitle detail: String? = nil, id: String, icon iconID: String, action: @escaping () -> Void) {
+        self.detail = detail; self.iconID = iconID
         super.init(frame: .zero)
         isAccessibilityElement = false
         isPointerInteractionEnabled = true
@@ -1960,11 +1981,18 @@ private final class ViewSwitchRow: UIButton {
         toggle.addAction(UIAction { _ in action() }, for: .valueChanged)
         mixedMark.text = "−"; mixedMark.textColor = WorkspaceStyle.selectedForeground; mixedMark.isAccessibilityElement = false
         mixedMark.textAlignment = .center; mixedMark.isUserInteractionEnabled = false
-        [labels, toggle, mixedMark].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
-        addSubview(labels); addSubview(toggle); toggle.addSubview(mixedMark)
+        icon.contentMode = .scaleAspectFit
+        icon.accessibilityIdentifier = "workspace-view-icon-" + id
+        icon.isAccessibilityElement = false; icon.isUserInteractionEnabled = false
+        [icon, labels, toggle, mixedMark].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
+        addSubview(icon); addSubview(labels); addSubview(toggle); toggle.addSubview(mixedMark)
         NSLayoutConstraint.activate([
             heightAnchor.constraint(greaterThanOrEqualToConstant: 48),
-            labels.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 24),
+            icon.heightAnchor.constraint(equalToConstant: 24),
+            labels.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
             labels.topAnchor.constraint(equalTo: topAnchor, constant: 9),
             labels.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
             labels.trailingAnchor.constraint(lessThanOrEqualTo: toggle.leadingAnchor, constant: -12),
@@ -1976,14 +2004,19 @@ private final class ViewSwitchRow: UIButton {
         ])
         toggle.setContentHuggingPriority(.required, for: .horizontal)
         toggle.setContentCompressionResistancePriority(.required, for: .horizontal)
-        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (row: ViewSwitchRow, _: UITraitCollection) in
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (row: ViewSwitchRow, _: UITraitCollection) in
             row.layer.borderColor = WorkspaceStyle.separator.cgColor
+            row.refreshIcon()
         }
         render(on: false, enabled: false)
     }
     required init?(coder: NSCoder) { nil }
+    private func refreshIcon() {
+        icon.image = WorkspaceIcon.image(iconID, traits: traitCollection, size: 24)
+    }
     func render(on: Bool, mixed: Bool = false, enabled: Bool) {
         isEnabled = enabled
+        refreshIcon(); icon.alpha = enabled ? 1 : 0.5
         toggle.setOn(on || mixed, animated: false)
         toggle.isEnabled = enabled
         toggle.onTintColor = mixed ? .systemGray : WorkspaceStyle.accent
@@ -2014,16 +2047,16 @@ final class WorkspaceViewPopover: UIViewController {
     private let heading = WorkspaceStyle.label(.title2)
     private let separator = UIView()
     private var viewButtons: [String: ViewOptionButton] = [:]
-    private lazy var fit = ViewOptionButton(WorkspaceStyle.text("fit"), id: "fit") { [weak self] in self?.onCommand?("view.fit") }
-    private lazy var exitPlanar = ViewOptionButton(NativeText.value("ui.ipados.exit_planar"), id: "exit-planar") { [weak self] in self?.onCommand?("view.exit_planar") }
-    private lazy var perspective = ViewSwitchRow(NativeText.value("ui.ipados.perspective"), id: "perspective") { [weak self] in self?.onPerspective?() }
-    private lazy var grid = ViewSwitchRow(ViewText.text("grid"), id: "grid") { [weak self] in self?.onGrid?() }
-    private lazy var integratedAxes = ViewSwitchRow(ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), id: "integrated-axes") { [weak self] in self?.onIntegratedAxes?() }
-    private lazy var origin = ViewSwitchRow(SketchText.text("origin_references"), subtitle: ViewText.text("origin_subtitle"), id: "origin") { [weak self] in self?.onOrigin?() }
-    private lazy var individualButton = ViewOptionButton(ViewText.text("individual_references"), id: "individual-references") { [weak self] in self?.showIndividuals(true) }
-    private lazy var automatic = ViewOptionButton(SketchText.text("automatic_origin"), id: "automatic") { [weak self] in self?.onReference?(nil, nil, nil) }
-    private lazy var originInModel = ViewSwitchRow(WorkspaceStyle.text("origin_in_model"), id: "origin-in-model") { [weak self] in self?.onOriginInModel?() }
-    private lazy var legacyPlanes = ViewSwitchRow(ViewText.text("legacy_planes"), subtitle: ViewText.text("legacy_planes_help"), id: "legacy-planes") { [weak self] in self?.onLegacyPlanes?() }
+    private lazy var fit = ViewOptionButton(WorkspaceStyle.text("fit"), id: "fit", icon: "fit") { [weak self] in self?.onCommand?("view.fit") }
+    private lazy var exitPlanar = ViewOptionButton(NativeText.value("ui.ipados.exit_planar"), id: "exit-planar", icon: "finish") { [weak self] in self?.onCommand?("view.exit_planar") }
+    private lazy var perspective = ViewSwitchRow(NativeText.value("ui.ipados.perspective"), id: "perspective", icon: "perspective") { [weak self] in self?.onPerspective?() }
+    private lazy var grid = ViewSwitchRow(ViewText.text("grid"), id: "grid", icon: "grid") { [weak self] in self?.onGrid?() }
+    private lazy var integratedAxes = ViewSwitchRow(ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), id: "integrated-axes", icon: "axis") { [weak self] in self?.onIntegratedAxes?() }
+    private lazy var origin = ViewSwitchRow(SketchText.text("origin_references"), subtitle: ViewText.text("origin_subtitle"), id: "origin", icon: "origin") { [weak self] in self?.onOrigin?() }
+    private lazy var individualButton = ViewOptionButton(ViewText.text("individual_references"), id: "individual-references", icon: "origin", disclosure: true) { [weak self] in self?.showIndividuals(true) }
+    private lazy var automatic = ViewOptionButton(SketchText.text("automatic_origin"), id: "automatic", icon: "origin") { [weak self] in self?.onReference?(nil, nil, nil) }
+    private lazy var originInModel = ViewSwitchRow(WorkspaceStyle.text("origin_in_model"), id: "origin-in-model", icon: "origin") { [weak self] in self?.onOriginInModel?() }
+    private lazy var legacyPlanes = ViewSwitchRow(ViewText.text("legacy_planes"), subtitle: ViewText.text("legacy_planes_help"), id: "legacy-planes", icon: "plane") { [weak self] in self?.onLegacyPlanes?() }
     private var references: [String: ViewSwitchRow] = [:]
     private var groups: [String: ViewSwitchRow] = [:]
     private var allActions: [ViewOptionButton] = []
@@ -2062,7 +2095,7 @@ final class WorkspaceViewPopover: UIViewController {
         for names in [["front", "back"], ["left", "right"], ["top", "bottom"], ["isometric"]] {
             let row = UIStackView(); row.axis = .horizontal; row.spacing = 8; row.distribution = .fillEqually
             for name in names {
-                let button = ViewOptionButton(NativeText.value("ui.ipados." + name), id: name) { [weak self] in self?.onCommand?("view." + name) }
+                let button = ViewOptionButton(NativeText.value("ui.ipados." + name), id: name, icon: "camera") { [weak self] in self?.onCommand?("view." + name) }
                 viewButtons[name] = button; row.addArrangedSubview(button)
             }
             views.addArrangedSubview(row)
@@ -2073,21 +2106,20 @@ final class WorkspaceViewPopover: UIViewController {
         separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
         main.addArrangedSubview(separator); main.setCustomSpacing(12, after: separator)
         [perspective, grid, integratedAxes, origin, individualButton].forEach(main.addArrangedSubview)
-        let back = ViewOptionButton(WorkspaceStyle.text("view"), id: "back") { [weak self] in self?.showIndividuals(false) }
-        back.configuration?.image = WorkspaceIcon.image("chevron_right", traits: traitCollection, size: 18)
-        back.configuration?.imagePlacement = .leading; back.imageView?.transform = CGAffineTransform(rotationAngle: .pi)
+        let back = ViewOptionButton(WorkspaceStyle.text("view"), id: "back", icon: "chevron_right") { [weak self] in self?.showIndividuals(false) }
+        back.imageView?.transform = CGAffineTransform(rotationAngle: .pi)
         individuals.addArrangedSubview(back)
         let individualTitle = WorkspaceStyle.label(.headline); individualTitle.text = ViewText.text("individual_references")
         individualTitle.accessibilityTraits.insert(.header); individuals.addArrangedSubview(individualTitle)
         func reference(_ item: String) {
-            let row = ViewSwitchRow(item == "O" ? SketchText.text("origin_point") : item, id: "reference-" + item) { [weak self] in
+            let row = ViewSwitchRow(item == "O" ? SketchText.text("origin_point") : item, id: "reference-" + item, icon: item == "O" ? "point" : (item.count == 2 ? "plane" : "axis")) { [weak self] in
                 guard let self else { return }; self.onReference?(item, nil, !(self.current?.originVisible(item) ?? false))
             }
             references[item] = row; individuals.addArrangedSubview(row)
         }
         reference("O")
         for (group, items) in [("axes", ["X", "Y", "Z"]), ("planes", ["XY", "XZ", "YZ"])] {
-            let row = ViewSwitchRow(WorkspaceStyle.text("all_" + group), id: "group-" + group) { [weak self] in
+            let row = ViewSwitchRow(WorkspaceStyle.text("all_" + group), id: "group-" + group, icon: group == "axes" ? "axis" : "plane") { [weak self] in
                 guard let self else { return }
                 self.onReference?(nil, group, !items.allSatisfy { self.current?.originVisible($0) == true })
             }
@@ -2096,7 +2128,7 @@ final class WorkspaceViewPopover: UIViewController {
         }
         let allRow = UIStackView(); allRow.spacing = 8; allRow.distribution = .fillEqually
         for visible in [true, false] {
-            let button = ViewOptionButton(SketchText.text(visible ? "show_origin" : "hide_origin"), id: visible ? "show-all" : "hide-all") { [weak self] in self?.onReference?(nil, nil, visible) }
+            let button = ViewOptionButton(SketchText.text(visible ? "show_origin" : "hide_origin"), id: visible ? "show-all" : "hide-all", icon: "eye") { [weak self] in self?.onReference?(nil, nil, visible) }
             allActions.append(button); allRow.addArrangedSubview(button)
         }
         individuals.addArrangedSubview(legacyPlanes)
@@ -2142,8 +2174,6 @@ final class WorkspaceViewPopover: UIViewController {
         integratedAxes.render(on: state?.grid.integrated_axes == true, enabled: referencesEnabled)
         origin.render(on: state?.visibility == .all, mixed: state?.visibility == .some, enabled: referencesEnabled)
         individualButton.isEnabled = true
-        individualButton.configuration?.image = WorkspaceIcon.image("chevron_right", traits: traitCollection, size: 18)
-        individualButton.configuration?.imagePlacement = .trailing
         for (name, row) in references { row.render(on: state?.originVisible(name) == true, enabled: referencesEnabled) }
         for (name, row) in groups {
             let items = name == "axes" ? ["X", "Y", "Z"] : ["XY", "XZ", "YZ"]

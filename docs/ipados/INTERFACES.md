@@ -80,6 +80,17 @@ axes, along with the XY/XZ/YZ labels.
 UIKit persists this under `SolidCraft.workspace.legacyOriginPlanes` and reapplies
 it on startup. The toggle changes guides only, without document/history changes.
 
+`view.touch_twist` is a native viewport preference with input
+`{"enabled": bool}` and the normal viewport diagnostic reply, including
+`touch_twist.enabled`. It defaults to true; false restores pan/pinch-only input.
+It cancels active contacts without editing the document. `view.navigate` in the
+native adapter also accepts `{"motion":"roll","angle": radians,
+"anchor_points":[x,y]}`: a finite signed angle in ±π and optional finite
+canvas-point coordinates bounded to ±1,000,000. The reply is the normal viewport
+diagnostic. Rotation uses the shared camera's `roll_by`; `frame_coords` and
+`place` keep the anchor fixed. This is a display-only native protocol extension,
+with no new engine command, document field, or ABI symbol.
+
 `view.touch_orbit` is a viewport presentation preference. Input is
 `{"follows_viewpoint": boolean}`; the viewport diagnostic reply includes the same
 `touch_orbit` object. The default is `true`: finger deltas retain their direction
