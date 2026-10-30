@@ -718,6 +718,12 @@ Metal view frame. All actions use the existing viewport command routes, includin
 the conditionally applicable planar-exit action. No text input or native
 UIButton context menu is used by this panel.
 
+The View pages use the existing canonical SolidCraft artwork beside their labels:
+Fit, Perspective, Grid, Origin, Axis, Plane and Point. Standard views retain the
+engine registry's shared Camera icon. Leading artwork remains visible alongside
+the trailing selected-view checkmark or disclosure chevron, including after
+appearance changes. Switches and mixed visibility retain their existing behavior.
+
 Grid remains independent of Origin references. The latter includes **Axes,
 planes & origin**: all visible hides all seven references; none or a mixed set
 shows all. Mixed visibility shows **Some visible**, a neutral switch track and
