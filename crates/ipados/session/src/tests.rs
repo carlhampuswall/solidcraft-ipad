@@ -2838,8 +2838,8 @@ fn origin_plane_display_is_compact_neutral_spaced_and_restores_original_style() 
                 palette.grid_major
             };
             assert_eq!(frame.guides.meshes[0].color, color);
-            assert_eq!(frame.guides.lines[0].color, color);
-            assert_eq!(&frame.guides.lines[0].points[..4], positions);
+            let outline = frame.guides.lines.iter().find(|line| line.points.len() == 5 && line.points[..4] == positions[..]).unwrap();
+            assert_eq!(outline.color, color);
             let inside = plane.to_world(solidcraft_engine::geom::Vec2::new(10., 10. * y_sign));
             let outside = plane.to_world(solidcraft_engine::geom::Vec2::new(20., 20. * y_sign));
             assert_eq!(view.pick_reference(point(&view, inside)), Some(Sel::Plane { name: name.into() }));
@@ -3081,10 +3081,18 @@ fn origin_references_respect_explicit_topology_filters_and_native_construction_v
     view.command("view.origin", &json!({"visible":false})).unwrap();
     view.command("view.choose_sketch_plane", &json!({})).unwrap();
     let plane = engine.preview_sketch_plane(json!("Tilted")).unwrap();
-    let world = plane.to_world(solidcraft_engine::geom::Vec2::new(7.5, 10.));
+    let world = plane.to_world(solidcraft_engine::geom::Vec2::new(15., 20.));
     let p = point(&view, world);
-    assert_eq!(view.pick(p, Some(engine.geometry_revision)), Some(Sel::Plane { name: "Tilted".into() }));
-    assert_eq!(view.snapshot().unwrap().guides.meshes.len(), 1);
+    for legacy in [false, true, false] {
+        view.command("view.origin_style", &json!({"legacy":legacy})).unwrap();
+        assert_eq!(view.pick(p, Some(engine.geometry_revision)), Some(Sel::Plane { name: "Tilted".into() }));
+        let frame = view.snapshot().unwrap();
+        assert_eq!(frame.guides.meshes.len(), 1);
+        let patch = &frame.guides.meshes[0];
+        assert_eq!(patch.color, solidcraft_engine::view::Palette::DEFAULT.sketch_construction);
+        let far_corner = plane.to_local(patch.mesh.positions[2]);
+        assert!(far_corner.x >= 25.0 && far_corner.y >= 25.0, "construction plane remains full size in either origin style");
+    }
     engine.execute("browser.visibility", json!({"items":["Tilted"],"visible":false})).unwrap();
     view.begin_update(3);
     view.install(3, engine.snapshot().unwrap());

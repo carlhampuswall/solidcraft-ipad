@@ -197,22 +197,26 @@ impl Viewport {
         planes
     }
 
-    fn reference_plane_size(&self) -> f64 {
-        self.reference_size() * if self.origin.legacy_planes { 1.0 } else { 0.5 }
+    fn compact_reference_plane(&self, name: &str) -> bool {
+        !self.origin.legacy_planes && matches!(name, "XY" | "XZ" | "YZ")
     }
 
-    fn reference_plane_offset(&self) -> f64 {
-        if self.origin.legacy_planes { 0.0 } else { self.reference_plane_size() * 0.1 }
+    fn reference_plane_size(&self, name: &str) -> f64 {
+        self.reference_size() * if self.compact_reference_plane(name) { 0.5 } else { 1.0 }
+    }
+
+    fn reference_plane_offset(&self, name: &str) -> f64 {
+        if self.compact_reference_plane(name) { self.reference_plane_size(name) * 0.1 } else { 0.0 }
     }
 
     fn corners(&self, name: &str, plane: Plane) -> [Vec3; 4] {
-        let size = self.reference_plane_size();
+        let size = self.reference_plane_size(name);
         let x = plane.x * size;
         // XZ's native sketch Y points down; origin guides extend toward world +Z.
         let y = plane.y * if name == "XZ" { -size } else { size };
         // Offset only the display patch within its actual plane. Modelling keeps
         // the engine plane and origin, while guides leave a gap beside both axes.
-        let origin = plane.origin + (x + y) * (self.reference_plane_offset() / size);
+        let origin = plane.origin + (x + y) * (self.reference_plane_offset(name) / size);
         [origin, origin + x, origin + x + y, origin + y]
     }
 
@@ -298,8 +302,8 @@ impl Viewport {
                 let hit = plane.intersect_ray(origin, direction)?;
                 let p = plane.to_local(hit);
                 let y = if name == "XZ" { -p.y } else { p.y };
-                let start = self.reference_plane_offset();
-                let end = start + self.reference_plane_size();
+                let start = self.reference_plane_offset(&name);
+                let end = start + self.reference_plane_size(&name);
                 let depth = (hit - origin).dot(direction);
                 ((start..=end).contains(&p.x) && (start..=end).contains(&y) && screen(hit).is_some() && visible(hit))
                     .then_some((depth, Sel::Plane { name }))
@@ -325,7 +329,7 @@ impl Viewport {
         let palette = Palette::DEFAULT;
         for (name, plane) in self.reference_planes() {
             let entity = Sel::Plane { name: name.clone() };
-            let base = if self.origin.legacy_planes {
+            let base = if !self.compact_reference_plane(&name) {
                 match name.as_str() {
                     "XY" => palette.axes[2],
                     "XZ" => palette.axes[1],

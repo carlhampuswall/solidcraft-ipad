@@ -963,6 +963,61 @@ final class NativeSession {
     private var selectionCheckGeneration: UInt64 = 0
     private var selectionCheckFrame: (report: BridgeState.ViewportReport, completion: (Result<[WorkspaceEntity], BridgeError>) -> Void)?
 
+    /// Synthetic finger contacts in the production native bridge. Completion
+    /// waits for the exact resulting frame; this is not physical touch input.
+    func developmentTwist(_ angle: Double, enabled: Bool, completion: @escaping (Result<Double, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        display.async { [weak self, state, lifecycle] in
+            do {
+                func snapshot() throws -> (BridgeState.ViewportReport, [String: Any]) {
+                    let data = try state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)
+                    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                          let result = envelope["result"] as? [String: Any] else {
+                        throw BridgeError(code: "twist_check", message: "Missing snapshot")
+                    }
+                    return (try JSONDecoder().decode(DevelopmentViewport.self, from: data).result, result)
+                }
+                let (before, beforeJSON) = try snapshot()
+                guard let metrics = before.metrics, let roll = before.camera?.roll else {
+                    throw BridgeError(code: "twist_check", message: "Missing camera/metrics")
+                }
+                let x = metrics.width_points / 2, y = metrics.height_points / 2
+                let events: [(InputSample.Phase, UInt64, Double, Double)] = [
+                    (.began, 9200, x - 100, y), (.began, 9201, x + 100, y),
+                    (.moved, 9201, x - 100 + 200 * cos(angle), y + 200 * sin(angle)),
+                    (.ended, 9201, x - 100 + 200 * cos(angle), y + 200 * sin(angle)), (.ended, 9200, x - 100, y)
+                ]
+                for (index, value) in events.enumerated() {
+                    let (stamp, _) = try snapshot()
+                    var sample = InputSample(source: .finger, phase: value.0, id: value.1,
+                        x_points: value.2, y_points: value.3, x_pixels: value.2 * metrics.scale, y_pixels: value.3 * metrics.scale,
+                        scale: metrics.scale, timestamp: ProcessInfo.processInfo.systemUptime + Double(index) * 0.01,
+                        pressure: nil, altitude: nil, geometry_revision: stamp.geometry_revision, consumed: false, shift: false, button: 0, scroll: 0)
+                    sample.viewport_epoch = stamp.viewport_epoch; sample.camera_epoch = stamp.camera_epoch; sample.document_id = stamp.document_id
+                    sample.display_preview = stamp.preview ?? false
+                    _ = try state.request(Data("{\"kind\":\"input\",\"event\":".utf8) + JSONEncoder().encode(sample) + Data("}".utf8), lane: .viewport)
+                }
+                let (after, afterJSON) = try snapshot()
+                let delta = (after.camera?.roll ?? .nan) - roll
+                let input = afterJSON["input"] as? [String: Any]
+                guard abs(delta - (enabled ? angle : 0)) < 0.000001,
+                      before.document_id == after.document_id, before.geometry_revision == after.geometry_revision,
+                      before.selection == after.selection, input?["contacts"] as? Int == 0,
+                      (beforeJSON["volume_mm3"] as? Double) == (afterJSON["volume_mm3"] as? Double) else {
+                    throw BridgeError(code: "twist_check", message: "Angle, document, selection or contact cleanup failed: \(delta)")
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive, lifecycle.accepts(ticket) else { return }
+                    self.selectionCheckFrame = (after, { result in completion(result.map { _ in delta }) })
+                    self.redraw()
+                }
+            } catch {
+                let error = BridgeState.error(error)
+                DispatchQueue.main.async { completion(.failure(error)) }
+            }
+        }
+    }
+
     /// Synthetic actual samples through the production mailbox, followed by a
     /// matching presented frame. This never claims physical Pencil delivery.
     func developmentSelectionTap(_ world: [Double]?, completion: @escaping (Result<[WorkspaceEntity], BridgeError>) -> Void) {

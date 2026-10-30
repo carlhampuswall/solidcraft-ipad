@@ -507,6 +507,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkBrowserOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-check") {
                     self.developmentCheckStarted = true; self.checkHistoryOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--deferred-changes-check") {
+                    self.developmentCheckStarted = true; self.checkDeferredChangesOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grid-axes-check") {
                     self.developmentCheckStarted = true; self.checkGridAxesOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--view-controls-check") {
@@ -3966,6 +3968,151 @@ private extension FoundationController {
                 capture("opened")
                 self.session.command("view.grid", params: ["visible": self.gridVisible, "integrated_axes": false]) { _ in
                     step(0)
+                }
+            }
+        }
+    }
+
+    /// Opt-in acceptance for the three deferred changes, on a disposable fixture.
+    private func checkDeferredChangesOnDevice() {
+        let expected = generation, started = Date().timeIntervalSince1970
+        let savedStyle = overrideUserInterfaceStyle, savedLegacy = legacyOriginPlanes
+        let savedOrigin = originVisibility
+        let keys = ["SolidCraft.workspace.legacyOriginPlanes", "SolidCraft.workspace.originVisibility"]
+        let defaults = UserDefaults.standard, savedDefaults = keys.map { UserDefaults.standard.object(forKey: $0) }
+        let candidate = Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"
+        guard let directory = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else { return }
+        var stages: [[String: Any]] = [], issues: [String] = [], finished = false
+        func require(_ value: Bool, _ message: String) { if !value { issues.append(message) } }
+        func descendants(_ parent: UIView) -> [UIView] { [parent] + parent.subviews.flatMap(descendants) }
+        func control(_ id: String) -> UIControl? {
+            guard let root = viewControlsPopover?.view else { return nil }
+            return descendants(root).first { $0.accessibilityIdentifier == "workspace-view-" + id } as? UIControl
+        }
+        func report(_ status: String) {
+            let value: [String: Any] = ["candidate": candidate, "started_at": started,
+                "completed_at": status == "running" ? 0 : Date().timeIntervalSince1970,
+                "status": status, "passed": status == "passed", "issues": issues, "stages": stages,
+                "library_project_untouched": session.currentProject == nil,
+                "coverage": "Physical iPad runtime, production UIKit controls, synthetic finger bridge events, matching presented Metal frames; physical finger/Pencil unverified"]
+            do { try JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("deferred-changes-check.json"), options: .atomic) }
+            catch { NSLog("Deferred changes report error: %@", String(describing: error)) }
+        }
+        func finish(_ error: String? = nil) {
+            guard !finished else { return }; finished = true
+            if let error { issues.append(error) }
+            gridAxesCheckAfterFrame = nil; session.endDevelopmentSelectionTapsCheck()
+            viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
+            overrideUserInterfaceStyle = savedStyle; legacyOriginPlanes = savedLegacy; originVisibility = savedOrigin
+            for (key, value) in zip(keys, savedDefaults) { defaults.set(value, forKey: key) }
+            session.command("view.origin_style", params: ["legacy": savedLegacy])
+            session.command("view.touch_twist", params: ["enabled": twoFingerTwist])
+            session.command("view.origin", params: ["visible": NSNull()])
+            for (item, visible) in savedOrigin { session.command("view.origin", params: ["item": item, "visible": visible]) }
+            report(issues.isEmpty ? "passed" : "failed")
+            NSLog("Deferred changes check %@", issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; "))
+        }
+        func capture(_ name: String, details: [String: Any] = [:]) {
+            view.layoutIfNeeded()
+            let surface: UIView = view.window ?? view
+            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+            do {
+                guard let png = image.pngData() else { throw BridgeError(code: "deferred_check", message: "PNG encoding failed") }
+                let filename = "deferred-" + name + ".png"
+                try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
+                var stage = details; stage["name"] = name; stage["screenshot"] = filename; stages.append(stage); report("running")
+            } catch { issues.append(String(describing: error)) }
+        }
+        func commands(_ values: [(String, [String: Any])], _ done: @escaping () -> Void) {
+            guard !finished else { return }
+            guard let first = values.first else { done(); return }
+            session.command(first.0, params: first.1) { result in
+                switch result { case .success: commands(Array(values.dropFirst()), done); case .failure(let error): finish(error.description) }
+            }
+        }
+        func frame(_ name: String, _ done: @escaping () -> Void) {
+            commands([("view.grid", ["visible": true])]) {
+                self.gridAxesCheckAfterFrame = { DispatchQueue.main.async { if !finished { capture(name); done() } } }
+            }
+        }
+        func wait(_ ready: @escaping () -> Bool, remaining: Int = 100, _ done: @escaping () -> Void) {
+            guard !finished else { return }
+            guard active, generation == expected else { finish("Workspace lifecycle changed"); return }
+            if ready() { done(); return }
+            guard remaining > 0 else { finish("Native state timed out"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(ready, remaining: remaining - 1, done) }
+        }
+        func inspectIcons() {
+            guard let root = viewControlsPopover?.view else { issues.append("View popup missing"); return }
+            let nodes = descendants(root)
+            let buttons = nodes.compactMap { $0 as? UIButton }.filter { $0.accessibilityIdentifier?.hasPrefix("workspace-view-") == true && $0.configuration != nil }
+            require(buttons.count >= 13 && buttons.allSatisfy { $0.configuration?.image != nil }, "View option icon missing")
+            let icons = nodes.compactMap { $0 as? UIImageView }.filter { $0.accessibilityIdentifier?.hasPrefix("workspace-view-icon-") == true }
+            require(icons.count >= 15 && icons.allSatisfy { $0.image != nil }, "View reference/switch icon missing")
+            require(self.keyboardTop == nil, "View popup opened the keyboard")
+        }
+        func twists(_ index: Int) {
+            let cases: [(Bool, Double, String)] = [(false, 0.4, "twist-disabled"), (true, 0.4, "twist-clockwise"), (true, -0.4, "twist-counterclockwise")]
+            guard index < cases.count else { finish(); return }
+            let (enabled, angle, name) = cases[index]
+            commands([("view.top", [:]), ("view.touch_twist", ["enabled": enabled])]) {
+                self.session.developmentTwist(angle, enabled: enabled) { result in
+                    switch result {
+                    case .success(let delta):
+                        capture(name, details: ["enabled": enabled, "expected_radians": enabled ? angle : 0, "actual_radians": delta])
+                        twists(index + 1)
+                    case .failure(let error): finish(error.description)
+                    }
+                }
+            }
+        }
+        func planes() {
+            viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
+            frame("planes-neutral-light") {
+                self.showViewControls()
+                wait({ self.viewControlsPopover?.view.window != nil }) {
+                    control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                    control("legacy-planes")?.sendActions(for: .valueChanged)
+                    wait({ !self.viewControlPending && self.legacyOriginPlanes }) {
+                        require(defaults.bool(forKey: keys[0]), "Legacy plane preference did not persist")
+                        self.viewControlsPopover?.dismiss(animated: false); self.viewControlsPopover = nil
+                        frame("planes-legacy-light") {
+                            self.showViewControls()
+                            wait({ self.viewControlsPopover?.view.window != nil }) {
+                                control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                                control("legacy-planes")?.sendActions(for: .valueChanged)
+                                wait({ !self.viewControlPending && !self.legacyOriginPlanes }) {
+                                    require(!defaults.bool(forKey: keys[0]), "Neutral plane preference did not persist")
+                                    self.viewControlsPopover?.dismiss(animated: false); self.viewControlsPopover = nil
+                                    self.overrideUserInterfaceStyle = .dark
+                                    frame("planes-neutral-dark") { twists(0) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        report("running")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 60) { if !finished { finish("Diagnostic timed out") } }
+        wait({ self.state != nil && self.viewPresentation != nil && self.pending.isEmpty }) {
+            require(self.session.currentProject == nil, "Diagnostic loaded a library project")
+            self.overrideUserInterfaceStyle = .light; self.legacyOriginPlanes = false
+            self.browserOpen = false; self.inspectorOpen = false; self.relayoutPanels()
+            commands([("view.isometric", [:]), ("view.fit", [:]), ("view.origin_style", ["legacy": false]),
+                      ("view.origin", ["group": "planes", "visible": true])]) {
+                self.showViewControls()
+                wait({ self.viewControlsPopover?.view.window != nil }) {
+                    frame("menu-light") {
+                        inspectIcons()
+                        control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                        self.overrideUserInterfaceStyle = .dark
+                        frame("references-dark") {
+                            inspectIcons()
+                            self.overrideUserInterfaceStyle = .light; planes()
+                        }
+                    }
                 }
             }
         }
