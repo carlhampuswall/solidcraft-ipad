@@ -2001,6 +2001,7 @@ final class WorkspaceViewPopover: UIViewController {
     var onCommand: ((String) -> Void)?
     var onPerspective: (() -> Void)?
     var onGrid: (() -> Void)?
+    var onIntegratedAxes: (() -> Void)?
     var onOrigin: (() -> Void)?
     var onReference: ((String?, String?, Bool?) -> Void)?
     var onOriginInModel: (() -> Void)?
@@ -2016,6 +2017,7 @@ final class WorkspaceViewPopover: UIViewController {
     private lazy var exitPlanar = ViewOptionButton(NativeText.value("ui.ipados.exit_planar"), id: "exit-planar") { [weak self] in self?.onCommand?("view.exit_planar") }
     private lazy var perspective = ViewSwitchRow(NativeText.value("ui.ipados.perspective"), id: "perspective") { [weak self] in self?.onPerspective?() }
     private lazy var grid = ViewSwitchRow(ViewText.text("grid"), id: "grid") { [weak self] in self?.onGrid?() }
+    private lazy var integratedAxes = ViewSwitchRow(ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), id: "integrated-axes") { [weak self] in self?.onIntegratedAxes?() }
     private lazy var origin = ViewSwitchRow(SketchText.text("origin_references"), subtitle: ViewText.text("origin_subtitle"), id: "origin") { [weak self] in self?.onOrigin?() }
     private lazy var individualButton = ViewOptionButton(ViewText.text("individual_references"), id: "individual-references") { [weak self] in self?.showIndividuals(true) }
     private lazy var automatic = ViewOptionButton(SketchText.text("automatic_origin"), id: "automatic") { [weak self] in self?.onReference?(nil, nil, nil) }
@@ -2068,7 +2070,7 @@ final class WorkspaceViewPopover: UIViewController {
         separator.backgroundColor = WorkspaceStyle.separator
         separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
         main.addArrangedSubview(separator); main.setCustomSpacing(12, after: separator)
-        [perspective, grid, origin, individualButton].forEach(main.addArrangedSubview)
+        [perspective, grid, integratedAxes, origin, individualButton].forEach(main.addArrangedSubview)
         let back = ViewOptionButton(WorkspaceStyle.text("view"), id: "back") { [weak self] in self?.showIndividuals(false) }
         back.configuration?.image = WorkspaceIcon.image("chevron_right", traits: traitCollection, size: 18)
         back.configuration?.imagePlacement = .leading; back.imageView?.transform = CGAffineTransform(rotationAngle: .pi)
@@ -2124,7 +2126,7 @@ final class WorkspaceViewPopover: UIViewController {
         if !inSketch && state?.planar == true { arranged.append(exitPlanar) }
         arranged.append(separator)
         if !inSketch { arranged.append(perspective) }
-        arranged += [grid, origin, individualButton]
+        arranged += [grid, integratedAxes, origin, individualButton]
         if main.arrangedSubviews.count != arranged.count || !zip(main.arrangedSubviews, arranged).allSatisfy({ $0 === $1 }) {
             for child in main.arrangedSubviews { main.removeArrangedSubview(child); child.removeFromSuperview() }
             arranged.forEach(main.addArrangedSubview)
@@ -2134,6 +2136,7 @@ final class WorkspaceViewPopover: UIViewController {
         for (name, button) in viewButtons { button.render(selected: state?.camera.standardView == name, enabled: cameraEnabled && state?.planar != true) }
         perspective.render(on: (state?.camera.fov ?? 0) > 0, enabled: cameraEnabled)
         grid.render(on: state?.grid.visible == true, enabled: referencesEnabled)
+        integratedAxes.render(on: state?.grid.integrated_axes == true, enabled: referencesEnabled)
         origin.render(on: state?.visibility == .all, mixed: state?.visibility == .some, enabled: referencesEnabled)
         individualButton.isEnabled = true
         individualButton.configuration?.image = WorkspaceIcon.image("chevron_right", traits: traitCollection, size: 18)

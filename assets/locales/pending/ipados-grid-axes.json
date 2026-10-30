@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.view.integrated_axes": "Axes in grid",
+    "ui.ipados.view.integrated_axes_help": "Show grid-plane axes automatically. Turn off for separate origin axes."
+  },
+  "de": {
+    "ui.ipados.view.integrated_axes": "Achsen im Raster",
+    "ui.ipados.view.integrated_axes_help": "Achsen der Rasterebene automatisch anzeigen. Für separate Ursprungsachsen ausschalten."
+  },
+  "ja": {
+    "ui.ipados.view.integrated_axes": "グリッド内の軸",
+    "ui.ipados.view.integrated_axes_help": "グリッド平面の軸を自動表示します。原点の軸を個別表示するにはオフにします。"
+  },
+  "ko": {
+    "ui.ipados.view.integrated_axes": "그리드의 축",
+    "ui.ipados.view.integrated_axes_help": "그리드 평면의 축을 자동으로 표시합니다. 원점 축을 따로 표시하려면 끄세요."
+  },
+  "zh": {
+    "ui.ipados.view.integrated_axes": "网格中的坐标轴",
+    "ui.ipados.view.integrated_axes_help": "自动显示网格平面上的坐标轴。关闭后可单独显示原点坐标轴。"
+  }
+}

@@ -101,6 +101,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--origin") {
         return origin_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--grid-axes") {
+        return grid_axes_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--input") {
         return input_proof(&destination);
     }
@@ -637,6 +640,81 @@ fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
         println!("{label}: object centre drift {drift:.6} points");
         capture(&view, label)?;
     }
+    Ok(())
+}
+
+/// Real native grid/origin state through the production guide converter and Mac
+/// GPU. Empty geometry leaves the full positive and negative grid axes visible.
+fn grid_axes_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str, expected: [bool; 3]| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let diagnostic = view.diagnostic();
+        if diagnostic["origin"]["visible"] != json!([false, expected[0], expected[1], expected[2], false, false, false]) {
+            return Err(format!("{stage}: unexpected effective origin visibility: {}", diagnostic["origin"]["visible"]).into());
+        }
+        let frame = view.snapshot().ok_or("missing grid-axis scene")?;
+        let line = |l: &SceneLine| SceneLine { points: l.points.clone(), color: l.color, alpha: l.alpha, width: l.width, on_top: l.on_top };
+        let mesh = |m: &SceneMesh| SceneMesh { mesh: m.mesh.clone(), color: m.color, face_colors: m.face_colors.clone(), opacity: m.opacity };
+        let scene = Scene {
+            background: frame.background,
+            radius: frame.camera.distance * 2.,
+            meshes: frame.model.scene.meshes.iter().map(mesh).collect(),
+            lines: frame.model.scene.lines.iter().map(line).collect(),
+            grid: frame.guides.grid.iter().map(line).collect(),
+            ..Scene::default()
+        };
+        let rgba =
+            capturer.rgba_highlighted(&scene, Some(solidcraft_ipados_bridge::renderer::guide_geometry(&frame.guides)), &frame.camera, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba.clone()).ok_or("grid-axis PNG encoding")?)?;
+        println!("{stage}: {path}");
+        Ok(rgba)
+    };
+    view.command("view.grid", &json!({"visible":true,"integrated_axes":false}))?;
+    let legacy = capture(&view, "legacy-before", [false; 3])?;
+    view.command("view.grid", &json!({"visible":true,"integrated_axes":true}))?;
+    let isometric = capture(&view, "isometric", [true, true, false])?;
+    if legacy == isometric {
+        return Err("integrated XY axes did not change the legacy grid image".into());
+    }
+    view.command("view.top", &json!({}))?;
+    let top = capture(&view, "top", [true, true, false])?;
+    view.command("view.front", &json!({}))?;
+    let front = capture(&view, "front", [true, false, true])?;
+    view.command("view.right", &json!({}))?;
+    let right = capture(&view, "right", [false, true, true])?;
+    if top == front || front == right || right == top {
+        return Err("principal grid images did not show their different axis colours".into());
+    }
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.origin", &json!({"item":"Z","visible":true}))?;
+    let explicit = capture(&view, "explicit-offplane-z", [true; 3])?;
+    if explicit == isometric {
+        return Err("explicit Show Z did not change the automatic XY grid image".into());
+    }
+    view.command("view.origin", &json!({"group":"axes","visible":false}))?;
+    let hidden = capture(&view, "all-axes-hidden", [false; 3])?;
+    if hidden == isometric || hidden != legacy {
+        return Err("hiding all axes did not restore the neutral legacy grid".into());
+    }
+    view.command("view.origin", &json!({"group":"axes","visible":null}))?;
+    view.command("view.grid", &json!({"visible":false}))?;
+    let grid_hidden = capture(&view, "grid-hidden", [false; 3])?;
+    if grid_hidden == hidden || !view.snapshot().ok_or("missing hidden-grid scene")?.guides.grid.is_empty() {
+        return Err("hiding the grid did not remove its automatic axes and neutral lines".into());
+    }
+    view.command("view.grid", &json!({"visible":true}))?;
+    if capture(&view, "restored", [true, true, false])? != isometric {
+        return Err("restoring the grid did not reproduce its original integrated-axis image".into());
+    }
+    println!(
+        "PASS: native grid-plane axes, bidirectional faded guides, individual/group visibility, explicit off-plane axis, neutral-grid and hidden-grid restoration; macOS GPU only, no UIKit/device claim"
+    );
     Ok(())
 }
 

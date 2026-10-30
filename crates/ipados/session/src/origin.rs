@@ -22,6 +22,8 @@ pub(crate) struct OriginReferences {
     #[serde(skip)]
     overrides: [Option<bool>; 7],
     #[serde(skip)]
+    grid_axes: [bool; 3],
+    #[serde(skip)]
     pub dirty: bool,
     #[serde(skip)]
     selection: Vec<Sel>,
@@ -33,14 +35,40 @@ pub(crate) struct OriginReferences {
 
 impl Default for OriginReferences {
     fn default() -> Self {
-        Self { visible: [false; 7], choosing: false, overrides: [None; 7], dirty: true, selection: Vec::new(), hover: None, active: false }
+        Self {
+            visible: [false; 7],
+            choosing: false,
+            overrides: [None; 7],
+            grid_axes: [false; 3],
+            dirty: true,
+            selection: Vec::new(),
+            hover: None,
+            active: false,
+        }
     }
 }
 
 impl OriginReferences {
     fn refresh_visibility(&mut self) {
-        self.visible = self.overrides.map(|value| value.unwrap_or(self.choosing));
+        self.visible = std::array::from_fn(|i| self.overrides[i].unwrap_or(self.choosing || (1..4).contains(&i) && self.grid_axes[i - 1]));
         self.dirty = true;
+    }
+
+    pub fn set_grid_axes(&mut self, axes: [bool; 3]) {
+        if self.grid_axes != axes {
+            self.grid_axes = axes;
+            self.refresh_visibility();
+        }
+    }
+
+    pub fn axis_visible(&self, index: usize, automatic: bool) -> bool {
+        self.overrides.get(index + 1).copied().flatten().unwrap_or(self.choosing || automatic)
+    }
+
+    // Automatic grid guides stay non-interactive, like the neutral grid. An
+    // explicit Show (or the plane chooser) exposes the engine reference identity.
+    fn reference_visible(&self, index: usize) -> bool {
+        self.visible.get(index) == Some(&true) && (self.choosing || self.overrides.get(index) == Some(&Some(true)))
     }
 
     pub fn set_choosing(&mut self, choosing: bool) {
@@ -178,7 +206,7 @@ impl Viewport {
                 }
             }
             for (index, axis) in [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
-                if self.origin.visible.get(index) == Some(&true) {
+                if self.origin.reference_visible(index) {
                     bounds.add(Vec3::ZERO);
                     bounds.add(axis * self.reference_size() * 1.2);
                 }
@@ -193,9 +221,7 @@ impl Viewport {
         }
         match entity {
             Sel::Plane { name } => self.reference_planes().iter().any(|(n, _)| n == name),
-            Sel::Axis { name } => {
-                ITEMS.iter().position(|n| *n == name).is_some_and(|i| (1..4).contains(&i) && self.origin.visible.get(i) == Some(&true))
-            }
+            Sel::Axis { name } => ITEMS.iter().position(|n| *n == name).is_some_and(|i| (1..4).contains(&i) && self.origin.reference_visible(i)),
             Sel::Vertex { body, point } => body.is_empty() && *point == Vec3::ZERO && self.origin.visible.first() == Some(&true),
             _ => false,
         }
@@ -218,20 +244,26 @@ impl Viewport {
             {
                 return Some(Sel::Vertex { body: String::new(), point: Vec3::ZERO });
             }
-            let start = screen(Vec3::ZERO)?;
+            let (ray_origin, ray_direction) = model.picks.ray(&self.camera, pixel[0], pixel[1], w, h);
             for (index, axis) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
-                if self.origin.visible.get(index + 1) != Some(&true) {
+                if !self.origin.reference_visible(index + 1) {
                     continue;
                 }
-                let end_world = axis * self.reference_size() * 1.2;
-                let Some(end) = screen(end_world) else { continue };
-                let delta = [end[0] - start[0], end[1] - start[1]];
-                let length2 = delta[0] * delta[0] + delta[1] * delta[1];
-                if length2 < tolerance * tolerance {
+                let Some([start_world, end_world]) = self.reference_axis_segment(axis, self.reference_size() * 1.2) else { continue };
+                // Work in world space: long faded endpoints may be clipped while
+                // the middle is visible, and screen interpolation is nonlinear
+                // under perspective. Axes pointing straight at the eye have no
+                // useful line target.
+                let dot = axis.dot(ray_direction);
+                let denominator = 1.0 - dot * dot;
+                if denominator < 1e-9 {
                     continue;
                 }
-                let t = (((pixel[0] - start[0]) * delta[0] + (pixel[1] - start[1]) * delta[1]) / length2).clamp(0.0, 1.0);
-                if (pixel[0] - start[0] - t * delta[0]).hypot(pixel[1] - start[1] - t * delta[1]) <= tolerance && visible(end_world * t) {
+                let relative = ray_origin - start_world;
+                let along = ((axis.dot(relative) - dot * ray_direction.dot(relative)) / denominator).clamp(0.0, (end_world - start_world).dot(axis));
+                let hit = start_world + axis * along;
+                let Some(projected) = screen(hit) else { continue };
+                if (pixel[0] - projected[0]).hypot(pixel[1] - projected[1]) <= tolerance && visible(hit) {
                     return Some(Sel::Axis { name: ITEMS.get(index + 1)?.to_string() });
                 }
             }
@@ -256,7 +288,7 @@ impl Viewport {
             .map(|(_, entity)| entity)
     }
 
-    fn reference_color(&self, entity: &Sel, color: Rgb) -> Rgb {
+    pub(crate) fn reference_color(&self, entity: &Sel, color: Rgb) -> Rgb {
         if self.selection.contains(entity) {
             Palette::DEFAULT.body_selected
         } else if self.hover.as_ref() == Some(entity) {
@@ -297,14 +329,12 @@ impl Viewport {
                 continue;
             }
             let Some(name) = ITEMS.get(index + 1) else { continue };
+            if self.axis_drawn_in_grid(axis) {
+                continue;
+            }
+            let Some(points) = self.reference_axis_segment(axis, self.reference_size() * 1.2) else { continue };
             let color = self.reference_color(&Sel::Axis { name: name.to_string() }, palette.axes[index]);
-            scene.lines.push(SceneLine {
-                points: vec![Vec3::ZERO, axis * self.reference_size() * 1.2],
-                color,
-                alpha: 1.0,
-                width: 2.5 * self.metrics.scale,
-                on_top: false,
-            });
+            scene.lines.push(SceneLine { points: points.to_vec(), color, alpha: 1.0, width: 2.5 * self.metrics.scale, on_top: false });
         }
         if self.origin.visible.first() == Some(&true) {
             let color = self.reference_color(&Sel::Vertex { body: String::new(), point: Vec3::ZERO }, palette.edge);
@@ -337,7 +367,7 @@ impl Viewport {
             add(&name, Sel::Plane { name: name.clone() }, corners[2]);
         }
         for (index, axis) in [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
-            if self.origin.visible.get(index) != Some(&true) {
+            if !self.origin.reference_visible(index) {
                 continue;
             }
             let Some(name) = ITEMS.get(index) else { continue };
