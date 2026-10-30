@@ -84,6 +84,16 @@ verifies the analytic resulting volume. The `-before.png`, `-faces-selected.png`
 events; physical Pencil input still requires an iPad check. On an iPad, also turn
 off **Tools → Multiple**, relaunch and verify that single selection is restored.
 
+`--selection-taps` captures selection, empty-space clearing and reselection with
+small Pencil lift motion through the real adapter and macOS GPU. Debug
+`--selection-taps-check` runs face → empty space → face → same-face toggle through
+the production native input mailbox on a physical iPad. It writes
+`selection-taps-check.json` and four `selection-taps-<stage>.png` UIKit captures
+in Documents, using a disposable fixture without loading or autosaving a library
+project. Each capture follows a matching presented frame. The receipt includes
+fresh timestamps and an optional `SolidCraftCandidate` Info.plist stamp.
+Both checks use synthetic Pencil samples; actual Pencil contact remains separate.
+
 For split-cylinder selection evidence, use `--cylinder-selection` for walls or
 `--cylinder-edge-selection` for circular rims. Both capture independent outer
 and inner selections as `-outer.png` and `-inner.png`, verifying that each tap

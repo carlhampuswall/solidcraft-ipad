@@ -83,6 +83,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--edge-selection") {
         return edge_selection_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--selection-taps") {
+        return selection_taps_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--cylinder-selection") {
         return cylinder_selection_proof(&destination, false);
     }
@@ -310,6 +313,70 @@ fn cylinder_selection_proof(destination: &str, edges: bool) -> Result<(), Box<dy
         std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("cylinder selection PNG")?)?;
         println!("{stage}: {} selected {}; {path}", view.selection().len(), if edges { "edges" } else { "faces" });
     }
+    Ok(())
+}
+
+/// Real geometry and highlights after synthetic Pencil taps with small lift motion.
+fn selection_taps_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    let projection = view.command("view.project", &json!({"point":[10.,10.,20.]}))?;
+    let face = [projection["points"][0].as_f64().ok_or("face pick x")?, projection["points"][1].as_f64().ok_or("face pick y")?];
+    let camera = view.snapshot().ok_or("selection tap frame")?.camera;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("selection tap frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("selection tap PNG")?)?;
+        println!("{stage}: {} selected; {path}", view.selection().len());
+        Ok(())
+    };
+    let input = |view: &mut Viewport, phase: InputPhase, id: u64, position: [f64; 2], timestamp: f64| -> Result<(), Box<dyn std::error::Error>> {
+        let diagnostic = view.diagnostic();
+        view.input(serde_json::from_value(json!({
+            "source":"pencil","phase":phase,"id":id,"x_points":position[0],"y_points":position[1],
+            "x_pixels":position[0],"y_pixels":position[1],"scale":1.,"timestamp":timestamp,
+            "viewport_epoch":diagnostic["viewport_epoch"],"camera_epoch":diagnostic["camera_epoch"],
+            "document_id":diagnostic["document_id"],"geometry_revision":diagnostic["geometry_revision"]
+        }))?)?;
+        Ok(())
+    };
+    input(&mut view, InputPhase::Began, 1, face, 1.)?;
+    input(&mut view, InputPhase::Ended, 1, [face[0] + 6., face[1]], 1.1)?;
+    if view.selection().len() != 1 || view.diagnostic()["selection"][0]["type"] != "face" {
+        return Err("Pencil face tap with six-point lift motion did not select".into());
+    }
+    let selected = serde_json::to_value(view.selection())?;
+    capture(&view, "selected")?;
+
+    input(&mut view, InputPhase::Began, 2, [24., 24.], 2.)?;
+    input(&mut view, InputPhase::Ended, 2, [32., 24.], 2.1)?;
+    if !view.selection().is_empty() {
+        return Err("Pencil empty-space tap with eight-point lift motion did not clear".into());
+    }
+    capture(&view, "cleared")?;
+
+    // Hover is visual feedback. Moving it away and back must not consume a tap.
+    input(&mut view, InputPhase::Hover, 0, [24., 24.], 3.)?;
+    input(&mut view, InputPhase::Hover, 0, face, 3.1)?;
+    input(&mut view, InputPhase::Began, 3, face, 3.2)?;
+    input(&mut view, InputPhase::Cancelled, 0, face, 3.21)?;
+    input(&mut view, InputPhase::Ended, 3, [face[0] + 8., face[1]], 3.3)?;
+    if serde_json::to_value(view.selection())? != selected {
+        return Err("Pencil tap after moving hover did not reselect the original face".into());
+    }
+    if view.snapshot().ok_or("reselected tap frame")?.camera != camera {
+        return Err("Pencil selection changed the camera".into());
+    }
+    capture(&view, "reselected")?;
+    println!("PASS: select, clear and reselect with six/eight-point lift motion and moving hover; synthetic Pencil input, macOS GPU only.");
     Ok(())
 }
 

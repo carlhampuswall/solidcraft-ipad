@@ -41,6 +41,18 @@ Shift still adds or removes picks while Multiple is off. Fillet and Chamfer
 receive every selected edge; face operations receive every selected face where
 the existing command supports it. Selection changes do not enter model history.
 
+Pencil selection uses the touch-down position and tolerates up to ten display
+points of contact motion, including the final lift sample. Moving toward the next
+target while lifting therefore does not lose the face or edge originally tapped.
+An empty-space tap uses its own touch-down position to clear selection. A stroke
+that exceeds that tolerance stays a stroke even if it returns to its start.
+Sketch geometry and tool handles retain their five-point drag threshold.
+
+`render_proof --selection-taps` captures a face selection, empty-space clearing
+and reselection after moving hover, with six/eight-point lift motion. These are
+synthetic Pencil events and real macOS GPU captures; physical Pencil delivery
+remains a separate check.
+
 Cylinder rims split into kernel edge pieces hover and select as one complete
 circle. Tapping either half again deselects the whole rim; inner, outer, top and
 bottom rims remain independent. Single selection also retains all pieces of the
@@ -123,7 +135,8 @@ router, including predicted end events. Estimated force/tilt corrections are not
 used for CAD dimensions. Basic editing works with all optional properties absent.
 
 The 128-sample native mailbox thins redundant actual Pencil motion when rendering
-falls behind. It discards queued hover feedback first, and drops incoming hover
+falls behind. It discards queued hover feedback (including id-zero hover exits)
+first, and drops incoming hover feedback
 if a full queue contains only authoritative input. Hover cannot cancel a tap.
 For contact samples it retains begin/end/cancel, reversals and context boundaries;
 only intermediate moves on the same screen path (within a quarter point) can be
@@ -166,7 +179,8 @@ producer; there is no tap/pan/pinch recognizer synthesizing duplicate CAD contac
 Hover and scroll recognizers only report their distinct non-contact phases.
 History tap recognizers invoke the existing commands and never emit contacts.
 
-Pencil movement beyond 5 display points distinguishes drag from tap. Finger
+Pencil movement beyond 5 display points begins an actual tool or sketch drag;
+selection-only Pencil contacts use the ten-point tolerance described above. Finger
 navigation requires over 6 points; while Pencil is down, one finger requires over
 12 points and 80 ms. Two-finger intent requires over 6 points and at least 24
 points of separation. Three or more viewport fingers produce no camera deltas.

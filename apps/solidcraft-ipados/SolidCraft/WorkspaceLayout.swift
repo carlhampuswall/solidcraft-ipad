@@ -717,11 +717,11 @@ final class InputMailbox {
     func append(_ sample: InputSample) -> UInt64? {
         lock.lock(); defer { lock.unlock() }
         if samples.count >= 128 {
-            // Hover is disposable visual feedback, never a contact boundary.
+            // Hover and its id-zero exit are visual feedback, never a contact boundary.
             // A busy renderer must not let hover traffic cancel a real tap.
-            if let index = samples.firstIndex(where: { $0.phase == .hover }) {
+            if let index = samples.firstIndex(where: hoverFeedback) {
                 samples.remove(at: index)
-            } else if sample.phase == .hover {
+            } else if hoverFeedback(sample) {
                 return nil
             } else if let index = (1..<(samples.count - 1)).first(where: { redundantMotion(at: $0) }) {
                 samples.remove(at: index)
@@ -733,6 +733,9 @@ final class InputMailbox {
         if scheduled { return nil }
         scheduled = true
         return epoch
+    }
+    private func hoverFeedback(_ sample: InputSample) -> Bool {
+        sample.phase == .hover || sample.phase == .cancelled && sample.id == 0
     }
     private func redundantMotion(at index: Int) -> Bool {
         let before = samples[index - 1], current = samples[index], after = samples[index + 1]

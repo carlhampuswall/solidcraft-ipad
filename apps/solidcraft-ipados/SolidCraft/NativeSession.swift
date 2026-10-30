@@ -926,6 +926,15 @@ final class NativeSession {
                     if frame.presented == true, let next = self.sketchCheckAfterFrame {
                         self.sketchCheckAfterFrame = nil; next()
                     }
+                    if frame.presented == true, let viewport = frame.viewport, let check = self.selectionCheckFrame,
+                       viewport.document_id == check.report.document_id,
+                       viewport.geometry_revision == check.report.geometry_revision,
+                       viewport.viewport_epoch == check.report.viewport_epoch,
+                       viewport.camera_epoch == check.report.camera_epoch,
+                       viewport.selection == check.report.selection {
+                        self.selectionCheckFrame = nil
+                        check.completion(.success(viewport.selection))
+                    }
                     #endif
                     if self.redrawAgain { self.redrawAgain = false; self.redraw() }
                     if frame.presented != true, retries > 0 {
@@ -951,6 +960,70 @@ final class NativeSession {
     private var sketchCheckToken: UInt64?
     private var sketchCheckDimension: WorkspaceConstraint?
     private var sketchCheckCompletion: ((WorkspaceState) -> Void)?
+    private var selectionCheckGeneration: UInt64 = 0
+    private var selectionCheckFrame: (report: BridgeState.ViewportReport, completion: (Result<[WorkspaceEntity], BridgeError>) -> Void)?
+
+    /// Synthetic actual samples through the production mailbox, followed by a
+    /// matching presented frame. This never claims physical Pencil delivery.
+    func developmentSelectionTap(_ world: [Double]?, completion: @escaping (Result<[WorkspaceEntity], BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else {
+            completion(.failure(BridgeError(code: "selection_taps_check", message: "Viewport is inactive"))); return
+        }
+        let expected = selectionCheckGeneration
+        display.async { [weak self, state, lifecycle] in
+            do {
+                let report = try JSONDecoder().decode(DevelopmentViewport.self, from: state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)).result
+                guard let metrics = report.metrics else { throw BridgeError(code: "selection_taps_check", message: "Viewport metrics are missing") }
+                var point = [30.0, 30.0]
+                if let world {
+                    let data = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": "view.project", "params": ["point": world]])
+                    point = try JSONDecoder().decode(DevelopmentProjection.self, from: state.request(data, lane: .viewport)).result.points
+                }
+                guard point.count == 2 else { throw BridgeError(code: "selection_taps_check", message: "Face projection is missing") }
+                let target = point
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive, lifecycle.accepts(ticket), self.selectionCheckGeneration == expected else { return }
+                    let contact = UInt64(9100) + self.selectionCheckGeneration
+                    let time = ProcessInfo.processInfo.systemUptime
+                    let samples: [(InputSample.Phase, UInt64, Double, Double)] = [
+                        (.hover, 0, -16, -12), (.hover, 0, 0, 0), (.cancelled, 0, 0, 0),
+                        (.began, contact, 0, 0), (.moved, contact, 6, 0), (.ended, contact, 8, 0)
+                    ]
+                    for (index, value) in samples.enumerated() {
+                        let x = target[0] + value.2, y = target[1] + value.3
+                        var sample = InputSample(source: .pencil, phase: value.0, id: value.1,
+                            x_points: x, y_points: y, x_pixels: x * metrics.scale, y_pixels: y * metrics.scale,
+                            scale: metrics.scale, timestamp: time + Double(index) * 0.001,
+                            pressure: nil, altitude: nil, geometry_revision: report.geometry_revision,
+                            consumed: false, shift: false, button: 0, scroll: 0)
+                        sample.viewport_epoch = report.viewport_epoch; sample.camera_epoch = report.camera_epoch
+                        sample.document_id = report.document_id; sample.display_preview = report.preview ?? false
+                        self.record(sample)
+                    }
+                    self.display.async { [weak self, state] in
+                        let result = Result {
+                            try JSONDecoder().decode(DevelopmentViewport.self, from: state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)).result
+                        }.mapError(BridgeState.error)
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self, self.alive, lifecycle.accepts(ticket), self.selectionCheckGeneration == expected else { return }
+                            switch result {
+                            case .success(let updated): self.selectionCheckFrame = (updated, completion); self.redraw()
+                            case .failure(let error): completion(.failure(error))
+                            }
+                        }
+                    }
+                }
+            } catch {
+                let failure = BridgeState.error(error)
+                DispatchQueue.main.async { completion(.failure(failure)) }
+            }
+        }
+    }
+
+    func endDevelopmentSelectionTapsCheck() {
+        selectionCheckGeneration &+= 1
+        selectionCheckFrame = nil
+    }
 
     /// Opt-in device smoke: real engine, synthetic Pencil samples and native
     /// numeric APIs. It never claims physical touch, Pencil or UI tap coverage.

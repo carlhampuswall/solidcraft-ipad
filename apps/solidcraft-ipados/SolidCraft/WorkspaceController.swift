@@ -481,6 +481,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.startAssemblyCheck()
                 } else if ProcessInfo.processInfo.arguments.contains("--tool-dismissal-check") {
                     self.developmentCheckStarted = true; self.checkToolDismissalOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--selection-taps-check") {
+                    self.developmentCheckStarted = true; self.checkSelectionTapsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
                     self.startGroupedInspectorCheckIfReady()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
@@ -3434,6 +3436,90 @@ private extension FoundationController {
             report.append("PASS complete; library projects and saved preferences unchanged")
         } catch { report.append("FAIL " + error.localizedDescription) }
         saveReport()
+    }
+
+    /// Disposable fixture and synthetic Pencil samples through the native mailbox.
+    /// Captures follow matching presented frames; physical Pencil remains separate.
+    private func checkSelectionTapsOnDevice() {
+        guard let directory = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
+            NSLog("Selection taps check FAIL: evidence directory unavailable"); return
+        }
+        let started = Date().timeIntervalSince1970
+        let run = UUID().uuidString
+        let candidate = Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"
+        let expected = generation
+        let cases = ["face", "empty", "face-again", "same-face-toggle"]
+        var stages: [[String: Any]] = []
+        var firstFace: WorkspaceEntity?
+        var finished = false
+        func save(status: String, failure: String = "") {
+            let report: [String: Any] = ["status": status, "passed": status == "passed", "error": failure,
+                "run_id": run, "candidate": candidate, "started_at": started,
+                "completed_at": status == "running" ? 0 : Date().timeIntervalSince1970,
+                "coverage": "Physical runtime; synthetic Pencil samples through InputMailbox; physical Pencil unverified",
+                "library_project_untouched": session.currentProject == nil, "stages": stages]
+            do {
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("selection-taps-check.json"), options: .atomic)
+            } catch { NSLog("Selection taps evidence write FAIL: %@", error.localizedDescription) }
+            NSLog("SolidCraft selection taps check %@", String(describing: report))
+        }
+        func finish(_ failure: String? = nil) {
+            guard !finished else { return }; finished = true
+            session.endDevelopmentSelectionTapsCheck()
+            save(status: failure == nil && stages.count == cases.count ? "passed" : "failed", failure: failure ?? "")
+        }
+        func step(_ index: Int) {
+            guard !finished else { return }
+            guard active, generation == expected else { finish("Workspace lifecycle changed"); return }
+            if index == cases.count { finish(); return }
+            let name = cases[index]
+            session.developmentSelectionTap(index == 1 ? nil : [-8, 0, 10]) { [weak self] result in
+                guard let self, !finished else { return }
+                do {
+                    let selected = try result.get()
+                    let selectedFace = index == 0 || index == 2
+                    guard selectedFace ? selected.count == 1 && selected.first?.type == "face" : selected.isEmpty else {
+                        throw BridgeError(code: "selection_taps_check", message: "Unexpected selection after " + name + ": " + selected.map(\.readout).joined(separator: ", "))
+                    }
+                    if index == 0 { firstFace = selected.first }
+                    if index == 2, selected.first != firstFace {
+                        throw BridgeError(code: "selection_taps_check", message: "Face target changed after clearing empty space")
+                    }
+                    self.view.layoutIfNeeded()
+                    let surface: UIView = self.view.window ?? self.view
+                    let capture = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in
+                        surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true)
+                    }
+                    guard let png = capture.pngData() else { throw BridgeError(code: "selection_taps_check", message: "Screenshot encoding failed") }
+                    let filename = "selection-taps-" + name + ".png"
+                    try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
+                    stages.append(["name": name, "passed": true, "selection": selected.map(\.readout),
+                                   "move_points": 6, "lift_points": 8, "screenshot": filename])
+                    save(status: "running"); step(index + 1)
+                } catch { finish(String(describing: error)) }
+            }
+        }
+        let setup: [(String, [String: Any])] = [
+            ("tool.set", ["tool": "select"]), ("select.filter", ["filter": "face"]),
+            ("select.multiple", ["enabled": true]), ("view.perspective", ["enabled": false]),
+            ("view.top", [:]), ("view.fit", [:]), ("select.clear", [:])
+        ]
+        func prepare(_ index: Int) {
+            guard !finished else { return }
+            if index == setup.count { step(0); return }
+            session.command(setup[index].0, params: setup[index].1) { result in
+                switch result { case .success: prepare(index + 1); case .failure(let error): finish(error.description) }
+            }
+        }
+        save(status: "running")
+        guard session.currentProject == nil else { finish("Diagnostic must use the disposable launch fixture"); return }
+        // Late workspace reads may still contain an earlier selected face.
+        // Keep this disposable session quiet; the saved preference is untouched.
+        extrudeOnFaceSelection = false
+        browserOpen = false; inspectorOpen = false; relayoutPanels()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if !finished { finish("Diagnostic timed out waiting for a matching presented frame") } }
+        prepare(0)
     }
 
     func checkToolDismissalOnDevice() {

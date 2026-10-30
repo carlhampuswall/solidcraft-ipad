@@ -120,8 +120,8 @@ struct WorkspaceChecks {
         }
         // A busy display lane must preserve the Pencil contact through a burst
         // of actual samples, including its final lift, without an input.cancel.
-        func pencil(_ phase: InputSample.Phase, _ sequence: UInt64) -> InputSample {
-            var sample = InputSample(source: .pencil, phase: phase, id: 91,
+        func pencil(_ phase: InputSample.Phase, _ sequence: UInt64, _ id: UInt64 = 91) -> InputSample {
+            var sample = InputSample(source: .pencil, phase: phase, id: id,
                 x_points: Double(sequence), y_points: 100, x_pixels: Double(sequence) * 2, y_pixels: 200,
                 scale: 2, timestamp: Double(sequence), pressure: nil, altitude: nil,
                 geometry_revision: 1, consumed: false, shift: false, button: 0, scroll: 0)
@@ -161,6 +161,23 @@ struct WorkspaceChecks {
         try require(!hoverBatch.cancelled && hoverBatch.samples.count <= 128, "hover backlog cancelled a tap or exceeded the buffer bound")
         try require(hoverBatch.samples.filter { $0.phase != .hover }.map(\.phase) == [.began, .ended], "hover backlog lost tap boundaries")
         try require(zip(hoverBatch.samples, hoverBatch.samples.dropFirst()).allSatisfy { $0.sequence < $1.sequence }, "hover eviction reordered input")
+        // Hover exits use cancelled/id zero, not a real contact cancellation.
+        // Preserve three successive taps (select, clear, select) under that traffic.
+        let exitingHover = InputMailbox()
+        let exitingToken = exitingHover.append(pencil(.began, 1, 91))
+        _ = exitingHover.append(pencil(.ended, 2, 91))
+        for sequence in UInt64(3)...400 { _ = exitingHover.append(pencil(.cancelled, sequence, 0)) }
+        _ = exitingHover.append(pencil(.began, 401, 92))
+        _ = exitingHover.append(pencil(.ended, 402, 92))
+        for sequence in UInt64(403)...800 { _ = exitingHover.append(pencil(.cancelled, sequence, 0)) }
+        _ = exitingHover.append(pencil(.began, 801, 93))
+        _ = exitingHover.append(pencil(.ended, 802, 93))
+        guard let exitingToken, let exitingBatch = exitingHover.take(token: exitingToken) else { throw NSError(domain: "InputChecks", code: 3) }
+        let exitingContacts = exitingBatch.samples.filter { $0.id != 0 }
+        try require(!exitingBatch.cancelled && exitingBatch.samples.count <= 128, "hover exit backlog cancelled successive taps or exceeded the buffer bound")
+        try require(exitingContacts.map(\.phase) == [.began, .ended, .began, .ended, .began, .ended]
+                    && exitingContacts.map(\.id) == [91, 91, 92, 92, 93, 93], "hover exits lost select/clear/select tap boundaries")
+        try require(zip(exitingBatch.samples, exitingBatch.samples.dropFirst()).allSatisfy { $0.sequence < $1.sequence }, "hover exit eviction reordered input")
         let fullContacts = InputMailbox()
         let fullToken = fullContacts.append(pencil(.began, 1))
         for sequence in UInt64(2)...128 { _ = fullContacts.append(pencil(.scroll, sequence)) }
@@ -168,6 +185,20 @@ struct WorkspaceChecks {
         guard let fullToken, let fullBatch = fullContacts.take(token: fullToken) else { throw NSError(domain: "InputChecks", code: 3) }
         try require(!fullBatch.cancelled && fullBatch.samples.count == 128 && fullBatch.samples.first?.phase == .began,
                     "incoming hover cancelled a full queue of authoritative input")
+        let fullExitContacts = InputMailbox()
+        let fullExitToken = fullExitContacts.append(pencil(.began, 1))
+        for sequence in UInt64(2)...128 { _ = fullExitContacts.append(pencil(.scroll, sequence)) }
+        _ = fullExitContacts.append(pencil(.cancelled, 129, 0))
+        guard let fullExitToken, let fullExitBatch = fullExitContacts.take(token: fullExitToken) else { throw NSError(domain: "InputChecks", code: 3) }
+        try require(!fullExitBatch.cancelled && fullExitBatch.samples.count == 128 && fullExitBatch.samples.first?.phase == .began,
+                    "incoming hover exit cancelled a full queue of authoritative input")
+        let cancelledContact = InputMailbox()
+        let cancelledToken = cancelledContact.append(pencil(.began, 1))
+        _ = cancelledContact.append(pencil(.cancelled, 2))
+        for sequence in UInt64(3)...1000 { _ = cancelledContact.append(pencil(.cancelled, sequence, 0)) }
+        guard let cancelledToken, let cancelledBatch = cancelledContact.take(token: cancelledToken) else { throw NSError(domain: "InputChecks", code: 3) }
+        try require(!cancelledBatch.cancelled && cancelledBatch.samples.filter { $0.id != 0 }.map(\.phase) == [.began, .cancelled],
+                    "hover exits discarded a real contact cancellation")
         let uncertain = InputMailbox()
         let uncertainToken = uncertain.append(pencil(.began, 1))
         for sequence in UInt64(2)...130 { _ = uncertain.append(pencil(.scroll, sequence)) }

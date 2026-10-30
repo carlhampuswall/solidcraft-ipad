@@ -887,6 +887,106 @@ fn topology_taps_accumulate_by_default_toggle_individually_and_allow_single_sele
 }
 
 #[test]
+fn pencil_selection_taps_keep_the_touch_down_target_through_lift_motion() {
+    for scale in [1., 2.] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();
+        let mut view = Viewport::default();
+        view.set_metrics(metrics(800., 600., scale)).unwrap();
+        view.begin_update(1);
+        assert!(view.install(1, adapter.snapshot().unwrap()));
+        let camera = view.camera;
+        let model = view.model.clone().unwrap();
+        let history = adapter.session.undo.len();
+        for (filter, location) in [
+            (PickFilter::Auto, Vec3::new(20., 0., 10.)),
+            (PickFilter::Edge, Vec3::new(20., 0., 10.)),
+            (PickFilter::Vertex, Vec3::new(20., 0., 20.)),
+            (PickFilter::Face, Vec3::new(20., 10., 10.)),
+            (PickFilter::Body, Vec3::new(20., 10., 10.)),
+        ] {
+            view.filter = filter;
+            let start = point(&view, location);
+            let expected = view.pick(start, None).unwrap();
+            for (id, offset) in [(1, [8., 0.]), (2, [0., -8.]), (3, [6., 6.])] {
+                // Selecting and toggling use the same down target even when
+                // moving to the next target starts during the final sample.
+                for count in [1, 0] {
+                    feed(&mut view, InputSource::Pencil, InputPhase::Began, id, start, 1.);
+                    feed(&mut view, InputSource::Pencil, InputPhase::Ended, id, [start[0] + offset[0], start[1] + offset[1]], 1.1);
+                    assert_eq!(view.selection().len(), count, "{filter:?}, scale {scale}, lift {offset:?}");
+                    if count == 1 {
+                        assert_eq!(serde_json::to_value(view.selection()).unwrap(), json!([expected]));
+                    }
+                }
+            }
+        }
+        assert_eq!(view.camera, camera);
+        assert!(Arc::ptr_eq(&model, view.model.as_ref().unwrap()));
+        assert_eq!(adapter.session.undo.len(), history);
+    }
+}
+
+#[test]
+fn pencil_face_and_empty_space_taps_alternate_without_losing_contact_intent() {
+    let (_, mut view) = proof();
+    view.filter = PickFilter::Face;
+    view.command("view.top", &json!({})).unwrap();
+    let face = point(&view, Vec3::new(20., 15., 10.));
+    let expected = view.pick(face, None).unwrap();
+    let empty = [30., 30.];
+    assert!(view.pick(empty, None).is_none());
+    for id in 1..=12 {
+        let (start, count) = if id % 2 == 1 { (face, 1) } else { (empty, 0) };
+        // Hover travels between targets without changing contact ownership.
+        feed(&mut view, InputSource::Pencil, InputPhase::Hover, 0, start, id as f64);
+        feed(&mut view, InputSource::Pencil, InputPhase::Cancelled, 0, start, id as f64 + 0.01);
+        feed(&mut view, InputSource::Pencil, InputPhase::Began, id, start, id as f64 + 0.02);
+        feed(&mut view, InputSource::Pencil, InputPhase::Moved, id, [start[0] + 6., start[1]], id as f64 + 0.04);
+        feed(&mut view, InputSource::Pencil, InputPhase::Ended, id, [start[0] + 8., start[1]], id as f64 + 0.06);
+        assert_eq!(view.selection().len(), count, "tap {id} must select/clear after moving between targets");
+        if count == 1 {
+            assert_eq!(serde_json::to_value(view.selection()).unwrap(), json!([expected]));
+        }
+    }
+    // A real stroke, even one returning to its origin, must never become a tap.
+    for (source, distance) in [(InputSource::Pencil, 12.), (InputSource::Indirect, 8.)] {
+        feed(&mut view, source, InputPhase::Began, 20, face, 20.);
+        feed(&mut view, source, InputPhase::Moved, 20, [face[0] + distance, face[1]], 20.1);
+        feed(&mut view, source, InputPhase::Ended, 20, face, 20.2);
+        assert!(view.selection().is_empty());
+    }
+}
+
+#[test]
+fn pencil_edge_tap_does_not_lose_its_target_at_the_pick_tolerance_boundary() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    assert!(view.install(1, adapter.snapshot().unwrap()));
+    view.command("view.top", &json!({})).unwrap();
+    view.filter = PickFilter::Edge;
+    let edge = point(&view, Vec3::new(20., 10., 20.));
+    let start = [edge[0] + 6., edge[1]];
+    let end = [edge[0] + 10., edge[1]];
+    let expected = view.pick(start, None).unwrap();
+    assert!(view.pick(end, None).is_none(), "lift coordinate is outside the edge's eight-point target");
+    for count in [1, 0] {
+        feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, start, 1.);
+        feed(&mut view, InputSource::Pencil, InputPhase::Ended, 1, end, 1.1);
+        assert_eq!(view.selection().len(), count);
+        if count == 1 {
+            assert_eq!(serde_json::to_value(view.selection()).unwrap(), json!([expected]));
+        }
+    }
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 2, end, 2.);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 2, start, 2.1);
+    assert!(view.selection().is_empty(), "a tap starting outside the edge target must not acquire it during lift");
+}
+
+#[test]
 fn cylindrical_rim_hover_and_taps_select_both_halves_and_keep_other_rims_separate() {
     let mut adapter = SessionAdapter::new();
     adapter.execute("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();

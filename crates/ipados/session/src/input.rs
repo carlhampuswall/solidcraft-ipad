@@ -872,7 +872,12 @@ impl Viewport {
         let revision = c.revision;
         let model_token = c.model_token;
         let distance = (point[0] - c.start[0]).hypot(point[1] - c.start[1]);
-        let moved = c.moved || distance > 5.0;
+        // Selection has no drag action. Tolerate small Pencil lift motion and
+        // retain the target touched down on, as sketch selection already does.
+        // Actual tool/sketch drags keep their more precise movement threshold.
+        let pencil_tap = e.source == InputSource::Pencil && matches!(owner, Owner::PencilCandidate | Owner::ModelDismiss);
+        let moved = c.moved || distance > if pencil_tap { 10.0 } else { 5.0 };
+        let tap_point = if pencil_tap { start } else { point };
         let elapsed = e.timestamp - c.began;
         if matches!(owner, Owner::Tool | Owner::SketchTool) && self.metrics.pixel(point).is_none() {
             self.contacts.cancel_edit();
@@ -944,11 +949,12 @@ impl Viewport {
                 && self.model.as_ref().is_some_and(|m| Some(m.geometry_revision) == revision)
                 && !self.updating
                 && !self.contacts.navigating
-                && let Some(pixel) = self.metrics.pixel(point)
+                && self.metrics.pixel(point).is_some()
+                && let Some(pixel) = self.metrics.pixel(tap_point)
                 && let Some(model) = self.display_model()
                 && model.picks.pick(&self.camera, self.vp(), self.metrics, pixel, crate::PickFilter::Body).is_none()
                 && model.picks.pick_profile(&self.camera, self.vp(), self.metrics, pixel).is_none()
-                && self.pick_reference(point).is_none()
+                && self.pick_reference(tap_point).is_none()
             {
                 let token = self.modelling.as_ref().map(|edit| edit.token);
                 self.cancel_model();
@@ -975,7 +981,7 @@ impl Viewport {
                 && self.model.as_ref().is_some_and(|m| Some(m.geometry_revision) == revision)
                 && !self.contacts.navigating
             {
-                let hit = self.pick(point, revision);
+                let hit = self.pick(tap_point, revision);
                 // Accumulate real picks, while an ordinary empty-space tap
                 // clears the set without requiring a trip through Tools.
                 let add = e.shift || self.multiple && hit.is_some();
