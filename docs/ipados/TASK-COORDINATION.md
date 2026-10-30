@@ -4,6 +4,8 @@ The user authorized a return to one shared directory with no project build lock
 on 2026-10-31, after the running tasks finished and merged. The view-menu icons
 (`07c7a664`), two-finger rotation (`4f74b1ab`) and plane appearance (`6aaa4a67`)
 are in local `develop`; their task-specific testing waivers remain recorded.
+The later [device verification](HANDOFF.md) on 2026-10-31 covers those three
+changes on candidate `85bde6a4`; physical finger/Pencil input remains unverified.
 This replaces the previous task-worktree/integration/build-slot workflow.
 
 ## Work in the primary checkout

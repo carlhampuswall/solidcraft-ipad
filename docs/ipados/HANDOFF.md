@@ -9,6 +9,36 @@ totals, single-save-slot descriptions and no-commit/no-push status do not descri
 the final combined branch. The engine suite is excluded from this integration's
 checks at the user's request; no full-CI success is claimed.
 
+
+## Deferred-change device verification — 2026-10-31
+
+Signed candidate `85bde6a4c1eed2441da473b420aa1ec48d2e73fd` was installed and
+verified on the physical iPad Pro 11-inch (3rd generation), iPadOS 27.2. This
+covers the previously deferred View menu icons, two-finger twist and compact
+origin-plane appearance. The native acceptance report passes all eight stages;
+all eight UIKit/Metal captures were retrieved and inspected. The original-plane
+switch persisted both values. Injected finger contacts produced camera rolls
+of +0.4 and −0.4 radians, and zero with twist disabled, while preserving geometry
+and selection and clearing the contacts. The app was then relaunched normally
+and its saved project was visibly restored.
+
+Testing found and fixed a regression where compact styling also shrank custom
+construction planes, hiding a tilted plane inside the fixture solid. Custom
+construction planes now retain their original display/pick extent and colour;
+XY/XZ/YZ retain the new compact appearance. All 195 session tests, 28 bridge
+tests, affected Clippy, Rust formatting, 692 native adaptive cases, icon checks
+and unsigned/signed builds passed. No full workspace CI or simulator was run.
+
+Evidence is in ignored `target/deferred-changes/`: `ipad-session.json`,
+`deferred-changes-check.json`, eight `deferred-*.png` images and `logs/`.
+Earlier failed diagnostic attempts are preserved in `attempt1/` and `attempt2/`;
+the driver was corrected for mounted-page counts and modal sequencing. Popovers
+in this run used the saved Dark preference; the canvas was exercised in both
+appearances. Physical finger/Pencil delivery and hands-on gestures remain
+unverified; the touch sequence was injected through the native bridge on the
+real device and awaited matching presented frames. Library projects were not
+loaded or autosaved during the diagnostic. All preferences were restored.
+
 ---
 
 # Pencil selection of finished sketch profiles — 2026-10-28

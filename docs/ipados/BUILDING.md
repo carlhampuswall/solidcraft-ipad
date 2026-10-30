@@ -87,12 +87,13 @@ without loading or autosaving a library project. Device actions require the
 task protocol's iPad reservation. Programmatic control actions remain separate
 from physical touch or Pencil verification.
 
-Debug `--deferred-changes-check` verifies the View menu icons in Light/Dark,
-neutral/legacy origin planes through the production View controls, and
+Debug `--deferred-changes-check` verifies View menu icons, Light/Dark canvas
+appearance, neutral/legacy origin planes through the production View controls, and
 clockwise/counterclockwise two-finger twist plus its disabled behavior. It uses
 a disposable fixture, restores preferences, and writes
 `deferred-changes-check.json` and eight `deferred-*.png` UIKit/Metal captures in
-Documents. Twist contacts are injected through the native bridge; completion
+Documents. Popovers follow the saved workspace appearance preference.
+Twist contacts are injected through the native bridge; completion
 waits for the matching presented frame. This verifies physical iPad runtime,
 not physical finger or Pencil delivery. Reserve the iPad through the task
 protocol before installing, launching or retrieving evidence. Construction planes
