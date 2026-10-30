@@ -756,6 +756,18 @@ old native-menu keyboard issue. Hardware Pencil/finger and hands-on VoiceOver
 coverage remain separate from these UIKit/remote-pointer checks. Saved visibility
 preferences and the normal Test document were restored after the disposable run.
 
+## Sketch constraint choices
+
+The sketch Constraints button uses a text-free anchored action sheet, matching
+the History workaround above. It retains the ten localized constraint choices,
+disabled ineligible choices and Cancel. Opening executes no command; choosing an
+action rechecks the current document, sketch, geometry revision and selection
+before dispatching the existing Rust-authored eligible command. This avoids the
+native UIButton menu preview that can unexpectedly raise the software keyboard
+after selecting two sketch edges. The disposable `--constraints-menu-check`
+diagnostic covers opening/reopening without text focus or canvas changes,
+eligibility, Parallel and Undo; physical contact remains separate coverage.
+
 ## Grouped modelling options
 
 The compact inspector keeps its source, operation and persistent action footer.
