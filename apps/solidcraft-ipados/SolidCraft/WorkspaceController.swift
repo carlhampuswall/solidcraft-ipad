@@ -3391,7 +3391,8 @@ private extension FoundationController {
                 self.constraintsButton.sendActions(for: .primaryActionTriggered)
                 wait("constraint sheet", until: { self.presentedViewController is UIAlertController && self.presentedViewController?.isBeingPresented == false }) {
                     guard let sheet = self.presentedViewController as? UIAlertController else { return }
-                    check(sheet.preferredStyle == .actionSheet && sheet.textFields == nil, "constraint choices requested text entry")
+                    check(sheet.preferredStyle == .actionSheet && sheet.textFields?.isEmpty != false,
+                          "constraint choices requested text entry (style: \(sheet.preferredStyle.rawValue), fields: \(sheet.textFields?.count ?? 0))")
                     check(self.constraintsButton.menu == nil && !self.constraintsButton.showsMenuAsPrimaryAction, "native menu preview remains installed")
                     check(sheet.actions.count == Self.constraintChoices.count + 1, "missing constraint choices or Cancel")
                     for key in Self.constraintChoices {
