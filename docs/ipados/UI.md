@@ -73,8 +73,11 @@ orientation triad continues to show XYZ independently. Automatic grid axes have
 no reference labels or hit targets, preserving empty-space selection clearing.
 Individual axis visibility overrides still win: explicit Show exposes the
 selectable engine reference and can show an off-plane axis; Hide suppresses an
-axis even on the current grid. Automatic restores the plane-dependent defaults.
-Hiding the grid hides its automatic axes; explicitly shown references remain.
+axis even on the current grid. Only axes along the visible grid extend in both
+directions; off-plane axes retain short positive origin markers. Automatic
+restores the plane-dependent defaults. Hiding the grid hides its automatic axes;
+explicitly shown references remain as short markers, including axes that were
+previously extended along that grid.
 Changes a default: yes — turning off **Axes in grid** restores the former hidden
 origin-axis defaults and short positive reference segments
 (`SolidCraft.workspace.integratedGridAxes`). The preference and individual

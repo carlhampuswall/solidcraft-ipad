@@ -1090,8 +1090,9 @@ impl Viewport {
             let extent = extent2.sqrt();
             return Some([axis * (along - extent), axis * (along + extent)]);
         }
-        let extent = legacy_extent.max(self.camera.half_height() * 2.0);
-        Some([-axis * extent, axis * extent])
+        // Only a currently visible, containing grid extends an axis. Explicit
+        // off-plane references and references with the grid hidden stay short.
+        Some([Vec3::ZERO, axis * legacy_extent])
     }
 }
 

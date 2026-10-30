@@ -4017,7 +4017,16 @@ private extension FoundationController {
             }),
             ("front", { control("front")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "front" && axes(["X", "Z"]) }, {}),
             ("right", { control("right")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "right" && axes(["Y", "Z"]) }, {}),
-            ("isometric", { control("isometric")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "isometric" && axes(["X", "Y"]) }, {})
+            ("isometric", { control("isometric")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "isometric" && axes(["X", "Y"]) }, {}),
+            ("isometric-z", {
+                control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                control("reference-Z")?.sendActions(for: .valueChanged)
+            }, { axes(["X", "Y", "Z"]) }, {}),
+            ("grid-hidden-explicit", {
+                control("back")?.sendActions(for: .primaryActionTriggered)
+                control("grid")?.sendActions(for: .valueChanged)
+            }, { self.viewPresentation?.grid.visible == false && axes(["Z"]) }, {}),
+            ("grid-restored-explicit", { control("grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.visible == true && axes(["X", "Y", "Z"]) }, {})
         ]
         func step(_ index: Int) {
             guard !finished else { return }
