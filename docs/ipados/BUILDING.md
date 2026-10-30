@@ -79,9 +79,10 @@ no CPU fallback is substituted for this proof.
 Append `--grid-axes` for before/after grid-axis evidence in isometric, top, front
 and right views, individual overrides, hidden grid and restored defaults.
 Debug `--grid-axes-check` runs the production native View controls on a disposable
-fixture, captures eleven presented UIKit/Metal frames, and writes a fresh
+fixture, captures fourteen presented UIKit/Metal frames, and writes a fresh
 candidate-stamped `grid-axes-check.json` in Documents. It checks axis defaults,
-individual overrides, grid hiding/restoration and the saved legacy preference
+individual overrides, finite off-plane and hidden-grid reference markers,
+grid hiding/restoration and the saved legacy preference
 without loading or autosaving a library project. Device actions require the
 task protocol's iPad reservation. Programmatic control actions remain separate
 from physical touch or Pencil verification.

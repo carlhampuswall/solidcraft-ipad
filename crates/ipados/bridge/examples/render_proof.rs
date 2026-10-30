@@ -646,6 +646,8 @@ fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
 /// Real native grid/origin state through the production guide converter and Mac
 /// GPU. Empty geometry leaves the full positive and negative grid axes visible.
 fn grid_axes_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use solidcraft_ipados_session::WorldPoint as Vec3;
+
     let mut engine = SessionAdapter::new();
     let mut view = Viewport::default();
     view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
@@ -675,6 +677,15 @@ fn grid_axes_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> 
         println!("{stage}: {path}");
         Ok(rgba)
     };
+    let require_short_axis = |view: &Viewport, axis: Vec3| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("missing short-axis scene")?;
+        let lines: Vec<_> =
+            frame.guides.lines.iter().filter(|line| !line.on_top && line.points.iter().all(|point| point.cross(axis).len() < 1e-8)).collect();
+        if lines.len() != 1 || lines[0].points != vec![Vec3::ZERO, axis * 30.] {
+            return Err(format!("axis {axis:?} must retain its short positive origin marker outside the visible grid").into());
+        }
+        Ok(())
+    };
     view.command("view.grid", &json!({"visible":true,"integrated_axes":false}))?;
     let legacy = capture(&view, "legacy-before", [false; 3])?;
     view.command("view.grid", &json!({"visible":true,"integrated_axes":true}))?;
@@ -693,6 +704,7 @@ fn grid_axes_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> 
     }
     view.command("view.isometric", &json!({}))?;
     view.command("view.origin", &json!({"item":"Z","visible":true}))?;
+    require_short_axis(&view, Vec3::Z)?;
     let explicit = capture(&view, "explicit-offplane-z", [true; 3])?;
     if explicit == isometric {
         return Err("explicit Show Z did not change the automatic XY grid image".into());
@@ -708,12 +720,25 @@ fn grid_axes_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> 
     if grid_hidden == hidden || !view.snapshot().ok_or("missing hidden-grid scene")?.guides.grid.is_empty() {
         return Err("hiding the grid did not remove its automatic axes and neutral lines".into());
     }
-    view.command("view.grid", &json!({"visible":true}))?;
+    view.command("view.origin", &json!({"group":"axes","visible":true}))?;
+    for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+        require_short_axis(&view, axis)?;
+    }
+    let grid_hidden_explicit = capture(&view, "grid-hidden-explicit-axes", [true; 3])?;
+    if grid_hidden_explicit == grid_hidden {
+        return Err("explicit origin markers disappeared when the grid was hidden".into());
+    }
+    view.command("view.grid", &json!({"visible":false,"integrated_axes":false}))?;
+    if capture(&view, "legacy-hidden-explicit-axes", [true; 3])? != grid_hidden_explicit {
+        return Err("hidden-grid origin markers must match their legacy finite appearance".into());
+    }
+    view.command("view.origin", &json!({"group":"axes","visible":null}))?;
+    view.command("view.grid", &json!({"visible":true,"integrated_axes":true}))?;
     if capture(&view, "restored", [true, true, false])? != isometric {
         return Err("restoring the grid did not reproduce its original integrated-axis image".into());
     }
     println!(
-        "PASS: native grid-plane axes, bidirectional faded guides, individual/group visibility, explicit off-plane axis, neutral-grid and hidden-grid restoration; macOS GPU only, no UIKit/device claim"
+        "PASS: native grid-plane axes, bidirectional faded in-plane guides, finite off-plane/hidden-grid origin markers, individual/group visibility and grid restoration; macOS GPU only, no UIKit/device claim"
     );
     Ok(())
 }

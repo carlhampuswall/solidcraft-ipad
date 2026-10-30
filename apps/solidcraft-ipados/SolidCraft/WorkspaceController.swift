@@ -3420,7 +3420,8 @@ private extension FoundationController {
                 self.constraintsButton.sendActions(for: .primaryActionTriggered)
                 wait("constraint sheet", until: { self.presentedViewController is UIAlertController && self.presentedViewController?.isBeingPresented == false }) {
                     guard let sheet = self.presentedViewController as? UIAlertController else { return }
-                    check(sheet.preferredStyle == .actionSheet && sheet.textFields == nil, "constraint choices requested text entry")
+                    check(sheet.preferredStyle == .actionSheet && sheet.textFields?.isEmpty != false,
+                          "constraint choices requested text entry (style: \(sheet.preferredStyle.rawValue), fields: \(sheet.textFields?.count ?? 0))")
                     check(self.constraintsButton.menu == nil && !self.constraintsButton.showsMenuAsPrimaryAction, "native menu preview remains installed")
                     check(sheet.actions.count == Self.constraintChoices.count + 1, "missing constraint choices or Cancel")
                     for key in Self.constraintChoices {
@@ -3455,24 +3456,29 @@ private extension FoundationController {
             }
         }
         let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]),
-            ("sketch.line", ["p0": [-20, -10], "p1": [15, -8]]),
-            ("sketch.line", ["p0": [-18, 10], "p1": [20, 15]]), ("tool.set", ["tool": "select"]), ("view.fit", [:])]
+            ("sketch.line", ["points": [[-20, -10], [15, -8]], "infer": false, "connect": false]),
+            ("sketch.line", ["points": [[-18, 10], [20, 15]], "infer": false, "connect": false]),
+            ("tool.set", ["tool": "select"]), ("view.fit", [:])]
         func prepare(_ index: Int) {
             guard active, generation == expected, !finished else { return }
             guard index < fixture.count else {
-                guard let sketch = state?.sketch, sketch.curves.count == 2 else { issues.append("fixture has no two edges"); finish(); return }
-                browserOpen = false; inspectorOpen = false; relayoutPanels()
-                session.selectEntity(["type": "sketch_curve", "id": sketch.curves[0].id, "sketch": sketch.id], additive: false) { result in
-                    guard case .success = result else { issues.append("first edge selection failed"); finish(); return }
-                    self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[1].id, "sketch": sketch.id], additive: true) { result in
-                        guard case .success = result else { issues.append("second edge selection failed"); finish(); return }
-                        wait("two selected edges", until: { self.state?.selection.count == 2 && self.pending.isEmpty }, then: verify)
+                wait("fixture edges", until: { self.state?.sketch?.curves.count == 2 && self.pending.isEmpty }) {
+                    guard let sketch = self.state?.sketch else { return }
+                    self.browserOpen = false; self.inspectorOpen = false; self.relayoutPanels()
+                    self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[0].id, "sketch": sketch.id], additive: false) { result in
+                        guard case .success = result else { issues.append("first edge selection failed"); finish(); return }
+                        self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[1].id, "sketch": sketch.id], additive: true) { result in
+                            guard case .success = result else { issues.append("second edge selection failed"); finish(); return }
+                            wait("two selected edges", until: { self.state?.selection.count == 2 && self.pending.isEmpty }, then: verify)
+                        }
                     }
                 }
                 return
             }
             session.command(fixture[index].0, params: fixture[index].1) { result in
-                guard case .success = result else { issues.append("fixture command failed: " + fixture[index].0); finish(); return }
+                if case .failure(let error) = result {
+                    issues.append("fixture command failed: " + fixture[index].0 + ": " + error.description); finish(); return
+                }
                 prepare(index + 1)
             }
         }
@@ -4041,7 +4047,16 @@ private extension FoundationController {
             }),
             ("front", { control("front")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "front" && axes(["X", "Z"]) }, {}),
             ("right", { control("right")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "right" && axes(["Y", "Z"]) }, {}),
-            ("isometric", { control("isometric")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "isometric" && axes(["X", "Y"]) }, {})
+            ("isometric", { control("isometric")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "isometric" && axes(["X", "Y"]) }, {}),
+            ("isometric-z", {
+                control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                control("reference-Z")?.sendActions(for: .valueChanged)
+            }, { axes(["X", "Y", "Z"]) }, {}),
+            ("grid-hidden-explicit", {
+                control("back")?.sendActions(for: .primaryActionTriggered)
+                control("grid")?.sendActions(for: .valueChanged)
+            }, { self.viewPresentation?.grid.visible == false && axes(["Z"]) }, {}),
+            ("grid-restored-explicit", { control("grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.visible == true && axes(["X", "Y", "Z"]) }, {})
         ]
         func step(_ index: Int) {
             guard !finished else { return }

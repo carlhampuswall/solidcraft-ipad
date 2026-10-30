@@ -271,6 +271,56 @@ fn viewport_explicit_integrated_axes_pick_the_negative_and_panned_visible_span()
 }
 
 #[test]
+fn viewport_origin_axes_stay_short_outside_the_current_visible_grid() {
+    fn assert_short_axis(view: &Viewport, revision: u64, index: usize, name: &str, axis: Vec3) {
+        let snapshot = view.snapshot().unwrap();
+        let lines: Vec<_> =
+            snapshot.guides.lines.iter().filter(|line| !line.on_top && line.color == solidcraft_engine::view::Palette::DEFAULT.axes[index]).collect();
+        assert_eq!(lines.len(), 1, "{name} stays a single origin reference marker");
+        assert_eq!(lines[0].points, vec![Vec3::ZERO, axis * 30.], "{name} retains its short positive origin extent");
+        for (distance, expected) in [(20., true), (-20., false), (60., false)] {
+            assert_eq!(
+                view.pick(point(view, axis * distance), Some(revision)),
+                expected.then(|| Sel::Axis { name: name.into() }),
+                "{name} at {distance} mm must follow its displayed short segment"
+            );
+        }
+    }
+
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    let before = view.snapshot().unwrap();
+    view.command("view.origin", &json!({"group":"axes","visible":false})).unwrap();
+    view.command("view.origin", &json!({"item":"Z","visible":true})).unwrap();
+    assert_short_axis(&view, engine.geometry_revision, 2, "Z", Vec3::Z);
+
+    view.command("view.front", &json!({})).unwrap();
+    let in_plane = view.snapshot().unwrap();
+    assert!(in_plane.guides.lines.iter().filter(|line| !line.on_top).any(|line| line.points.iter().any(|point| point.z < -30.)));
+    for distance in [-20., 60.] {
+        assert_eq!(view.pick(point(&view, Vec3::Z * distance), Some(engine.geometry_revision)), Some(Sel::Axis { name: "Z".into() }));
+    }
+    view.command("view.grid", &json!({"visible":false})).unwrap();
+    assert!(view.snapshot().unwrap().guides.grid.is_empty());
+    assert_short_axis(&view, engine.geometry_revision, 2, "Z", Vec3::Z);
+    view.command("view.grid", &json!({"visible":true})).unwrap();
+    assert_eq!(view.pick(point(&view, Vec3::Z * -20.), Some(engine.geometry_revision)), Some(Sel::Axis { name: "Z".into() }));
+    view.command("view.isometric", &json!({})).unwrap();
+    assert_short_axis(&view, engine.geometry_revision, 2, "Z", Vec3::Z);
+
+    view.command("view.origin", &json!({"group":"axes","visible":true})).unwrap();
+    view.command("view.grid", &json!({"visible":false})).unwrap();
+    for (index, (name, axis)) in [("X", Vec3::X), ("Y", Vec3::Y), ("Z", Vec3::Z)].into_iter().enumerate() {
+        assert_short_axis(&view, engine.geometry_revision, index, name, axis);
+    }
+    assert!(Arc::ptr_eq(&before.model, &view.snapshot().unwrap().model));
+    assert!(engine.session.undo.is_empty());
+}
+
+#[test]
 fn viewport_integrated_axis_picking_keeps_visible_middles_with_clipped_endpoints() {
     let mut engine = SessionAdapter::new();
     let mut view = Viewport::default();
