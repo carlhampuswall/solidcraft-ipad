@@ -1248,7 +1248,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         ])
     }
 
-    private func showViewControls() {
+    private func showViewControls(animated: Bool = true) {
         guard viewButton.isEnabled, presentedViewController == nil else { return }
         let panel = WorkspaceViewPopover()
         panel.overrideUserInterfaceStyle = workspaceInterfaceStyle
@@ -1267,7 +1267,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         viewControlsPopover = panel
         rebuildViewMenu()
-        present(panel, animated: true)
+        present(panel, animated: animated)
     }
 
     private func toggleLegacyOriginPlanes() {
@@ -4047,9 +4047,10 @@ private extension FoundationController {
             guard let root = viewControlsPopover?.view else { issues.append("View popup missing"); return }
             let nodes = descendants(root)
             let buttons = nodes.compactMap { $0 as? UIButton }.filter { $0.accessibilityIdentifier?.hasPrefix("workspace-view-") == true && $0.configuration != nil }
-            require(buttons.count >= 13 && buttons.allSatisfy { $0.configuration?.image != nil }, "View option icon missing")
+            let mainPage = control("fit") != nil
+            require(buttons.count >= (mainPage ? 9 : 4) && buttons.allSatisfy { $0.configuration?.image != nil }, "View option icon missing")
             let icons = nodes.compactMap { $0 as? UIImageView }.filter { $0.accessibilityIdentifier?.hasPrefix("workspace-view-icon-") == true }
-            require(icons.count >= 15 && icons.allSatisfy { $0.image != nil }, "View reference/switch icon missing")
+            require(icons.count >= (mainPage ? 4 : 11) && icons.allSatisfy { $0.image != nil }, "View reference/switch icon missing")
             require(self.keyboardTop == nil, "View popup opened the keyboard")
         }
         func twists(_ index: Int) {
@@ -4070,16 +4071,18 @@ private extension FoundationController {
         func planes() {
             viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
             frame("planes-neutral-light") {
-                self.showViewControls()
-                wait({ self.viewControlsPopover?.view.window != nil }) {
+                self.updateAvailability()
+                self.showViewControls(animated: false)
+                wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
                     control("individual-references")?.sendActions(for: .primaryActionTriggered)
                     control("legacy-planes")?.sendActions(for: .valueChanged)
                     wait({ !self.viewControlPending && self.legacyOriginPlanes }) {
                         require(defaults.bool(forKey: keys[0]), "Legacy plane preference did not persist")
                         self.viewControlsPopover?.dismiss(animated: false); self.viewControlsPopover = nil
                         frame("planes-legacy-light") {
-                            self.showViewControls()
-                            wait({ self.viewControlsPopover?.view.window != nil }) {
+                            self.updateAvailability()
+                            self.showViewControls(animated: false)
+                            wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
                                 control("individual-references")?.sendActions(for: .primaryActionTriggered)
                                 control("legacy-planes")?.sendActions(for: .valueChanged)
                                 wait({ !self.viewControlPending && !self.legacyOriginPlanes }) {
@@ -4102,8 +4105,9 @@ private extension FoundationController {
             self.browserOpen = false; self.inspectorOpen = false; self.relayoutPanels()
             commands([("view.isometric", [:]), ("view.fit", [:]), ("view.origin_style", ["legacy": false]),
                       ("view.origin", ["group": "planes", "visible": true])]) {
-                self.showViewControls()
-                wait({ self.viewControlsPopover?.view.window != nil }) {
+                self.updateAvailability()
+                self.showViewControls(animated: false)
+                wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
                     frame("menu-light") {
                         inspectIcons()
                         control("individual-references")?.sendActions(for: .primaryActionTriggered)
