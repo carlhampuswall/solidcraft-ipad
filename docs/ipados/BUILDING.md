@@ -156,7 +156,7 @@ The existing build script and Xcode scheme are unchanged. Launch now generates
 `SessionAdapter::fixture()` using real engine commands: a base, a separate post
 and a visible reference sketch. Use Fit/Views/Projection, select a filter, tap
 with Pencil or pointer, toggle Multiple and Clear. Finger drags orbit; two fingers
-pan/pinch. Pointer secondary drag orbits, middle (or Shift-secondary) drag pans,
+pan/pinch/twist. Pointer secondary drag orbits, middle (or Shift-secondary) drag pans,
 scroll zooms, and hover preselects. “Change post” edits the real post feature;
 Undo and Redo use existing engine history. Status shows current geometry revision
 and selected entity identities. No Files UI is added.

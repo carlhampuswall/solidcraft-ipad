@@ -75,6 +75,7 @@ pub struct Viewport {
     pub(crate) camera_epoch: u64,
     pub(crate) planar: bool,
     pub(crate) touch_orbit_follows_viewpoint: bool,
+    pub(crate) two_finger_twist: bool,
     pub(crate) direct_handles: bool,
     pub(crate) drag_step_mm: f64,
     pub(crate) automatic_subtract: bool,
@@ -115,6 +116,7 @@ impl Default for Viewport {
             camera_epoch: 0,
             planar: false,
             touch_orbit_follows_viewpoint: true,
+            two_finger_twist: true,
             direct_handles: true,
             drag_step_mm: 0.1,
             automatic_subtract: true,
@@ -433,6 +435,10 @@ impl Viewport {
                 "view.navigate" => {
                     self.navigate(params)?;
                 }
+                "view.touch_twist" => {
+                    let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("bad_params", "enabled must be a boolean"))?;
+                    self.two_finger_twist = enabled;
+                }
                 "view.touch_orbit" => {
                     self.touch_orbit_follows_viewpoint = params
                         .get("follows_viewpoint")
@@ -535,6 +541,34 @@ impl Viewport {
 
     /// Single camera path for native gestures and explicit navigation commands.
     pub(crate) fn navigate(&mut self, params: &Value) -> Result<(), AdapterError> {
+        // Native multitouch adds continuous image rotation using the shared
+        // Camera operations. Other navigation stays on the engine's stateless path.
+        if params.get("motion").and_then(Value::as_str) == Some("roll") {
+            let angle = params
+                .get("angle")
+                .and_then(Value::as_f64)
+                .filter(|a| a.is_finite() && a.abs() <= std::f64::consts::PI)
+                .ok_or_else(|| error("bad_params", "roll angle must be finite and within ±pi radians"))?;
+            let anchor = params
+                .get("anchor_points")
+                .map(|value| {
+                    let point: [f64; 2] = serde_json::from_value(value.clone())
+                        .map_err(|_| error("bad_params", "anchor_points must contain two finite coordinates"))?;
+                    if !point.iter().all(|v| v.is_finite() && v.abs() <= 1e6) {
+                        return Err(error("bad_params", "anchor_points must be finite and within ±1000000 points"));
+                    }
+                    Ok(point)
+                })
+                .transpose()?;
+            let (right, up, _) = self.camera.basis();
+            let plane = Plane { origin: self.camera.target, x: right, y: up };
+            let pivot = anchor.and_then(|point| self.plane_point(point, plane)).map(|point| (point, self.camera.frame_coords(point)));
+            self.camera.roll_by(angle);
+            if let Some((point, coords)) = pivot {
+                self.camera.place(point, coords);
+            }
+            return Ok(());
+        }
         let mut p = params.clone();
         let obj = p.as_object_mut().ok_or_else(|| error("bad_params", "navigation parameters must be an object"))?;
         if self.planar && obj.get("motion").and_then(Value::as_str) == Some("orbit") {
@@ -711,6 +745,7 @@ impl Viewport {
             "background":self.background.map(|color| [color.0,color.1,color.2]),
             "grid":{"visible":self.grid.visible,"integrated_axes":self.grid.integrated_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
             "touch_orbit":{"follows_viewpoint":self.touch_orbit_follows_viewpoint},
+            "touch_twist":{"enabled":self.two_finger_twist},
             "tool_dismissal":{"cancel_on_dismiss":self.cancel_tools_on_dismiss},
             "handle":self.handle(),"handle_point":self.handle_point(),"model_value":self.model_value(),"annotations":self.sketch_annotations(),"constraint_indicators":self.sketch_constraint_indicators()})
     }

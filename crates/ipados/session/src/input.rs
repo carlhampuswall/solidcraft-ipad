@@ -1033,6 +1033,15 @@ impl Viewport {
                         let after = (point[0] - other[0]).hypot(point[1] - other[1]);
                         if before >= 24.0 && after >= 24.0 {
                             self.navigate(&json!({"motion":"zoom","factor":(before/after).clamp(0.05,20.0)}))?;
+                            if self.two_finger_twist {
+                                let previous_angle = (old[1] - other[1]).atan2(old[0] - other[0]);
+                                let current_angle = (point[1] - other[1]).atan2(point[0] - other[0]);
+                                let difference = current_angle - previous_angle;
+                                // The shortest signed turn avoids a jump at ±pi.
+                                let angle = difference.sin().atan2(difference.cos());
+                                self.navigate(&json!({"motion":"roll","angle":angle,
+                                    "anchor_points":[(point[0]+other[0])*0.5,(point[1]+other[1])*0.5]}))?;
+                            }
                         }
                     }
                 }

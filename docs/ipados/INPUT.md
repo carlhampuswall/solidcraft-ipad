@@ -16,7 +16,7 @@ history; Escape or Cancel interaction discards a provisional interaction.
 | Pencil drag on an active modelling/assembly handle | Native parameter proposal and scratch geometry; lift leaves a preview for explicit Apply |
 | Touch, Pencil or primary pointer drag on a sketch dimension label in Select or Move | Reposition text, extension lines and arrows together; measured geometry stays fixed; one undo step for a saved dimension, session-only placement for a selected-edge measurement |
 | One finger | Turn the visible object in the drag direction in 3D; pan in an active sketch plane; an enabled direct handle captures its own drag |
-| Two fingers | Simultaneous centroid pan and distance-ratio zoom |
+| Two fingers | Simultaneous centroid pan, distance-ratio zoom and twist rotation about the viewing direction |
 | Two-finger double-tap | Undo one engine history action |
 | Three-finger double-tap | Redo one engine history action |
 | Pointer primary / hover | Existing selection / preselection |
@@ -102,6 +102,17 @@ cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
 It writes `-before.png`, `-previous.png` and `-fixed.png` using the real input
 router and shared renderer, and checks that the corrected object's centre does
 not drift. This is macOS GPU evidence, separate from physical iPad verification.
+
+Two-finger twisting turns the view in the same screen direction as the fingers,
+including in a sketch plane, without tilting that plane. Pan and pinch remain
+available during the same gesture. Rotation uses the shortest signed angle
+between successive contact vectors, so crossing ±180° does not jump. The current
+finger midpoint stays fixed during the rotation component. Disable **Tools →
+Rotate view with two-finger twist** to restore pan/pinch without rotation; the
+choice persists in `SolidCraft.workspace.twoFingerTwist` and never edits a design.
+The native navigation adapter delegates rotation and anchor preservation to the
+shared `Camera::roll_by`, `frame_coords` and `place` methods; no camera math is
+copied into UIKit or a second controller.
 
 History double-taps are enabled by default and can be disabled under **Tools →
 Double-tap gestures for Undo/Redo** to restore the previous input behaviour.
