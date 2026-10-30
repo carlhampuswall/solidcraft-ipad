@@ -76,6 +76,16 @@ The example uses real commands, rebuilds/tessellates the document and draws it
 with the shared GPU capture/viewport pipelines. It requires an accessible GPU;
 no CPU fallback is substituted for this proof.
 
+Append `--grid-axes` for before/after grid-axis evidence in isometric, top, front
+and right views, individual overrides, hidden grid and restored defaults.
+Debug `--grid-axes-check` runs the production native View controls on a disposable
+fixture, captures eleven presented UIKit/Metal frames, and writes a fresh
+candidate-stamped `grid-axes-check.json` in Documents. It checks axis defaults,
+individual overrides, grid hiding/restoration and the saved legacy preference
+without loading or autosaving a library project. Device actions require the
+task protocol's iPad reservation. Programmatic control actions remain separate
+from physical touch or Pencil verification.
+
 For Pencil selection evidence, append `--edge-selection`. It compares two taps
 in the previous single-selection mode with the default Multiple mode, captures
 two selected faces and two selected edges, then uses both edges in one Fillet and

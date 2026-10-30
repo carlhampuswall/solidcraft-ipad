@@ -105,6 +105,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var developmentCheckStarted = false
 #if DEBUG
     private var groupedInspectorFrameReady = false
+    private var gridAxesCheckAfterFrame: (() -> Void)?
     private var assemblyCheckRunning = false
     private var assemblyCheckTicket: UInt64 = 0
     private var assemblyCheckSignal: DispatchSourceSignal?
@@ -192,6 +193,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var leftBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.leftBrowser") as? Bool ?? true
     private var diagnostics = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.diagnostics")
     private var gridVisible = UserDefaults.standard.object(forKey: "SolidCraft.workspace.gridVisible") as? Bool ?? true
+    private var integratedGridAxes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.integratedGridAxes") as? Bool ?? true
     private var originInBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.originInBrowser") as? Bool ?? false
     private var resetChromeOffsets = false
     private var viewpointOrbit = UserDefaults.standard.object(forKey: "SolidCraft.workspace.viewpointOrbit") as? Bool ?? true
@@ -457,7 +459,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if staleChanged { self.updateStatus() }
             }
             #if DEBUG
-            if presented { self.groupedInspectorFrameReady = true }
+            if presented {
+                self.groupedInspectorFrameReady = true
+                if let next = self.gridAxesCheckAfterFrame {
+                    self.gridAxesCheckAfterFrame = nil
+                    next()
+                }
+            }
             if presented, !self.developmentCheckStarted {
                 if ProcessInfo.processInfo.arguments.contains("--input-check") {
                     self.developmentCheckStarted = true; self.session.developmentInputCheck()
@@ -494,6 +502,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkBrowserOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-check") {
                     self.developmentCheckStarted = true; self.checkHistoryOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--grid-axes-check") {
+                    self.developmentCheckStarted = true; self.checkGridAxesOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--view-controls-check") {
                     self.developmentCheckStarted = true; self.checkViewControlsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-actions-check") {
@@ -521,7 +531,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .success:
                 self.failure = nil
                 self.updateCanvasAppearance()
-                self.session.command("view.grid", params: ["visible": self.gridVisible])
+                self.session.command("view.grid", params: ["visible": self.gridVisible, "integrated_axes": self.integratedGridAxes])
                 self.session.command("view.touch_orbit", params: ["follows_viewpoint": self.viewpointOrbit])
                 self.session.command("view.drag_precision", params: ["step_mm": self.dragStepMM])
                 self.session.command("view.tool_handles", params: ["enabled": self.directHandles])
@@ -1164,6 +1174,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func toggleIntegratedGridAxes() {
+        guard !referencesLocked else { return }
+        let enabled = !(viewPresentation?.grid.integrated_axes ?? integratedGridAxes)
+        viewControlPending = true; rebuildViewMenu()
+        canvas.cancelInput()
+        session.command("view.grid", params: ["visible": viewPresentation?.grid.visible ?? gridVisible, "integrated_axes": enabled]) { [weak self] result in
+            guard let self else { return }
+            self.viewControlPending = false
+            if case .success = result {
+                self.integratedGridAxes = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.integratedGridAxes")
+            }
+            self.table.reloadData(); self.rebuildViewMenu()
+        }
+    }
+
     private func togglePerspective() {
         guard !numericEditing, !modellingCommitting, pending.isEmpty, !viewControlPending, state?.sketch == nil else { return }
         let enabled = !(viewPresentation.map { $0.camera.fov > 0 } ?? perspective)
@@ -1218,6 +1244,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         panel.onCommand = { [weak self] command in self?.runViewCommand(command) }
         panel.onPerspective = { [weak self] in self?.togglePerspective() }
         panel.onGrid = { [weak self] in self?.toggleGrid() }
+        panel.onIntegratedAxes = { [weak self] in self?.toggleIntegratedGridAxes() }
         panel.onOrigin = { [weak self] in self?.toggleOriginReferences() }
         panel.onReference = { [weak self] item, group, visible in self?.setOriginVisibility(item: item, group: group, visible: visible) }
         panel.onOriginInModel = { [weak self] in self?.toggleOriginInModel() }
@@ -3749,7 +3776,7 @@ private extension FoundationController {
     /// every saved visibility override. It never opens/autosaves a library design.
     private func checkViewControlsOnDevice() {
         let expected = generation
-        let savedOrigin = originVisibility, savedGrid = gridVisible
+        let savedOrigin = originVisibility, savedGrid = gridVisible, savedIntegratedAxes = integratedGridAxes
         let defaults = UserDefaults.standard
         let savedOriginDefault = defaults.object(forKey: "SolidCraft.workspace.originVisibility")
         let savedGridDefault = defaults.object(forKey: "SolidCraft.workspace.gridVisible")
@@ -3778,7 +3805,7 @@ private extension FoundationController {
             defaults.set(savedGridDefault, forKey: "SolidCraft.workspace.gridVisible")
             session.command("view.origin", params: ["visible": NSNull()])
             for (item, visible) in savedOrigin { session.command("view.origin", params: ["item": item, "visible": visible]) }
-            session.command("view.grid", params: ["visible": savedGrid])
+            session.command("view.grid", params: ["visible": savedGrid, "integrated_axes": savedIntegratedAxes])
             failure = nil; updateStatus(); rebuildViewMenu()
             viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
             print("View controls check " + (issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")))
@@ -3871,7 +3898,158 @@ private extension FoundationController {
                 check(self.viewPresentation == openingState && self.canvas.frame == openingFrame, "opening View changed the camera or viewport")
                 check(self.keyboardTop == nil, "opening View raised a keyboard")
                 capture("opened")
-                step(0)
+                self.session.command("view.grid", params: ["visible": self.gridVisible, "integrated_axes": false]) { _ in
+                    step(0)
+                }
+            }
+        }
+    }
+
+    /// Disposable native fixture; real View controls and Rust presentation state.
+    /// A fresh presented frame precedes every capture. No project is loaded/saved.
+    private func checkGridAxesOnDevice() {
+        let expected = generation
+        let savedOrigin = originVisibility, savedGrid = gridVisible, savedAxes = integratedGridAxes
+        let defaults = UserDefaults.standard
+        let keys = ["SolidCraft.workspace.originVisibility", "SolidCraft.workspace.gridVisible", "SolidCraft.workspace.integratedGridAxes"]
+        let savedDefaults = keys.map { defaults.object(forKey: $0) }
+        let started = Date().timeIntervalSince1970
+        let runID = UUID().uuidString
+        let candidate = Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"
+        var original: WorkspaceState?
+        var issues: [String] = []
+        var stages: [[String: Any]] = []
+        var finished = false
+        guard let directory = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true) else {
+            NSLog("Grid axes check FAIL: evidence directory unavailable"); return
+        }
+        func check(_ value: Bool, _ message: String) { if !value { issues.append(message) } }
+        func control(_ id: String, in parent: UIView? = nil) -> UIControl? {
+            guard let parent = parent ?? viewControlsPopover?.view else { return nil }
+            if parent.accessibilityIdentifier == "workspace-view-" + id { return parent as? UIControl }
+            for child in parent.subviews { if let found = control(id, in: child) { return found } }
+            return nil
+        }
+        func axes(_ expected: [String]) -> Bool {
+            guard let presentation = viewPresentation else { return false }
+            return Self.originItems.allSatisfy { presentation.originVisible($0) == expected.contains($0) }
+        }
+        func save(_ status: String) {
+            let report: [String: Any] = ["status": status, "passed": status == "passed", "candidate": candidate,
+                "run_id": runID, "started_at": started, "completed_at": status == "running" ? 0 : Date().timeIntervalSince1970,
+                "coverage": "Physical native runtime; programmatic View controls and rendered captures; physical touch/Pencil unverified",
+                "library_project_untouched": session.currentProject == nil, "issues": issues, "stages": stages]
+            do {
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("grid-axes-check.json"), options: .atomic)
+            } catch { NSLog("Grid axes evidence write FAIL: %@", error.localizedDescription) }
+        }
+        func finish(_ error: String? = nil) {
+            guard !finished else { return }; finished = true
+            if let error { issues.append(error) }
+            gridAxesCheckAfterFrame = nil
+            originVisibility = savedOrigin; gridVisible = savedGrid; integratedGridAxes = savedAxes
+            for (key, value) in zip(keys, savedDefaults) { defaults.set(value, forKey: key) }
+            session.command("view.origin", params: ["visible": NSNull()])
+            for (item, visible) in savedOrigin { session.command("view.origin", params: ["item": item, "visible": visible]) }
+            session.command("view.grid", params: ["visible": savedGrid, "integrated_axes": savedAxes])
+            viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
+            failure = nil; updateStatus(); rebuildViewMenu()
+            save(issues.isEmpty ? "passed" : "failed")
+            NSLog("Grid axes check %@", issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; "))
+        }
+        func unchanged() {
+            check(state?.document_id == original?.document_id && state?.geometry_revision == original?.geometry_revision &&
+                  state?.can_undo == original?.can_undo && state?.selection == original?.selection, "grid axes changed document/history/selection")
+        }
+        func capture(_ stage: String) {
+            view.layoutIfNeeded()
+            let surface: UIView = view.window ?? view
+            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+            let filename = "grid-axes-" + stage + ".png"
+            do {
+                guard let data = image.pngData() else { throw NSError(domain: "GridAxesCheck", code: 1) }
+                try data.write(to: directory.appendingPathComponent(filename), options: .atomic)
+                stages.append(["stage": stage, "screenshot": filename,
+                    "visible": Self.originItems.filter { viewPresentation?.originVisible($0) == true },
+                    "integrated_axes": viewPresentation?.grid.integrated_axes == true,
+                    "grid_visible": viewPresentation?.grid.visible == true])
+                save("running")
+            } catch { issues.append("capture " + stage + ": " + String(describing: error)) }
+        }
+        func wait(_ condition: @escaping () -> Bool, remaining: Int = 100, then next: @escaping () -> Void) {
+            guard !finished else { return }
+            guard active, generation == expected else { finish("workspace lifecycle changed"); return }
+            if condition() { next(); return }
+            guard remaining > 0 else { finish("state update timed out"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(condition, remaining: remaining - 1, then: next) }
+        }
+        let steps: [(String, () -> Void, () -> Bool, () -> Void)] = [
+            ("top", { control("top")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "top" && axes(["X", "Y"]) }, {
+                check((control("integrated-axes") as? UISwitch)?.isOn == true, "grid axes switch did not follow renderer")
+            }),
+            ("explicit-z", {
+                control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                control("reference-Z")?.sendActions(for: .valueChanged)
+            }, { axes(["X", "Y", "Z"]) }, {}),
+            ("z-hidden", { control("reference-Z")?.sendActions(for: .valueChanged) }, { axes(["X", "Y"]) }, {}),
+            ("automatic", {
+                control("automatic")?.sendActions(for: .primaryActionTriggered)
+                control("back")?.sendActions(for: .primaryActionTriggered)
+            }, { self.originVisibility.isEmpty && axes(["X", "Y"]) }, {}),
+            ("grid-hidden", { control("grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.visible == false && axes([]) }, {}),
+            ("grid-restored", { control("grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.visible == true && axes(["X", "Y"]) }, {}),
+            ("legacy", { control("integrated-axes")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.integrated_axes == false && axes([]) }, {
+                check(defaults.object(forKey: "SolidCraft.workspace.integratedGridAxes") as? Bool == false, "legacy preference did not persist")
+            }),
+            ("integrated", { control("integrated-axes")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.integrated_axes == true && axes(["X", "Y"]) }, {
+                check(defaults.object(forKey: "SolidCraft.workspace.integratedGridAxes") as? Bool == true, "integrated preference did not persist")
+                self.viewControlPending = true; self.rebuildViewMenu()
+                check(control("integrated-axes")?.isEnabled == false, "busy grid-axis switch remained enabled")
+                self.toggleIntegratedGridAxes()
+                self.viewControlPending = false; self.rebuildViewMenu()
+                check(self.integratedGridAxes, "busy grid-axis switch changed preference")
+            }),
+            ("front", { control("front")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "front" && axes(["X", "Z"]) }, {}),
+            ("right", { control("right")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "right" && axes(["Y", "Z"]) }, {}),
+            ("isometric", { control("isometric")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "isometric" && axes(["X", "Y"]) }, {})
+        ]
+        func step(_ index: Int) {
+            guard !finished else { return }
+            guard index < steps.count else { unchanged(); finish(); return }
+            let (name, action, ready, verify) = steps[index]
+            action()
+            wait({ !self.viewControlPending && ready() }) {
+                verify(); unchanged()
+                // A no-op viewport command schedules a fresh frame after its
+                // completion; capture only after that frame has been presented.
+                self.session.command("view.grid", params: ["visible": self.viewPresentation?.grid.visible ?? true]) { result in
+                    if case .failure(let error) = result { finish(error.description); return }
+                    self.gridAxesCheckAfterFrame = {
+                        DispatchQueue.main.async {
+                            guard !finished else { return }
+                            capture(name); step(index + 1)
+                        }
+                    }
+                }
+            }
+        }
+        save("running")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45) { if !finished { finish("diagnostic timed out") } }
+        wait({ self.viewPresentation != nil && self.state != nil && self.pending.isEmpty }) {
+            original = self.state
+            self.session.command("view.origin", params: ["visible": NSNull()]) { result in
+                if case .failure(let error) = result { finish(error.description); return }
+                self.originVisibility = [:]
+                self.session.command("view.grid", params: ["visible": true, "integrated_axes": true]) { result in
+                    if case .failure(let error) = result { finish(error.description); return }
+                    self.gridVisible = true; self.integratedGridAxes = true
+                    self.showViewControls()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        guard self.viewControlsPopover != nil else { finish("View panel did not open"); return }
+                        step(0)
+                    }
+                }
             }
         }
     }

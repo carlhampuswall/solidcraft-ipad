@@ -534,7 +534,7 @@ struct WorkspaceChecks {
             let visible = (0..<7).map { mask & (1 << $0) != 0 }
             let json = try JSONSerialization.data(withJSONObject: ["result": [
                 "origin": ["visible": visible, "choosing": mask % 2 == 0],
-                "grid": ["visible": true], "planar": false, "camera": ["fov": 0]
+                "grid": ["visible": true, "integrated_axes": mask % 2 == 0], "planar": false, "camera": ["fov": 0]
             ]])
             let projection = try JSONDecoder().decode(ViewControlsPresentation.Envelope.self, from: json).result
             let expected: ViewControlsPresentation.Visibility = mask == 0 ? .none : (mask == 127 ? .all : .some)
@@ -544,6 +544,7 @@ struct WorkspaceChecks {
                 try require(projection.originVisible(item) == visible[index], "individual reference did not match the master source")
             }
             try require(projection.grid.visible, "reference projection changed the independent grid")
+            try require(projection.grid.integrated_axes == (mask % 2 == 0), "grid axis preference did not decode from authoritative viewport")
             cases += 1
         }
         // Selected View buttons follow the actual camera, including orbit and
