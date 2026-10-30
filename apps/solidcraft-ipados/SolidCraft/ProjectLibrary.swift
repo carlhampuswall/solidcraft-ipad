@@ -1,6 +1,6 @@
 import Foundation
 
-/// Native file organisation only. Each design remains the upstream .solidcraft
+/// Native file organisation only. Each design remains the upstream native
 /// container; directory UUIDs keep equally named imports from overwriting work.
 struct ProjectRecord: Equatable {
     let id: UUID
@@ -12,7 +12,8 @@ struct ProjectRecord: Equatable {
 struct ProjectLibrary {
     let root: URL
     static let maximumImportBytes: Int64 = 512 * 1024 * 1024
-    static let importExtensions: Set<String> = ["solidcraft", "step", "stp", "stl", "obj", "3mf"]
+    static let nativeExtensions: Set<String> = ["sc", "solidcraft"]
+    static let importExtensions = nativeExtensions.union(["step", "stp", "stl", "obj", "3mf"])
 
     static func applicationLibrary() throws -> Self {
         let support = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -40,7 +41,7 @@ struct ProjectLibrary {
                   try directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]).isDirectory == true,
                   try directory.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else { return nil }
             let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey], options: [.skipsHiddenFiles])
-                .filter { $0.pathExtension.lowercased() == "solidcraft" }
+                .filter { Self.nativeExtensions.contains($0.pathExtension.lowercased()) }
             guard files.count == 1, let file = files.first else { return nil }
             let values = try file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true else { return nil }

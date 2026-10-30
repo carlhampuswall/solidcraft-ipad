@@ -490,7 +490,7 @@ final class NativeSession {
             let data: Data
             var created: ProjectRecord?
             if insert {
-                guard source.pathExtension.lowercased() != "solidcraft" else { throw ProjectLibrary.failure("insert_native") }
+                guard !ProjectLibrary.nativeExtensions.contains(source.pathExtension.lowercased()) else { throw ProjectLibrary.failure("insert_native") }
                 let command = ["step", "stp"].contains(source.pathExtension.lowercased()) ? "file.insert_step" : "file.insert_mesh"
                 data = try Self.fileCommand(state, command, params: ["path": staged.path])
                 // The import is already an undoable command. A later autosave

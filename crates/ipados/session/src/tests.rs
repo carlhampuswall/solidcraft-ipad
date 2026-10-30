@@ -203,6 +203,61 @@ fn projects_round_trip_native_step_and_failed_replacements_preserve_the_live_des
 }
 
 #[test]
+fn projects_preserve_upstream_reference_data_from_sc_through_legacy_native_containers() {
+    let directory = std::env::temp_dir().join(format!(
+        "solidcraft-ipados-upstream-roundtrip-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    ));
+    std::fs::create_dir_all(&directory).unwrap();
+    let scan = directory.join("reference.xyz");
+    let desktop = directory.join("desktop.sc");
+    let native = directory.join("native.solidcraft");
+    let reopened = directory.join("reopened.solidcraft");
+    std::fs::write(&scan, "0 0 0\n1 2 3\n4 5 6\n").unwrap();
+
+    // Create data supported by upstream but not exposed by the native forms.
+    let mut upstream = solidcraft_engine::Session::default();
+    upstream.execute("file.new", &json!({"name":"Portable reference fixture"})).unwrap();
+    upstream.execute("solid.box", &json!({"length":20,"width":15,"height":10,"body_name":"Stock"})).unwrap();
+    let cloud = upstream.execute("pointcloud.insert", &json!({"path":scan,"name":"Reference"})).unwrap()["cloud"].as_u64().unwrap();
+    upstream.execute("parameters.add", &json!({"name":"radius","expression":"2 mm"})).unwrap();
+    let sketch = upstream.execute("sketch.create", &json!({"plane":"XY","name":"Equation reference"})).unwrap()["sketch"].as_u64().unwrap();
+    let curve = upstream
+        .execute("sketch.equation_curve", &json!({"x":"radius * cos(t)","y":"radius * sin(t)","start":"0","end":"pi","construction":true}))
+        .unwrap()["curve"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    upstream.execute("sketch.finish", &json!({})).unwrap();
+    upstream.execute("file.save_as", &json!({"path":desktop})).unwrap();
+    let expected = upstream.doc.clone();
+    let feature_ids: Vec<_> = expected.features.iter().map(|feature| feature.id).collect();
+    assert_eq!(expected.point_clouds[0].id, cloud);
+    assert_eq!(expected.point_clouds[0].points.len(), 3);
+    assert_eq!(expected.point_clouds[0].world_point(1), Some(Vec3::new(1.0, 2.0, 3.0)));
+    // Both native opens must use the embedded points, without the original scan.
+    std::fs::remove_file(&scan).unwrap();
+
+    let mut adapter = SessionAdapter::new();
+    for (source, destination) in [(&desktop, &native), (&native, &reopened)] {
+        let (_, snapshot) =
+            adapter.replace_document(Some(source.to_str().unwrap()), "Portable reference fixture", destination.to_str().unwrap()).unwrap();
+        assert_eq!(*adapter.session.doc, *expected, "the native project transaction preserves the complete upstream document");
+        assert_eq!(adapter.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), feature_ids);
+        assert_eq!(adapter.session.doc.point_clouds, expected.point_clouds);
+        let equation = adapter.session.doc.sketch(sketch).unwrap().equation_of(&curve).unwrap();
+        assert_eq!(equation.x.as_deref(), Some("radius * cos(t)"));
+        assert_eq!((equation.y.as_str(), equation.start.as_str(), equation.end.as_str()), ("radius * sin(t)", "0", "pi"));
+        assert_eq!(snapshot.body_count, 1);
+        assert!((snapshot.volume_mm3 - 3000.0).abs() < 1e-6, "reference data must not change the 20 × 15 × 10 mm box");
+        let saved = solidcraft_engine::io::read_design(&std::fs::read(destination).unwrap()).unwrap();
+        assert_eq!(saved, *expected, "the shared reader preserves the native .solidcraft output too");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn session_owns_and_releases_the_real_document() {
     let adapter = SessionAdapter::new();
     let document = Arc::downgrade(&adapter.session.doc);

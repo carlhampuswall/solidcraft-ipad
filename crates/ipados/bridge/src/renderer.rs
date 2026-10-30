@@ -231,7 +231,9 @@ impl NativeRenderer {
         let camera = &snapshot.camera;
         let eye = camera.eye().to_f32();
         Frame {
+            product_lights: None,
             product: false,
+            upload_error: None,
             key: self.scene_key,
             slot: self.scene.clone(),
             sketch_key: snapshot.guide_revision,
@@ -247,12 +249,14 @@ impl NativeRenderer {
             clip: [0.0; 4],
             cap: [0.0; 4],
             images: Vec::new(),
+            points: Vec::new(),
             analysis: [0.0; 8],
             analysis_colors: [0.0; 36],
             access: None,
             outline: true,
             eye: [eye[0], eye[1], eye[2], if camera.fov > 0.0 { 1.0 } else { 0.0 }],
             ao_radius: 0.0,
+            ao_samples: solidcraft_gpu::view::AO_SAMPLES,
             ssaa: 1.0,
             hover_tint: snapshot.hover_tint,
             selection_tint: snapshot.selection_tint,

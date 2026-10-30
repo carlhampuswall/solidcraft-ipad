@@ -1989,7 +1989,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func presentImportPicker(insert: Bool) {
         importingIntoProject = insert
-        let extensions = ProjectLibrary.importExtensions.filter { !insert || $0 != "solidcraft" }.sorted()
+        let extensions = ProjectLibrary.importExtensions.filter { !insert || !ProjectLibrary.nativeExtensions.contains($0) }.sorted()
         let types = extensions.compactMap { UTType(filenameExtension: $0) }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
         picker.delegate = self; picker.allowsMultipleSelection = false; picker.shouldShowFileExtensions = true

@@ -1,5 +1,44 @@
 # Accepted upstream failures for the development baseline
 
+## User extension — 0.27.1 development build, 2026-10-30
+
+The user explicitly extended the exception for the **same three failures** to
+the reviewed SolidCraft **0.27.1** iPad development candidate and authorized its
+local integration into `develop`, installation and testing on the physical iPad.
+The reviewed application/code tree is
+`b10a8ee3e52200e2d4b63d1aaa391f6fc32c7406`, preserving the completed pen-selection
+fix at `8544368f7282cb350bdfb07f6828f0919aa3445b` and upstream release
+`aa1fe28ddff42cac2990a312765a1a6c50d97dfe`. This section is the only documentation
+overlay on that reviewed tree for the initial integration.
+
+The actual full `cargo +1.95.0 xtask ci` run remains **failed (exit 1)**:
+**10,318 passed, three failed, 69 ignored**, with **86/87 test and side jobs
+passing**. The three failure signatures exactly match the earlier preserved
+baseline: the counterbored-ring measurement, robustness seed 36 and robustness
+seed 71, listed below. Their tests, tolerances, local-prism implementation and
+goldens are byte-identical to both the release and the earlier integration base.
+No test is disabled, no tolerance widened and no golden data blessed.
+
+The current full-gate log is retained in this task's
+`target/upstream-verification/full-ci.log`, SHA-256
+`6dd968dfd9ceef50b28527e2a6f32b926fda420feff5d180d15d8ad901c5e0ea`.
+`target/upstream-verification/review.json` records the candidate, exact signatures
+and other passing validation. Native adapter tests (206), the Foundation harness
+(692 cases), strict Clippy, the unsigned iPad build and dependency guard pass.
+Three preserved format-40 files round-trip through format-44 `.sc` and
+`.solidcraft` containers; web offline/update, format-fold and seven actual Mac
+GPU workflows also pass. Physical-device results are recorded separately for
+the integrated commit; Mac GPU and synthetic input are not physical Pencil
+verification.
+
+This is a **local development-baseline exception**, not green CI or release
+qualification. Seed 36 still produces invalid geometry. It permits no new or
+changed failure, test suppression, unrelated kernel repair, push or publication
+to `main`. Any application-code change beyond the reviewed tree requires fresh
+affected validation and a new review of this bounded exception. The original
+failed full-CI result must remain in the task record alongside the explicit
+exception and any passing documentation-overlay checks.
+
 ## User exception — 2026-10-28
 
 After the earlier blocked checkpoint, the user resumed Step 8.5 and explicitly
