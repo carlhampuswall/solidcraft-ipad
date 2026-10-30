@@ -2005,6 +2005,7 @@ final class WorkspaceViewPopover: UIViewController {
     var onOrigin: (() -> Void)?
     var onReference: ((String?, String?, Bool?) -> Void)?
     var onOriginInModel: (() -> Void)?
+    var onLegacyPlanes: (() -> Void)?
     private let scroll = UIScrollView()
     private let root = UIStackView()
     private let main = UIStackView()
@@ -2022,6 +2023,7 @@ final class WorkspaceViewPopover: UIViewController {
     private lazy var individualButton = ViewOptionButton(ViewText.text("individual_references"), id: "individual-references") { [weak self] in self?.showIndividuals(true) }
     private lazy var automatic = ViewOptionButton(SketchText.text("automatic_origin"), id: "automatic") { [weak self] in self?.onReference?(nil, nil, nil) }
     private lazy var originInModel = ViewSwitchRow(WorkspaceStyle.text("origin_in_model"), id: "origin-in-model") { [weak self] in self?.onOriginInModel?() }
+    private lazy var legacyPlanes = ViewSwitchRow(ViewText.text("legacy_planes"), subtitle: ViewText.text("legacy_planes_help"), id: "legacy-planes") { [weak self] in self?.onLegacyPlanes?() }
     private var references: [String: ViewSwitchRow] = [:]
     private var groups: [String: ViewSwitchRow] = [:]
     private var allActions: [ViewOptionButton] = []
@@ -2097,6 +2099,7 @@ final class WorkspaceViewPopover: UIViewController {
             let button = ViewOptionButton(SketchText.text(visible ? "show_origin" : "hide_origin"), id: visible ? "show-all" : "hide-all") { [weak self] in self?.onReference?(nil, nil, visible) }
             allActions.append(button); allRow.addArrangedSubview(button)
         }
+        individuals.addArrangedSubview(legacyPlanes)
         individuals.addArrangedSubview(allRow); individuals.addArrangedSubview(automatic); individuals.addArrangedSubview(originInModel)
         showIndividuals(false)
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (panel: WorkspaceViewPopover, _: UITraitCollection) in panel.view.setNeedsLayout() }
@@ -2117,7 +2120,7 @@ final class WorkspaceViewPopover: UIViewController {
         if view.window != nil { UIAccessibility.post(notification: .layoutChanged, argument: visible ? individuals : main) }
     }
     func render(_ state: ViewControlsPresentation?, cameraEnabled: Bool, referencesEnabled: Bool,
-                inSketch: Bool, automatic: Bool, originInModel: Bool) {
+                inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool) {
         loadViewIfNeeded(); current = state
         fit.render(selected: false, enabled: cameraEnabled)
         fit.contentHorizontalAlignment = .leading
@@ -2149,6 +2152,7 @@ final class WorkspaceViewPopover: UIViewController {
         }
         self.automatic.render(selected: automatic, enabled: referencesEnabled)
         self.originInModel.render(on: originInModel, enabled: true)
+        self.legacyPlanes.render(on: legacyPlanes, enabled: referencesEnabled)
         allActions.forEach { $0.render(selected: false, enabled: referencesEnabled) }
         view.setNeedsLayout()
     }

@@ -19,6 +19,7 @@ pub(crate) const ITEMS: [&str; 7] = ["O", "X", "Y", "Z", "XY", "XZ", "YZ"];
 pub(crate) struct OriginReferences {
     pub visible: [bool; 7],
     pub choosing: bool,
+    pub legacy_planes: bool,
     #[serde(skip)]
     overrides: [Option<bool>; 7],
     #[serde(skip)]
@@ -38,6 +39,7 @@ impl Default for OriginReferences {
         Self {
             visible: [false; 7],
             choosing: false,
+            legacy_planes: false,
             overrides: [None; 7],
             grid_axes: [false; 3],
             dirty: true,
@@ -102,6 +104,12 @@ impl Viewport {
 
     pub(crate) fn origin_command(&mut self, id: &str, params: &Value) -> Result<bool, AdapterError> {
         match id {
+            "view.origin_style" => {
+                let legacy =
+                    params.get("legacy").and_then(Value::as_bool).ok_or_else(|| error("bad_params", "ui.ipados.view.plane_style_boolean"))?;
+                self.cancel_interactions();
+                self.origin.legacy_planes = legacy;
+            }
             "view.origin" => {
                 let visible = match params.get("visible") {
                     Some(Value::Null) => None,
@@ -189,12 +197,23 @@ impl Viewport {
         planes
     }
 
+    fn reference_plane_size(&self) -> f64 {
+        self.reference_size() * if self.origin.legacy_planes { 1.0 } else { 0.5 }
+    }
+
+    fn reference_plane_offset(&self) -> f64 {
+        if self.origin.legacy_planes { 0.0 } else { self.reference_plane_size() * 0.1 }
+    }
+
     fn corners(&self, name: &str, plane: Plane) -> [Vec3; 4] {
-        let size = self.reference_size();
+        let size = self.reference_plane_size();
         let x = plane.x * size;
         // XZ's native sketch Y points down; origin guides extend toward world +Z.
         let y = plane.y * if name == "XZ" { -size } else { size };
-        [plane.origin, plane.origin + x, plane.origin + x + y, plane.origin + y]
+        // Offset only the display patch within its actual plane. Modelling keeps
+        // the engine plane and origin, while guides leave a gap beside both axes.
+        let origin = plane.origin + (x + y) * (self.reference_plane_offset() / size);
+        [origin, origin + x, origin + x + y, origin + y]
     }
 
     pub(crate) fn reference_bounds(&self) -> Aabb3 {
@@ -279,9 +298,10 @@ impl Viewport {
                 let hit = plane.intersect_ray(origin, direction)?;
                 let p = plane.to_local(hit);
                 let y = if name == "XZ" { -p.y } else { p.y };
-                let size = self.reference_size();
+                let start = self.reference_plane_offset();
+                let end = start + self.reference_plane_size();
                 let depth = (hit - origin).dot(direction);
-                ((0.0..=size).contains(&p.x) && (0.0..=size).contains(&y) && screen(hit).is_some() && visible(hit))
+                ((start..=end).contains(&p.x) && (start..=end).contains(&y) && screen(hit).is_some() && visible(hit))
                     .then_some((depth, Sel::Plane { name }))
             })
             .min_by(|a, b| a.0.total_cmp(&b.0))
@@ -305,11 +325,15 @@ impl Viewport {
         let palette = Palette::DEFAULT;
         for (name, plane) in self.reference_planes() {
             let entity = Sel::Plane { name: name.clone() };
-            let base = match name.as_str() {
-                "XY" => palette.axes[2],
-                "XZ" => palette.axes[1],
-                "YZ" => palette.axes[0],
-                _ => palette.sketch_construction,
+            let base = if self.origin.legacy_planes {
+                match name.as_str() {
+                    "XY" => palette.axes[2],
+                    "XZ" => palette.axes[1],
+                    "YZ" => palette.axes[0],
+                    _ => palette.sketch_construction,
+                }
+            } else {
+                palette.grid_major
             };
             let color = self.reference_color(&entity, base);
             let points = self.corners(&name, plane);
@@ -363,8 +387,10 @@ impl Viewport {
             }
         };
         for (name, plane) in self.reference_planes() {
-            let corners = self.corners(&name, plane);
-            add(&name, Sel::Plane { name: name.clone() }, corners[2]);
+            if self.origin.legacy_planes || !matches!(name.as_str(), "XY" | "XZ" | "YZ") {
+                let corners = self.corners(&name, plane);
+                add(&name, Sel::Plane { name: name.clone() }, corners[2]);
+            }
         }
         for (index, axis) in [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z].into_iter().enumerate() {
             if !self.origin.reference_visible(index) {

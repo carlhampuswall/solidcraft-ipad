@@ -2653,6 +2653,7 @@ fn origin_references_are_automatic_during_sketch_creation_without_changing_saved
     let mut engine = SessionAdapter::new();
     let before = engine.session.doc.clone();
     let mut view = Viewport::default();
+    view.command("view.origin_style", &json!({"legacy":true})).unwrap();
     view.command("view.grid", &json!({"visible":true,"integrated_axes":false})).unwrap();
     view.set_metrics(metrics(800., 600., 2.)).unwrap();
     view.begin_update(1);
@@ -2699,6 +2700,70 @@ fn origin_references_are_automatic_during_sketch_creation_without_changing_saved
     view.command("view.choose_sketch_plane", &json!({})).unwrap();
     view.command("view.cancel_plane", &json!({})).unwrap();
     assert_eq!(view.diagnostic()["reference_labels"].as_array().unwrap().len(), 7, "Show all preserves the old always-visible preference");
+}
+
+#[test]
+fn origin_plane_display_is_compact_neutral_spaced_and_restores_original_style() {
+    use solidcraft_engine::geom::Plane;
+    let mut engine = SessionAdapter::new();
+    let document = engine.session.doc.clone();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    view.command("view.choose_sketch_plane", &json!({})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["legacy_planes"], false);
+    let labels = view.diagnostic()["reference_labels"].as_array().unwrap().clone();
+    assert_eq!(labels.len(), 4);
+    assert!(labels.iter().all(|label| ["O", "X", "Y", "Z"].contains(&label["name"].as_str().unwrap())));
+    let camera = view.camera;
+    for legacy in [false, true, false] {
+        view.command("view.origin_style", &json!({"legacy":legacy})).unwrap();
+        let size = if legacy { 25.0 } else { 12.5 };
+        for (name, plane, y_sign) in [("XY", Plane::XY, 1.), ("XZ", Plane::XZ, -1.), ("YZ", Plane::YZ, 1.)] {
+            view.command("view.origin", &json!({"visible":false})).unwrap();
+            view.command("view.origin", &json!({"item":name,"visible":true})).unwrap();
+            let frame = view.snapshot().unwrap();
+            assert_eq!(frame.guides.meshes.len(), 1);
+            let positions = &frame.guides.meshes[0].mesh.positions;
+            let offset = if legacy { 0.0 } else { size * 0.1 };
+            let origin = plane.origin + (plane.x + plane.y * y_sign) * offset;
+            assert_eq!(
+                positions,
+                &vec![origin, origin + plane.x * size, origin + plane.x * size + plane.y * size * y_sign, origin + plane.y * size * y_sign]
+            );
+            let palette = solidcraft_engine::view::Palette::DEFAULT;
+            let color = if legacy {
+                match name {
+                    "XY" => palette.axes[2],
+                    "XZ" => palette.axes[1],
+                    _ => palette.axes[0],
+                }
+            } else {
+                palette.grid_major
+            };
+            assert_eq!(frame.guides.meshes[0].color, color);
+            assert_eq!(frame.guides.lines[0].color, color);
+            assert_eq!(&frame.guides.lines[0].points[..4], positions);
+            let inside = plane.to_world(solidcraft_engine::geom::Vec2::new(10., 10. * y_sign));
+            let outside = plane.to_world(solidcraft_engine::geom::Vec2::new(20., 20. * y_sign));
+            assert_eq!(view.pick_reference(point(&view, inside)), Some(Sel::Plane { name: name.into() }));
+            assert_eq!(view.pick_reference(point(&view, outside)).is_some(), legacy);
+            for local in [(0.5, 10.), (10., 0.5)] {
+                let gap = plane.to_world(solidcraft_engine::geom::Vec2::new(local.0, local.1 * y_sign));
+                assert_eq!(view.pick_reference(point(&view, gap)).is_some(), legacy, "the axis gap must not select {name}");
+            }
+            assert_eq!(view.diagnostic()["reference_labels"].as_array().unwrap().len(), usize::from(legacy));
+        }
+        assert_eq!(view.camera, camera, "style preference must preserve the camera");
+    }
+    let before = view.diagnostic();
+    for invalid in [json!({}), json!({"legacy":null}), json!({"legacy":"true"}), json!({"legacy":1})] {
+        assert!(view.command("view.origin_style", &invalid).is_err());
+        assert_eq!(view.diagnostic(), before);
+    }
+    assert!(Arc::ptr_eq(&document, &engine.session.doc));
+    assert!(engine.session.undo.is_empty());
 }
 
 #[test]
@@ -2751,7 +2816,7 @@ fn origin_visibility_controls_rendering_picking_and_retains_legacy_empty_view() 
     view.begin_update(1);
     view.install(1, engine.snapshot().unwrap());
     view.command("view.choose_sketch_plane", &json!({})).unwrap();
-    for (name, world) in [("XY", Vec3::new(15., 15., 0.)), ("XZ", Vec3::new(15., 0., 15.)), ("YZ", Vec3::new(0., 15., 15.))] {
+    for (name, world) in [("XY", Vec3::new(10., 10., 0.)), ("XZ", Vec3::new(10., 0., 10.)), ("YZ", Vec3::new(0., 10., 10.))] {
         view.command("view.origin", &json!({"visible":false})).unwrap();
         view.command("view.origin", &json!({"item":name,"visible":true})).unwrap();
         assert_eq!(view.pick(point(&view, world), Some(engine.geometry_revision)), Some(Sel::Plane { name: name.into() }));
@@ -2854,7 +2919,7 @@ fn plane_chooser_cancellation_restores_camera_and_rejects_stale_or_dragged_taps(
     view.command("view.front", &json!({})).unwrap();
     let camera = view.camera;
     view.command("view.choose_sketch_plane", &json!({})).unwrap();
-    let p = point(&view, Vec3::new(15., 15., 0.));
+    let p = point(&view, Vec3::new(10., 10., 0.));
     assert!(view.pick(p, Some(engine.geometry_revision + 1)).is_none());
     for phase in [InputPhase::Began, InputPhase::Ended] {
         let mut sample = event(InputSource::Pencil, phase, 1, p, 1.);
@@ -2886,6 +2951,7 @@ fn origin_chooser_frames_plane_axis_and_point_targets_in_portrait_and_landscape(
     for (width, height) in [(800., 600.), (390., 760.), (300., 900.)] {
         let mut engine = SessionAdapter::new();
         let mut view = Viewport::default();
+        view.command("view.origin_style", &json!({"legacy":true})).unwrap();
         view.set_metrics(metrics(width, height, 2.)).unwrap();
         view.begin_update(1);
         view.install(1, engine.snapshot().unwrap());
@@ -2920,7 +2986,7 @@ fn origin_references_respect_explicit_topology_filters_and_native_construction_v
     view.command("view.origin", &json!({"visible":false})).unwrap();
     view.command("view.choose_sketch_plane", &json!({})).unwrap();
     let plane = engine.preview_sketch_plane(json!("Tilted")).unwrap();
-    let world = plane.to_world(solidcraft_engine::geom::Vec2::new(15., 20.));
+    let world = plane.to_world(solidcraft_engine::geom::Vec2::new(7.5, 10.));
     let p = point(&view, world);
     assert_eq!(view.pick(p, Some(engine.geometry_revision)), Some(Sel::Plane { name: "Tilted".into() }));
     assert_eq!(view.snapshot().unwrap().guides.meshes.len(), 1);

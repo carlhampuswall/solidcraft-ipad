@@ -1,0 +1,27 @@
+{
+  "en": {
+    "ui.ipados.view.legacy_planes": "Original plane display",
+    "ui.ipados.view.legacy_planes_help": "Restore larger colored planes with labels and no gap beside the axes.",
+    "ui.ipados.view.plane_style_boolean": "The original plane display setting must be a boolean."
+  },
+  "de": {
+    "ui.ipados.view.legacy_planes": "Ursprüngliche Ebenendarstellung",
+    "ui.ipados.view.legacy_planes_help": "Stellt größere farbige Ebenen mit Beschriftungen ohne Abstand zu den Achsen wieder her.",
+    "ui.ipados.view.plane_style_boolean": "Die Einstellung für die ursprüngliche Ebenendarstellung muss ein boolescher Wert sein."
+  },
+  "ja": {
+    "ui.ipados.view.legacy_planes": "従来の平面表示",
+    "ui.ipados.view.legacy_planes_help": "ラベル付きの大きな色分けされた平面を、軸との隙間なしで表示します。",
+    "ui.ipados.view.plane_style_boolean": "従来の平面表示の設定は真偽値である必要があります。"
+  },
+  "ko": {
+    "ui.ipados.view.legacy_planes": "기존 평면 표시",
+    "ui.ipados.view.legacy_planes_help": "레이블이 있는 큰 색상 평면을 축과 간격 없이 복원합니다.",
+    "ui.ipados.view.plane_style_boolean": "기존 평면 표시 설정은 불리언 값이어야 합니다."
+  },
+  "zh": {
+    "ui.ipados.view.legacy_planes": "原始平面显示",
+    "ui.ipados.view.legacy_planes_help": "恢复带标签的较大彩色平面，平面与坐标轴之间无间隙。",
+    "ui.ipados.view.plane_style_boolean": "原始平面显示设置必须是布尔值。"
+  }
+}

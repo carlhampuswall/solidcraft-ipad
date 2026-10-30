@@ -67,6 +67,19 @@ mutually exclusive; invalid requests apply no changes. UIKit's **All axes** and
 **All planes** controls save the resulting per-item overrides under the existing
 `SolidCraft.workspace.originVisibility` preference.
 
+Reference planes default to half their previous width and height, with matching
+rendered outlines and picking bounds. They use one neutral palette color and
+leave a gap of 10% of their width beside each in-plane axis. Only the display
+patch moves; the engine plane and sketch origin retain their exact positions.
+XY/XZ/YZ viewport labels are hidden; axis, origin point, construction-plane and
+browser labels retain their identities.
+`view.origin_style` accepts `{"legacy": boolean}` and returns the viewport
+diagnostic with `origin.legacy_planes`. **View > Individual references > Original
+plane display** restores full-size, axis-colored reference planes touching the
+axes, along with the XY/XZ/YZ labels.
+UIKit persists this under `SolidCraft.workspace.legacyOriginPlanes` and reapplies
+it on startup. The toggle changes guides only, without document/history changes.
+
 `view.touch_orbit` is a viewport presentation preference. Input is
 `{"follows_viewpoint": boolean}`; the viewport diagnostic reply includes the same
 `touch_orbit` object. The default is `true`: finger deltas retain their direction

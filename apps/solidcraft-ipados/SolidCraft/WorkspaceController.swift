@@ -206,6 +206,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
+    private var legacyOriginPlanes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.legacyOriginPlanes")
     private var originVisibility = UserDefaults.standard.dictionary(forKey: "SolidCraft.workspace.originVisibility") as? [String: Bool] ?? [:]
     private static let originItems = ["O", "X", "Y", "Z", "XY", "XZ", "YZ"]
     private static let originAxes = ["X", "Y", "Z"]
@@ -544,6 +545,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.session.command("tool.repeat_rectangles", params: ["enabled": self.repeatRectangles])
                 self.session.command("select.filter", params: ["filter": self.filter.rawValue])
                 self.session.command("select.multiple", params: ["enabled": self.multiple])
+                self.session.command("view.origin_style", params: ["legacy": self.legacyOriginPlanes])
                 for (item, visible) in self.originVisibility {
                     self.session.command("view.origin", params: ["item": item, "visible": visible])
                 }
@@ -1252,6 +1254,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         panel.onIntegratedAxes = { [weak self] in self?.toggleIntegratedGridAxes() }
         panel.onOrigin = { [weak self] in self?.toggleOriginReferences() }
         panel.onReference = { [weak self] item, group, visible in self?.setOriginVisibility(item: item, group: group, visible: visible) }
+        panel.onLegacyPlanes = { [weak self] in self?.toggleLegacyOriginPlanes() }
         panel.onOriginInModel = { [weak self] in self?.toggleOriginInModel() }
         if let popover = panel.popoverPresentationController {
             popover.sourceView = viewButton; popover.sourceRect = viewButton.bounds
@@ -1261,6 +1264,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewControlsPopover = panel
         rebuildViewMenu()
         present(panel, animated: true)
+    }
+
+    private func toggleLegacyOriginPlanes() {
+        guard !referencesLocked else { return }
+        let enabled = !legacyOriginPlanes
+        viewControlPending = true; rebuildViewMenu()
+        session.command("view.origin_style", params: ["legacy": enabled]) { [weak self] result in
+            guard let self else { return }
+            self.viewControlPending = false
+            if case .success = result {
+                self.legacyOriginPlanes = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.legacyOriginPlanes")
+            }
+            self.rebuildViewMenu()
+        }
     }
 
     private func toggleOriginInModel() {
@@ -1287,7 +1305,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewButton.menu = nil; viewButton.showsMenuAsPrimaryAction = false
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
-            automatic: originVisibility.isEmpty, originInModel: originInBrowser)
+            automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes)
     }
 
     private func originCell(_ cell: UITableViewCell, row: Int) -> UITableViewCell {
