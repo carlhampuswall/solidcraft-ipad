@@ -32,7 +32,7 @@ turning it off restores the previous header position
 The floating header hosts its folder button directly, with a full 44-point
 touch target. It does not wrap that single control in a scroll view: UIKit's
 scroll-edge effect could blur the icon when the header occupied the top strip.
-The text layout retains its scrolling action bar. The opt-in `--chrome-check`
+The compact floating workspace is the only available layout. The opt-in `--chrome-check`
 also checks native hit testing across the visible controls and captures the
 floating header in Light and Dark appearances.
 Physical iPad verification on 2026-10-29 passed all eight text/floating,
@@ -266,9 +266,11 @@ registry icon mappings; these counts are discovered rather than fixed limits.
 
 ## Defaults and compatibility
 
-Changes a default: yes — compact floating chrome and dark native chrome are the
-new defaults. **Tools → Compact floating workspace** off restores the earlier
-text rail, header and docking policy (`SolidCraft.workspace.compactChrome`).
+Compact floating chrome is always enabled. The **Compact floating workspace**
+toggle has been removed at the user's request; saved
+`SolidCraft.workspace.compactChrome` values are ignored, including `false`.
+The earlier text rail, header and docking policy are no longer available.
+Dark native chrome remains the default.
 **Tools → Appearance → System** restores the earlier appearance policy; an
 existing `SolidCraft.workspace.appearance` value is retained. Rail side and
 two-/three-finger history gesture preferences are unchanged. Pinning and diagnostic
@@ -277,7 +279,7 @@ visibility are transient native presentation preferences, never CAD data.
 Changes a default: yes — bottom controls now use the bottom safe area.
 **Tools → Extend UI to bottom edge** off restores the former safe-area spacing
 (`SolidCraft.workspace.useBottomSafeArea`). The preference is saved between
-launches and applies to floating and text layouts, collapsed/expanded history,
+launches and applies to collapsed/expanded history,
 panels and on-canvas model value placement. Keyboard bounds still take priority.
 
 ## Viewport appearance and visibility
@@ -317,20 +319,20 @@ switching. These are physical UIKit observations, not mockups; hardware Pencil,
 palm rejection and VoiceOver are separate outstanding coverage. See the UI section
 of HANDOFF for current evidence and final gate status.
 
-Compatibility switching also has an opt-in DEBUG UIKit regression:
-launch with `--chrome-check` to cycle text/floating layouts in light/dark,
+Floating chrome also has an opt-in DEBUG UIKit regression:
+launch with `--chrome-check` to cycle light/dark and bottom safe-area settings,
 then read `Documents/workspace-chrome-check.json` from the app container. It checks
 actual visible icon/touch frames after UIKit layout, including the reparented
 browser button and retained scroll offsets. It also checks that the actual
 canvas fills the top/bottom window edges, that edge hit tests reach the canvas,
 and that status/history use the requested bottom spacing. It does not merely
-repeat the Foundation policy calculation. All eight physical combinations of
-text/floating, light/dark and both bottom spacing preferences pass for the bottom
-extension. The report is `target/ipados-bottom-edge-chrome-landscape.json`;
+repeat the Foundation policy calculation. Earlier verification passed all eight
+combinations of text/floating, light/dark and both bottom spacing preferences for
+the bottom extension. The report is `target/ipados-bottom-edge-chrome-landscape.json`;
 the unsigned and signed build logs are `target/ipados-bottom-edge-{unsigned,device}.log`.
 On this iPad the extension recovers 25 points beneath the former safe-area bound.
 The optional
-`--chrome-check-restore-dark` restores compact/dark preferences after this check;
+`--chrome-check-restore-dark` restores the dark appearance after this check;
 without that flag it restores the preferences present at launch. This mode never
 authors CAD or synthesizes Pencil input. It caught a runtime reparenting issue;
 the fix resets scroll offsets once after new chrome frames are assigned and

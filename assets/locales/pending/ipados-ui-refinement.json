@@ -1,6 +1,5 @@
 {
   "en": {
-    "ui.ipados.workspace.compact_chrome": "Compact floating workspace",
     "ui.ipados.workspace.constraint_selection_hint": "Select sketch geometry to enable compatible constraints.",
     "ui.ipados.workspace.constraints": "Constraints",
     "ui.ipados.workspace.curve_selection_hint": "Select sketch curves first.",

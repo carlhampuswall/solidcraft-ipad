@@ -194,7 +194,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var keyboardTop: CGFloat?
     private var railRight = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.railRight")
     private var appearance = (UserDefaults.standard.object(forKey: "SolidCraft.workspace.appearance") as? Int) ?? 2
-    private var compactChrome = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactChrome") as? Bool ?? true
+    // The floating workspace is the only supported presentation; ignore saved legacy values.
+    private let compactChrome = true
     private var homeToolbar = UserDefaults.standard.object(forKey: "SolidCraft.workspace.homeToolbar") as? Bool ?? true
     private var compactInspector = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactInspector") as? Bool ?? true
     private var useTopSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useTopSafeArea") as? Bool ?? true
@@ -2958,11 +2959,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.rebuildMenus()
         })
         moreActions.append(UIMenu(title: ModellingText.text("parameters"), children: modelActions { $0.hasPrefix("parameters.") }))
-        moreActions.append(UIAction(title: WorkspaceStyle.text("compact_chrome"), state: compactChrome ? .on : .off) { [weak self] _ in
-            guard let self else { return }; self.canvas.cancelInput(); self.compactChrome.toggle()
-            UserDefaults.standard.set(self.compactChrome, forKey: "SolidCraft.workspace.compactChrome")
-            self.configureChrome(); self.updateSubtitle(); self.updateAvailability(); self.rebuildMenus()
-        })
         moreActions.append(UIAction(title: InspectorText.text("compact_inspector"),
                                     attributes: modellingEditing ? .disabled : [], state: compactInspector ? .on : .off) { [weak self] _ in
             guard let self, !self.modellingEditing else { return }
@@ -3458,14 +3454,14 @@ private extension FoundationController {
     /// Real UIKit sizing, scrolling and completion on a disposable native sketch.
     func checkSketchToolbarOnDevice() {
         let expected = generation
-        let savedCompact = compactChrome, savedAppearance = appearance
-        let variants = [(true, 2, "select"), (true, 2, "sketch.line"),
-                        (true, 1, "sketch.spline.fit_point"), (false, 1, "select"), (true, 2, "select")]
+        let savedAppearance = appearance
+        let variants = [(2, "select"), (2, "sketch.line"),
+                        (1, "sketch.spline.fit_point"), (1, "select"), (2, "select")]
         var issues: [String] = []
         var finished = false
         func report() {
             guard !finished else { return }; finished = true
-            compactChrome = savedCompact; appearance = savedAppearance
+            appearance = savedAppearance
             applyAppearance(); configureChrome(); updateAvailability(); view.layoutIfNeeded()
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -3491,8 +3487,8 @@ private extension FoundationController {
             guard index < variants.count else {
                 finishSketchButton.sendActions(for: .touchUpInside); waitForFinish(); return
             }
-            let (compact, style, tool) = variants[index]
-            compactChrome = compact; appearance = style
+            let (style, tool) = variants[index]
+            appearance = style
             applyAppearance(); configureChrome()
             session.command("tool.set", params: ["tool": tool]) { result in
                 guard case .success = result else { issues.append("tool selection failed: \(tool)"); report(); return }
@@ -3502,7 +3498,7 @@ private extension FoundationController {
                     if self.finishSketchButton.isHidden || !self.finishSketchButton.isEnabled {
                         issues.append("completion unavailable: \(index)")
                     }
-                    if compact {
+                    if self.compactChrome {
                         self.railScroll.setContentOffset(CGPoint(x: 0, y: max(0, self.railScroll.contentSize.height - self.railScroll.bounds.height)), animated: false)
                         let frame = self.finishSketchButton.convert(self.finishSketchButton.bounds, to: self.top)
                         if !self.top.bounds.contains(frame) || frame.height < 44 || self.finishSketchButton.configuration?.title != SketchText.text("finish") {
@@ -4645,7 +4641,7 @@ private extension FoundationController {
     }
 
     func checkBrowserOnDevice() {
-        compactChrome = true; leftBrowser = true; appearance = 2
+        leftBrowser = true; appearance = 2
         originExpanded = false
         configureChrome(); applyAppearance()
         func capture(_ name: String) {
@@ -5266,8 +5262,8 @@ private extension FoundationController {
         }
     }
 
-    /// Actual UIKit regression for controls reparented between text/floating
-    /// layouts. Foundation rectangle tests cannot observe retained scroll state.
+    /// Actual UIKit regression for floating controls across appearance and safe-area
+    /// settings. Foundation rectangle tests cannot observe retained scroll state.
     func checkChromeOnDevice() {
         struct Report: Encodable {
             let compact: Bool
@@ -5276,23 +5272,20 @@ private extension FoundationController {
             let issues: [String]
             let frames: [String: [Double]]
         }
-        let savedCompact = compactChrome
         let savedAppearance = appearance
         let savedBottomSafeArea = useBottomSafeArea
         let expected = generation
         let variants = [false, true].flatMap { bottom in
-            [(false, 1, bottom), (true, 1, bottom), (false, 2, bottom), (true, 2, bottom)]
+            [(1, bottom), (2, bottom)]
         }
         var reports: [Report] = []
         func step(_ index: Int) {
             guard active, generation == expected else { return }
             if index == variants.count {
                 let restoreDark = ProcessInfo.processInfo.arguments.contains("--chrome-check-restore-dark")
-                compactChrome = restoreDark ? true : savedCompact
                 appearance = restoreDark ? 2 : savedAppearance
                 useBottomSafeArea = savedBottomSafeArea
                 if restoreDark {
-                    UserDefaults.standard.set(true, forKey: "SolidCraft.workspace.compactChrome")
                     UserDefaults.standard.set(2, forKey: "SolidCraft.workspace.appearance")
                 }
                 applyAppearance(); configureChrome(); updateSubtitle(); updateAvailability(); rebuildMenus()
@@ -5306,7 +5299,7 @@ private extension FoundationController {
                 return
             }
             canvas.cancelInput()
-            compactChrome = variants[index].0; appearance = variants[index].1; useBottomSafeArea = variants[index].2
+            appearance = variants[index].0; useBottomSafeArea = variants[index].1
             applyAppearance(); configureChrome(); updateSubtitle(); updateAvailability(); rebuildMenus()
             view.layoutIfNeeded()
             // Check after UIKit completes the reparenting/layout turn, rather

@@ -257,7 +257,7 @@ launches automatically nor substitutes for human UI/Pencil verification.
 
 DEBUG `--sketch-toolbar-check` uses a disposable sketch and the production UIKit
 controls. It checks icon titles and touch sizes after state refreshes, header
-completion visibility while the rail scrolls, text/floating layout switches,
+completion visibility while the floating rail scrolls,
 Light/Dark appearance, line/spline tools, and tapping **Finish sketch** to exit.
 It writes `sketch-toolbar-check.json` and five `sketch-toolbar-<index>.png`
 captures in Documents without opening or autosaving a library project.
