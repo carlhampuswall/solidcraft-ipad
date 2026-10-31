@@ -58,11 +58,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var createSketchButton = WorkspaceButton(SketchText.text("create")) { [weak self] in self?.chooseSketchPlane() }
     private lazy var sketchToolsButton = WorkspaceButton(SketchText.text("draw"), action: {})
     private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.run("sketch.finish") }
-    private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.run("tool.finish_chain") }
+    private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.finishSketchChain() }
     private lazy var endpointFinishButton: WorkspaceButton = WorkspaceButton(SketchText.text("finish_chain"), prominent: true) { [weak self] in
         guard let self, !self.endpointFinishButton.isHidden, self.endpointFinishButton.isEnabled else { return }
         self.endpointFinishButton.isHidden = true
-        self.run("tool.finish_chain")
+        self.finishSketchChain()
     }
     private lazy var documentActionsButton = WorkspaceButton(ProjectText.text("title")) { [weak self] in self?.showProjects() }
     private lazy var homeButton = WorkspaceButton(WorkspaceStyle.text("home")) { [weak self] in
@@ -2838,6 +2838,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         run("tool.set", params: ["tool": tool])
         if tool == "post_radius" { inspectorOpen = true; browserOpen = false; view.setNeedsLayout() }
     }
+    private func finishSketchChain() {
+        if state?.active_tool == "sketch.line" { setTool("select") }
+        else { run("tool.finish_chain") }
+    }
     private func toggleMultipleSelection() {
         let enabled = !multiple
         canvas.cancelInput()
@@ -3880,7 +3884,22 @@ private extension FoundationController {
                             button.sendActions(for: .touchUpInside)
                             wait({ self.sketchInput?.finish_chain_at == nil && self.pending.isEmpty }) {
                                 if !button.isHidden || self.state?.sketch?.curves.count != 2 || self.state?.sketch == nil { issues.append("Finish changed geometry or closed the sketch") }
-                                capture("finished"); report()
+                                if self.state?.active_tool != "select" { issues.append("Finish did not return to Select") }
+                                capture("finished")
+                                self.setTool("sketch.line")
+                                wait({ self.state?.active_tool == "sketch.line" && self.pending.isEmpty }) {
+                                    tap([-25, 20, 0]) {
+                                        tap([-10, 25, 0]) {
+                                            wait({ !self.endpointFinishButton.isHidden && self.pending.isEmpty && self.state?.sketch?.curves.count == 3 }) {
+                                                self.finishChainButton.sendActions(for: .touchUpInside)
+                                                wait({ self.state?.active_tool == "select" && self.pending.isEmpty }) {
+                                                    if self.state?.sketch?.curves.count != 3 { issues.append("Toolbar Finish changed geometry") }
+                                                    capture("toolbar-finished"); report()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

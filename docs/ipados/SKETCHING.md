@@ -49,16 +49,20 @@ actual macOS GPU renderer. Captures were inspected; this does not verify UIKit
 runtime or physical Pencil input. The engine test suite was not run.
 
 While drawing a line chain, a small checkmark button appears beside the last
-committed endpoint. It runs `tool.finish_chain`, leaving the committed lines and
-the sketch open; the next line starts a new chain. The button uses the shared
+committed endpoint. It switches to Select through `tool.set`, leaving the
+committed lines and the sketch open. Choose Line again to start a new chain.
+The toolbar's Finish chain button also returns to Select for lines; splines
+retain their existing `tool.finish_chain` completion. The endpoint button uses the shared
 camera projection, avoids workspace controls and hides during drawing/evaluation. Its accessible
 label is **Finish chain** and its touch target is 44 points. The toolbar's
 existing Finish chain and Finish sketch controls remain available.
 
 DEBUG `--line-finish-check` draws two lines through synthetic Pencil samples,
-checks the production UIKit endpoint button and taps it, verifies both lines and
-the open sketch remain, then writes `line-finish-check.json` and
-`line-finish-ready.png` / `line-finish-finished.png` in Documents. Physical input
+checks the production UIKit endpoint button and taps it, verifies Select is
+active while both lines and the open sketch remain, then draws another line
+and checks the toolbar's Finish chain action also returns to Select. It writes
+`line-finish-check.json` and `line-finish-ready.png`, `line-finish-finished.png`
+and `line-finish-toolbar-finished.png` in Documents. Physical input
 delivery requires a separate manual check.
 
 ## Capability inventory at the checked-out upstream revision
