@@ -339,10 +339,18 @@ Native requests use `requestNumeric` or `requestModelling`:
   viewport preference `view.automatic_subtract {"enabled":true|false}` controls
   inward-drag operation inference. `_auto_subtract` and `_auto_subtract_scope`
   are provisional form metadata stripped before shared engine commands.
+- Combine exposes `body_pick` and `bodies_pick` fields for `target` and `tools`,
+  with the active role in `selection_field`. Tapping a face picks and highlights
+  its whole body. The target is single selection; tools toggle independently of
+  the saved Multiple setting and cannot include the target. Role changes retain
+  their existing picks. Selection stays on the original bodies until explicit
+  Preview or Apply, and reselecting reveals consumed tools. Editing a Combine
+  feature uses its pre-feature scene; Cancel restores the original result.
 - Preview validates the exact current parameters. Typing, changing selection or
   starting a newer proposal invalidates that result. Apply evaluates the latest
   parameters itself. The host schedules previews automatically after changes;
-  there is no separate Preview action.
+  Combine pauses automatic previews during body picking and exposes Preview to
+  finish the selection explicitly.
 - Apply commits one logical history action. A consumed token cannot apply twice.
   Editing an existing feature preserves its original native feature ID.
 - A model's `last_preview` may remain visible while newer work is pending, with

@@ -979,6 +979,7 @@ impl Viewport {
             // Stale/consumed contacts and navigation never dismiss an edit.
             if self.cancel_tools_on_dismiss
                 && self.model_active()
+                && self.modelling.as_ref().is_none_or(|edit| edit.body_pick_field().is_none())
                 && model_token.is_some()
                 && model_token == self.modelling.as_ref().map(|edit| edit.token)
                 && e.phase == InputPhase::Ended

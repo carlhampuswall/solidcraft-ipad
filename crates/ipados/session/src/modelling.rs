@@ -52,6 +52,23 @@ pub struct ModelEdit {
     pub feedback: Vec<String>,
 }
 
+impl ModelEdit {
+    pub(crate) fn body_pick_field(&self) -> Option<&str> {
+        self.selection_field
+            .as_deref()
+            .filter(|key| self.fields.iter().any(|field| field["key"] == *key && matches!(field["kind"].as_str(), Some("body_pick" | "bodies_pick"))))
+    }
+
+    fn has_body_picks(&self) -> bool {
+        self.fields.iter().any(|field| field["kind"] == "body_pick")
+    }
+
+    fn body_pick_selection(&self, field: &str) -> Vec<Sel> {
+        let names = if field == "tools" { self.params["tools"].as_array().cloned().unwrap_or_default() } else { vec![self.params["target"].clone()] };
+        names.iter().filter_map(|name| name.as_str().map(|name| Sel::Body { name: name.into() })).collect()
+    }
+}
+
 #[derive(Clone, PartialEq, Serialize)]
 pub struct ModelHandle {
     pub origin: solidcraft_engine::geom::Vec3,
@@ -637,7 +654,20 @@ impl SessionAdapter {
         } else {
             context.create_model_form(&mut edit, selection)?;
         }
+        let combine = edit.operation == "solid.combine"
+            || feature.and_then(|id| self.session.doc.feature(id)).is_some_and(|feature| matches!(feature.kind, FeatureKind::Combine { .. }));
+        if combine {
+            for field in &mut edit.fields {
+                match field["key"].as_str() {
+                    Some("target") => field["kind"] = json!("body_pick"),
+                    Some("tools") => field["kind"] = json!("bodies_pick"),
+                    _ => {}
+                }
+            }
+            edit.selection_field = Some("target".into());
+        }
         if reattach
+            || combine && feature.is_some()
             || feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err())
         {
             let mut source = context.snapshot()?;
@@ -842,7 +872,7 @@ impl SessionAdapter {
     pub fn refresh_model(&self, edit: &ModelEdit, selection: &[Sel], params: Option<Value>) -> Result<ModelEdit, AdapterError> {
         self.validate_model(edit)?;
         let selecting_targets = edit.selection_field.as_deref() == Some("targets");
-        let mut refreshed = if edit.feature.is_some() || crate::assembly::supported(&edit.operation) || selecting_targets {
+        let mut refreshed = if edit.feature.is_some() || crate::assembly::supported(&edit.operation) || selecting_targets || edit.has_body_picks() {
             edit.clone()
         } else {
             self.begin_model(edit.token, Some(&edit.operation), None, selection)?
@@ -868,6 +898,24 @@ impl SessionAdapter {
         .then(|| (refreshed.params["faces"].clone(), refreshed.params["body"].clone()));
         let canvas_selection = params.is_none();
         refreshed.params = params.unwrap_or_else(|| edit.params.clone());
+        if canvas_selection && let Some(field) = edit.body_pick_field() {
+            let bodies: Vec<_> = selection
+                .iter()
+                .filter_map(|selected| match selected {
+                    Sel::Body { name } => Some(json!(name)),
+                    _ => None,
+                })
+                .collect();
+            if field == "target" {
+                refreshed.params["target"] = bodies.first().cloned().unwrap_or(Value::Null);
+                let target = refreshed.params["target"].clone();
+                if let Some(tools) = refreshed.params["tools"].as_array_mut() {
+                    tools.retain(|tool| tool != &target);
+                }
+            } else {
+                refreshed.params["tools"] = json!(bodies.into_iter().filter(|body| body != &refreshed.params["target"]).collect::<Vec<_>>());
+            }
+        }
         if edit.operation == "sketch.redefine" && canvas_selection && edit.selection_field.as_deref() == Some("plane") {
             refreshed.params["plane"] = self.sketch_attachment_selection(edit, selection);
         }
@@ -1076,6 +1124,7 @@ impl SessionAdapter {
             .iter()
             .filter_map(|s| match s {
                 Sel::Body { name } => Some(json!(name)),
+                Sel::Face { body, .. } | Sel::Edge { body, .. } | Sel::Vertex { body, .. } if edit.operation == "solid.combine" => Some(json!(body)),
                 _ => None,
             })
             .collect();
@@ -1233,7 +1282,14 @@ impl SessionAdapter {
             "solid.combine" => {
                 f.push(field("target", "Target body", "reference", bodies.clone()));
                 f.push(field("tools", "Tool bodies", "references", bodies.clone()));
-                p["tools"] = json!([]);
+                let mut unique = Vec::new();
+                for body in &selected_bodies {
+                    if !unique.contains(body) {
+                        unique.push(body.clone());
+                    }
+                }
+                p["target"] = unique.first().cloned().unwrap_or(Value::Null);
+                p["tools"] = json!(unique.iter().skip(1).collect::<Vec<_>>());
                 p["keep_tools"] = json!(true);
                 f.push(field("keep_tools", "Retain tool bodies", "choice", vec![option("Retain", json!(true)), option("Consume", json!(false))]));
                 p["operation"] = json!("join");
@@ -1327,7 +1383,7 @@ impl SessionAdapter {
     }
 
     pub fn model_descriptor(&self, edit: &ModelEdit) -> Value {
-        json!({"token":edit.token,"operation":edit.operation,"feature":edit.feature,"params":edit.params,"fields":edit.fields,"valid":edit.preview.is_some(),"handle":edit.handle,"reply":edit.reply,"feedback":edit.feedback})
+        json!({"token":edit.token,"operation":edit.operation,"feature":edit.feature,"params":edit.params,"fields":edit.fields,"selection_field":edit.selection_field,"valid":edit.preview.is_some(),"handle":edit.handle,"reply":edit.reply,"feedback":edit.feedback})
     }
 
     fn validate_model(&self, edit: &ModelEdit) -> Result<(), AdapterError> {
@@ -1704,6 +1760,9 @@ impl Viewport {
         if edit.params != current.params || edit.version != current.version {
             self.cancel_interactions();
         }
+        if let Some(field) = edit.body_pick_field() {
+            self.selection = edit.body_pick_selection(field);
+        }
         self.modelling = Some(edit);
         self.changed();
         Ok(())
@@ -1725,7 +1784,7 @@ impl Viewport {
             return Err(error("disabled", "Finish the current operation."));
         }
         self.cancel_interactions();
-        if edit.operation == "sketch.redefine" && !self.updating {
+        if edit.repair_source.is_some() && !self.updating {
             edit.repair_original = self
                 .model
                 .as_ref()
@@ -1736,6 +1795,9 @@ impl Viewport {
             self.model = Some(source.clone());
             self.selection.clear();
             self.updating = false;
+        }
+        if edit.body_pick_field().is_some() {
+            self.selection = edit.body_pick_selection("target");
         }
         self.modelling = Some(edit);
         self.changed();
@@ -1781,17 +1843,24 @@ impl Viewport {
         let field = field.or_else(|| {
             if edit.operation == "sketch.redefine" {
                 Some("plane")
+            } else if edit.has_body_picks() {
+                Some("target")
             } else {
                 (edit.operation == "solid.extrude" && edit.params["operation"] != "new" && edit.params["profile"].is_object()).then_some("targets")
             }
         });
         if field.is_some_and(|field| {
-            !matches!(field, "profile" | "targets" | "plane" | "edges" | "faces") || !edit.fields.iter().any(|input| input["key"] == field)
+            !matches!(field, "profile" | "targets" | "target" | "tools" | "plane" | "edges" | "faces")
+                || !edit.fields.iter().any(|input| input["key"] == field)
+                || matches!(field, "target" | "tools") && !edit.has_body_picks()
         }) {
             return Err(error("bad_params", "Choose a modelling source or target field."));
         }
         self.fail_model(token)?;
         self.selection.clear();
+        if edit.has_body_picks() {
+            self.selection = edit.body_pick_selection(field.unwrap_or("target"));
+        }
         if let Some(edit) = &mut self.modelling {
             edit.selection_field = field.map(str::to_string);
             if edit.operation == "sketch.redefine" {

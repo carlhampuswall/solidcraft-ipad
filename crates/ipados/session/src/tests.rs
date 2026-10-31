@@ -6995,6 +6995,110 @@ fn modelling_hole_uses_real_sketch_centres_explicit_targets_and_original_diamete
 }
 
 #[test]
+fn modelling_combine_visual_picks_whole_bodies_and_keeps_roles_separate() {
+    for device in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Target"})).unwrap();
+        for (name, x, width) in [("Tool A", 5, 5), ("Tool B", 15, 3)] {
+            adapter
+                .execute("solid.box", json!({"length":width,"width":30,"height":14,"corner":[x,-5,-2],"operation":"new","body_name":name}))
+                .unwrap();
+        }
+        let original = adapter.snapshot().unwrap();
+        let history = adapter.session.undo.len();
+        let mut viewport = Viewport::default();
+        viewport.set_metrics(metrics(800., 600., 1.)).unwrap();
+        viewport.begin_update(1);
+        viewport.install(1, original.clone());
+        viewport.command("view.top", &json!({})).unwrap();
+        viewport.command("select.filter", &json!({"filter":"edge"})).unwrap();
+        viewport.command("select.multiple", &json!({"enabled":false})).unwrap();
+        let mut edit = adapter.begin_model(786, Some("solid.combine"), None, &[]).unwrap();
+        edit.params["operation"] = json!("cut");
+        edit.params["keep_tools"] = json!(false);
+        assert!(edit.fields.iter().any(|field| field["key"] == "target" && field["kind"] == "body_pick"));
+        assert!(edit.fields.iter().any(|field| field["key"] == "tools" && field["kind"] == "bodies_pick"));
+        viewport.begin_model(edit).unwrap();
+        let mut sequence = 0;
+        let mut choose = |viewport: &mut Viewport, world: Vec3| {
+            sequence += 1;
+            let tap = point(viewport, world);
+            feed(viewport, device, InputPhase::Began, sequence, tap, sequence as f64);
+            feed(viewport, device, InputPhase::Ended, sequence, tap, sequence as f64 + 0.1);
+            let edit = adapter.refresh_model(&viewport.model_edit(786).unwrap(), viewport.selection(), None).unwrap();
+            viewport.update_model(edit).unwrap();
+        };
+        choose(&mut viewport, Vec3::new(2., 5., 10.));
+        assert_eq!(viewport.selection(), &[Sel::Body { name: "Target".into() }]);
+        assert_eq!(viewport.snapshot().unwrap().selected_bodies, ["Target"]);
+        viewport.select_model_inputs(786, Some("tools")).unwrap();
+        choose(&mut viewport, Vec3::new(6., 5., 12.));
+        choose(&mut viewport, Vec3::new(16., 5., 12.));
+        choose(&mut viewport, Vec3::new(2., 5., 10.));
+        assert_eq!(viewport.model_edit(786).unwrap().params["tools"], json!(["Tool A", "Tool B"]));
+        assert_eq!(viewport.snapshot().unwrap().selected_bodies, ["Tool A", "Tool B"]);
+        let edit = viewport.model_edit(786).unwrap();
+        let stale = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+        choose(&mut viewport, Vec3::new(6., 5., 12.));
+        assert!(viewport.publish_model(786, &stale).is_err(), "a late preview must not validate a removed tool");
+        assert_eq!(viewport.model_edit(786).unwrap().params["tools"], json!(["Tool B"]));
+        choose(&mut viewport, Vec3::new(6., 5., 12.));
+        // Re-entering a role retains its picks; empty space clears only that role.
+        viewport.select_model_inputs(786, Some("tools")).unwrap();
+        feed(&mut viewport, device, InputPhase::Began, 99, [1., 1.], 20.);
+        feed(&mut viewport, device, InputPhase::Ended, 99, [1., 1.], 20.1);
+        assert!(viewport.model_active(), "empty space must clear the active role without dismissing Combine");
+        let empty = adapter.refresh_model(&viewport.model_edit(786).unwrap(), viewport.selection(), None).unwrap();
+        assert_eq!(empty.params["target"], "Target");
+        assert_eq!(empty.params["tools"], json!([]));
+        assert!(adapter.prepare_model(&empty, empty.params.clone(), false).is_err());
+        // Restore the complete selection and explicitly preview.
+        viewport.select_model_inputs(786, Some("tools")).unwrap();
+        let edit = viewport.model_edit(786).unwrap();
+        let prepared = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+        assert!((prepared.model.volume_mm3 - 2400.).abs() < 1e-5);
+        viewport.publish_model(786, &prepared).unwrap();
+        assert!(viewport.model_edit(786).unwrap().selection_field.is_none());
+        viewport.select_model_inputs(786, Some("tools")).unwrap();
+        assert!(Arc::ptr_eq(&viewport.snapshot().unwrap().model, &original), "reselection reveals consumed tools");
+        assert_eq!(viewport.selection().len(), 2);
+        assert_eq!(viewport.diagnostic()["filter"], "edge");
+        assert_eq!(adapter.session.undo.len(), history);
+        viewport.cancel_model();
+        assert!(Arc::ptr_eq(&viewport.snapshot().unwrap().model, &original));
+    }
+}
+
+#[test]
+fn modelling_combine_history_picking_reveals_original_tools_and_cancel_restores_result() {
+    let mut adapter = SessionAdapter::new();
+    for (name, x) in [("Target", 0), ("Tool", 5)] {
+        adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"corner":[x,0,0],"operation":"new","body_name":name})).unwrap();
+    }
+    let edit = adapter.begin_model(787, Some("solid.combine"), None, &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["target"] = json!("Target");
+    params["tools"] = json!(["Tool"]);
+    params["keep_tools"] = json!(false);
+    modelling_commit(&mut adapter, &edit, params);
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let result = adapter.snapshot().unwrap();
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800., 600., 1.)).unwrap();
+    viewport.begin_update(1);
+    viewport.install(1, result.clone());
+    let edit = adapter.begin_model(788, None, Some(feature), &[]).unwrap();
+    assert!(edit.repair_source.is_some());
+    viewport.begin_model(edit).unwrap();
+    viewport.select_model_inputs(788, Some("tools")).unwrap();
+    assert_eq!(viewport.selection(), &[Sel::Body { name: "Tool".into() }]);
+    assert_eq!(viewport.snapshot().unwrap().model.scene.meshes.len(), 2);
+    viewport.cancel_model();
+    assert!(Arc::ptr_eq(&viewport.snapshot().unwrap().model, &result));
+    assert!(!viewport.is_updating());
+}
+
+#[test]
 fn modelling_boolean_modes_distinguish_target_tools_and_retain_behavior_with_history() {
     for (operation, expected) in [("join", 1500.0), ("cut", 500.0), ("intersect", 500.0)] {
         let mut adapter = SessionAdapter::new();

@@ -104,6 +104,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--edge-selection") {
         return edge_selection_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--combine-selection") {
+        return combine_selection_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--selection-taps") {
         return selection_taps_proof(&destination);
     }
@@ -1135,6 +1138,67 @@ fn continuous_resize_proof(destination: &str) -> Result<(), Box<dyn std::error::
     println!(
         "PASS: new extrusion, tap/re-grab, one continuous Pencil contact 10→15→20→12 mm with in-flight motion, displayed progress/inspection, explicit Apply. Synthetic input, macOS GPU; physical Pencil unverified."
     );
+    Ok(())
+}
+
+fn combine_selection_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.box", json!({"length":20,"width":20,"height":10,"body_name":"Target"}))?;
+    for (name, x, width) in [("Tool A", 5, 5), ("Tool B", 15, 3)] {
+        engine.execute("solid.box", json!({"length":width,"width":30,"height":14,"corner":[x,-5,-2],"operation":"new","body_name":name}))?;
+    }
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("select.filter", &json!({"filter":"face"}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("combine frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("{stage}: selected {:?}; {:.3} mm³; {path}", snapshot.selected_bodies, snapshot.model.volume_mm3);
+        Ok(())
+    };
+    let choose = |view: &mut Viewport, world: serde_json::Value, time: f64| -> Result<(), Box<dyn std::error::Error>> {
+        let projected = view.command("view.project", &json!({"point":world}))?;
+        for (phase, timestamp) in [("began", time), ("ended", time + 0.1)] {
+            let context = view.diagnostic();
+            view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":91,"timestamp":timestamp,
+                "x_points":projected["points"][0],"y_points":projected["points"][1],"x_pixels":projected["pixels"][0],"y_pixels":projected["pixels"][1],"scale":1,
+                "geometry_revision":context["geometry_revision"],"document_id":context["document_id"],"viewport_epoch":context["viewport_epoch"],
+                "camera_epoch":context["camera_epoch"],"display_preview":context["preview"]}))?)?;
+        }
+        let edit = engine.refresh_model(&view.model_edit(789)?, view.selection(), None)?;
+        view.update_model(edit)?;
+        Ok(())
+    };
+    capture(&view, "before")?;
+    let mut edit = engine.begin_model(789, Some("solid.combine"), None, &[])?;
+    edit.params["operation"] = json!("cut");
+    edit.params["keep_tools"] = json!(false);
+    view.begin_model(edit)?;
+    choose(&mut view, json!([2, 5, 10]), 1.)?;
+    if view.model_edit(789)?.params["target"] != "Target" {
+        return Err("target body pick failed".into());
+    }
+    capture(&view, "target")?;
+    view.select_model_inputs(789, Some("tools"))?;
+    choose(&mut view, json!([6, 5, 12]), 2.)?;
+    choose(&mut view, json!([16, 5, 12]), 3.)?;
+    let edit = view.model_edit(789)?;
+    if edit.params["tools"] != json!(["Tool A", "Tool B"]) {
+        return Err("tool body picks failed".into());
+    }
+    capture(&view, "tools")?;
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
+    if (preview.model.volume_mm3 - 2400.).abs() > 1e-5 {
+        return Err("combine cut volume".into());
+    }
+    view.publish_model(789, &preview)?;
+    capture(&view, "preview")?;
     Ok(())
 }
 

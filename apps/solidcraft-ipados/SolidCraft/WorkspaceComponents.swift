@@ -1514,11 +1514,15 @@ final class ModellingInspector: UIStackView {
     let compact: Bool
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
+    private(set) var selectionField: String?
+    var hasBodyPicks: Bool { fields.contains { $0.kind == "body_pick" } }
+    var isPickingBodies: Bool { hasBodyPicks && selectionField != nil }
     private var validated: [String: PresentationJSON]?
     private var attachmentReady: Bool {
         !fields.contains(where: { $0.key == "plane" && $0.kind == "face_pick" }) || validated == params
     }
     private var entryHint: String {
+        if isPickingBodies { return NativeText.value("ui.ipados.combine.pick_" + (selectionField == "target" ? "target" : "tools")) }
         if fields.contains(where: { $0.key == "plane" && $0.kind == "face_pick" }), params["plane"] == nil || params["plane"] == .null {
             return NativeText.value("ui.ipados.attachment.choose_face")
         }
@@ -1592,6 +1596,7 @@ final class ModellingInspector: UIStackView {
         } else { title = ModellingText.text("tools") }
         params = state.params ?? [:]
         fields = state.fields ?? []
+        selectionField = state.selection_field
         apply = WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true, action: {})
         cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
         select = WorkspaceButton(ModellingText.text("select_in_viewport"), action: {})
@@ -1622,7 +1627,7 @@ final class ModellingInspector: UIStackView {
                 addArrangedSubview(help)
             }
             addArrangedSubview(feedback)
-        } else if !isAttachmentRepair { addArrangedSubview(select) }
+        } else if !isAttachmentRepair && !hasBodyPicks { addArrangedSubview(select) }
         footer.axis = .vertical; footer.spacing = 8
         if compact {
             let divider = UIView(); divider.backgroundColor = WorkspaceStyle.separator
@@ -1640,6 +1645,7 @@ final class ModellingInspector: UIStackView {
         } else { footer.addArrangedSubview(actions); footer.addArrangedSubview(cancel); addArrangedSubview(footer) }
         apply.addAction(UIAction { [weak self] _ in
             guard let self, !self.busy, !self.contextRefreshing, self.attachmentReady,
+                  !ModellingFormPresentation.needsCombineBodies(self.params),
                   !ModellingFormPresentation.needsExtrusionDistance(self.params) else { return }
             self.endEditing(true); self.onApply?(self.params)
         }, for: .touchUpInside)
@@ -1660,6 +1666,7 @@ final class ModellingInspector: UIStackView {
 
     func evaluated(_ state: ModellingState) {
         busy = false; committing = false; inputWhileBusy = false
+        selectionField = state.selection_field
         if state.params == params, let fields = state.fields { self.fields = fields }
         validated = state.valid == true && state.params == params ? params : nil
         if validated != nil { locallyEdited = false }
@@ -1671,6 +1678,7 @@ final class ModellingInspector: UIStackView {
         // Inspection refreshes available native references. Current draft text
         // remains owned by its fields; inspection never silently replaces an input.
         if let fields = state.fields { self.fields = fields }
+        selectionField = state.selection_field
         if !locallyEdited, let params = state.params { self.params = params }
         validated = state.valid == true && state.params == params ? params : nil
         if !textEntryActive { rebuildFields() }
@@ -1692,6 +1700,7 @@ final class ModellingInspector: UIStackView {
     func contextRefreshed(_ state: ModellingState) {
         if let params = state.params { self.params = params }
         if let fields = state.fields { self.fields = fields }
+        selectionField = state.selection_field
         contextRefreshing = false; busy = false; inputWhileBusy = false
         locallyEdited = false; validated = nil
         if !textEntryActive { rebuildFields() }
@@ -1718,7 +1727,8 @@ final class ModellingInspector: UIStackView {
         if !busy { message.show(entryHint) }
     }
     private func updateAvailability() {
-        apply.availability(enabled: !busy && !contextRefreshing && attachmentReady && !ModellingFormPresentation.needsExtrusionDistance(params))
+        apply.availability(enabled: !busy && !contextRefreshing && attachmentReady && !ModellingFormPresentation.needsExtrusionDistance(params)
+            && !ModellingFormPresentation.needsCombineBodies(params))
         cancel.availability(enabled: !committing)
         select.availability(enabled: !busy && !contextRefreshing)
         fieldViews.forEach { $0.isUserInteractionEnabled = !contextRefreshing && (!busy || inputWhileBusy) }
@@ -1771,7 +1781,7 @@ final class ModellingInspector: UIStackView {
             choiceGroup = nil; choiceStack = nil
             let heading = WorkspaceStyle.label(.body)
             heading.text = ModellingText.label(field.label)
-            if field.kind != "references" && (!compact || field.kind != "expression" && field.kind != "slider") {
+            if field.kind != "references" && field.kind != "bodies_pick" && (!compact || field.kind != "expression" && field.kind != "slider") {
                 heading.font = .preferredFont(forTextStyle: compact ? .caption1 : .body)
                 stack.addArrangedSubview(heading)
             }
@@ -1811,8 +1821,10 @@ final class ModellingInspector: UIStackView {
                 if field.kind == "slider" { buildSlider(field, editor: editor, in: stack) }
             } else if field.kind == "face_pick" {
                 buildFacePick(field, in: stack)
-            } else if field.kind == "references" {
+            } else if field.kind == "references" || field.kind == "bodies_pick" {
                 buildReferences(field, in: stack)
+            } else if field.kind == "body_pick" {
+                buildBodyPick(field, in: stack)
             } else if field.kind == "reference" && (compact || field.key == "plane") {
                 buildSource(field, in: stack)
             } else {
@@ -1846,12 +1858,34 @@ final class ModellingInspector: UIStackView {
             options.content.addArrangedSubview(additionalFields)
             fieldsStack.addArrangedSubview(options)
         }
-        if compact && !directSurfaceControls && !isAttachmentRepair && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
+        if hasBodyPicks {
+            let preview = WorkspaceButton(NativeText.value("ui.ipados.combine.preview")) { [weak self] in
+                guard let self, self.handleEntryEnabled, !ModellingFormPresentation.needsCombineBodies(self.params) else { return }
+                self.endEditing(true); self.onPreview?(self.params)
+            }
+            preview.accessibilityIdentifier = "workspace-model-preview"
+            preview.availability(enabled: !ModellingFormPresentation.needsCombineBodies(params))
+            fieldsStack.addArrangedSubview(preview); fieldViews.append(preview)
+        } else if compact && !directSurfaceControls && !isAttachmentRepair && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
             fieldsStack.addArrangedSubview(select)
         }
         updateAvailability()
     }
     var isAttachmentRepair: Bool { fields.contains { $0.kind == "face_pick" } }
+
+    private func buildBodyPick(_ field: ModellingState.Field, in stack: UIStackView) {
+        let summary = WorkspaceStyle.label(.subheadline)
+        summary.text = parameter(field.key).map(referenceSummary) ?? ModellingText.text("no_selection")
+        summary.numberOfLines = 0
+        summary.accessibilityIdentifier = "workspace-model-summary-" + field.key
+        stack.addArrangedSubview(summary)
+        let pick = WorkspaceButton(ModellingFormText.text("select_in_model")) { [weak self] in
+            guard let self, self.handleEntryEnabled else { return }
+            self.endEditing(true); self.onSelect?(field.key)
+        }
+        pick.artwork("select"); pick.accessibilityIdentifier = "workspace-model-select-" + field.key
+        stack.addArrangedSubview(pick); fieldViews.append(pick)
+    }
 
     private func buildFacePick(_ field: ModellingState.Field, in stack: UIStackView) {
         let selected = parameter(field.key).map { $0 != .null } ?? false
@@ -2012,9 +2046,10 @@ final class ModellingInspector: UIStackView {
         let values: [PresentationJSON]
         if case .array(let current) = parameter(field.key) { values = current } else { values = [] }
         let generation = fieldGeneration
-        let body = field.key == "targets"
+        let visual = field.kind == "bodies_pick"
+        let body = field.key == "targets" || visual
         let title = WorkspaceStyle.label(.subheadline)
-        title.text = body ? ModellingFormText.text("target_bodies") : ModellingText.label(field.label)
+        title.text = field.key == "targets" ? ModellingFormText.text("target_bodies") : ModellingText.label(field.label)
         title.accessibilityTraits = .header
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let count = WorkspaceStyle.label(.caption1, secondary: true)
@@ -2045,12 +2080,12 @@ final class ModellingInspector: UIStackView {
         for (index, value) in values.enumerated() {
             let name = field.options?.first(where: { $0.value == value }).map { ModellingText.label($0.label) } ?? display(value)
             var moves: [UIAction] = []
-            if index > 0 {
+            if index > 0 && !visual {
                 moves.append(UIAction(title: ModellingText.text("move_up"), image: UIImage(systemName: "arrow.up")) { [weak self] _ in
                     self?.editReferences(field.key, generation: generation) { ModellingFormPresentation.moving(from: index, to: index - 1, in: $0) }
                 })
             }
-            if index + 1 < values.count {
+            if index + 1 < values.count && !visual {
                 moves.append(UIAction(title: ModellingText.text("move_down"), image: UIImage(systemName: "arrow.down")) { [weak self] _ in
                     self?.editReferences(field.key, generation: generation) { ModellingFormPresentation.moving(from: index, to: index + 1, in: $0) }
                 })
@@ -2065,6 +2100,14 @@ final class ModellingInspector: UIStackView {
         let addTitle = ModellingFormText.text(body ? "select_bodies" : "select_inputs")
         let add = ModellingFormButton(title: addTitle, symbol: "plus", label: addTitle,
                                       identifier: "workspace-model-field-" + field.key, accent: true)
+        if visual {
+            add.addAction(UIAction { [weak self] _ in
+                guard let self, self.canEditFields(generation) else { return }
+                self.endEditing(true); self.onSelect?(field.key)
+            }, for: .primaryActionTriggered)
+            group.append(add)
+            return
+        }
         let listActions = options.map { option in
             UIAction(title: ModellingText.label(option.label)) { [weak self] _ in
                 self?.editReferences(field.key, generation: generation) { current in
@@ -2091,6 +2134,7 @@ final class ModellingInspector: UIStackView {
         if case .array(let values) = parameter(key) { current = values } else { current = [] }
         guard let next = edit(current), next != current else { return }
         setParameter(key, value: .array(next)); changed(); rebuildFields()
+        if hasBodyPicks { onContextChange?(params) }
     }
 }
 

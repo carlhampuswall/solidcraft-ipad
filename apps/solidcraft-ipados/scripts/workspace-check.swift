@@ -67,6 +67,17 @@ struct WorkspaceChecks {
             try require(!ModellingFormPresentation.needsExtrusionDistance(params), "entered distance was ignored")
         }
         let booleanOptions: [PresentationJSON] = [.bool(false), .bool(true)]
+        let combine: [String: PresentationJSON] = ["keep_tools": .bool(false), "target": .string("Target"), "tools": .array([.string("Tool")])]
+        try require(!ModellingFormPresentation.needsCombineBodies(combine), "complete body picks disabled Combine")
+        for target in [PresentationJSON.null, .string("")] {
+            var params = combine; params["target"] = target
+            try require(ModellingFormPresentation.needsCombineBodies(params), "Combine accepted a missing target")
+        }
+        for tools in [PresentationJSON.array([]), .array([.string("Target")]), .array([.integer(1)])] {
+            var params = combine; params["tools"] = tools
+            try require(ModellingFormPresentation.needsCombineBodies(params), "Combine accepted missing or invalid tool bodies")
+        }
+        try require(!ModellingFormPresentation.needsCombineBodies([:]), "unrelated tools required Combine bodies")
         for options in [booleanOptions, Array(booleanOptions.reversed())] {
             for value in [false, true] {
                 try require(ModellingFormPresentation.booleanValue(kind: "choice", options: options, selected: .bool(value)) == value,

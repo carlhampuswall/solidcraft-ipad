@@ -5,6 +5,16 @@ import Foundation
 enum ModellingFormPresentation {
     static let automaticExtrudeDepthKey = "SolidCraft.workspace.automaticExtrudeDepth"
 
+    static func needsCombineBodies(_ params: [String: PresentationJSON]) -> Bool {
+        guard params["keep_tools"] != nil else { return false }
+        guard case .string(let target) = params["target"], !target.isEmpty,
+              case .array(let tools) = params["tools"], !tools.isEmpty else { return true }
+        return tools.contains { value in
+            guard case .string(let name) = value else { return true }
+            return name.isEmpty || name == target
+        }
+    }
+
     static func usesDirectSurfaceControls<Workspace>(_ fields: [ModellingResponse<Workspace>.Field], compact: Bool) -> Bool {
         compact && fields.contains { $0.key == "edges" || $0.key == "faces" }
             && fields.contains { ["radius", "distance", "thickness"].contains($0.key) }

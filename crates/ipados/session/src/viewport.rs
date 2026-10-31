@@ -715,7 +715,7 @@ impl Viewport {
         }
         let filter = if self.origin.choosing {
             PickFilter::Face
-        } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("targets")) {
+        } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("targets") || edit.body_pick_field().is_some()) {
             PickFilter::Body
         } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("edges")) {
             PickFilter::Edge
@@ -740,6 +740,7 @@ impl Viewport {
         // Explicit topology filters retain their target. In the plane chooser,
         // reference planes compete with body faces using the rendered depth.
         if (self.origin.choosing || picked.is_none())
+            && self.modelling.as_ref().is_none_or(|edit| edit.body_pick_field().is_none())
             && let Some(reference) = self.pick_reference(points)
         {
             return Some(reference);
@@ -808,6 +809,22 @@ impl Viewport {
     }
 
     pub(crate) fn select(&mut self, hit: Option<Sel>, add: bool) {
+        let body_field = self.modelling.as_ref().and_then(|edit| edit.body_pick_field()).map(str::to_string);
+        if body_field.is_some() && hit.as_ref().is_some_and(|hit| !matches!(hit, Sel::Body { .. })) {
+            return;
+        }
+        if body_field.as_deref() == Some("tools")
+            && let Some(Sel::Body { name }) = &hit
+            && self.modelling.as_ref().is_some_and(|edit| edit.params["target"] == *name)
+        {
+            return;
+        }
+        let add = match body_field.as_deref() {
+            Some("target") => false,
+            Some("tools") => hit.is_some(),
+            _ => add,
+        };
+        let previous = body_field.as_ref().map(|_| self.selection.clone());
         if !add {
             self.selection.clear();
         }
@@ -821,6 +838,14 @@ impl Viewport {
                     self.selection.extend(missing);
                 }
             }
+        }
+        if previous.as_ref().is_some_and(|previous| previous != &self.selection)
+            && let Some(edit) = &mut self.modelling
+        {
+            // A late preview must never validate an earlier set of body picks.
+            edit.version = edit.version.saturating_add(1);
+            edit.preview = None;
+            edit.last_preview = None;
         }
         self.hover = None;
         self.changed();

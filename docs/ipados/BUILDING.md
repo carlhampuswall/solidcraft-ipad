@@ -109,6 +109,13 @@ verifies the analytic resulting volume. The `-before.png`, `-faces-selected.png`
 events; physical Pencil input still requires an iPad check. On an iPad, also turn
 off **Tools → Multiple**, relaunch and verify that single selection is restored.
 
+`--combine-selection` captures the original solids, whole target highlight,
+multiple tool-body highlights and a two-tool cut preview through the real
+adapter and macOS GPU. Combine uses direct viewport pick buttons in both native
+inspector layouts. Check target replacement, tool toggling, Preview, reselection
+of consumed tools, Apply and Cancel on the iPad. Synthetic adapter input and an
+unsigned build do not verify UIKit touch delivery or physical Pencil input.
+
 `--selection-taps` captures selection, empty-space clearing and reselection with
 small Pencil lift motion through the real adapter and macOS GPU. Debug
 `--selection-taps-check` runs face → empty space → face → same-face toggle through

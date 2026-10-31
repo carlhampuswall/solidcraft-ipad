@@ -679,6 +679,7 @@ struct ModellingResponse<Workspace: Decodable>: Decodable {
     let feature: UInt64?
     let params: [String: PresentationJSON]?
     let fields: [Field]?
+    let selection_field: String?
     let valid: Bool?
     let feedback: [String]?
     let reply: PresentationJSON?
