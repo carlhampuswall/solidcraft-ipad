@@ -1041,3 +1041,33 @@ reservation receipt. The app's optional Info.plist candidate stamp was absent;
 the clean source candidate and signed binary hashes bind this build to the test.
 These checks verify physical iPad runtime with synthetic input; physical finger
 and Pencil contact remain unverified. Nothing was pushed.
+
+## History navigation preserves undo and redo — 2026-10-31
+
+Source candidate `058b71a33a0904140dfbe73c6ac4582c8e9efa62` keeps iPad history
+navigation outside the undo/redo stacks. The adapter temporarily retains both
+engine stacks while executing `timeline.roll_to` or `timeline.rollback`, then
+restores them, including on failure. Marker evaluation, geometry publication,
+model edits and persistence still use the existing engine.
+
+Both added session regressions failed before the fix. All 211 session and 30
+bridge tests pass, as do affected adapter Clippy, Rust formatting, the wasm32
+session check, 692 native workspace cases, icon checks and unsigned/signed iPad
+builds. The wasm check retains an existing engine dead-code warning. No engine
+test suite, full CI or simulator was run. Xcode resource generation and the
+native file-coordination harness required execution outside the outer sandbox.
+
+The reserved physical iPad `--history-check` passed using production UIKit
+controls on a disposable fixture: backward/forward arrows, reverse scrubbing,
+the empty stage and final lift preserved pending redo; Redo restored a feature
+rename, Undo reversed that edit, and a new rename discarded the redo branch.
+Twelve native screenshots were captured; the empty, single-body and completed
+undo/redo stages were visually inspected. Input was synthetic UIKit actions;
+physical finger/Pencil contact remains unverified. Normal launch was restored
+and the device reservation released.
+
+Evidence is under `target/history-navigation-device-20261031/`, including signed
+build output, `build.json` binding the clean candidate to signed binary hashes,
+installation/launch records, console acceptance, screenshots, `ipad-session.json`
+and `reservation.log`. Signing reused the existing team and profile. Fix commit
+`058b71a3` is local on `develop`; nothing was pushed.
