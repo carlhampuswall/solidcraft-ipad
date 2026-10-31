@@ -745,12 +745,9 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     private let evaluation = WorkspaceStyle.label(.footnote, secondary: true)
     private(set) var busy = false
     private(set) var draft = NumericDraftValidation()
+    private(set) var completedPreviewRevision: UInt64?
     private var committing = false
     private let showsActions: Bool
-    // The owning transaction selects whether Apply needs a separate preview.
-    var requiresPreview = true {
-        didSet { message.show(showsActions ? entryHint : nil); updateAvailability() }
-    }
     var onPreview: ((String) -> Void)?
     var onApply: ((String) -> Void)?
     var onCancel: (() -> Void)?
@@ -851,12 +848,8 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
             addArrangedSubview(help)
         }
         addArrangedSubview(actionFooter); actionFooter.isHidden = !showsActions
-        actionFooter.preview.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy else { return }
-            self.onPreview?(self.field.text ?? "")
-        }, for: .touchUpInside)
         actionFooter.apply.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy, self.draft.canApply(requiresPreview: self.requiresPreview) else { return }
+            guard let self, !self.busy else { return }
             self.field.resignFirstResponder(); self.onApply?(self.field.text ?? "")
         }, for: .touchUpInside)
         actionFooter.cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
@@ -869,8 +862,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         actionFooter = NumericEditorActions(); showsActions = false; panelInput = false
         super.init(coder: coder)
     }
-    private var entryHint: String { requiresPreview ? previewRequired : NumericText.text("apply_hint") }
-    private var previewRequired: String { panelInput ? NumericText.text("preview_required") : ModellingText.text("preview_required") }
+    private var entryHint: String { NumericText.text("apply_hint") }
     private func makeAccessory() -> ExpressionAccessory {
         ExpressionAccessory(field: field, numeric: usesNumericKeyboard) { [weak self] in
             guard let self else { return false }
@@ -937,6 +929,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         guard draft.complete(revision: revision, valid: valid && error == nil) else {
             message.show(entryHint); return
         }
+        completedPreviewRevision = revision
         if valid && error == nil, let value { setEvaluation(value: value, units: units) }
         else { evaluation.isHidden = true }
         message.show(error ?? (valid ? feedback ?? WorkspaceStyle.text("preview_ready") : entryHint), error: error != nil)
@@ -968,10 +961,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         else { message.show(showsActions ? entryHint : nil) }
     }
     private func updateAvailability() {
-        actionFooter.preview.availability(enabled: !busy)
-        let canApply = draft.canApply(requiresPreview: requiresPreview)
-        actionFooter.apply.availability(enabled: !busy && canApply,
-            reason: canApply ? nil : previewRequired)
+        actionFooter.apply.availability(enabled: !busy)
         actionFooter.cancel.availability(enabled: !committing)
         closeButton?.availability(enabled: !committing)
     }
@@ -998,7 +988,6 @@ enum NumericText {
 
 /// The compact editor can pin this footer outside its scrolling form.
 final class NumericEditorActions: UIStackView {
-    let preview = WorkspaceButton(WorkspaceStyle.text("preview"), prominent: true, action: {})
     let apply = WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true, action: {})
     let cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
     private let row = UIStackView()
@@ -1009,17 +998,16 @@ final class NumericEditorActions: UIStackView {
         divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
         addArrangedSubview(divider)
         row.spacing = 8; row.distribution = .fillEqually
-        for button in [cancel, preview, apply] { button.textOnly(); row.addArrangedSubview(button) }
+        for button in [cancel, apply] { button.textOnly(); row.addArrangedSubview(button) }
         cancel.configuration?.background.backgroundColor = WorkspaceStyle.fieldBackground
         cancel.configuration?.baseForegroundColor = WorkspaceStyle.foreground
         addArrangedSubview(row)
-        preview.accessibilityIdentifier = "workspace-numeric-preview"
         apply.accessibilityIdentifier = "workspace-numeric-apply"
         cancel.accessibilityIdentifier = "workspace-numeric-cancel"
     }
     required init(coder: NSCoder) { super.init(coder: coder) }
     override func layoutSubviews() {
-        let needed = [cancel, preview, apply].reduce(CGFloat(16)) { $0 + max(44, $1.intrinsicContentSize.width) }
+        let needed = [cancel, apply].reduce(CGFloat(8)) { $0 + max(44, $1.intrinsicContentSize.width) }
         let direction: NSLayoutConstraint.Axis = bounds.width < needed ? .vertical : .horizontal
         if row.axis != direction { row.axis = direction }
         super.layoutSubviews()
@@ -1415,11 +1403,7 @@ final class ModellingInspector: UIStackView {
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
     private var validated: [String: PresentationJSON]?
-    var requiresPreview = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.dimensionPreviewRequired") {
-        didSet { updateAvailability(); message.show(entryHint) }
-    }
-    private var canApply: Bool { !requiresPreview || validated == params }
-    private var entryHint: String { requiresPreview ? ModellingText.text("preview_required") : NumericText.text("apply_hint") }
+    private var entryHint: String { NumericText.text("apply_hint") }
     private var locallyEdited = false
     private var editors: [NumericExpressionEditor] = []
     private var textFields: [UITextField] = []
@@ -1437,7 +1421,6 @@ final class ModellingInspector: UIStackView {
     private let fieldsStack = UIStackView()
     private let additionalFields = UIStackView()
     private var optionsExpanded = false
-    private let preview: WorkspaceButton
     private let apply: WorkspaceButton
     private let cancel: WorkspaceButton
     private let select: WorkspaceButton
@@ -1484,13 +1467,12 @@ final class ModellingInspector: UIStackView {
         } else { title = ModellingText.text("tools") }
         params = state.params ?? [:]
         fields = state.fields ?? []
-        preview = WorkspaceButton(WorkspaceStyle.text("preview"), action: {})
         apply = WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true, action: {})
         cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
         select = WorkspaceButton(ModellingText.text("select_in_viewport"), action: {})
         super.init(frame: .zero)
         axis = .vertical; spacing = compact ? 12 : 16
-        preview.artwork("eye"); apply.artwork("finish"); cancel.artwork("close"); select.artwork("select")
+        apply.artwork("finish"); cancel.artwork("close"); select.artwork("select")
         let heading = WorkspaceStyle.label(.headline)
         heading.text = title
         heading.accessibilityTraits = .header
@@ -1516,23 +1498,19 @@ final class ModellingInspector: UIStackView {
             footer.addArrangedSubview(divider)
         }
         footer.addArrangedSubview(message)
-        let actions: UIStackView = compact ? InspectorActionRow(buttons: [cancel, preview, apply]) : UIStackView(arrangedSubviews: [preview, apply])
+        let actions: UIStackView = compact ? InspectorActionRow(buttons: [cancel, apply]) : UIStackView(arrangedSubviews: [apply])
         actions.spacing = 8; actions.distribution = .fillEqually
         if compact {
-            // Text keeps three actions readable at narrow widths. Their
+            // Text keeps the actions readable at narrow widths. Their
             // canonical tool artwork remains on the operation choices.
-            for button in [cancel, preview, apply] { button.textOnly() }
+            for button in [cancel, apply] { button.textOnly() }
             footer.addArrangedSubview(actions)
         } else { footer.addArrangedSubview(actions); footer.addArrangedSubview(cancel); addArrangedSubview(footer) }
-        preview.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy else { return }; self.endEditing(true); self.onPreview?(self.params)
-        }, for: .touchUpInside)
         apply.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy, !self.contextRefreshing, self.canApply else { return }; self.endEditing(true); self.onApply?(self.params)
+            guard let self, !self.busy, !self.contextRefreshing else { return }; self.endEditing(true); self.onApply?(self.params)
         }, for: .touchUpInside)
         cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
         select.addAction(UIAction { [weak self] _ in self?.endEditing(true); self?.onSelect?(nil) }, for: .touchUpInside)
-        preview.accessibilityIdentifier = "workspace-model-preview"
         apply.accessibilityIdentifier = "workspace-model-apply"
         cancel.accessibilityIdentifier = "workspace-model-cancel"
         rebuildFields(); updateAvailability()
@@ -1540,7 +1518,6 @@ final class ModellingInspector: UIStackView {
     required init(coder: NSCoder) {
         title = ModellingText.text("tools"); compact = false
         params = [:]; fields = []
-        preview = WorkspaceButton(WorkspaceStyle.text("preview"), action: {})
         apply = WorkspaceButton(WorkspaceStyle.text("apply"), action: {})
         cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
         select = WorkspaceButton(ModellingText.text("select_in_viewport"), action: {})
@@ -1607,8 +1584,7 @@ final class ModellingInspector: UIStackView {
         if !busy { message.show(entryHint) }
     }
     private func updateAvailability() {
-        preview.availability(enabled: !busy && !contextRefreshing)
-        apply.availability(enabled: !busy && !contextRefreshing && canApply, reason: canApply ? nil : entryHint)
+        apply.availability(enabled: !busy && !contextRefreshing)
         cancel.availability(enabled: !committing)
         select.availability(enabled: !busy && !contextRefreshing)
         fieldViews.forEach { $0.isUserInteractionEnabled = !contextRefreshing && (!busy || inputWhileBusy) }

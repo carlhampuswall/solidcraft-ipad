@@ -634,7 +634,7 @@ final class NativeSession {
         command("select.entity", params: ["entity": entity, "additive": additive], completion: completion)
     }
 
-    /// Preview and commit are explicit user actions. The Rust session owns tokens,
+    /// The host requests automatic previews and explicit commits. Rust owns tokens,
     /// expression parsing, units, stale-selection checks and the single history action.
     /// Validation failure is returned to the field, without replacing its draft.
     func requestNumeric(action: String, token: UInt64? = nil, expression: String? = nil, dimension: String? = nil,

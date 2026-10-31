@@ -261,9 +261,8 @@ checked against the current token/version and document context before publishing
 or accepting. Older results are discarded. A consumed token cannot commit twice.
 
 The host disables Apply while references refresh or computation is pending.
-Apply evaluates the current parameters directly; Preview is optional by default.
-Tools → Require Preview before applying restores the earlier preview gate for
-inspectors and their number popups. Invalid input removes
+Apply evaluates the current parameters directly. Parameter and reference changes
+preview automatically, without a manual Preview button. Invalid input removes
 current-preview status and returns structured diagnostics. Confirmation evaluates
 the submitted current parameters again before acceptance. A successful operation
 or edit is one logical engine undo action; typing, handle samples, navigation and

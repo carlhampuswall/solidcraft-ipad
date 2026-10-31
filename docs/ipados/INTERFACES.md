@@ -337,8 +337,8 @@ Native requests use `requestNumeric` or `requestModelling`:
   are provisional form metadata stripped before shared engine commands.
 - Preview validates the exact current parameters. Typing, changing selection or
   starting a newer proposal invalidates that result. Apply evaluates the latest
-  parameters itself; the optional preview-required preference additionally waits
-  for a matching successful Preview before enabling it.
+  parameters itself. The host schedules previews automatically after changes;
+  there is no separate Preview action.
 - Apply commits one logical history action. A consumed token cannot apply twice.
   Editing an existing feature preserves its original native feature ID.
 - A model's `last_preview` may remain visible while newer work is pending, with

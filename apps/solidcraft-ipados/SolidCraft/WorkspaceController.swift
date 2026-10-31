@@ -143,6 +143,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private weak var inlineNumericEditor: NumericValueEditorController?
     private var numericStarting = false
     private var numericGeneration: UInt64 = 0
+    private let numericAutomaticPreview = DraftPreviewDebouncer()
+    private let modellingAutomaticPreview = DraftPreviewDebouncer()
+    private let transformAutomaticPreview = DraftPreviewDebouncer()
+    private var transformPreviewPending = false
+    private var transformCommitPending = false
     private var sketchInput: SketchInputPresentation?
     private var planeDraft: (value: Any, label: String)?
     private var planeGeneration: UInt64 = 0
@@ -689,9 +694,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             numericGeneration &+= 1
             numericToken = nil; numericContext = nil; numericStarting = false
             clearNumericEditor()
-            transformGeneration &+= 1; transformDraft = nil
-            transformBusy = false
-            transformEditors.forEach { $0.editor.field.resignFirstResponder() }; transformEditors.removeAll(); transformMessage = nil
+            clearTransform()
             failure = WorkspaceStyle.text("invalidated")
         }
         let previous = state
@@ -1667,7 +1670,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.properties.addArrangedSubview(form)
                 form.onPreview = { [weak self] params in self?.evaluateModelling(params, commit: false) }
                 form.onLivePreview = { [weak self] params in self?.evaluateModelling(params, commit: false, live: true) }
-                form.onContextChange = { [weak self] params in self?.refreshModellingContext(params) }
+                form.onContextChange = { [weak self] params in self?.refreshModellingContext(params, submitAfter: .preview) }
                 form.onInlineChoice = { [weak self] params in self?.refreshModellingContext(params, submitAfter: .preview) }
                 form.onApply = { [weak self] params in self?.evaluateModelling(params, commit: true) }
                 form.onCancel = { [weak self] in self?.cancelModelling() }
@@ -1676,9 +1679,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self?.presentModelValue(parameter: field.key, expression: expression, units: field.units ?? "",
                         name: ModellingText.label(field.label), source: source)
                 } : nil
-                form.onChange = { [weak self] in self?.failure = nil; self?.updateStatus(); self?.layoutModelValue() }
+                form.onChange = { [weak self] in
+                    self?.failure = nil; self?.updateStatus(); self?.layoutModelValue()
+                    self?.scheduleModellingPreview()
+                }
                 form.onSelect = { [weak self, weak form] field in
                     guard let self, let form else { return }
+                    self.modellingAutomaticPreview.cancel()
                     form.beginContextRefresh()
                     self.session.requestModelling(action: "inspect", token: token, params: form.params) { [weak self, weak form] result in
                         guard let self, self.modellingToken == token else { return }
@@ -1704,6 +1711,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.inspectorOpen = true; self.browserOpen = false; self.failure = nil
                 self.relayoutPanels()
+                self.scheduleModellingPreview()
 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--auto-face-extrude-check"),
                    operation == "solid.extrude", feature == nil {
@@ -1718,7 +1726,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func scheduleModellingPreview() {
+        let expected = modellingGeneration
+        modellingAutomaticPreview.schedule { [weak self] in
+            guard let self, self.modellingGeneration == expected, let form = self.modellingInspector else { return }
+            self.evaluateModelling(form.params, commit: false, live: true)
+        }
+    }
+
     private func evaluateModelling(_ params: [String: PresentationJSON], commit: Bool, live: Bool = false) {
+        modellingAutomaticPreview.cancel()
         guard let token = modellingToken, let form = modellingInspector, !modellingCommitting else { return }
         if modellingContextNeedsRefresh || modellingContextInspectInFlight {
             refreshModellingContext(params, submitAfter: commit ? .commit : .preview)
@@ -1782,13 +1799,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.modellingInspectPending = false
             guard self.modellingFormVersion == expectedForm, form?.params == expectedParams else { return }
             switch result {
-            case .success(let model): form?.inspected(model)
+            case .success(let model): form?.inspected(model); self.scheduleModellingPreview()
             case .failure(let error): form?.failed(error)
             }
         }
     }
 
     private func refreshModellingContext(_ params: [String: PresentationJSON], submitAfter: ModellingSubmission? = nil) {
+        modellingAutomaticPreview.cancel()
         guard modellingToken != nil, let form = modellingInspector, !modellingCommitting else { return }
         modellingFormVersion &+= 1
         modellingContextNeedsRefresh = true
@@ -1817,7 +1835,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.modellingContextNeedsRefresh = false
                     if let submission = self.submitAfterModellingContext, let current = form?.params {
                         self.submitAfterModellingContext = nil
-                        self.evaluateModelling(current, commit: submission == .commit)
+                        self.evaluateModelling(current, commit: submission == .commit, live: submission == .preview)
                     } else {
                         self.modelValueEditor?.editor.setBusy(false)
                     }
@@ -1852,6 +1870,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func clearModelling() {
+        modellingAutomaticPreview.cancel()
         modellingStartedFromSelection = false
         modellingGeneration &+= 1
         if let editor = modelValueEditor { editor.dismiss(animated: false) { [weak self] in self?.updateAvailability() } }
@@ -1913,7 +1932,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let controller = NumericValueEditorController(expression: expression, units: units, name: name,
             context: form.numericContext, parameter: parameter)
         controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
-        controller.editor.requiresPreview = form.requiresPreview
         let expected = modellingGeneration
         controller.editor.onChange = { [weak self, weak controller, weak form] in
             guard let self, self.modellingGeneration == expected, self.modellingToken == token,
@@ -1937,7 +1955,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         modelValueEditor = controller
         updateModelValueChoices()
-        present(controller, animated: true) { [weak self] in self?.updateAvailability() }
+        present(controller, animated: true) { [weak self] in
+            self?.updateAvailability(); self?.scheduleModellingPreview()
+        }
     }
 
     private func updateModelValueChoices() {
@@ -2476,20 +2496,36 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let heading = WorkspaceStyle.label(.body); heading.text = SketchText.text(name); properties.addArrangedSubview(heading)
             let field = NumericExpressionEditor(expression: expression, units: units, showsActions: false)
             field.onFocus = { [weak self] in self?.updateAvailability(); DispatchQueue.main.async { [weak self] in self?.revealField() } }
+            field.onChange = { [weak self] in self?.scheduleTransformPreview() }
             properties.addArrangedSubview(field)
             return (name, kind, field)
         }
         let message = WorkspaceMessage(); transformMessage = message; properties.addArrangedSubview(message)
-        properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("preview")) { [weak self] in self?.evaluateTransform(commit: false) })
         properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true) { [weak self] in self?.evaluateTransform(commit: true) })
         properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("cancel")) { [weak self] in self?.cancelTransform() })
         inspectorOpen = true; browserOpen = false; updateAvailability(); view.setNeedsLayout()
+        scheduleTransformPreview()
+    }
+
+    private func scheduleTransformPreview() {
+        transformPreviewPending = true
+        let expected = transformGeneration
+        transformAutomaticPreview.schedule { [weak self] in
+            guard let self, self.transformGeneration == expected, !self.transformBusy else { return }
+            self.evaluateTransform(commit: false)
+        }
     }
 
     private func evaluateTransform(commit: Bool) {
-        guard let draft = transformDraft, !transformBusy else { return }
+        transformAutomaticPreview.cancel()
+        guard let draft = transformDraft else { return }
+        if transformBusy {
+            if commit { transformCommitPending = true; transformEditors.forEach { $0.editor.field.isEnabled = false } }
+            return
+        }
+        transformPreviewPending = false; transformCommitPending = false
         transformBusy = true
-        transformEditors.forEach { $0.editor.field.resignFirstResponder(); $0.editor.field.isEnabled = false }
+        if commit { transformEditors.forEach { $0.editor.field.resignFirstResponder(); $0.editor.field.isEnabled = false } }
         transformMessage?.show(NativeText.value("ui.ipados.updating"), busy: true)
         let expected = transformGeneration
         let fields = transformEditors.map { (name: $0.name, expression: $0.editor.field.text ?? "", kind: $0.kind) }
@@ -2522,8 +2558,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func finishTransformEvaluation(error: BridgeError?) {
         transformBusy = false; transformEditors.forEach { $0.editor.field.isEnabled = true }
         transformMessage?.show(error?.message ?? WorkspaceStyle.text("preview_ready"), error: error != nil)
+        if transformCommitPending { evaluateTransform(commit: true) }
+        else if transformPreviewPending { scheduleTransformPreview() }
     }
     private func clearTransform() {
+        transformAutomaticPreview.cancel(); transformPreviewPending = false; transformCommitPending = false
         transformGeneration &+= 1; transformDraft = nil; numericContext = nil; transformBusy = false
         transformEditors.forEach { $0.editor.field.resignFirstResponder() }; transformEditors.removeAll(); transformMessage = nil
     }
@@ -2561,8 +2600,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
         let editor = controller.editor
         self.editor = editor
-        editor.requiresPreview = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.dimensionPreviewRequired")
         editor.onPreview = { [weak self] expression in self?.evaluateNumeric(expression, commit: false) }
+        editor.onChange = { [weak self] in self?.scheduleNumericPreview() }
         editor.onApply = { [weak self] expression in self?.evaluateNumeric(expression, commit: true) }
         editor.onCancel = { [weak self] in self?.cancelNumeric() }
         editor.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.updateAvailability() }
@@ -2575,9 +2614,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         present(controller, animated: true)
         failure = nil
         updateAvailability(); updateStatus(); view.setNeedsLayout()
+        scheduleNumericPreview()
+    }
+
+    private func scheduleNumericPreview() {
+        let expected = numericGeneration
+        numericAutomaticPreview.schedule { [weak self] in
+            guard let self, self.numericGeneration == expected, let editor = self.editor else { return }
+            self.evaluateNumeric(editor.field.text ?? "", commit: false)
+        }
     }
 
     private func evaluateNumeric(_ expression: String, commit: Bool) {
+        numericAutomaticPreview.cancel()
         guard let token = numericToken, let editor, !editor.busy else { return }
         let expected = numericGeneration
         let revision = editor.draft.revision
@@ -2599,6 +2648,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
             }
             self.updateAvailability()
+            if !commit, let editor, editor.draft.revision != revision { self.scheduleNumericPreview() }
         }
     }
 
@@ -2625,6 +2675,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func clearNumericEditor() {
+        numericAutomaticPreview.cancel()
         editor?.field.resignFirstResponder(); editor = nil
         let controller = inlineNumericEditor
         inlineNumericEditor = nil
@@ -2881,14 +2932,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.canvas.historyGesturesEnabled, forKey: "SolidCraft.workspace.historyGestures")
             self.rebuildMenus()
         }
-        let dimensionPreviewRequired = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.dimensionPreviewRequired")
-        let dimensionPreview = UIAction(title: NumericText.text("require_preview"), state: dimensionPreviewRequired ? .on : .off) { [weak self] _ in
-            UserDefaults.standard.set(!dimensionPreviewRequired, forKey: "SolidCraft.workspace.dimensionPreviewRequired")
-            self?.editor?.requiresPreview = !dimensionPreviewRequired
-            self?.modellingInspector?.requiresPreview = !dimensionPreviewRequired
-            self?.modelValueEditor?.editor.requiresPreview = !dimensionPreviewRequired
-            self?.rebuildMenus()
-        }
         let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
             guard let self else { return }
             let enabled = !self.twoFingerTwist
@@ -2973,7 +3016,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, historyGestures, dimensionPreview, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, sketchExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, sketchExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
@@ -3372,6 +3415,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         canvas.cancelInput(); session.suspend()
     }
     func shutdown() {
+        numericAutomaticPreview.cancel(); modellingAutomaticPreview.cancel(); transformAutomaticPreview.cancel()
         historyActivation = nil
         featureHistory.cancelScrub()
         generation &+= 1; numericGeneration &+= 1; active = false
@@ -3860,7 +3904,7 @@ private extension FoundationController {
                     let touchHeight = control is UISwitch ? control.point(inside: CGPoint(x: control.bounds.midX, y: control.bounds.midY + 21), with: nil) : frame.height >= 44
                     try require(frame.width >= 44 && touchHeight, name + ": grouped control lost its touch target")
                 }
-                for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+                for id in ["workspace-model-cancel", "workspace-model-apply"] {
                     let action = try find(id, in: panel, as: UIButton.self), frame = action.convert(action.bounds, to: panel)
                     try require(!action.isDescendant(of: scroll) && panel.bounds.contains(frame) && frame.width >= 44 && frame.height >= 44, name + ": persistent action clipped")
                     if let label = action.titleLabel {
@@ -5162,7 +5206,7 @@ private extension FoundationController {
                     controller.loadViewIfNeeded(); controller.view.frame = CGRect(origin: .zero, size: size)
                     controller.view.setNeedsLayout(); controller.view.layoutIfNeeded()
                     controller.editor.actionFooter.layoutIfNeeded()
-                    for button in [controller.editor.actionFooter.preview, controller.editor.actionFooter.apply, controller.editor.actionFooter.cancel] {
+                    for button in [controller.editor.actionFooter.apply, controller.editor.actionFooter.cancel] {
                         let frame = button.convert(button.bounds, to: controller.view)
                         check(frame.width >= 44 && frame.height >= 44 && controller.view.bounds.contains(frame), "unreachable action at \(size)/\(category.rawValue): \(frame)")
                     }
@@ -5182,13 +5226,10 @@ private extension FoundationController {
                       let apply = find("workspace-model-apply", in: form.footer) as? UIButton else {
                     issues.append("missing direct extrude Apply"); finish(); return
                 }
-                form.requiresPreview = true
-                check(!apply.isEnabled, "legacy modelling preference did not require Preview")
-                form.requiresPreview = false
                 check(apply.isEnabled, "modelling Apply required Preview")
                 func exercise(_ popup: NumericValueEditorController?) {
                     let numeric = popup?.editor
-                    check(numeric == nil || numeric?.requiresPreview == false, "extrude popup required Preview")
+                    check(popup == nil || find("workspace-numeric-preview", in: popup?.view ?? self.view) == nil, "extrude popup retained Preview")
                     let token = self.modellingToken
                     func enter(_ expression: String) {
                         if let numeric {
@@ -5214,7 +5255,7 @@ private extension FoundationController {
                             capture(inPopup ? "extrude-popup-applied" : "extrude-inspector-applied")
                             self.run("edit.undo")
                             wait("direct extrude single undo", { self.pending.isEmpty && self.state?.modelling?.timeline.map(\.id) == features }) {
-                                if inPopup { layoutVariants(); finish() }
+                                if inPopup { automaticTransform(rotate: false) }
                                 else { directModellingApply(inPopup: true) }
                             }
                         }
@@ -5234,6 +5275,43 @@ private extension FoundationController {
                     }
                 }
             }
+        }
+        func automaticTransform(rotate: Bool) {
+            let commands: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]),
+                ("sketch.line", ["points": [[0, 0], [20, 0]], "infer": false, "connect": false]), ("tool.set", ["tool": "select"])]
+            func prepare(_ index: Int) {
+                guard index < commands.count else {
+                    wait("transform fixture", { self.state?.sketch?.curves.count == 1 && self.pending.isEmpty }) {
+                        guard let curve = self.state?.sketch?.curves.first else { issues.append("missing transform curve"); finish(); return }
+                        let revision = self.state?.geometry_revision
+                        self.beginTransform(entities: [curve.id], rotate: rotate, copy: false)
+                        guard let input = self.transformEditors.first(where: { $0.name == (rotate ? "angle" : "delta_x") })?.editor.field else {
+                            issues.append("missing transform expression"); finish(); return
+                        }
+                        input.text = rotate ? "30 deg" : "5 mm"; input.sendActions(for: .editingChanged)
+                        wait("automatic sketch transform", { !self.transformBusy && !self.transformPreviewPending && self.canvas.displayingPreview }) {
+                            check(self.state?.geometry_revision == revision, "automatic transform committed geometry")
+                            capture(rotate ? "automatic-rotate" : "automatic-move")
+                            input.text = rotate ? "45 deg" : "6 mm"; input.sendActions(for: .editingChanged)
+                            input.text = rotate ? "60 deg" : "7 mm"; input.sendActions(for: .editingChanged)
+                            wait("latest automatic transform", { !self.transformBusy && !self.transformPreviewPending && self.canvas.displayingPreview }) {
+                                check(self.state?.geometry_revision == revision, "rapid transform edits committed geometry")
+                                self.cancelTransform()
+                                wait("cancel automatic transform", { self.transformDraft == nil && !self.canvas.displayingPreview }) {
+                                    check(self.state?.geometry_revision == revision, "cancelling automatic transform changed geometry")
+                                    if rotate { layoutVariants(); finish() } else { automaticTransform(rotate: true) }
+                                }
+                            }
+                        }
+                    }
+                    return
+                }
+                self.session.command(commands[index].0, params: commands[index].1) { result in
+                    guard case .success = result else { issues.append("transform fixture failed"); finish(); return }
+                    prepare(index + 1)
+                }
+            }
+            prepare(0)
         }
         func inspectorEntry() {
             let revision = self.state?.geometry_revision
@@ -5261,14 +5339,21 @@ private extension FoundationController {
                         check(find(choiceID, in: popup.view) === originalChoice, "workspace layout rebuilt the numeric popup choices")
                     }
                     capture("inspector-entry")
-                    popup.editor.actionFooter.preview.sendActions(for: .touchUpInside)
-                    wait("inspector preview", { !popup.editor.busy }) {
+                    check(find("workspace-numeric-preview", in: popup.view) == nil && find("workspace-model-preview", in: self.inspectorPanel) == nil, "manual Preview button remains visible")
+                    wait("automatic inspector preview", { !popup.editor.busy && popup.editor.draft.isValidated }) {
                         check(popup.editor.draft.isValidated && popup.editor.actionFooter.apply.isEnabled, "inspector raw expression failed native Preview")
                         capture("inspector-preview")
-                        popup.editor.actionFooter.cancel.sendActions(for: .touchUpInside)
-                        wait("inspector cancel", { !self.modellingEditing && self.presentedViewController == nil }) {
-                            check(self.state?.geometry_revision == revision, "cancelling inspector entry changed geometry")
-                            directModellingApply(inPopup: false)
+                        popup.editor.field.text = "12 mm"; popup.editor.field.sendActions(for: .editingChanged)
+                        popup.editor.field.text = "15 mm"; popup.editor.field.sendActions(for: .editingChanged)
+                        wait("automatic edited extrusion", { !popup.editor.busy && popup.editor.draft.isValidated }) {
+                            check(form.params["distance"] == .string("15 mm") && self.state?.geometry_revision == revision,
+                                  "automatic extrusion preview lost current text or committed geometry")
+                            capture("automatic-extrude")
+                            popup.editor.actionFooter.cancel.sendActions(for: .touchUpInside)
+                            wait("inspector cancel", { !self.modellingEditing && self.presentedViewController == nil }) {
+                                check(self.state?.geometry_revision == revision, "cancelling inspector entry changed geometry")
+                                directModellingApply(inPopup: false)
+                            }
                         }
                     }
                 }
@@ -5296,7 +5381,7 @@ private extension FoundationController {
                     guard let button = find("workspace-keypad-" + key, in: controller.view) else { issues.append("missing embedded key " + key); continue }
                     check(button.bounds.width >= 44 && button.bounds.height >= 44, "compressed embedded key " + key)
                 }
-                check(editor.actionFooter.apply.isEnabled == !editor.requiresPreview, "dimension Apply preview preference was ignored")
+                check(editor.actionFooter.apply.isEnabled, "dimension Apply required Preview")
                 check(self.canvas.frame == originalCanvas, "embedded pad resized the Metal viewport")
                 func enter(_ text: String) { field.text = text; field.sendActions(for: .editingChanged) }
                 func selectedOffsets() -> [Int] {
@@ -5310,22 +5395,19 @@ private extension FoundationController {
                     sign.sendActions(for: .touchUpInside)
                     check(field.text == "6 + 6", "sign key did not restore the raw draft")
                 }
-                editor.actionFooter.preview.sendActions(for: .touchUpInside)
                 enter("2 +")
                 if let start = field.position(from: field.beginningOfDocument, offset: 1),
                    let end = field.position(from: field.beginningOfDocument, offset: 3) { field.selectedTextRange = field.textRange(from: start, to: end) }
                 let selection = selectedOffsets()
-                wait("stale preview", { !editor.busy }) {
+                wait("automatic invalid preview", { !editor.busy && editor.completedPreviewRevision == editor.draft.revision }) {
                     check(field.text == "2 +" && field.isFirstResponder && selectedOffsets() == selection, "preview lost draft/caret/focus")
-                    check(!editor.draft.isValidated && editor.actionFooter.apply.isEnabled == !editor.requiresPreview, "stale preview changed Apply eligibility")
+                    check(!editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "stale preview changed Apply eligibility")
                     capture("stale-\(style)")
-                    editor.actionFooter.preview.sendActions(for: .touchUpInside)
                     wait("invalid expression", { !editor.busy }) {
                         check(field.text == "2 +" && !editor.draft.isValidated && !editor.message.isHidden, "invalid expression lost text or feedback")
                         capture("invalid-\(style)")
                         enter("-2 mm + 10 mm")
-                        editor.actionFooter.preview.sendActions(for: .touchUpInside)
-                        wait("units and negative terms", { !editor.busy }) {
+                        wait("automatic units and negative terms", { !editor.busy && editor.draft.isValidated }) {
                             check(editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "valid units/negative terms did not validate")
                             check(field.text == "-2 mm + 10 mm" && field.isFirstResponder, "valid preview changed expression/focus")
                             let frame = editor.actionFooter.convert(editor.actionFooter.bounds, to: controller.view)
@@ -5365,9 +5447,6 @@ private extension FoundationController {
             self.beginNumeric(source: self.browserButton)
             wait("direct Apply editor", { self.inlineNumericEditor?.editor.field.isFirstResponder == true }) {
                 guard let editor = self.editor else { issues.append("missing direct Apply editor"); finish(); return }
-                editor.requiresPreview = true
-                check(!editor.actionFooter.apply.isEnabled, "legacy preference did not require Preview")
-                editor.requiresPreview = false
                 let token = self.numericToken
                 editor.field.text = "2 +"; editor.field.sendActions(for: .editingChanged)
                 check(editor.actionFooter.apply.isEnabled && !editor.draft.isValidated, "direct Apply required a preview")
@@ -5591,7 +5670,7 @@ private extension FoundationController {
         }
         func verifyFooter(_ stage: String) -> Bool {
             view.layoutIfNeeded()
-            for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+            for id in ["workspace-model-cancel", "workspace-model-apply"] {
                 guard let button = find(id, in: inspectorPanel), !button.isDescendant(of: inspectorScroll) else {
                     assemblyCheckFail("\(stage): action still scrolls"); return false
                 }
@@ -5624,7 +5703,7 @@ private extension FoundationController {
                 ])
                 host.view.layoutIfNeeded(); scroll.frame = panel.content.bounds
                 panel.setNeedsLayout(); panel.layoutIfNeeded(); form.footer.layoutIfNeeded()
-                for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+                for id in ["workspace-model-cancel", "workspace-model-apply"] {
                     guard let action = find(id, in: panel) else { assemblyCheckFail("large-text action missing"); return false }
                     let frame = action.convert(action.bounds, to: panel)
                     guard panel.bounds.contains(frame), frame.width >= 44, frame.height >= 44 else {
@@ -5667,10 +5746,9 @@ private extension FoundationController {
             self.view.layoutIfNeeded()
             let canvasFrame = self.canvas.frame
             self.assemblyCheckBegin("solid.extrude", params: fixture) { _ in
-                self.modellingInspector?.requiresPreview = true // Retain explicit coverage of the optional legacy policy.
                 guard let form = self.modellingInspector,
                       let apply = find("workspace-model-apply", in: self.inspectorPanel) as? UIButton,
-                      !apply.isEnabled, verifyFooter("initial") else { self.assemblyCheckFail("unvalidated Apply enabled"); return }
+                      apply.isEnabled, verifyFooter("initial") else { self.assemblyCheckFail("direct Apply disabled"); return }
                 self.view.layoutIfNeeded()
                 guard self.canvas.frame == canvasFrame else { self.assemblyCheckFail("opening inspector resized Metal canvas"); return }
                 for id in ["workspace-model-field-profile", "workspace-model-field-distance", "workspace-model-inline-operation-0", "workspace-model-inline-operation-3"] {
@@ -5687,7 +5765,7 @@ private extension FoundationController {
                     self.assemblyCheckWaitForFrame(model, preview: true, stage: "compact-inspector") {
                         capture("dark")
                         self.appearance = 1; self.applyAppearance(); self.view.layoutIfNeeded(); capture("light")
-                        for id in ["workspace-model-cancel", "workspace-model-preview", "workspace-model-apply"] {
+                        for id in ["workspace-model-cancel", "workspace-model-apply"] {
                             guard let button = find(id, in: self.inspectorPanel) as? UIButton, button.configuration?.image == nil else {
                                 self.assemblyCheckFail("appearance refresh restored footer artwork/wrapping"); return
                             }
@@ -5695,7 +5773,7 @@ private extension FoundationController {
                         self.appearance = 2; self.applyAppearance()
                         guard let distance = find("workspace-model-field-distance", in: form) as? UITextField else { self.assemblyCheckFail("distance field"); return }
                         distance.text = "5 mm +"; distance.sendActions(for: .editingChanged)
-                        guard !apply.isEnabled, form.params["distance"] == .string("5 mm +") else { self.assemblyCheckFail("edited raw expression reused preview"); return }
+                        guard apply.isEnabled, form.params["distance"] == .string("5 mm +") else { self.assemblyCheckFail("edited raw expression blocked direct Apply"); return }
                         form.beginContextRefresh()
                         guard !apply.isEnabled else { self.assemblyCheckFail("reference refresh reused preview"); return }
                         form.contextRefreshDiscarded()
@@ -5728,7 +5806,7 @@ private extension FoundationController {
                                     }
                                 }
                                 subtract.sendActions(for: .touchUpInside)
-                                guard !apply.isEnabled, form.params["_auto_subtract"] == .bool(false) else {
+                                guard form.params["_auto_subtract"] == .bool(false) else {
                                     self.assemblyCheckFail("operation change reused validation or dropped explicit override"); return
                                 }
                             }

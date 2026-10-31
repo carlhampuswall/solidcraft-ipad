@@ -727,14 +727,26 @@ struct WorkspaceChecks {
         try require(draft != definition, "changed expressions could reuse old preview eligibility")
         // Preview validation follows the exact draft revision. UIKit owns raw
         // text and selection; the policy never parses or normalises expressions.
+        var queuedPreviews: [DispatchWorkItem] = []
+        var previewValues: [Int] = []
+        let debouncer = DraftPreviewDebouncer { queuedPreviews.append($0) }
+        debouncer.schedule { previewValues.append(1) }
+        debouncer.schedule { previewValues.append(2) }
+        queuedPreviews.forEach { $0.perform() }; queuedPreviews.removeAll()
+        try require(previewValues == [2], "rapid draft edits evaluated superseded previews")
+        debouncer.schedule { previewValues.append(3) }
+        debouncer.cancel()
+        queuedPreviews.forEach { $0.perform() }; queuedPreviews.removeAll()
+        try require(previewValues == [2], "Apply or Cancel allowed a delayed preview to run")
+        debouncer.schedule { previewValues.append(4) }
+        queuedPreviews.forEach { $0.perform() }
+        try require(previewValues == [2, 4], "a new draft could not preview after cancellation")
         var numericDraft = NumericDraftValidation()
-        try require(!numericDraft.isValidated && numericDraft.canApply(requiresPreview: false), "dimension Apply required a separate Preview")
-        try require(!numericDraft.canApply(requiresPreview: true), "preview-required preference allowed an unvalidated draft")
+        try require(!numericDraft.isValidated, "a new numeric draft was already validated")
         let originalNumericRevision = numericDraft.revision
         numericDraft.changed() // a fast edit while the first preview is pending
         try require(!numericDraft.complete(revision: originalNumericRevision, valid: true), "an older preview validated newer numeric input")
-        try require(!numericDraft.isValidated && !numericDraft.canApply(requiresPreview: true), "a stale numeric preview enabled preview-required Apply")
-        try require(numericDraft.canApply(requiresPreview: false), "editing during Preview blocked direct Apply after completion")
+        try require(!numericDraft.isValidated, "a stale numeric preview validated newer input")
         let currentNumericRevision = numericDraft.revision
         try require(numericDraft.complete(revision: currentNumericRevision, valid: true) && numericDraft.isValidated, "the current numeric preview did not enable Apply")
         numericDraft.changed() // edit away, then back to exactly the original text
@@ -743,7 +755,6 @@ struct WorkspaceChecks {
         try require(numericDraft.complete(revision: numericDraft.revision, valid: false) && !numericDraft.isValidated, "invalid expression enabled Apply")
         try require(numericDraft.complete(revision: numericDraft.revision, valid: true) && numericDraft.isValidated, "correcting an invalid expression did not recover validation")
         try require(!numericDraft.complete(revision: originalNumericRevision, valid: false) && numericDraft.isValidated, "a stale error removed newer validation")
-        try require(numericDraft.canApply(requiresPreview: true), "preview-required preference rejected a validated draft")
         // This is the native model bridge envelope shape: real profile-selection
         // payloads, expression text, nullable feature IDs and ordered input arrays.
         // The production response decoder is generic only over the workspace body.

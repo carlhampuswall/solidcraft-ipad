@@ -1,6 +1,30 @@
 import CoreGraphics
 import Foundation
 
+/// Main-thread draft work is replaceable until it reaches the serial CAD lane.
+/// The generation also rejects a cancelled item already handed to the run loop.
+final class DraftPreviewDebouncer {
+    private var work: DispatchWorkItem?
+    private var generation: UInt64 = 0
+    private let enqueue: (DispatchWorkItem) -> Void
+    init(enqueue: @escaping (DispatchWorkItem) -> Void = { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: $0) }) {
+        self.enqueue = enqueue
+    }
+    func schedule(_ operation: @escaping () -> Void) {
+        cancel()
+        let expected = generation
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.generation == expected else { return }
+            self.generation &+= 1
+            self.work = nil
+            operation()
+        }
+        work = item; enqueue(item)
+    }
+    func cancel() { generation &+= 1; work?.cancel(); work = nil }
+    deinit { work?.cancel() }
+}
+
 /// Native drag presentation preference; exact expressions bypass this mapping.
 enum DragResolution {
     static let key = "SolidCraft.workspace.dragStepMM"
@@ -57,7 +81,6 @@ struct NumericDraftValidation {
     private(set) var revision: UInt64 = 0
     private var validatedRevision: UInt64?
     var isValidated: Bool { validatedRevision == revision }
-    func canApply(requiresPreview: Bool) -> Bool { !requiresPreview || isValidated }
     mutating func changed() { revision &+= 1; validatedRevision = nil }
     @discardableResult mutating func complete(revision: UInt64, valid: Bool) -> Bool {
         guard revision == self.revision else { return false }

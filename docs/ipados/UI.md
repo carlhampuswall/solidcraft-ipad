@@ -143,12 +143,12 @@ Direction, through-all, targets and all other descriptor fields remain available
 under **More options**. Reference order and the automatic-subtract/explicit-override
 rules still belong to Rust.
 
-Preview status and Cancel/Preview/Apply occupy a persistent panel footer outside
+Automatic preview status and Cancel/Apply occupy a persistent panel footer outside
 the scroll view. The actions stack vertically when their labels cannot fit
 across, including larger text and narrow windows. Detailed engine feedback
 scrolls with the body. Apply validates the current parameters and commits directly;
-Preview is optional. The optional preview-required preference retains matching
-preview eligibility after parameter or reference changes. The async generation/document/token checks,
+Edits preview automatically after a short typing pause. Only the latest queued
+draft is evaluated; Apply and Cancel discard delayed work. The async generation/document/token checks,
 preview mailbox and atomic engine acceptance are unchanged. Compact forms request
 380 points of width, bounded by available space. The floating Metal canvas retains
 its bounds when the inspector opens; the existing keyboard resize path remains.
@@ -184,7 +184,7 @@ hardware Pencil/VoiceOver remain separate follow-ups.
 Numeric entry follows the approved keypad reference: the popup contains its own
 four-by-four number pad, a large outlined raw-expression field, field name and
 native source context, a compact units/parentheses/ABC row, framed expression
-help and one persistent Cancel/Preview/Apply row. Done is a key in that pad and
+help and one persistent Cancel/Apply row. Done is a key in that pad and
 only dismisses input. The number pad is a UIKit view inside the popup; numeric
 mode does not open a separate software-keyboard area or resize the Metal canvas.
 ABC explicitly opens full text entry for parameters, functions and additional
@@ -207,16 +207,15 @@ rail appearance alone. New Extrude and Offset Face distance descriptors publish
 the engine Length kind's default unit, so Swift does not infer units from labels
 or parse expressions. Other fields retain their native unit metadata.
 
-Preview leaves text editable and validates only its captured draft revision.
-Dimension and modelling edits can Apply directly: the existing engine validates the current
-expression and geometry before accepting one transaction. Preview is optional.
-Tools → Require Preview before applying restores the earlier two-step
-flow (preference `SolidCraft.workspace.dimensionPreviewRequired`, off by default).
-In that mode, typing during evaluation, including editing away and back to
-identical text, keeps Apply disabled until a matching Preview completes. The setting
-covers inspectors and their number popups. Errors appear beside the
-retained draft. Done and Return leave the transaction provisional; applying an
-operation disables Close/Cancel and keypad edits until completion.
+Automatic preview leaves text editable and validates only its captured draft
+revision. Number edits, modelling parameters/references and sketch transforms
+preview after a 300 ms typing pause; existing sliders and direct handles retain
+their live preview path. One pending request replaces older queued edits.
+Dimension and modelling Apply validate current values before accepting one
+transaction. There is no manual Preview button or preview-required setting;
+the former preference key is ignored, as explicitly requested by the user.
+Errors appear beside the retained draft. Done and Return leave the transaction
+provisional; applying an operation disables Close/Cancel and edits until completion.
 The existing Rust tokens, context checks, scratch evaluation and atomic
 acceptance still own geometry and history.
 
