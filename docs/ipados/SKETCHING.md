@@ -242,9 +242,22 @@ dimension popovers also offer **Make reference**. Switching modes closes the
 popover and converts the committed dimension in one undo step; any uncommitted
 expression or preview is discarded first. Tap the value again to use its new
 mode. Free-size helpers have no mode switch until a dimension is applied.
-A drag continues moving the
-annotation rather than opening the editor. Multi-touch navigation, cancellation,
-display changes and suspension cannot turn an interrupted contact into an edit.
+A drag continues moving the annotation rather than opening the editor.
+Multi-touch navigation, cancellation, display changes and suspension cannot
+turn an interrupted contact into an edit.
+
+The popover follow-up passed the physical iPad DEBUG checks on 2026-10-31,
+candidate `fd700c20`. The reference popover has no enabled input, Apply action,
+numeric token or keypad; Close releases its editing context. Both popover mode
+buttons, Undo/Redo and reopening passed. A 100 mm driving preview followed by an
+invalid expression was discarded when making the saved 50 mm dimension a
+reference. The existing inline entry/deletion check also passed, including
+helpers without saved-dimension actions. Popover screenshots were visually
+inspected; evidence and signed-binary hashes are in
+`target/dimension-popover-device-20261031/`. Unsigned/signed builds and the
+692-case native harness passed. Coverage uses synthetic UIKit actions, with
+physical Pencil and VoiceOver unverified; no engine tests were run.
+
 The DEBUG `--inline-dimension-check` launch flag prepares a disposable rectangle
 for physical tap, numeric-entry and drag checks without opening a library project.
 Tools > **Tap dimensions to edit** disables inline entry and restores selecting
