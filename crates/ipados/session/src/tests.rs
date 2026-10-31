@@ -2743,6 +2743,89 @@ fn sketch_dimensioned_rectangle_reopens_roundtrips_and_regenerates_native_prism(
 }
 
 #[test]
+fn sketch_resize_preserves_circle_cut_split_by_projected_face_edges() {
+    let mut adapter = SessionAdapter::new();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap().value["sketch"].as_u64().unwrap();
+    let rectangle = adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[80,80]})).unwrap().value;
+    let mut dimensions = Vec::new();
+    for side in ["top", "right"] {
+        let curve = rectangle["sides"][side].as_str().unwrap();
+        numeric_apply(&mut adapter, &curve_selection(sketch, curve), Some("length"), "80 mm");
+        dimensions.push(adapter.sketch_snapshot().unwrap().sketch.constraints.iter().filter_map(|c| c.param.clone()).next_back().unwrap());
+    }
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("solid.extrude", json!({"sketch":sketch,"distance":4})).unwrap();
+    let body = adapter.session.world_state().bodies[0].name.clone();
+    let face = modelling_face(&adapter, &body, Vec3::new(40., 40., 4.));
+    let Sel::Face { index, point, .. } = face else { panic!("top face") };
+    let top = adapter.execute("sketch.create", json!({"plane":{"face":point,"body":body,"index":index}})).unwrap().value["sketch"].as_u64().unwrap();
+    let projected_corner = adapter
+        .sketch_snapshot()
+        .unwrap()
+        .sketch
+        .points
+        .iter()
+        .find(|point| point.link.is_some() && (point.pos.x - 80.).abs() < 1e-7 && (point.pos.y - 80.).abs() < 1e-7)
+        .unwrap()
+        .id
+        .clone();
+    adapter.execute("sketch.circle.center", json!({"center":projected_corner,"radius":45})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let state = adapter.session.model.state();
+    let selected: Vec<_> = state
+        .sketch(top)
+        .unwrap()
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| (profile.region.interior_point() - solidcraft_engine::geom::Vec2::new(80., 80.)).len() < 45.)
+        .map(|(index, _)| Sel::Profile { sketch: top, index })
+        .collect();
+    assert_eq!(selected.len(), 2);
+    for selection in &selected {
+        let Sel::Profile { index, .. } = selection else { panic!("profile") };
+        let solved = state.sketch(top).unwrap();
+        let captured = solidcraft_engine::doc::capture_profile_selection(solved, &[*index]).unwrap();
+        assert_eq!(solidcraft_engine::doc::profile_selection_indices(solved, &captured).unwrap(), [*index], "a partial pick must stay partial");
+    }
+    let edit = adapter.begin_model(804, Some("solid.extrude"), None, &selected).unwrap();
+    let mut params = edit.params.clone();
+    params["distance"] = json!("10 mm");
+    params["direction"] = json!("negative");
+    params["operation"] = json!("cut");
+    params["targets"] = json!([body]);
+    modelling_commit(&mut adapter, &edit, params);
+    let cut = adapter.session.doc.features.last().unwrap().id;
+    assert!(matches!(&adapter.session.doc.feature(cut).unwrap().kind,
+        FeatureKind::Extrude { profiles: solidcraft_engine::doc::ProfileSel::WholeBoundaries { profiles }, .. }
+        if profiles.len() == 1 && profiles[0].outer == ["c1"] && profiles[0].holes.is_empty()));
+    let original = 4. * (80. * 80. - std::f64::consts::PI * 45_f64.powi(2) / 4.);
+    assert!((modelling_volume(&adapter) - original).abs() < original * 5e-4);
+    adapter.execute("timeline.roll_to", json!({"position":1})).unwrap();
+    for parameter in dimensions {
+        adapter.execute("parameters.change", json!({"name":parameter,"expression":"40 mm"})).unwrap();
+    }
+    let mut loaded = modelling_roundtrip(&adapter);
+    let cap = (45_f64.powi(2) * (40_f64 / 45.).acos() - 40. * (45_f64.powi(2) - 40_f64.powi(2)).sqrt()) / 2.;
+    let expected = 4. * (40. * 40. - std::f64::consts::PI * 45_f64.powi(2) / 4. + 2. * cap);
+    for adapter in [&mut adapter, &mut loaded] {
+        for position in [2, 3, 4, 2, 4] {
+            adapter.execute("timeline.roll_to", json!({"position":position})).unwrap();
+            let actual = modelling_volume(adapter);
+            let expected = if position == 4 { expected } else { 6400. };
+            assert!(
+                (actual - expected).abs() < expected * 5e-4,
+                "stage {position}: {actual} != {expected}; {:?}",
+                adapter.session.doc.feature(cut).unwrap().kind
+            );
+        }
+        let mut reopened = modelling_roundtrip(adapter);
+        assert!((modelling_volume(&reopened) - expected).abs() < expected * 5e-4);
+        assert!(reopened.snapshot().unwrap().body_count > 0);
+    }
+}
+
+#[test]
 fn sketch_constraints_drag_conflicts_and_previews_preserve_valid_document() {
     let mut adapter = SessionAdapter::new();
     adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap();

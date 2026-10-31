@@ -10,6 +10,31 @@ the final combined branch. The engine suite is excluded from this integration's
 checks at the user's request; no full-CI success is claimed.
 
 
+## Circular cut selection after sketch resizing — 2026-10-31
+
+A synthetic 80 × 80 × 4 mm plate, face-attached sketch and radius-45 mm
+circle reproduce the reported silent whole-body subtraction when the base sketch
+shrinks to 40 × 40 mm. Projected face edges split the selected circle into two
+graph regions with ambiguous curve lists; their saved list indices subsequently
+refer to different regions. Capture now retains the complete drawn circle's
+whole source boundary, and resolves its current graph pieces by that identity.
+Partial selections stay partial. The pending format marker protects older readers;
+previously saved index selections are not reinterpreted by guessing lost intent.
+
+The regression failed before the fix with zero remaining volume and passes after
+it with the analytic remaining volume (about 594.44 mm³), including history-marker
+navigation and native save/reopen. Five document profile-reference tests, all 209
+session tests and all 30 bridge tests pass. CLI before/after CPU captures and
+measurements are in ignored `target/sketch-resize-investigation/`. A local repaired
+copy of the affected saved design also rebuilds at both 40 and 80 mm without
+feature warnings or errors. Formatting, affected Clippy with warnings denied,
+pending-format checks, adapter/bridge WebAssembly checking and the unsigned iPad
+build pass. WebAssembly retains the existing unused `Exported.bodies` warning.
+The first Xcode attempt was blocked by the outer sandbox; its unchanged-source
+retry completed outside that sandbox. The original on-device design was only
+read; the app was not installed, launched or driven. Engine tests/full CI remain
+excluded by the current task policy.
+
 ## Deferred-change device verification — 2026-10-31
 
 Signed candidate `85bde6a4c1eed2441da473b420aa1ec48d2e73fd` was installed and

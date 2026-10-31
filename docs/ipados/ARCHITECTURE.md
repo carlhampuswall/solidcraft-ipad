@@ -126,6 +126,16 @@ an internally failed handle must be destroyed and recreated.
 
 ## Upstream delta ledger
 
+`crates/doc/src/profile_refs.rs` also preserves a complete drawn profile by its
+whole source boundary when projected face edges split it into ambiguous graph
+regions. Previously the shared capture could retain list indices; resizing the
+supporting sketch could silently select different regions and cut away an entire
+body. The existing whole-boundary representation now resolves all pieces of the
+same drawn profile, with complete area coverage checked. Partial picks retain
+their exact region. `format/pending/drawn-profile-boundaries.rs` gates this saved
+meaning for older readers. This is a shared document-reference fix suitable for
+upstream; it adds no platform dependency or kernel behavior.
+
 | File outside platform directories | Why adapter alone is insufficient; minimal change | Desktop/web impact; upstream suitability |
 | --- | --- | --- |
 | `Cargo.toml` | Register two actual nested packages; retain native host/namespace exclusions. | Adds members only; no changed shared dependencies. Fork-specific registration. |

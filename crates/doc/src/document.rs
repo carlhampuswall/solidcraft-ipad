@@ -169,6 +169,7 @@ pub enum ProfileSel {
     /// The local association identity survives retirement and resurrection of arc roles.
     OffsetBoundaries { associations: Vec<String> },
     /// Exact whole source coverage, including holes; partial source curves do not match.
+    /// A complete drawn boundary can span graph regions split by projected reference edges.
     WholeBoundaries { profiles: Vec<WholeProfileBoundary> },
     /// The profile containing each sketch point.
     Points { points: Vec<Vec2> },

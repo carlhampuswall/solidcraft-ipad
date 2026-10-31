@@ -46,20 +46,71 @@ fn validate_whole(profiles: &[WholeProfileBoundary]) -> Result<()> {
     Ok(())
 }
 
+/// A complete drawn boundary can be split into several graph faces by projected
+/// reference edges. Keep its source curves, rather than those faces' list positions.
+fn drawn_boundaries(ss: &SolvedSketch) -> Vec<(WholeProfileBoundary, Vec<usize>)> {
+    if ss.sketch.links.is_empty() || ss.profiles.len() > 10_000 {
+        return Vec::new();
+    }
+    let drawn = solidcraft_sketch::find_drawn_profiles(&ss.sketch);
+    if drawn.len() > MAX_SELECTIONS {
+        return Vec::new();
+    }
+    drawn
+        .iter()
+        .filter_map(|profile| {
+            let boundary = whole_boundary(profile)?;
+            let pieces: Vec<_> = ss
+                .profiles
+                .iter()
+                .enumerate()
+                .filter(|(_, piece)| profile.region.contains(piece.region.interior_point()))
+                .map(|(index, _)| index)
+                .collect();
+            let area: f64 = pieces.iter().filter_map(|index| ss.profiles.get(*index)).map(|piece| piece.area).sum();
+            // The graph must cover the complete selected region, including its holes.
+            (!pieces.is_empty() && (area - profile.area).abs() <= profile.area.abs().max(1.) * 1e-8).then_some((boundary, pieces))
+        })
+        .collect()
+}
+
+fn capture_drawn_selection(ss: &SolvedSketch, checked: &[usize]) -> Option<ProfileSel> {
+    let selected: BTreeSet<_> = checked.iter().copied().collect();
+    let mut covered = BTreeSet::new();
+    let mut profiles = Vec::new();
+    for (boundary, pieces) in drawn_boundaries(ss) {
+        if pieces.iter().all(|index| selected.contains(index)) {
+            covered.extend(pieces);
+            profiles.push(boundary);
+        }
+    }
+    (!profiles.is_empty() && covered == selected).then_some(ProfileSel::WholeBoundaries { profiles })
+}
+
 fn whole_profile_indices(ss: &SolvedSketch, profiles: &[WholeProfileBoundary]) -> Result<Vec<usize>> {
     validate_whole(profiles)?;
     let current = ss.profiles.iter().map(whole_boundary).collect::<Vec<_>>();
-    profiles
+    let mut drawn = None;
+    let selections = profiles
         .iter()
         .map(|identity| {
             let mut matches = current.iter().enumerate().filter(|(_, candidate)| candidate.as_ref() == Some(identity));
-            let (index, _) = matches.next().ok_or_else(|| DocError::Unknown(format!("complete source profile in {}", ss.name)))?;
+            let Some((index, _)) = matches.next() else {
+                let boundaries = drawn.get_or_insert_with(|| drawn_boundaries(ss));
+                let mut matches = boundaries.iter().filter(|(candidate, _)| candidate == identity);
+                let (_, indices) = matches.next().ok_or_else(|| DocError::Unknown(format!("complete source profile in {}", ss.name)))?;
+                if matches.next().is_some() {
+                    return Err(DocError::Invalid(format!("ambiguous drawn source profile in {}", ss.name)));
+                }
+                return Ok(indices.clone());
+            };
             if matches.next().is_some() {
                 return Err(DocError::Invalid(format!("ambiguous complete source profile in {}", ss.name)));
             }
-            Ok(index)
+            Ok(vec![index])
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    Ok(selections.into_iter().flatten().collect())
 }
 
 fn same_ids(a: &[String], b: &[String]) -> bool {
@@ -293,6 +344,7 @@ fn selection_indices(ss: &SolvedSketch, selection: &ProfileSel, mut notes: Optio
 
 /// Persist selected complete offset boundaries by association identity. Mixed selections
 /// retain exact ordinary loops and the complete reserved role set of each offset boundary.
+/// Ambiguous graph pieces covering a complete drawn profile retain its source boundary.
 pub fn capture_profile_selection(ss: &SolvedSketch, indices: &[usize]) -> Result<ProfileSel> {
     let checked = profile_selection_indices(ss, &ProfileSel::Indices { indices: indices.to_vec() })?;
     if checked.is_empty() || checked.iter().collect::<BTreeSet<_>>().len() != checked.len() {
@@ -325,8 +377,8 @@ pub fn capture_profile_selection(ss: &SolvedSketch, indices: &[usize]) -> Result
     }
     let mut associations = Vec::new();
     let mut loops = Vec::new();
-    for index in checked {
-        let curves = &ss.profiles.get(index).ok_or_else(|| DocError::Invalid("profile index changed during capture".into()))?.outer_curves;
+    for index in &checked {
+        let curves = &ss.profiles.get(*index).ok_or_else(|| DocError::Invalid("profile index changed during capture".into()))?.outer_curves;
         if curves.is_empty() {
             return Ok(ProfileSel::Indices { indices: indices.to_vec() });
         }
@@ -348,7 +400,7 @@ pub fn capture_profile_selection(ss: &SolvedSketch, indices: &[usize]) -> Result
             associations.push(id);
         } else {
             if ss.profiles.iter().filter(|profile| same_ids(curves, &profile.outer_curves)).count() != 1 {
-                return Ok(ProfileSel::Indices { indices: indices.to_vec() });
+                return Ok(capture_drawn_selection(ss, &checked).unwrap_or_else(|| ProfileSel::Indices { indices: indices.to_vec() }));
             }
             loops.push(curves.clone());
         }
