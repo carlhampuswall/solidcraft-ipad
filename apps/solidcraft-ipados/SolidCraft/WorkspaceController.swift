@@ -1755,6 +1755,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 form.onInlineChoice = { [weak self] params in self?.refreshModellingContext(params, submitAfter: .preview) }
                 form.onApply = { [weak self] params in self?.evaluateModelling(params, commit: true) }
                 form.onCancel = { [weak self] in self?.cancelModelling() }
+                form.onReferenceChoices = { [weak self] menu, source in
+                    guard let self, self.modellingToken == token, !self.modellingCommitting,
+                          self.presentedViewController == nil, source.window != nil else { return }
+                    self.canvas.cancelInput(); self.view.endEditing(true)
+                    let picker = BrowserActionController(menu: menu)
+                    let navigation = UINavigationController(rootViewController: picker)
+                    navigation.modalPresentationStyle = .popover
+                    navigation.overrideUserInterfaceStyle = self.workspaceInterfaceStyle
+                    navigation.preferredContentSize = picker.preferredContentSize
+                    if let popover = navigation.popoverPresentationController {
+                        popover.sourceView = source; popover.sourceRect = source.bounds
+                        popover.delegate = self
+                    }
+                    self.present(navigation, animated: true)
+                }
                 form.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.revealField(); self?.updateAvailability() }
                 form.onEditValue = form.compact ? { [weak self] field, expression, source in
                     self?.presentModelValue(parameter: field.key, expression: expression, units: field.units ?? "",
@@ -4155,17 +4170,28 @@ private extension FoundationController {
             session.command("view.grid", params: ["visible":gridVisible])
         }
         func chooseFace(then next: @escaping () -> Void) {
-            guard let form = modellingInspector, let field = form.fields.first(where: { $0.key == "plane" }),
-                  let option = field.options?.first(where: { option in
-                      guard case .object(let plane) = option.value, case .array(let point)? = plane["face"], point.count == 3,
-                            let z = point[2].value as? NSNumber else { return false }
-                      return abs(z.doubleValue - 10) < 0.00001
-                  }), let button = control("workspace-model-field-plane"),
-                  let action = button.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == ModellingText.label(option.label) }) else {
-                finish("Current top face menu choice unavailable"); return
+            wait({ self.modellingInspector?.handleEntryEnabled == true && control("workspace-model-field-plane")?.isEnabled == true }) {
+                guard let form = self.modellingInspector, let field = form.fields.first(where: { $0.key == "plane" }),
+                      let option = field.options?.first(where: { option in
+                          guard case .object(let plane) = option.value, case .array(let point)? = plane["face"], point.count == 3,
+                                let z = point[2].value as? NSNumber else { return false }
+                          return abs(z.doubleValue - 10) < 0.00001
+                      }), let button = control("workspace-model-field-plane") else {
+                    finish("Current top face choice unavailable"); return
+                }
+                button.sendActions(for: .touchUpInside)
+                wait({ (self.presentedViewController as? UINavigationController)?.topViewController is BrowserActionController }) {
+                    guard let picker = (self.presentedViewController as? UINavigationController)?.topViewController as? BrowserActionController,
+                          let index = picker.menu.children.firstIndex(where: { $0.title == ModellingText.label(option.label) }),
+                          self.keyboardTop == nil, !self.textEntryActive else {
+                        finish("Face chooser missing or raised the keyboard"); return
+                    }
+                    capture("face-list-" + String(stages.count)) {
+                        picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: index, section: 0))
+                        wait({ self.presentedViewController == nil && control("workspace-model-apply")?.isEnabled == true }, then: next)
+                    }
+                }
             }
-            action.performWithSender(button, target: nil)
-            wait({ control("workspace-model-apply")?.isEnabled == true }, then: next)
         }
         func exercise(_ sketch: UInt64) {
             guard let row = state?.rows.first(where: { $0.id == "feature:" + String(sketch) }),
@@ -4228,7 +4254,7 @@ private extension FoundationController {
             ("sketch.rectangle.two_point", ["p0":[2,2],"p1":[8,8]]), ("sketch.finish", [:]),
             ("sketch.edit", ["sketch":"Base outline"]), ("sketch.delete", ["entities":["l2"]]),
             ("sketch.line", ["points":[[40,0],[40,20]]]), ("sketch.finish", [:]),
-            ("timeline.edit", ["feature":"Extrude1","set":["profiles":[["point":[10,10]]]]]), ("view.iso", [:]), ("view.fit", [:])]
+            ("timeline.edit", ["feature":"Extrude1","set":["profiles":[["point":[10,10]]]]]), ("view.isometric", [:]), ("view.fit", [:])]
         func prepare(_ index: Int) {
             guard !finished else { return }
             guard index < fixture.count else {

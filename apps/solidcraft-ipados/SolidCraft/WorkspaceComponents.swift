@@ -1509,6 +1509,9 @@ final class ModellingInspector: UIStackView {
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
     private var validated: [String: PresentationJSON]?
+    private var attachmentReady: Bool {
+        !fields.contains(where: { $0.key == "plane" && $0.kind == "reference" }) || validated == params
+    }
     private var entryHint: String {
         if fields.contains(where: { $0.key == "plane" && $0.kind == "reference" }), params["plane"] == nil || params["plane"] == .null {
             return NativeText.value("ui.ipados.attachment.choose_face")
@@ -1545,6 +1548,7 @@ final class ModellingInspector: UIStackView {
     var onFocus: (() -> Void)?
     var onChange: (() -> Void)?
     var onSelect: ((String?) -> Void)?
+    var onReferenceChoices: ((BrowserActionMenu, UIView) -> Void)?
     var onEditValue: ((ModellingState.Field, String, UIView) -> Void)?
     var focusedField: UITextField? { editors.first(where: { $0.field.isFirstResponder })?.field ?? textFields.first(where: { $0.isFirstResponder }) }
     var textEntryActive: Bool { focusedField != nil }
@@ -1629,7 +1633,7 @@ final class ModellingInspector: UIStackView {
             footer.addArrangedSubview(actions)
         } else { footer.addArrangedSubview(actions); footer.addArrangedSubview(cancel); addArrangedSubview(footer) }
         apply.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy, !self.contextRefreshing,
+            guard let self, !self.busy, !self.contextRefreshing, self.attachmentReady,
                   !ModellingFormPresentation.needsExtrusionDistance(self.params) else { return }
             self.endEditing(true); self.onApply?(self.params)
         }, for: .touchUpInside)
@@ -1708,7 +1712,7 @@ final class ModellingInspector: UIStackView {
         if !busy { message.show(entryHint) }
     }
     private func updateAvailability() {
-        apply.availability(enabled: !busy && !contextRefreshing && !ModellingFormPresentation.needsExtrusionDistance(params))
+        apply.availability(enabled: !busy && !contextRefreshing && attachmentReady && !ModellingFormPresentation.needsExtrusionDistance(params))
         cancel.availability(enabled: !committing)
         select.availability(enabled: !busy && !contextRefreshing)
         fieldViews.forEach { $0.isUserInteractionEnabled = !contextRefreshing && (!busy || inputWhileBusy) }
@@ -1793,7 +1797,7 @@ final class ModellingInspector: UIStackView {
                 if field.kind == "slider" { buildSlider(field, editor: editor, in: stack) }
             } else if field.kind == "references" {
                 buildReferences(field, in: stack)
-            } else if compact && field.kind == "reference" {
+            } else if field.kind == "reference" && (compact || field.key == "plane") {
                 buildSource(field, in: stack)
             } else {
                 let selected = parameter(field.key)
@@ -1809,7 +1813,7 @@ final class ModellingInspector: UIStackView {
                     let hint = WorkspaceStyle.label(.footnote, secondary: true); hint.text = ModellingText.text("no_inputs"); stack.addArrangedSubview(hint)
                 }
             }
-            if !compact && (field.key == "profile" || field.key == "plane" && field.kind == "reference") {
+            if !compact && field.key == "profile" {
                 let pick = WorkspaceButton(ModellingText.text("select_in_viewport")) { [weak self] in
                     self?.endEditing(true); self?.onSelect?(field.key)
                 }
@@ -1854,6 +1858,27 @@ final class ModellingInspector: UIStackView {
         change.menu = UIMenu(children: options + [UIAction(title: ModellingText.text("select_in_viewport")) { [weak self] _ in
             self?.endEditing(true); self?.onSelect?(field.key)
         }])
+        if field.key == "plane" {
+            // The repair has no text inputs. Reuse ordinary table choices so
+            // UIKit's system menu cannot activate its keyboard/type-ahead path.
+            change.menu = nil; change.showsMenuAsPrimaryAction = false
+            let generation = fieldGeneration
+            change.addAction(UIAction { [weak self, weak change] _ in
+                guard let self, let change, self.canEditFields(generation) else { return }
+                var choices = (field.options ?? []).map { option in
+                    BrowserActionMenu.Item(title: ModellingText.label(option.label), selected: option.value == self.parameter(field.key)) { [weak self] in
+                        guard let self, self.canEditFields(generation) else { return }
+                        self.setParameter(field.key, value: option.value); self.changed(); self.rebuildFields()
+                        self.onContextChange?(self.params)
+                    }
+                }
+                choices.append(BrowserActionMenu.Item(title: ModellingText.text("select_in_viewport"), icon: "select") { [weak self] in
+                    guard let self, self.canEditFields(generation) else { return }
+                    self.endEditing(true); self.onSelect?(field.key)
+                })
+                self.onReferenceChoices?(BrowserActionMenu(title: ModellingText.label(field.label), children: choices), change)
+            }, for: .touchUpInside)
+        }
         change.setContentCompressionResistancePriority(.required, for: .horizontal)
         change.setContentHuggingPriority(.required, for: .horizontal)
         let row = UIStackView(arrangedSubviews: [summary, change])

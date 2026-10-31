@@ -53,9 +53,20 @@ impl SessionAdapter {
     pub(crate) fn sketch_attachment_command(&self, edit: &ModelEdit, params: &Value) -> Result<Value, AdapterError> {
         // Only the exact, upstream face payloads from this revision's form may
         // be accepted. Do not fall back to a nearest point or a later body.
-        let plane = params
-            .get("plane")
-            .filter(|plane| edit.fields.iter().filter_map(|field| field["options"].as_array()).flatten().any(|option| option["value"] == **plane));
+        let picked = &params["plane"];
+        let point = serde_json::from_value::<solidcraft_engine::geom::Vec3>(picked["face"].clone()).ok().filter(|point| point.is_finite());
+        // Swift's JSON round trip can spell 10.0 as 10. Compare typed coordinates
+        // and exact body/index/path identity, then send the canonical option to
+        // the engine rather than the caller's re-encoded geometry payload.
+        let plane = edit.fields.iter().filter_map(|field| field["options"].as_array()).flatten().find_map(|option| {
+            let plane = &option["value"];
+            (plane["body"] == picked["body"]
+                && plane["index"] == picked["index"]
+                && plane["path"] == picked["path"]
+                && point.is_some()
+                && serde_json::from_value::<solidcraft_engine::geom::Vec3>(plane["face"].clone()).ok() == point)
+                .then_some(plane)
+        });
         let plane = plane.ok_or_else(|| error("selection", "ui.ipados.attachment.choose_face"))?;
         let feature =
             edit.feature.and_then(|id| self.session.doc.feature(id)).ok_or_else(|| error("stale_edit", "ui.ipados.attachment.choose_sketch"))?;

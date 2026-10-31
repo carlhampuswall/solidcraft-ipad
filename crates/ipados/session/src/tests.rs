@@ -5426,6 +5426,8 @@ fn modelling_sketch_attachment_repairs_changed_cap_with_preview_undo_roundtrip_a
     assert!(adapter.prepare_model(&edit, edit.params.clone(), true).is_err());
     let mut params = edit.params.clone();
     params["plane"] = attachment_top(&edit);
+    // JSONDecoder/JSONSerialization on the native host normalise 10.0 to 10.
+    params["plane"]["face"][2] = json!(10);
     let preview = adapter.prepare_model(&edit, params.clone(), false).unwrap();
     assert!((preview.model.volume_mm3 - 8000.).abs() < 1e-5);
     assert!(Arc::ptr_eq(&original, &adapter.session.doc));
