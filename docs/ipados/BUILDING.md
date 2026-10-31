@@ -134,6 +134,20 @@ partial arcs use their arc length. Straight edges show length alone. The native
 `--edge-length-check` includes a circular cylinder rim and a semicircular solid
 edge, checking both values, the saved toggle, and actual UIKit captures.
 
+Verified on 2026-10-31 with clean combined candidate
+`5597b7cff54fec0c9af95e21b10a1d08d69ea30e` (measurement change `522e34aa`):
+three focused session regressions, the bridge workspace regression, native
+692-case/icon harness, formatting, adapter Clippy, lists/i18n, session wasm and
+unsigned/signed device builds passed. The wasm check retains an existing engine
+dead-code warning. Reserved physical iPad checks passed for 40/30 mm straight
+edges, the radius-7 mm cylinder rim (43.982 mm), the semicircle (21.991 mm), the
+disabled readout and cleared selection. Both curved-edge UIKit screenshots were
+visually inspected with length and radius visible together. Evidence and signed
+binary hashes are in `target/edge-radius-device-20261031/`; normal app launch was
+restored and the reservation released. Coverage uses synthetic Pencil selection
+on physical hardware; physical Pencil delivery, the engine suite, full CI and
+simulators were not run.
+
 For split-cylinder selection evidence, use `--cylinder-selection` for walls or
 `--cylinder-edge-selection` for circular rims. Both capture independent outer
 and inner selections as `-outer.png` and `-inner.png`, verifying that each tap
