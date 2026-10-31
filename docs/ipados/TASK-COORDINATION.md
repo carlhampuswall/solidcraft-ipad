@@ -35,6 +35,15 @@ rules in [UPSTREAM.md](UPSTREAM.md) and scoped AGENTS files remain in force.
 
 ## Check a finished batch, not every edit
 
+**Engine tests require an explicit user request.** Do not run the engine suite,
+including indirectly through `cargo xtask ci`, workspace-wide tests or a helper's
+full-check option, unless the user explicitly asks for it for the current task.
+The user reaffirmed this restriction on 2026-10-31. A shared-crate change alone
+does not authorize engine tests. Use focused checks for the affected code;
+session/bridge tests, GPU tests, linting, wasm checks and unsigned native builds
+remain available. Report omitted full-CI coverage accurately. This restriction
+takes precedence over broader CI instructions in this repository and its skills.
+
 Implement and review a coherent set of changes first. Run the smallest relevant
 checks once when that batch is ready to commit or hand off. Do not run tests,
 build the app, or install on the iPad after every small edit. A new commit alone
@@ -50,8 +59,9 @@ is not a reason to repeat passing checks on identical source.
   affected Clippy and Rust formatting. Add meaningful focused regressions where
   needed; do not add tests that merely mirror a trivial edit.
 - Shared crates, desktop/web code, dependencies/workspace configuration and
-  unfamiliar areas retain full `cargo +1.95.0 xtask ci` at the completed-batch
-  checkpoint. Full CI is still required for upstream/main/release qualification.
+  unfamiliar areas use the relevant compatibility checks at the completed-batch
+  checkpoint. Full CI is still required for upstream/main/release qualification,
+  but running its engine suite requires the explicit user request described above.
 
 After a failure, fix it and rerun the failed checks and anything affected by the
 fix. After later source changes, rerun only checks whose inputs or behavior were
