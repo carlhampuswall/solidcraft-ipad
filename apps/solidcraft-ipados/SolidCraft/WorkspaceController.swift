@@ -5752,7 +5752,8 @@ private extension FoundationController {
             view.layoutIfNeeded()
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
                 guard let data = image.pngData() else { print("Browser check FAIL: image encoding"); return }
                 try data.write(to: directory.appendingPathComponent("browser-check-" + name + ".png"), options: .atomic)
                 print("Browser check CAPTURE \(name)")
