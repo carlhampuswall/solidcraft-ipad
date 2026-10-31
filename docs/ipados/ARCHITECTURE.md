@@ -126,6 +126,13 @@ an internally failed handle must be destroyed and recreated.
 
 ## Upstream delta ledger
 
+`cmd/face.rs` and `cmd/features.rs` partition multi-face extrusions by oriented
+plane and capture all linked profiles before applying any extrusion. Each plane
+uses the existing Extrude feature along its own normal; the engine transaction
+keeps the batch atomic. Coplanar selections retain their single feature. This
+Apple-independent command improvement adds no document format or kernel changes.
+The adapter's tool preview includes every newly created extrusion body.
+
 Face-based operations mark their generated linked boundary with the additive
 `Feature.internal_profile` flag (`document.rs`, `placement_reuse.rs`,
 `cmd/sketch.rs` and `format/pending/internal-face-profiles.rs`). The native browser,

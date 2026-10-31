@@ -34,7 +34,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .key("E")
         .contract(&EXTRUDE_CONTRACT)
         .output(output_schema_for::<FeatureResult>)
-        .params("distance: expr (or through_all: true); taper?: angle expr (positive: outward, so the far end is larger along the extrusion direction; negative: inward, so the far end is smaller); sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [{curves: [ids]}] (the profile whose outer loop is made of exactly these curves, or pieces of them; found again on every recompute, so it follows parameter changes; islands inside are its holes; an error when no profile or several match) | [{point:[x,y]}] (index and point picks are stored by their curves when that finds the same profile; a pick on a drawn profile that reference geometry, such as the projected outline of the face the sketch is on, cuts into regions takes the whole drawn profile); exact_regions?: bool (each index or point pick is exactly the region it names, as the dialogs send); default: every drawn profile, except that a loop inside another is its hole and a loop inside that hole is material again; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); faces?: [[x,y,z],…] (coplanar faces of one body); face_body?: name (whose face, where faces of several bodies meet at the point); direction?: positive|negative|symmetric (distance is total thickness, split evenly around the start plane); convention?: total_distance|legacy_per_side (default total_distance; legacy preserves older symmetric extents); distance2?: expr (Two Sides: a second distance the other way from the first side, which may be through_all or to; with direction: negative the first side goes against the normal and distance2 along it); start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); targets?: [body] (Join from a face, or from a sketch on a body's face, defaults to that face's body; explicit targets or participants override); name?; body_name?; thin?: true (Thin: a wall along sketch curves instead of the profiles) with curves?: [curve ids] (open chains and closed loops, joined where they meet end to end; default: every drawn curve of the sketch), thickness: expr, side?: center|inside|outside|two_sides (a closed loop's inside is the area it encloses, an open chain's the side it bends toward, a straight line's the left of its first curve as drawn; default center), thickness2?: expr (two_sides: the thickness outside); corners are mitred, crossing walls are one"),
+        .params("distance: expr (or through_all: true); taper?: angle expr (positive: outward, so the far end is larger along the extrusion direction; negative: inward, so the far end is smaller); sketch?: id|name (default: active or last sketch); profiles?: all | [index] | [{curves: [ids]}] (the profile whose outer loop is made of exactly these curves, or pieces of them; found again on every recompute, so it follows parameter changes; islands inside are its holes; an error when no profile or several match) | [{point:[x,y]}] (index and point picks are stored by their curves when that finds the same profile; a pick on a drawn profile that reference geometry, such as the projected outline of the face the sketch is on, cuts into regions takes the whole drawn profile); exact_regions?: bool (each index or point pick is exactly the region it names, as the dialogs send); default: every drawn profile, except that a loop inside another is its hole and a loop inside that hole is material again; face?: [x,y,z] (extrude a planar body face instead of a sketch profile); faces?: [[x,y,z],…] (planar faces of one body, each extruded along its own normal; coplanar faces share a feature, other planes make separate features in one undo action); face_body?: name (whose face, where faces of several bodies meet at the point); direction?: positive|negative|symmetric (distance is total thickness, split evenly around the start plane); convention?: total_distance|legacy_per_side (default total_distance; legacy preserves older symmetric extents); distance2?: expr (Two Sides: a second distance the other way from the first side, which may be through_all or to; with direction: negative the first side goes against the normal and distance2 along it); start_offset?: expr (along the sketch normal, also with direction: negative); to?: [x,y,z] (To Object: a face, vertex or point; to_offset?: expr past it); from?: [x,y,z] (From Object: start at that face or point); operation?: new|join|cut|intersect|auto (cut into a body, otherwise join existing solids; new in an empty component); targets?: [body] (Join from a face, or from a sketch on a body's face, defaults to that face's body; explicit targets or participants override); name?; body_name?; thin?: true (Thin: a wall along sketch curves instead of the profiles) with curves?: [curve ids] (open chains and closed loops, joined where they meet end to end; default: every drawn curve of the sketch), thickness: expr, side?: center|inside|outside|two_sides (a closed loop's inside is the area it encloses, an open chain's the side it bends toward, a straight line's the left of its first curve as drawn; default center), thickness2?: expr (two_sides: the thickness outside); corners are mitred, crossing walls are one"),
     CommandSpec::new("solid.revolve", "Revolve", revolve)
         .at("SOLID", "CREATE")
         .icon("revolve")
@@ -828,7 +828,7 @@ fn add_feature_in(s: &mut Session, p: &Value, kind: FeatureKind, world: bool) ->
 
 fn extrude(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "solid.extrude";
-    let grouped = if let Some(value) = p.get("faces") {
+    if let Some(value) = p.get("faces") {
         if p.get("face").is_some() || p.get("sketch").is_some() || p.get("profiles").is_some() {
             return Err(bad(cmd, "faces cannot be combined with face, sketch or profiles"));
         }
@@ -837,14 +837,47 @@ fn extrude(s: &mut Session, p: &Value) -> Result<Value> {
             .filter(|faces| !faces.is_empty() && faces.len() <= 1024)
             .ok_or_else(|| bad(cmd, "faces must contain between 1 and 1024 points"))?;
         let points = faces.iter().map(|point| vec3(point).ok_or_else(|| bad(cmd, "faces must be points [x,y,z]"))).collect::<Result<Vec<_>>>()?;
-        let (id, points, body) = super::face::sketch_of_faces(s, &points, cmd, str_(p, "face_body"))?;
-        Some((id, Some(ProfileSel::Points { points }), Some(body)))
-    } else {
-        None
-    };
+        let groups = super::face::face_plane_groups(s, &points, cmd, str_(p, "face_body"))?;
+        // Capture every linked boundary while the selected body is unchanged. In
+        // particular a cut must not erase or resize a later group's source face.
+        let sources = groups.iter().map(|points| super::face::sketch_of_faces(s, points, cmd, str_(p, "face_body"))).collect::<Result<Vec<_>>>()?;
+        let proposals: Vec<_> = groups
+            .into_iter()
+            .zip(sources)
+            .map(|(points, source)| {
+                let mut params = p.clone();
+                params["faces"] = json!(points);
+                if str_(p, "operation").is_some_and(|operation| operation.eq_ignore_ascii_case("auto")) {
+                    params["operation"] = json!(auto_operation_in(s, &params, false).unwrap_or("new"));
+                }
+                (params, source)
+            })
+            .collect();
+        let mut reply = Value::Null;
+        let mut changes = [Vec::new(), Vec::new(), Vec::new()];
+        for (params, (id, inside, body)) in proposals {
+            reply = extrude_profile(s, &params, Some((id, ProfileSel::Points { points: inside }, body)))?;
+            for (key, names) in ["created_bodies", "changed_bodies", "removed_bodies"].into_iter().zip(&mut changes) {
+                for name in reply[key].as_array().into_iter().flatten() {
+                    if !names.contains(name) {
+                        names.push(name.clone());
+                    }
+                }
+            }
+        }
+        for (key, names) in ["created_bodies", "changed_bodies", "removed_bodies"].into_iter().zip(changes) {
+            reply[key] = json!(names);
+        }
+        return Ok(reply);
+    }
+    extrude_profile(s, p, None)
+}
+
+fn extrude_profile(s: &mut Session, p: &Value, source: Option<(u64, ProfileSel, String)>) -> Result<Value> {
+    let cmd = "solid.extrude";
     // A planar body face extrudes like a profile: its boundary is copied into a sketch on it.
-    let (sketch, face_profile, face_body) = if let Some(grouped) = grouped {
-        grouped
+    let (sketch, face_profile, face_body) = if let Some((id, profiles, body)) = source {
+        (id, Some(profiles), Some(body))
     } else {
         match p.get("face").and_then(vec3) {
             Some(fp) => {

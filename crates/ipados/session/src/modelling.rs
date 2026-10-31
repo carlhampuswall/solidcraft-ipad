@@ -1518,7 +1518,11 @@ impl SessionAdapter {
                 tool_source.execute("timeline.roll_to", &json!({"position":position}))?;
             }
             let preview = tool_source.preview_world(&[(command.into(), tool)])?;
-            for body in preview.after.bodies.iter().filter(|body| body.feature == feature) {
+            for body in
+                preview.after.bodies.iter().filter(|body| {
+                    if command == "timeline.edit" { body.feature == feature } else { self.session.doc.feature(body.feature).is_none() }
+                })
+            {
                 let shape = body.mesh();
                 bounds = bounds.union(&shape.bounds());
                 display.meshes.push(SceneMesh {

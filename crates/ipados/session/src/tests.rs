@@ -5667,7 +5667,7 @@ fn modelling_face_extrusion_cut_and_symmetric_extents_follow_the_face_normal() {
 }
 
 #[test]
-fn modelling_face_extrusion_groups_coplanar_faces_and_rejects_incompatible_sources_without_mutation() {
+fn modelling_face_extrusion_groups_coplanar_faces_and_rejects_invalid_sources_without_mutation() {
     let mut adapter = SessionAdapter::new();
     adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"})).unwrap();
     let sketch = adapter.execute("sketch.create", json!({"plane":"XY","offset":"10 mm"})).unwrap().value["sketch"].as_u64().unwrap();
@@ -5677,7 +5677,6 @@ fn modelling_face_extrusion_groups_coplanar_faces_and_rejects_incompatible_sourc
     adapter.execute("solid.cylinder", json!({"radius":5,"height":10,"base":[30,0,0],"body_name":"Cylinder"})).unwrap();
     let top = modelling_face(&adapter, "Stock", Vec3::new(2., 5., 10.));
     let other_top = modelling_face(&adapter, "Stock", Vec3::new(8., 5., 10.));
-    let side = modelling_face(&adapter, "Stock", Vec3::new(0., 5., 5.));
     let curve = modelling_face(&adapter, "Cylinder", Vec3::new(35., 0., 5.));
     let history = adapter.session.undo.len();
     let before = adapter.session.doc.to_json();
@@ -5689,10 +5688,8 @@ fn modelling_face_extrusion_groups_coplanar_faces_and_rejects_incompatible_sourc
     let preview = adapter.prepare_model(&valid, params, false).unwrap();
     let before_volume = adapter.snapshot().unwrap().volume_mm3;
     assert!((preview.model.volume_mm3 - before_volume - 160.).abs() < 1e-5);
-    for selections in [vec![top.clone(), side], vec![curve.clone()]] {
-        let invalid = adapter.begin_model(775, Some("solid.extrude"), None, &selections).unwrap();
-        assert!(adapter.prepare_model(&invalid, invalid.params.clone(), false).is_err());
-    }
+    let invalid = adapter.begin_model(775, Some("solid.extrude"), None, std::slice::from_ref(&curve)).unwrap();
+    assert!(adapter.prepare_model(&invalid, invalid.params.clone(), false).is_err());
     assert!(adapter.begin_model(776, Some("solid.extrude"), None, &[top.clone(), curve]).is_err());
     assert!(adapter.begin_model(777, Some("solid.extrude"), None, &[top, Sel::Profile { sketch, index: 0 }]).is_err());
     for source in [
@@ -5708,6 +5705,101 @@ fn modelling_face_extrusion_groups_coplanar_faces_and_rejects_incompatible_sourc
     }
     assert_eq!(adapter.session.undo.len(), history);
     assert_eq!(adapter.session.doc.to_json(), before);
+}
+
+#[test]
+fn modelling_face_extrusion_uses_each_plane_normal_with_atomic_preview_commit_and_undo() {
+    for (operation, direction, expected) in [("new", "positive", 1400.), ("join", "positive", 1400.), ("cut", "negative", 640.)] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"})).unwrap();
+        let x = modelling_face(&adapter, "Stock", Vec3::new(10., 5., 5.));
+        let y = modelling_face(&adapter, "Stock", Vec3::new(5., 10., 5.));
+        let selection = [x.clone(), y, x]; // Repeated picks must not extrude a face twice.
+        let before = adapter.session.doc.to_json();
+        let history = adapter.session.undo.len();
+        let edit = adapter.begin_model(774, Some("solid.extrude"), None, &selection).unwrap();
+        let mut params = edit.params.clone();
+        params["distance"] = json!("2 mm");
+        params["operation"] = json!(operation);
+        params["direction"] = json!(direction);
+        params["targets"] = if operation == "new" { json!([]) } else { json!(["Stock"]) };
+        let preview = adapter.prepare_model(&edit, params.clone(), false).unwrap();
+        assert!((preview.model.volume_mm3 - expected).abs() < 1e-5, "{operation}: {}", preview.model.volume_mm3);
+        if operation != "new" {
+            let display = preview.model.preview_scene.as_ref().unwrap();
+            assert_eq!(display.names.iter().filter(|name| name.is_empty()).count(), 2, "both normal directions need tool feedback");
+        }
+        assert_eq!(adapter.session.doc.to_json(), before);
+        assert_eq!(adapter.session.undo.len(), history);
+        let committed = modelling_commit(&mut adapter, &edit, params);
+        assert!((committed.volume_mm3 - expected).abs() < 1e-5);
+        let state = adapter.session.model.state();
+        let planes: Vec<_> = state.sketches.iter().map(|sketch| sketch.plane.normal()).collect();
+        assert!(planes.iter().any(|normal| normal.dist(Vec3::X) < 1e-8));
+        assert!(planes.iter().any(|normal| normal.dist(Vec3::Y) < 1e-8));
+        let bounds = committed.bounds;
+        let end = if operation == "cut" { 8. } else { 12. };
+        assert!((bounds.max.x - end).abs() < 1e-5 && (bounds.max.y - end).abs() < 1e-5, "{operation}: {bounds:?}");
+        assert!((bounds.max.z - 10.).abs() < 1e-5);
+        let reopened = modelling_roundtrip(&adapter);
+        assert!((modelling_volume(&reopened) - expected).abs() < 1e-5);
+        adapter.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(adapter.session.doc.to_json(), before);
+        adapter.execute("edit.redo", json!({})).unwrap();
+        assert!((modelling_volume(&adapter) - expected).abs() < 1e-5);
+    }
+}
+
+#[test]
+fn modelling_face_extrusion_keeps_opposite_normals_separate_and_infers_auto_before_cutting() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"})).unwrap();
+    let reply = adapter
+        .execute(
+            "solid.extrude",
+            json!({"faces":[[10,5,5],[0,5,5],[5,10,5],[5,0,5]],
+        "face_body":"Stock","distance":2,"operation":"new"}),
+        )
+        .unwrap()
+        .value;
+    assert_eq!(reply["created_bodies"].as_array().unwrap().len(), 4);
+    let model = adapter.snapshot().unwrap();
+    assert!((model.volume_mm3 - 1800.).abs() < 1e-5);
+    assert!(model.bounds.min.dist(Vec3::new(-2., -2., 0.)) < 1e-5);
+    assert!(model.bounds.max.dist(Vec3::new(12., 12., 10.)) < 1e-5);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    adapter
+        .execute(
+            "solid.extrude",
+            json!({"faces":[[10,5,5],[5,10,5]],"face_body":"Stock",
+        "distance":6,"direction":"negative","operation":"auto","targets":["Stock"]}),
+        )
+        .unwrap();
+    // The first cut removes the second pick. Both operations still use the
+    // original face: remaining stock is 4 × 4 × 10, rather than a new second body.
+    assert!((modelling_volume(&adapter) - 160.).abs() < 1e-5);
+    assert_eq!(adapter.snapshot().unwrap().body_count, 1);
+}
+
+#[test]
+fn modelling_face_extrusion_rolls_back_when_a_later_plane_fails() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"})).unwrap();
+    let before = adapter.session.doc.to_json();
+    let history = adapter.session.undo.len();
+    // X reaches the target, but Y would have zero extent. Neither may be committed.
+    assert!(
+        adapter
+            .execute(
+                "solid.extrude",
+                json!({"faces":[[10,5,5],[5,10,5]],"face_body":"Stock",
+        "to":[12,10,5],"operation":"join","targets":["Stock"]})
+            )
+            .is_err()
+    );
+    assert_eq!(adapter.session.doc.to_json(), before);
+    assert_eq!(adapter.session.undo.len(), history);
+    assert!((modelling_volume(&adapter) - 1000.).abs() < 1e-5);
 }
 
 #[test]

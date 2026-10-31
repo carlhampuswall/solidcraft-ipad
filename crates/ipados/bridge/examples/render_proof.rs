@@ -138,7 +138,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return modelling_proof(&destination);
     }
     if std::env::args().nth(2).as_deref() == Some("--face-extrude") {
-        return face_extrude_proof(&destination);
+        return face_extrude_proof(&destination, false);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--multi-face-extrude") {
+        return face_extrude_proof(&destination, true);
     }
     if std::env::args().nth(2).as_deref() == Some("--subtract-selection") {
         return subtract_selection_proof(&destination);
@@ -1185,7 +1188,7 @@ fn subtract_selection_proof(destination: &str) -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-fn face_extrude_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn face_extrude_proof(destination: &str, multiple: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = SessionAdapter::new();
     engine.execute("solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Stock"}))?;
     let mut view = Viewport::default();
@@ -1195,13 +1198,17 @@ fn face_extrude_proof(destination: &str) -> Result<(), Box<dyn std::error::Error
     view.command("view.isometric", &json!({}))?;
     view.command("view.fit", &json!({}))?;
     let faces = engine.execute("model.faces", json!({"body":"Stock"}))?.value;
-    let top = faces["faces"]
-        .as_array()
-        .ok_or("faces")?
-        .iter()
-        .find(|face| face["plane_normal"][2].as_f64().is_some_and(|normal| normal > 0.999))
-        .ok_or("top face")?;
-    let selection = [serde_json::from_value(json!({"type":"face","body":"Stock","index":top["index"],"point":top["point"]}))?];
+    let mut selection = Vec::new();
+    for axis in if multiple { vec![0, 1] } else { vec![2] } {
+        let face = faces["faces"]
+            .as_array()
+            .ok_or("faces")?
+            .iter()
+            .find(|face| face["plane_normal"][axis].as_f64().is_some_and(|normal| normal > 0.999))
+            .ok_or("planar face")?;
+        selection.push(serde_json::from_value(json!({"type":"face","body":"Stock","index":face["index"],"point":face["point"]}))?);
+    }
+    let outward_volume = if multiple { 15_500. } else { 18_000. };
     let capturer = solidcraft_gpu::capture::Capturer::headless()?;
     let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
         let snapshot = view.snapshot().ok_or("face extrusion frame")?;
@@ -1228,7 +1235,7 @@ fn face_extrude_proof(destination: &str) -> Result<(), Box<dyn std::error::Error
     let edit = engine.refresh_model(&edit, &selection, Some(params))?;
     view.begin_model(edit.clone())?;
     let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
-    if (preview.model.volume_mm3 - 18_000.).abs() > 1e-5 {
+    if (preview.model.volume_mm3 - outward_volume).abs() > 1e-5 {
         return Err("face extrusion preview did not add 5 mm".into());
     }
     view.publish_model(771, &preview)?;
@@ -1239,9 +1246,11 @@ fn face_extrude_proof(destination: &str) -> Result<(), Box<dyn std::error::Error
     let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
     view.finish_model(771, Some(engine.accept_model(&edit, prepared)?))?;
     capture(&view, "applied")?;
-    for (token, operation, direction, volume) in
-        [(772, "new", "positive", 18_000.), (773, "intersect", "negative", 6000.), (774, "cut", "negative", 6000.)]
-    {
+    for (token, operation, direction, volume) in [
+        (772, "new", "positive", outward_volume),
+        (773, "intersect", "negative", if multiple { 250. } else { 6000. }),
+        (774, "cut", "negative", if multiple { 8750. } else { 6000. }),
+    ] {
         let mut engine = SessionAdapter::new();
         engine.execute("solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Stock"}))?;
         view.begin_update(token);

@@ -82,8 +82,9 @@ pub struct ExtrudeParams {
     /// A point on a planar body face to extrude instead of a sketch profile.
     #[serde(default)]
     pub face: Option<Point3>,
-    /// Several coplanar faces of one body to extrude together, by a point on each. Not with
-    /// `face`, `sketch` or `profiles`.
+    /// Planar faces of one body, by a point on each, extruded along each face's normal.
+    /// Coplanar faces share a feature; other planes create separate features in one undo
+    /// action. Not with `face`, `sketch` or `profiles`.
     #[serde(default, deserialize_with = "present")]
     #[schemars(with = "FacesParam")]
     pub faces: Option<FacesParam>,

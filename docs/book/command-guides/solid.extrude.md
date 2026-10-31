@@ -5,7 +5,10 @@ body. For example, a rectangle extruded 20 mm becomes a rectangular block.
 
 - For a solid extrusion, finish a sketch with at least one closed region. Select
   the region you want, rather than an individual edge or point.
-- You can also select a planar face of an existing body instead of a sketch.
+- You can also select planar faces of one existing body instead of a sketch.
+  Each face extrudes perpendicular to its own plane, so faces pointing in
+  different directions can extrude together. They share the entered distance;
+  one Undo reverses the whole operation.
 - To add or remove material, an existing body must meet the extrusion. Choose
   **New Body** when you want an independent piece.
 - **Thin Extrude** uses sketch curves instead of filled regions; open chains are

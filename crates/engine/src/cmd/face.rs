@@ -245,6 +245,47 @@ fn xy(v: Vec2) -> Value {
     json!([v.x, v.y])
 }
 
+/// Partition the original picks before any extrusion changes their source body. Each
+/// equally oriented plane becomes a linked profile with its own extrusion normal.
+pub(super) fn face_plane_groups(s: &Session, points: &[Vec3], cmd: &str, face_body: Option<&str>) -> Result<Vec<Vec<Vec3>>> {
+    if points.is_empty() || points.len() > 1024 {
+        return Err(bad(cmd, "faces must contain between 1 and 1024 points"));
+    }
+    let state = s.model.state();
+    let mut source = None;
+    let mut seen = std::collections::HashSet::new();
+    let mut groups: Vec<(solidcraft_geom::Plane, Vec<Vec3>)> = Vec::new();
+    for &point in points {
+        if !point.is_finite() {
+            return Err(bad(cmd, "faces must be finite points"));
+        }
+        let (mesh, index, distance, name) = face_at_in(s, point, face_body)
+            .map_err(|_| bad(cmd, "ambiguous face; specify face_body"))?
+            .ok_or_else(|| bad(cmd, "no body face at a selected point"))?;
+        if source.as_ref().is_some_and(|previous| previous != &name) {
+            return Err(bad(cmd, "faces must belong to one body"));
+        }
+        source = Some(name.clone());
+        let body = state.body(&name).ok_or_else(|| bad(cmd, "selected body disappeared"))?;
+        let plane = body.body.planar_face(index as usize).ok_or_else(|| bad(cmd, "faces must be planar"))?;
+        if distance > (mesh.bounds().diagonal() * 1e-3).max(1e-3) * 10.0 {
+            return Err(bad(cmd, "no body face at a selected point"));
+        }
+        if !seen.insert(index) {
+            continue;
+        }
+        let tolerance = (body.body.size() * 1e-9).max(1e-8);
+        if let Some((_, picks)) =
+            groups.iter_mut().find(|(base, _)| base.normal().dot(plane.normal()) >= 1.0 - 1e-9 && base.height(plane.origin).abs() <= tolerance)
+        {
+            picks.push(point);
+        } else {
+            groups.push((plane, vec![point]));
+        }
+    }
+    Ok(groups.into_iter().map(|(_, picks)| picks).collect())
+}
+
 /// Coplanar faces share one linked profile sketch and one Extrude feature. Resolve every
 /// pick before editing the document, so later picks never search an already modified body.
 pub(super) fn sketch_of_faces(s: &mut Session, points: &[Vec3], cmd: &str, face_body: Option<&str>) -> Result<(u64, Vec<Vec2>, String)> {
