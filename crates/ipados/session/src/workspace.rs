@@ -171,6 +171,7 @@ impl SessionAdapter {
                     "sketch.spline.fit_point",
                     "sketch.move",
                     "sketch.dimension_text",
+                    "sketch.delete",
                     "sketch.trim",
                     "sketch.extend",
                 ]

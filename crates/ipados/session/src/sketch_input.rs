@@ -136,6 +136,7 @@ impl SketchInput {
             "select" => "select_hint",
             tool if tool.starts_with("sketch.constraint.") => "constraint_pick",
             "sketch.move" => "move",
+            "sketch.delete" => "delete_hint",
             "sketch.trim" => "trim",
             "sketch.extend" => "extend",
             "sketch.dimension" => "dimension_place",
@@ -361,7 +362,7 @@ impl Viewport {
             return false;
         };
         let local = snapshot.plane.to_local(world);
-        if direct || matches!(self.contacts.sketch.tool.as_str(), "sketch.move" | "sketch.trim" | "sketch.extend") {
+        if direct || matches!(self.contacts.sketch.tool.as_str(), "sketch.move" | "sketch.delete" | "sketch.trim" | "sketch.extend") {
             let Some(selection) = self.pick_sketch(screen) else {
                 return false;
             };
@@ -475,7 +476,7 @@ impl Viewport {
         self.contacts.sketch.contact = None;
         let anchored = self.contacts.sketch.started_with_anchor;
         let tool = self.contacts.sketch.tool.as_str();
-        if matches!(tool, "sketch.dimension" | "sketch.trim" | "sketch.extend") {
+        if matches!(tool, "sketch.dimension" | "sketch.delete" | "sketch.trim" | "sketch.extend") {
             let _ = self.queue_sketch(true);
             return;
         }
@@ -556,6 +557,10 @@ impl Viewport {
                     proposal["text_at"] = json!([last.at.x, last.at.y]);
                     ("sketch.dimension".into(), proposal)
                 }
+                "sketch.delete" => {
+                    let (entity, _, _) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select a curve"))?;
+                    ("sketch.delete".into(), json!({"entities":[entity]}))
+                }
                 "sketch.trim" | "sketch.extend" => {
                     let (entity, _, _) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select a curve"))?;
                     (state.tool.clone(), json!({"curve":entity,"at":[last.at.x,last.at.y]}))
@@ -621,7 +626,7 @@ impl Viewport {
             || self.contacts.sketch.moving_measurement.is_some()
             || !self.contacts.sketch.snapping
             || snapshot.sketch.view.no_snap
-            || matches!(self.contacts.sketch.tool.as_str(), "sketch.trim" | "sketch.extend" | "sketch.dimension" | "sketch.move")
+            || matches!(self.contacts.sketch.tool.as_str(), "sketch.delete" | "sketch.trim" | "sketch.extend" | "sketch.dimension" | "sketch.move")
         {
             return placement;
         }
@@ -704,13 +709,16 @@ impl Viewport {
         let snapshot = self.model.as_ref()?.sketch.as_ref()?;
         let point = snapshot.plane.to_local(self.plane_point(screen, snapshot.plane)?);
         let tolerance = 10.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        if self.constraint_tool().is_none()
+        let curves_only = self.contacts.sketch.tool == "sketch.delete";
+        if !curves_only
+            && self.constraint_tool().is_none()
             && let Some((id, _, _)) = self.visible_glyphs().into_iter().find(|(_, _, at)| at.dist(point) <= tolerance)
         {
             return Some(Sel::SketchConstraint { id });
         }
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        if self.constraint_tool().is_none()
+        if !curves_only
+            && self.constraint_tool().is_none()
             && let Some(c) = snapshot
                 .sketch
                 .constraints
@@ -725,12 +733,13 @@ impl Viewport {
         {
             return Some(Sel::SketchConstraint { id: c.id.clone() });
         }
-        if let Some(p) = snapshot
-            .sketch
-            .points
-            .iter()
-            .filter(|p| p.pos.dist(point) <= tolerance && self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() }))
-            .min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
+        if !curves_only
+            && let Some(p) = snapshot
+                .sketch
+                .points
+                .iter()
+                .filter(|p| p.pos.dist(point) <= tolerance && self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() }))
+                .min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
         {
             return Some(Sel::SketchPoint { id: p.id.clone() });
         }

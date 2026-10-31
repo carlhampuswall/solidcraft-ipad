@@ -1,0 +1,6 @@
+{
+  "en": {
+    "ui.ipados.sketch.delete": "Delete",
+    "ui.ipados.sketch.delete_hint": "Tap a curve to delete it. Use Trim to cut a section."
+  }
+}

@@ -84,7 +84,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var sketchQuickTools: [(String, WorkspaceButton)] = [
         ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"),
         ("sketch.circle.center", "circle"), ("sketch.arc.three_point", "arc"),
-        ("sketch.spline.fit_point", "spline"), ("sketch.trim", "trim")
+        ("sketch.spline.fit_point", "spline"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
     ].map { id, label in
         (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
     }
@@ -3038,7 +3038,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         moreButton.showsMenuAsPrimaryAction = true
         let sketchTools = [("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
                      ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
-                     ("sketch.trim", "trim"), ("sketch.extend", "extend")]
+                     ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
         sketchToolsButton.menu = UIMenu(children: sketchTools.compactMap { id, label in
             guard state?.tools.contains(where: { $0.id == id && $0.enabled }) == true else { return nil }
             return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
@@ -3456,7 +3456,7 @@ private extension FoundationController {
         let expected = generation
         let savedAppearance = appearance
         let variants = [(2, "select"), (2, "sketch.line"),
-                        (1, "sketch.spline.fit_point"), (1, "select"), (2, "select")]
+                        (1, "sketch.spline.fit_point"), (1, "sketch.delete"), (2, "sketch.delete"), (1, "select"), (2, "select")]
         var issues: [String] = []
         var finished = false
         func report() {

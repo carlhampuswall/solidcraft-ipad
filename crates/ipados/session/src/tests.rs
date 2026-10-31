@@ -4136,6 +4136,71 @@ fn sketch_constraint_indicators_disclose_related_geometry_and_are_pickable() {
 }
 
 #[test]
+fn sketch_delete_taps_remove_only_the_hit_curve_and_repeat_with_history() {
+    for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.delete");
+        for (id, y) in [("target", -20), ("other", 20)] {
+            engine.execute("sketch.line", json!({"points":[[-30,y],[30,y]],"ids":[id],"infer":false,"connect":false})).unwrap();
+        }
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        assert!(engine.workspace(&[], false, false)["tools"].as_array().unwrap().iter().any(|t| t["id"] == "sketch.delete" && t["enabled"] == true));
+        view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"other"}})).unwrap();
+        let undo = engine.session.undo.len();
+        let tap = |view: &mut Viewport, id, xy: [f64; 2]| {
+            let screen = point(view, Vec3::new(xy[0], xy[1], 0.));
+            feed(view, source, InputPhase::Began, id, screen, id as f64);
+            feed(view, source, InputPhase::Ended, id, screen, id as f64 + 0.1);
+        };
+        // Blank taps never queue deletion. Endpoint picking must delete the line,
+        // not its shared point, and preselection must not expand the deletion.
+        tap(&mut view, 1, [0., 70.]);
+        assert!(view.take_tool_work().is_none());
+        tap(&mut view, 2, [-30., -20.]);
+        assert!(run_tool(&mut engine, &mut view), "delete did not commit for {source:?}");
+        let sk = engine.sketch_snapshot().unwrap();
+        assert!(sk.sketch.curve_index("target").is_none());
+        assert!(sk.sketch.curve_index("other").is_some());
+        assert_eq!(engine.session.undo.len(), undo + 1);
+        assert_eq!(view.diagnostic()["input"]["tool"], "sketch.delete");
+        engine.execute("edit.undo", json!({})).unwrap();
+        assert!(engine.sketch_snapshot().unwrap().sketch.curve_index("target").is_some());
+        engine.execute("edit.redo", json!({})).unwrap();
+        view.begin_update(3);
+        view.install(3, engine.snapshot().unwrap());
+        tap(&mut view, 3, [0., 20.]);
+        assert!(run_tool(&mut engine, &mut view));
+        assert!(engine.sketch_snapshot().unwrap().sketch.curves.is_empty());
+        assert_eq!(engine.session.undo.len(), undo + 2);
+    }
+}
+
+#[test]
+fn sketch_delete_cancellation_preserves_geometry_and_rejects_late_preview() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.delete");
+    engine.execute("sketch.line", json!({"points":[[-30,0],[30,0]],"ids":["target"],"infer":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let original = engine.sketch_snapshot().unwrap().sketch;
+    let undo = engine.session.undo.len();
+    let screen = point(&view, Vec3::new(0., 0., 0.));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, screen, 1.);
+    let end = point(&view, Vec3::new(5., 0., 0.));
+    feed(&mut view, InputSource::Pencil, InputPhase::Moved, 1, end, 1.1);
+    let work = view.take_tool_work().unwrap();
+    let prepared = engine.prepare_tool(work.clone()).unwrap();
+    feed(&mut view, InputSource::Pencil, InputPhase::Cancelled, 1, end, 1.2);
+    assert!(!view.publish_tool_preview(prepared));
+    assert!(view.take_tool_work().is_none());
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+    assert_eq!(engine.session.undo.len(), undo);
+    engine.execute("sketch.finish", json!({})).unwrap();
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    assert!(view.command("tool.set", &json!({"tool":"sketch.delete"})).is_err());
+}
+
+#[test]
 fn sketch_trim_extend_and_transform_proposals_use_native_commands_once() {
     let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
     engine.execute("sketch.line", json!({"points":[[0,0],[40,0]],"ids":["target"],"infer":false,"connect":false})).unwrap();

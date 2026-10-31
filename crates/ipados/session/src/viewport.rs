@@ -391,6 +391,7 @@ impl Viewport {
                         | "sketch.spline.fit_point"
                         | "sketch.move"
                         | "sketch.dimension"
+                        | "sketch.delete"
                         | "sketch.trim"
                         | "sketch.extend"
                 ) {

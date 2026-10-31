@@ -827,8 +827,7 @@ impl Viewport {
                     && e.button == 0
                     && self.contacts.items.is_empty()
                     && matches!(owner, Owner::Navigation | Owner::Pointer)
-                    && self.contacts.sketch.tool == "select"
-                    && self.direct_handles)
+                    && (self.contacts.sketch.tool == "sketch.delete" || self.contacts.sketch.tool == "select" && self.direct_handles))
                 && self.begin_sketch_input(&e, point)
             {
                 owner = Owner::SketchTool;

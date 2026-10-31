@@ -253,7 +253,11 @@ references, and derive the snap radius from display points. Rectangle midpoint
 and intersection positioning is temporary because the rectangle creator accepts
 coordinates; origin/existing-point connection still uses native `connect`.
 
-After the core tools, the same palette exposes Trim and Extend. Selected
+The left sketch rail exposes Delete beside Trim. Delete stays active for repeated
+taps on curves, including their endpoints; each removed curve uses the existing
+`sketch.delete` command and is one undoable action. It never expands deletion to
+other selected entities. Trim cuts a section between intersections; Delete removes
+the whole curve. The sketch palette also exposes Delete, Trim and Extend. Selected
 entities also offer construction conversion, Translate, Translate a copy,
 Rotate, Rotate a copy and Mirror. Translation/rotation forms reuse the shared
 expression fields, delegate lengths/angles to `expr.evaluate`, and send one
