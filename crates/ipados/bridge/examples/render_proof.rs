@@ -1184,8 +1184,10 @@ fn combine_selection_proof(destination: &str) -> Result<(), Box<dyn std::error::
     if view.model_edit(789)?.params["target"] != "Target" {
         return Err("target body pick failed".into());
     }
+    if engine.model_descriptor(&view.model_edit(789)?)["selection_field"] != "tools" {
+        return Err("target pick did not advance to tool bodies".into());
+    }
     capture(&view, "target")?;
-    view.select_model_inputs(789, Some("tools"))?;
     choose(&mut view, json!([6, 5, 12]), 2.)?;
     choose(&mut view, json!([16, 5, 12]), 3.)?;
     let edit = view.model_edit(789)?;

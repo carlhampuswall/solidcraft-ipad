@@ -7018,8 +7018,23 @@ fn modelling_combine_visual_picks_whole_bodies_and_keeps_roles_separate() {
         edit.params["keep_tools"] = json!(false);
         assert!(edit.fields.iter().any(|field| field["key"] == "target" && field["kind"] == "body_pick"));
         assert!(edit.fields.iter().any(|field| field["key"] == "tools" && field["kind"] == "bodies_pick"));
+        let seeded = adapter.begin_model(780, Some("solid.combine"), None, &[Sel::Body { name: "Target".into() }]).unwrap();
+        assert_eq!(seeded.selection_field.as_deref(), Some("tools"), "a preselected target starts ready for tool bodies");
         viewport.begin_model(edit).unwrap();
-        let mut sequence = 0;
+        // Two quick taps can arrive before the host inspects either selection.
+        let target = point(&viewport, Vec3::new(2., 5., 10.));
+        feed(&mut viewport, device, InputPhase::Began, 1, target, 1.);
+        feed(&mut viewport, device, InputPhase::Ended, 1, target, 1.1);
+        assert_eq!(viewport.model_edit(786).unwrap().selection_field.as_deref(), Some("tools"));
+        assert_eq!(viewport.snapshot().unwrap().selected_bodies, ["Target"]);
+        let tool = point(&viewport, Vec3::new(6., 5., 12.));
+        feed(&mut viewport, device, InputPhase::Began, 2, tool, 2.);
+        feed(&mut viewport, device, InputPhase::Ended, 2, tool, 2.1);
+        assert_eq!(viewport.model_edit(786).unwrap().params["target"], "Target", "a quick tool tap must not replace the target");
+        assert_eq!(viewport.selection(), &[Sel::Body { name: "Target".into() }, Sel::Body { name: "Tool A".into() }]);
+        let edit = adapter.refresh_model(&viewport.model_edit(786).unwrap(), viewport.selection(), None).unwrap();
+        viewport.update_model(edit).unwrap();
+        let mut sequence = 2;
         let mut choose = |viewport: &mut Viewport, world: Vec3| {
             sequence += 1;
             let tap = point(viewport, world);
@@ -7028,15 +7043,19 @@ fn modelling_combine_visual_picks_whole_bodies_and_keeps_roles_separate() {
             let edit = adapter.refresh_model(&viewport.model_edit(786).unwrap(), viewport.selection(), None).unwrap();
             viewport.update_model(edit).unwrap();
         };
-        choose(&mut viewport, Vec3::new(2., 5., 10.));
-        assert_eq!(viewport.selection(), &[Sel::Body { name: "Target".into() }]);
-        assert_eq!(viewport.snapshot().unwrap().selected_bodies, ["Target"]);
-        viewport.select_model_inputs(786, Some("tools")).unwrap();
-        choose(&mut viewport, Vec3::new(6., 5., 12.));
         choose(&mut viewport, Vec3::new(16., 5., 12.));
         choose(&mut viewport, Vec3::new(2., 5., 10.));
         assert_eq!(viewport.model_edit(786).unwrap().params["tools"], json!(["Tool A", "Tool B"]));
-        assert_eq!(viewport.snapshot().unwrap().selected_bodies, ["Tool A", "Tool B"]);
+        assert_eq!(viewport.snapshot().unwrap().selected_bodies, ["Target", "Tool A", "Tool B"]);
+        viewport.select_model_inputs(786, Some("target")).unwrap();
+        choose(&mut viewport, Vec3::new(16., 5., 12.));
+        let changed = viewport.model_edit(786).unwrap();
+        assert_eq!(changed.params["target"], "Tool B");
+        assert_eq!(changed.params["tools"], json!(["Tool A"]), "the replacement target must leave the tool set");
+        assert_eq!(changed.selection_field.as_deref(), Some("tools"));
+        viewport.select_model_inputs(786, Some("target")).unwrap();
+        choose(&mut viewport, Vec3::new(2., 5., 10.));
+        choose(&mut viewport, Vec3::new(16., 5., 12.));
         let edit = viewport.model_edit(786).unwrap();
         let stale = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
         choose(&mut viewport, Vec3::new(6., 5., 12.));
@@ -7061,7 +7080,7 @@ fn modelling_combine_visual_picks_whole_bodies_and_keeps_roles_separate() {
         assert!(viewport.model_edit(786).unwrap().selection_field.is_none());
         viewport.select_model_inputs(786, Some("tools")).unwrap();
         assert!(Arc::ptr_eq(&viewport.snapshot().unwrap().model, &original), "reselection reveals consumed tools");
-        assert_eq!(viewport.selection().len(), 2);
+        assert_eq!(viewport.selection().len(), 3);
         assert_eq!(viewport.diagnostic()["filter"], "edge");
         assert_eq!(adapter.session.undo.len(), history);
         viewport.cancel_model();
@@ -7091,7 +7110,7 @@ fn modelling_combine_history_picking_reveals_original_tools_and_cancel_restores_
     assert!(edit.repair_source.is_some());
     viewport.begin_model(edit).unwrap();
     viewport.select_model_inputs(788, Some("tools")).unwrap();
-    assert_eq!(viewport.selection(), &[Sel::Body { name: "Tool".into() }]);
+    assert_eq!(viewport.selection(), &[Sel::Body { name: "Target".into() }, Sel::Body { name: "Tool".into() }]);
     assert_eq!(viewport.snapshot().unwrap().model.scene.meshes.len(), 2);
     viewport.cancel_model();
     assert!(Arc::ptr_eq(&viewport.snapshot().unwrap().model, &result));

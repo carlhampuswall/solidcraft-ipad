@@ -342,7 +342,10 @@ Native requests use `requestNumeric` or `requestModelling`:
 - Combine exposes `body_pick` and `bodies_pick` fields for `target` and `tools`,
   with the active role in `selection_field`. Tapping a face picks and highlights
   its whole body. The target is single selection; tools toggle independently of
-  the saved Multiple setting and cannot include the target. Role changes retain
+  the saved Multiple setting and cannot include the target. A target tap switches
+  immediately to tools, including before the next host inspection. The target
+  remains highlighted; the target button can reopen target picking. A preselected
+  target also starts in tools. Role changes retain
   their existing picks. Selection stays on the original bodies until explicit
   Preview or Apply, and reselecting reveals consumed tools. Editing a Combine
   feature uses its pre-feature scene; Cancel restores the original result.

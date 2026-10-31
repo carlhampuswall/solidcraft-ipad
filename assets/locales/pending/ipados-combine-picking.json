@@ -1,6 +1,6 @@
 {
   "en": {
-    "ui.ipados.combine.pick_target": "Tap any face to select the whole target body, then select tool bodies.",
+    "ui.ipados.combine.pick_target": "Tap any face to select the whole target body. Tool-body selection starts automatically.",
     "ui.ipados.combine.pick_tools": "Tap bodies to add or remove tools. Preview when the selection is ready.",
     "ui.ipados.combine.preview": "Preview"
   }

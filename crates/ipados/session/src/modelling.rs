@@ -64,8 +64,33 @@ impl ModelEdit {
     }
 
     fn body_pick_selection(&self, field: &str) -> Vec<Sel> {
-        let names = if field == "tools" { self.params["tools"].as_array().cloned().unwrap_or_default() } else { vec![self.params["target"].clone()] };
-        names.iter().filter_map(|name| name.as_str().map(|name| Sel::Body { name: name.into() })).collect()
+        // Keep the target visibly selected while adding tools. It also makes
+        // the handoff observable through the host's ordinary selection reports.
+        let mut names = vec![self.params["target"].clone()];
+        if field == "tools" {
+            names.extend(self.params["tools"].as_array().into_iter().flatten().cloned());
+        }
+        let mut selected = Vec::new();
+        for name in names.iter().filter_map(Value::as_str) {
+            let body = Sel::Body { name: name.into() };
+            if !selected.contains(&body) {
+                selected.push(body);
+            }
+        }
+        selected
+    }
+
+    pub(crate) fn pick_body_target(&mut self, name: &str) -> Vec<Sel> {
+        self.params["target"] = json!(name);
+        if let Some(tools) = self.params["tools"].as_array_mut() {
+            tools.retain(|tool| tool != name);
+        }
+        // Switch on the viewport lane: a second tap may precede host inspection.
+        self.selection_field = Some("tools".into());
+        self.version = self.version.saturating_add(1);
+        self.preview = None;
+        self.last_preview = None;
+        self.body_pick_selection("tools")
     }
 }
 
@@ -664,7 +689,7 @@ impl SessionAdapter {
                     _ => {}
                 }
             }
-            edit.selection_field = Some("target".into());
+            edit.selection_field = Some(if edit.params["target"].as_str().is_some_and(|name| !name.is_empty()) { "tools" } else { "target" }.into());
         }
         if reattach
             || combine && feature.is_some()
@@ -1796,8 +1821,8 @@ impl Viewport {
             self.selection.clear();
             self.updating = false;
         }
-        if edit.body_pick_field().is_some() {
-            self.selection = edit.body_pick_selection("target");
+        if let Some(field) = edit.body_pick_field() {
+            self.selection = edit.body_pick_selection(field);
         }
         self.modelling = Some(edit);
         self.changed();

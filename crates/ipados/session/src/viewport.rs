@@ -813,6 +813,15 @@ impl Viewport {
         if body_field.is_some() && hit.as_ref().is_some_and(|hit| !matches!(hit, Sel::Body { .. })) {
             return;
         }
+        if body_field.as_deref() == Some("target")
+            && let Some(Sel::Body { name }) = &hit
+            && let Some(edit) = &mut self.modelling
+        {
+            self.selection = edit.pick_body_target(name);
+            self.hover = None;
+            self.changed();
+            return;
+        }
         if body_field.as_deref() == Some("tools")
             && let Some(Sel::Body { name }) = &hit
             && self.modelling.as_ref().is_some_and(|edit| edit.params["target"] == *name)
