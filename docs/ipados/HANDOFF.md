@@ -1245,3 +1245,25 @@ installed, and the device reservation was released. No engine tests, simulator,
 physical touch/Pencil input or external transfer was used. Evidence, binary hashes,
 seven captures and the passing receipt are in ignored `target/project-direct-device/`.
 Nothing was pushed.
+
+### Numeric input waits for Apply (2026-10-31)
+
+`0c98f27a` removes automatic evaluation while typing dimension, modelling and
+sketch-transform expressions. Pending modelling previews are cancelled on edits
+and numeric-popup entry; sliders, direct handles and explicit choices retain
+their existing preview paths. Numeric entry removes the resolved-value label and
+idle/progress hints between the field and keypad. Validation errors remain below
+the keypad after submission.
+
+- PASS: 692 Foundation workspace cases and canonical native icon checks.
+- PASS: unsigned arm64 Rust/UIKit build and existing-profile signed device build.
+- Updated the existing `--numeric-entry-check` to check draft-only edits, stable
+  field layout, absent resolved text, direct Apply and sketch-transform Apply.
+- Physical verification was not run: concurrent task edits made the shared
+  checkout dirty after the checked commit. The clean-candidate device rule was
+  preserved; no device install/launch or simulator was performed for this task.
+- Engine tests and full CI were not run. Nothing was pushed.
+
+Build/check logs are `/tmp/solidcraft-numeric-apply-{build,workspace}.log`;
+ignored `target/numeric-apply-only-device/` contains the signed build and prepared
+verification script. This is preparation, not device acceptance evidence.
