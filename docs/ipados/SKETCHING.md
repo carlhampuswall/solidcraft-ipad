@@ -469,3 +469,16 @@ exercises the real UIKit chooser and inspector, writes
 `sketch-projection-check.json`, and captures `projection-chooser.png` and
 `projection-projected.png`. Run it only inside a physical-device reservation;
 its synthetic actions do not verify physical Pencil input.
+
+Device verification on 2026-10-31: candidate `c8602c21` passed the production
+UIKit driver on the connected physical iPad. Source switching, individual/all
+selection, linked construction projection, one-step undo/redo and selected-curve
+Break Link passed with no reported issues. The chooser and projected-sketch
+screenshots were captured and visually inspected. Evidence remains untracked in
+`target/sketch-projection/` (`ipad-session.txt`, `device-report.json`,
+`projection-chooser.png`, `projection-projected.png`). Physical Pencil contact
+was not tested. The same implementation passed 238 session tests, 31 bridge
+tests, the native deterministic harness, unsigned/signed device builds, adapter
+Clippy, wasm, formatting, lists and i18n checks. The wasm build retains an
+existing engine dead-code warning; the engine test suite and full CI were not
+run under the task-coordination policy.
