@@ -9,6 +9,31 @@ totals, single-save-slot descriptions and no-commit/no-push status do not descri
 the final combined branch. The engine suite is excluded from this integration's
 checks at the user's request; no full-CI success is claimed.
 
+## Applied dimension and free-size helper appearance — 2026-10-31
+
+Commits `0b786382` and `a034d84b` distinguish saved driving dimensions (bold
+values, solid outlines) from free-size helpers (secondary text, dashed outlines).
+Selection retains the distinction; reference dimensions keep their parentheses
+and read-only behaviour. VoiceOver identifies unapplied measurements. The saved
+**Tools > Distinguish applied dimensions** switch restores the original captions.
+No solver, document, command or shared-source change is involved.
+
+The unsigned/signed native builds, all 692 workspace harness cases, native icon
+checks, locale lists and i18n checks pass. The physical iPad driver passes on
+candidate `a034d84b874d26ae903f814ce3c884ee8196940f`, checking actual caption
+fonts/outlines and touch sizes, the persisted fallback setting, Apply,
+preview/cancel, deletion and Undo/Redo. The settled UIKit/Metal capture shows an
+80 mm driving dimension beside a 40 mm helper. Both that capture and the fallback
+capture were inspected; visual review caught and fixed a hairline outline in the
+fallback before the final run. Normal launch was restored and the reservation
+released. Synthetic controls on the real iPad do not verify physical finger,
+Pencil or VoiceOver delivery. No engine tests, full CI or simulator were run.
+
+Ignored evidence is under `target/dimension-appearance-device/`, including
+`final-ipad-session.json`, `inline-dimension-styles.png` and build/console logs.
+`attempt1/` preserves the earlier visual review; `attempt2/` preserves a transient
+no-output device launch, followed by the successful unchanged-source retry.
+
 ## Direct sketch dimension deletion — 2026-10-31
 
 Candidate `a56ca844f861e414e98da2768c000dce50ab0ba2` adds **Delete dimension**
