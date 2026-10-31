@@ -751,6 +751,7 @@ impl Viewport {
 
     pub fn diagnostic(&self) -> Value {
         let mut input = self.contacts.diagnostic();
+        input["sketch"]["finish_chain_at"] = json!(self.sketch_chain_end());
         input["sketch"]["snapping"] =
             json!(self.contacts.sketch.snapping && self.model.as_ref().and_then(|m| m.sketch.as_ref()).is_none_or(|s| !s.sketch.view.no_snap));
         json!({"document_id":self.model.as_ref().map(|m| &m.document_id),

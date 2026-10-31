@@ -59,6 +59,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var sketchToolsButton = WorkspaceButton(SketchText.text("draw"), action: {})
     private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.run("sketch.finish") }
     private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.run("tool.finish_chain") }
+    private lazy var endpointFinishButton: WorkspaceButton = WorkspaceButton(SketchText.text("finish_chain"), prominent: true) { [weak self] in
+        guard let self, !self.endpointFinishButton.isHidden, self.endpointFinishButton.isEnabled else { return }
+        self.endpointFinishButton.isHidden = true
+        self.run("tool.finish_chain")
+    }
     private lazy var documentActionsButton = WorkspaceButton(WorkspaceStyle.text("document_actions"), action: {})
     private lazy var homeButton = WorkspaceButton(WorkspaceStyle.text("home")) { [weak self] in
         guard let self else { return }
@@ -407,6 +412,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         session.onSketchInput = { [weak self] value in
             guard let self, self.sketchInput != value else { return }
             self.sketchInput = value; self.updateStatus(); self.rebuildMenus()
+            self.layoutEndpointFinish()
         }
         session.onSketchAnnotations = { [weak self] annotations in self?.showSketchAnnotations(annotations) }
         canvas.dimensionAt = { [weak self] point in
@@ -434,6 +440,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modelValueButton.isHidden = true
         WorkspaceStyle.floatingSurface(modelValueButton)
         workspace.insertSubview(modelValueButton, aboveSubview: canvas)
+        endpointFinishButton.artwork("finish", compact: true)
+        endpointFinishButton.accessibilityIdentifier = "sketch-endpoint-finish"
+        endpointFinishButton.isHidden = true
+        workspace.insertSubview(endpointFinishButton, aboveSubview: canvas)
         session.onModelValue = { [weak self] value in
             guard let self else { return }
             self.modelValue = self.acceptsModelValueFrame ? value : nil
@@ -497,6 +507,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkInlineDimensionsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-toolbar-check") {
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--line-finish-check") {
+                    self.developmentCheckStarted = true; self.checkLineFinishOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--constraints-menu-check") {
                     self.developmentCheckStarted = true; self.checkConstraintsMenuOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--assembly-check") || ProcessInfo.processInfo.arguments.contains("--face-extrude-check") || ProcessInfo.processInfo.arguments.contains("--compact-inspector-check") {
@@ -2219,6 +2231,25 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func layoutEndpointFinish() {
+        guard active, state?.sketch != nil, state?.active_tool == "sketch.line",
+              !numericEditing, !modellingEditing, pending.isEmpty, presentedViewController == nil,
+              let position = sketchInput?.finish_chain_at, position.count == 2, position.allSatisfy(\.isFinite),
+              canvas.isUserInteractionEnabled else { endpointFinishButton.isHidden = true; return }
+        let anchor = CGPoint(x: canvas.frame.minX + position[0], y: canvas.frame.minY + position[1])
+        let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
+        let bounds = canvas.frame.intersection(safe).insetBy(dx: 8, dy: 8)
+        let obstacles = [top, railScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton, status, browserPanel, inspectorPanel]
+            .filter { !$0.isHidden }.map { $0.frame.insetBy(dx: -6, dy: -6) }
+        guard bounds.contains(anchor), let frame = ModelValuePlacement.resolve(anchor: anchor,
+            size: CGSize(width: 44, height: 44), bounds: bounds, obstacles: obstacles) else {
+            endpointFinishButton.isHidden = true; return
+        }
+        endpointFinishButton.frame = frame
+        endpointFinishButton.isEnabled = true
+        endpointFinishButton.isHidden = false
+    }
+
     private func sketchSolverText(_ sketch: WorkspaceSketch) -> String {
         if let oversized = sketch.report?.oversized { return SketchText.text("solve_limit") + ": " + String(oversized) }
         if let folded = sketch.report?.folded, !folded.isEmpty { return SketchText.text("orientation_failure") + ": " + folded.joined(separator: ", ") }
@@ -2719,6 +2750,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let textBlocksViewport = textEntryActive && !(cancelToolsOnDismiss && modellingEditing)
         canvas.isUserInteractionEnabled = !numericEditing && WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: modal, textEntryActive: textBlocksViewport)
         canvas.accessibilityElementsHidden = modal || numericEditing
+        layoutEndpointFinish()
         for button in referenceLabels.values {
             button.accessibilityElementsHidden = modal || numericEditing || modellingEditing
             button.isUserInteractionEnabled = !modal && !numericEditing && !modellingEditing
@@ -3234,7 +3266,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         let resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
                                navHeight: contentHeight(navigationActions, width: available.navigation.width))
-        if canvas.frame != resolved.canvas { canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true }
+        if canvas.frame != resolved.canvas {
+            canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true
+            sketchInput = nil; endpointFinishButton.isHidden = true
+        }
         layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
         railScroll.frame = resolved.rail
@@ -3277,7 +3312,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorScroll.frame = inspectorPanel.content.bounds
         browserPanel.accessibilityViewIsModal = compact && browserOpen
         inspectorPanel.accessibilityViewIsModal = compact && inspectorOpen
-        workspace.accessibilityElements = resolved.floating ? [top, browserButton, railScroll, browserPanel, navigationScroll, inspectorPanel, modelValueButton, canvas, historyActions, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, canvas, inspectorPanel, featureHistory, status]
+        workspace.accessibilityElements = resolved.floating ? [top, browserButton, railScroll, browserPanel, navigationScroll, inspectorPanel, modelValueButton, endpointFinishButton, canvas, historyActions, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointFinishButton, canvas, inspectorPanel, featureHistory, status]
         if resetChromeOffsets {
             // Reparenting the same controls changes scroll content dimensions.
             // Discard the old text-toolbar offsets once, after the new frames
@@ -3295,6 +3330,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         historyActivation = nil
         featureHistory.cancelScrub()
         active = false
+        endpointFinishButton.isHidden = true
 #if DEBUG
         groupedInspectorFrameReady = false
 #endif
@@ -3325,6 +3361,85 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 /// Opt-in device evidence driver. It uses the ordinary controller forms and their
 /// Preview/Apply/Cancel callbacks. It never synthesizes a hardware Pencil event.
 private extension FoundationController {
+    func checkLineFinishOnDevice() {
+        let expected = generation
+        var finished = false
+        var issues: [String] = []
+        func report(_ problem: String? = nil) {
+            guard !finished else { return }; finished = true
+            if let problem { issues.append(problem) }
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let data = try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "physical_contacts": false], options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: directory.appendingPathComponent("line-finish-check.json"), options: .atomic)
+            } catch { print("Line finish report failed: \(error)") }
+            print("Line finish check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+        }
+        func wait(_ ready: @escaping () -> Bool, remaining: Int = 100, then next: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if ready() { next(); return }
+            guard remaining > 0 else { report("Timed out waiting for native line completion"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(ready, remaining: remaining - 1, then: next) }
+        }
+        func capture(_ name: String) {
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                guard let png = image.pngData() else { report("Screenshot encoding failed"); return }
+                try png.write(to: directory.appendingPathComponent("line-finish-" + name + ".png"), options: .atomic)
+            } catch { report(error.localizedDescription) }
+        }
+        func tap(_ point: [Double], then next: @escaping () -> Void) {
+            session.developmentSketchTap(point) { result in
+                if case .failure(let error) = result { report(error.description); return }
+                self.session.command("view.grid", params: ["visible": self.gridVisible]) { result in
+                    if case .failure(let error) = result { report(error.description); return }
+                    self.gridAxesCheckAfterFrame = { DispatchQueue.main.async { next() } }
+                }
+            }
+        }
+        let commands: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]), ("tool.set", ["tool": "sketch.line"])]
+        func step(_ index: Int) {
+            guard !finished else { return }
+            if index < commands.count {
+                session.command(commands[index].0, params: commands[index].1) { result in
+                    if case .failure(let error) = result { report(error.description); return }; step(index + 1)
+                }
+                return
+            }
+            tap([-20, -10, 0]) {
+                if !self.endpointFinishButton.isHidden { issues.append("Button appeared before the first line") }
+                tap([0, 10, 0]) {
+                    tap([25, 10, 0]) {
+                        wait({ !self.endpointFinishButton.isHidden && self.pending.isEmpty }) {
+                            let button = self.endpointFinishButton
+                            if self.state?.sketch?.curves.count != 2 { issues.append("Expected two committed lines") }
+                            if button.bounds.width < 44 || button.bounds.height < 44 || button.configuration?.image == nil { issues.append("Missing artwork or touch target") }
+                            if self.workspace.hitTest(button.center, with: nil) !== button { issues.append("Endpoint button cannot receive taps") }
+                            if let position = self.sketchInput?.finish_chain_at {
+                                let endpoint = CGPoint(x: self.canvas.frame.minX + position[0], y: self.canvas.frame.minY + position[1])
+                                if hypot(button.center.x - endpoint.x, button.center.y - endpoint.y) > 90 { issues.append("Button too far from endpoint") }
+                                if button.frame.contains(endpoint) { issues.append("Button covers endpoint") }
+                            } else { issues.append("Missing endpoint projection") }
+                            capture("ready")
+                            button.sendActions(for: .touchUpInside)
+                            wait({ self.sketchInput?.finish_chain_at == nil && self.pending.isEmpty }) {
+                                if !button.isHidden || self.state?.sketch?.curves.count != 2 || self.state?.sketch == nil { issues.append("Finish changed geometry or closed the sketch") }
+                                capture("finished"); report()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        browserOpen = false; inspectorOpen = false; relayoutPanels()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 35) { report("Diagnostic timed out") }
+        step(0)
+    }
+
     func startGroupedInspectorCheckIfReady() {
         guard active, groupedInspectorFrameReady, state != nil, !developmentCheckStarted,
               ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") else { return }

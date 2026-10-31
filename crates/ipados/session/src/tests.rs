@@ -3561,6 +3561,49 @@ fn sketch_rectangle_repeat_preference_keeps_the_previous_creation_behavior() {
 }
 
 #[test]
+fn sketch_line_finish_anchor_tracks_committed_endpoint_and_never_changes_geometry() {
+    for plane in [json!("XY"), json!("YZ")] {
+        let (mut engine, mut view) = sketch_input_fixture(plane, "sketch.line");
+        assert!(view.sketch_chain_end().is_none());
+        sketch_tap(&mut view, 1, [0.0, 0.0]);
+        assert!(view.sketch_chain_end().is_none(), "a first point is not a committed line");
+        for (id, xy) in [(2, [20.0, 0.0]), (3, [20.0, 20.0])] {
+            sketch_tap(&mut view, id, xy);
+            assert!(view.sketch_chain_end().is_none(), "hide while accepting geometry");
+            assert!(run_tool(&mut engine, &mut view));
+            let plane = view.model.as_ref().unwrap().sketch.as_ref().unwrap().plane;
+            let endpoint = plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1]));
+            let anchor = view.sketch_chain_end().unwrap();
+            let expected = point(&view, endpoint);
+            assert!((anchor[0] - expected[0]).abs() < 1e-6 && (anchor[1] - expected[1]).abs() < 1e-6);
+            view.camera.target += Vec3::new(1.0, 1.0, 1.0);
+            view.changed();
+            let anchor = view.sketch_chain_end().unwrap();
+            let expected = point(&view, endpoint);
+            assert!((anchor[0] - expected[0]).abs() < 1e-6 && (anchor[1] - expected[1]).abs() < 1e-6, "anchor follows the camera");
+        }
+        let sketch = engine.sketch_snapshot().unwrap().sketch;
+        let history = engine.session.undo.len();
+        view.command("tool.finish_chain", &json!({})).unwrap();
+        assert!(view.sketch_chain_end().is_none());
+        assert_eq!(view.diagnostic()["input"]["sketch"]["finish_chain_at"], Value::Null);
+        assert!(view.take_tool_work().is_none());
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, sketch);
+        assert_eq!(engine.session.undo.len(), history);
+        sketch_tap(&mut view, 4, [-20.0, 0.0]);
+        assert!(view.sketch_chain_end().is_none(), "new chain begins without connecting to the old one");
+        sketch_tap(&mut view, 5, [-20.0, 10.0]);
+        assert!(run_tool(&mut engine, &mut view));
+        assert!(view.sketch_chain_end().is_some());
+        let endpoint = view.sketch_chain_end().unwrap();
+        feed(&mut view, InputSource::Pencil, InputPhase::Began, 6, endpoint, 6.0);
+        assert!(view.sketch_chain_end().is_none(), "keep controls away from an active drawing contact");
+        feed(&mut view, InputSource::Pencil, InputPhase::Cancelled, 6, endpoint, 6.1);
+        assert!(view.sketch_chain_end().is_none());
+    }
+}
+
+#[test]
 fn sketch_pencil_chain_native_references_close_profile_and_segment_undo_is_independent() {
     let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
     let undo = engine.session.undo.len();

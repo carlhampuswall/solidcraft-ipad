@@ -43,6 +43,7 @@ pub(crate) struct SketchInput {
     cursor: Option<Placement>,
     contact: Option<u64>,
     started_with_anchor: bool,
+    line_chain: bool,
     work: Option<ToolWork>,
     after: Option<Placement>,
     moving: Option<(String, Vec2, Vec<String>)>,
@@ -67,6 +68,7 @@ impl Default for SketchInput {
             cursor: None,
             contact: None,
             started_with_anchor: false,
+            line_chain: false,
             work: None,
             after: None,
             moving: None,
@@ -114,6 +116,7 @@ impl SketchInput {
         Ok(())
     }
     pub fn cancel(&mut self) {
+        self.line_chain = false;
         self.points.clear();
         self.cursor = None;
         self.contact = None;
@@ -173,6 +176,7 @@ impl SketchInput {
                 next.at = point;
             }
             self.points.push(next);
+            self.line_chain = true;
         }
         self.cursor = None;
         self.contact = None;
@@ -186,6 +190,26 @@ impl SketchInput {
 }
 
 impl Viewport {
+    /// Presentation-only anchor for finishing committed lines. Keep the active
+    /// drawing contact and provisional evaluations clear of native controls.
+    pub(crate) fn sketch_chain_end(&self) -> Option<[f64; 2]> {
+        let input = &self.contacts.sketch;
+        if input.tool != "sketch.line"
+            || !input.line_chain
+            || input.contact.is_some()
+            || input.work.is_some()
+            || input.suppressed
+            || self.contacts.navigating
+            || self.updating
+        {
+            return None;
+        }
+        let snapshot = self.model.as_ref()?.sketch.as_ref()?;
+        let end = input.points.last()?;
+        let position = crate::picking::project(self.vp(), snapshot.plane.to_world(end.at), self.metrics.pixels())?;
+        Some([position[0] / self.metrics.scale + self.metrics.origin_points[0], position[1] / self.metrics.scale + self.metrics.origin_points[1]])
+    }
+
     pub(crate) fn sketch_command(&mut self, id: &str, params: &Value) -> Result<bool, AdapterError> {
         match id {
             "tool.propose" => {

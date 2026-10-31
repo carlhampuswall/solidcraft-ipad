@@ -226,6 +226,15 @@ struct WorkspaceChecks {
         }
         try require(ModelValuePlacement.resolve(anchor: CGPoint(x: 100, y: 100), size: CGSize(width: 100, height: 48), bounds: CGRect(x: 0, y: 0, width: 300, height: 300), obstacles: []) != nil, "normal viewport lost exact value entry")
         try require(ModelValuePlacement.resolve(anchor: .zero, size: CGSize(width: 100, height: 48), bounds: .zero, obstacles: []) == nil, "collapsed viewport exposes a value chip")
+        let finishBounds = CGRect(x: 8, y: 8, width: 784, height: 584)
+        for anchor in [CGPoint(x: 400, y: 300), CGPoint(x: 15, y: 15), CGPoint(x: 785, y: 585)] {
+            let obstacle = CGRect(x: 700, y: 100, width: 90, height: 300)
+            guard let frame = ModelValuePlacement.resolve(anchor: anchor, size: CGSize(width: 44, height: 44), bounds: finishBounds, obstacles: [obstacle]) else {
+                throw NSError(domain: "WorkspaceChecks", code: 1, userInfo: [NSLocalizedDescriptionKey: "Line finish control disappeared near a viewport corner"])
+            }
+            try require(finishBounds.contains(frame) && !frame.intersects(obstacle), "Line finish control escaped the canvas or covered chrome")
+            try require(!frame.contains(anchor) && hypot(frame.midX - anchor.x, frame.midY - anchor.y) <= 90, "Line finish control covers or is too far from the endpoint")
+        }
         let handleJSON = Data(#"{"token":750,"parameter":"extent.distance","position":[400,300],"value":15,"units":"mm","expression":"plate_depth + 5 mm","valid":true}"#.utf8)
         let handleValue = try JSONDecoder().decode(ModelValuePresentation.self, from: handleJSON)
         try require(handleValue.expression == "plate_depth + 5 mm" && handleValue.token == 750 && handleValue.value == 15, "handle response replaced an expression or lost its transaction")

@@ -76,6 +76,7 @@ struct SketchInputPresentation: Decodable, Equatable {
     let auto_constraints: Bool
     let tool: String?
     let feedback: Feedback?
+    let finish_chain_at: [Double]?
 }
 struct SketchAnnotationPresentation: Decodable {
     let id: String
@@ -1157,7 +1158,7 @@ final class NativeSession {
         }
     }
 
-    private func developmentSketchTap(_ world: [Double], completion: @escaping (Result<Void, BridgeError>) -> Void) {
+    func developmentSketchTap(_ world: [Double], completion: @escaping (Result<Void, BridgeError>) -> Void) {
         display.async { [weak self, state] in
             do {
                 let project = try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": "view.project", "params": ["point": world]]), lane: .viewport)
