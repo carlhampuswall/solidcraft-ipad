@@ -74,6 +74,9 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--sketch-offset") {
+        return sketch_offset_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--sketch-rotation-snap") {
         return sketch_rotation_snap_proof(&destination);
     }
@@ -2096,6 +2099,69 @@ fn sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
     println!(
         "PASS: synthetic Pencil rectangle; actual driving dimensions, reopen, width preview/commit, native closed profile area1800, undo/redo, direct touch dimension drag with arrows and unchanged length. macOS GPU only; UIKit/Pencil hardware unverified."
+    );
+    Ok(())
+}
+
+/// Actual native viewport input and shared GPU evidence, without a simulator.
+fn sketch_offset_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-30,-20],"p1":[30,20],"connect":false}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("view.navigate", &json!({"motion":"zoom","factor":1.5}))?;
+    view.command("tool.set", &json!({"tool":"sketch.offset"}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, label: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("missing offset frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{label}: {path}");
+        Ok(())
+    };
+    capture(&view, "before")?;
+    for (phase, position) in [("began", [0., 20., 0.]), ("moved", [0., 27., 0.]), ("ended", [0., 27., 0.])] {
+        let p = view.command("view.project", &json!({"point":position}))?;
+        view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":1,
+            "x_points":p["points"][0],"y_points":p["points"][1],"x_pixels":p["pixels"][0],"y_pixels":p["pixels"][1],
+            "scale":1,"timestamp":1.,"geometry_revision":p["geometry_revision"]}))?)?;
+        if let Some(work) = view.take_tool_work() {
+            let prepared = engine.prepare_tool(work.clone())?;
+            if work.commit {
+                if !view.complete_tool(&work, engine.accept_tool(prepared)?) {
+                    return Err("offset commit rejected".into());
+                }
+                capture(&view, "committed")?;
+            } else {
+                if !view.publish_tool_preview(prepared) {
+                    return Err("offset preview rejected".into());
+                }
+                capture(&view, "preview")?;
+            }
+        }
+    }
+    let offset = engine.snapshot()?;
+    if offset.sketch.as_ref().is_none_or(|s| s.sketch.curves.len() != 8 || s.sketch.offsets.is_empty()) {
+        return Err("offset did not create an associated rectangle".into());
+    }
+    engine.execute("edit.undo", json!({}))?;
+    view.begin_update(2);
+    view.install(2, engine.snapshot()?);
+    if engine.snapshot()?.sketch.as_ref().is_none_or(|s| s.sketch.curves.len() != 4) {
+        return Err("offset undo failed".into());
+    }
+    capture(&view, "undo")?;
+    engine.execute("edit.redo", json!({}))?;
+    view.begin_update(3);
+    view.install(3, engine.snapshot()?);
+    capture(&view, "redo")?;
+    println!(
+        "PASS: 7 mm outward connected rectangle offset, actual scratch preview and one-step undo/redo; synthetic Pencil/macOS GPU, physical iPad unverified."
     );
     Ok(())
 }

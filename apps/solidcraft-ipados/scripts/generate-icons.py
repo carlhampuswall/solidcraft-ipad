@@ -93,7 +93,7 @@ def check(repository):
             source = (repository / f'crates/ipados/session/src/{area}.rs').read_text()
             native += re.findall(r'"([^"]+)"', source.split('const TOOLS:', 1)[1].split('];', 1)[0])
         native += ['sketch.point', 'sketch.line', 'sketch.rectangle.two_point', 'sketch.circle.center',
-                   'sketch.arc.three_point', 'sketch.spline.fit_point', 'sketch.delete', 'sketch.trim',
+                   'sketch.arc.three_point', 'sketch.spline.fit_point', 'sketch.offset', 'sketch.delete', 'sketch.trim',
                    'sketch.constraint.horizontal_vertical', 'sketch.constraint.parallel',
                    'sketch.constraint.perpendicular', 'sketch.constraint.coincident', 'sketch.constraint.tangent',
                    'sketch.constraint.equal', 'sketch.constraint.concentric', 'sketch.constraint.midpoint',

@@ -84,7 +84,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         ("sketch.point", "draw_point"),
         ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"),
         ("sketch.circle.center", "circle"), ("sketch.arc.three_point", "arc"),
-        ("sketch.spline.fit_point", "spline"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
+        ("sketch.spline.fit_point", "spline"), ("sketch.offset", "offset"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
     ].map { id, label in
         (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
     }
@@ -163,6 +163,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let entities: [String]
         let rotate: Bool
         let copy: Bool
+        var offset = false
+        var chain = true
+        var flip = false
     }
     private var transformDraft: TransformDraft?
     private var transformEditors: [(name: String, kind: String, editor: NumericExpressionEditor)] = []
@@ -2660,6 +2663,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let curves = selection.filter { $0.type == "sketch_curve" }.compactMap { $0.id?.readout }
             if !curves.isEmpty {
                 properties.addArrangedSubview(WorkspaceButton(SketchText.text("construction")) { [weak self] in self?.run("sketch.construction", params: ["curves": curves]) })
+                let offset = WorkspaceButton(SketchText.text("offset")) { [weak self] in self?.beginTransform(entities: curves, rotate: false, copy: false, offset: true) }
+                offset.commandArtwork("sketch.offset")
+                offset.accessibilityIdentifier = "workspace-sketch-offset"
+                properties.addArrangedSubview(offset)
                 let linked = curves.filter { id in sketch.curves.contains { $0.id == id && $0.link != nil } }
                 if !linked.isEmpty {
                     let button = WorkspaceButton(ProjectionText.text("break_link")) { [weak self] in
@@ -2738,22 +2745,39 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func beginTransform(entities: [String], rotate: Bool, copy: Bool) {
+    private func beginTransform(entities: [String], rotate: Bool, copy: Bool, offset: Bool = false) {
         guard !numericEditing, let state else { return }
         canvas.cancelInput(); transformGeneration &+= 1
-        transformDraft = TransformDraft(entities: entities, rotate: rotate, copy: copy)
+        transformDraft = TransformDraft(entities: entities, rotate: rotate, copy: copy, offset: offset)
         numericContext = (state.document_id, state.geometry_revision)
         properties.arrangedSubviews.forEach { properties.removeArrangedSubview($0); $0.removeFromSuperview() }
         let title = WorkspaceStyle.label(.headline)
-        title.text = SketchText.text(rotate ? (copy ? "rotate_copy" : "rotate") : (copy ? "copy" : "translate"))
+        title.text = SketchText.text(offset ? "offset" : (rotate ? (copy ? "rotate_copy" : "rotate") : (copy ? "copy" : "translate")))
         properties.addArrangedSubview(title)
-        let fields = rotate ? [("center_x", "length", "mm", "0 mm"), ("center_y", "length", "mm", "0 mm"), ("angle", "angle", "deg", "90 deg")] : [("delta_x", "length", "mm", "0 mm"), ("delta_y", "length", "mm", "0 mm")]
+        let fields = offset ? [("offset_distance", "length", "mm", "")] : rotate ? [("center_x", "length", "mm", "0 mm"), ("center_y", "length", "mm", "0 mm"), ("angle", "angle", "deg", "90 deg")] : [("delta_x", "length", "mm", "0 mm"), ("delta_y", "length", "mm", "0 mm")]
         transformEditors = fields.map { name, kind, units, expression in
             let heading = WorkspaceStyle.label(.body); heading.text = SketchText.text(name); properties.addArrangedSubview(heading)
             let field = NumericExpressionEditor(expression: expression, units: units, showsActions: false)
             field.onFocus = { [weak self] in self?.updateAvailability(); DispatchQueue.main.async { [weak self] in self?.revealField() } }
             properties.addArrangedSubview(field)
             return (name, kind, field)
+        }
+        if offset {
+            let hint = WorkspaceStyle.label(.footnote, secondary: true); hint.text = SketchText.text("offset_exact_hint"); properties.addArrangedSubview(hint)
+            let chain = WorkspaceButton(SketchText.text("offset_chain"), action: {})
+            chain.active(true)
+            chain.addAction(UIAction { [weak self, weak chain] _ in
+                guard let self, !self.transformBusy, var draft = self.transformDraft else { return }
+                draft.chain.toggle(); self.transformDraft = draft; chain?.active(draft.chain)
+            }, for: .touchUpInside)
+            properties.addArrangedSubview(chain)
+            let flip = WorkspaceButton(SketchText.text("offset_flip"), action: {})
+            flip.addAction(UIAction { [weak self, weak flip] _ in
+                guard let self, !self.transformBusy, var draft = self.transformDraft else { return }
+                draft.flip.toggle(); self.transformDraft = draft; flip?.active(draft.flip)
+            }, for: .touchUpInside)
+            properties.addArrangedSubview(flip)
+            properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("preview")) { [weak self] in self?.evaluateTransform(commit: false) })
         }
         let message = WorkspaceMessage(); transformMessage = message; properties.addArrangedSubview(message)
         properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true) { [weak self] in self?.evaluateTransform(commit: true) })
@@ -2779,14 +2803,18 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .failure(let error): self.finishTransformEvaluation(error: error)
             case .success(let values):
                 var params: [String: Any] = ["entities": draft.entities, "copy": draft.copy]
-                if draft.rotate {
+                if draft.offset {
+                    guard let expression = fields.first(where: { $0.name == "offset_distance" })?.expression else { self.finishTransformEvaluation(error: BridgeError(code: "numeric_validation", message: WorkspaceStyle.text("numeric_required"))); return }
+                    // Preserve the expression so the engine owns the driving parameter.
+                    params = ["curves": draft.entities, "distance": expression, "chain": draft.chain, "flip": draft.flip]
+                } else if draft.rotate {
                     guard let x = values["center_x"], let y = values["center_y"], let angle = values["angle"] else { self.finishTransformEvaluation(error: BridgeError(code: "numeric_validation", message: WorkspaceStyle.text("numeric_required"))); return }
                     params["center"] = [x, y]; params["angle"] = angle * 180 / .pi
                 } else {
                     guard let x = values["delta_x"], let y = values["delta_y"] else { self.finishTransformEvaluation(error: BridgeError(code: "numeric_validation", message: WorkspaceStyle.text("numeric_required"))); return }
                     params["translate"] = [x, y]
                 }
-                self.session.proposeSketchTransform(command: "sketch.move", params: params, commit: commit) { [weak self] result in
+                self.session.proposeSketchTransform(command: draft.offset ? "sketch.offset" : "sketch.move", params: params, commit: commit) { [weak self] result in
                     guard let self, self.transformGeneration == expected else { return }
                     switch result {
                     case .failure(let error): self.finishTransformEvaluation(error: error)
@@ -3037,6 +3065,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
     private func setTool(_ tool: String) {
         guard !numericEditing, state?.tools.first(where: { $0.id == tool })?.enabled == true else { return }
+        if tool == "sketch.offset", let curves = state?.selection.filter({ $0.type == "sketch_curve" }).compactMap({ $0.id?.readout }), !curves.isEmpty {
+            beginTransform(entities: curves, rotate: false, copy: false, offset: true); return
+        }
         run("tool.set", params: ["tool": tool])
         if tool == "post_radius" { inspectorOpen = true; browserOpen = false; view.setNeedsLayout() }
     }
@@ -3518,7 +3549,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         moreButton.showsMenuAsPrimaryAction = true
         let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
                      ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
-                     ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
+                     ("sketch.offset", "offset"), ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
         var sketchActions: [UIMenuElement] = sketchTools.compactMap { id, label in
             guard state?.tools.contains(where: { $0.id == id && $0.enabled }) == true else { return nil }
             return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }

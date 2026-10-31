@@ -445,3 +445,27 @@ the pre-consolidation recovery archive and Git bundle. The older separate task
 worktrees required independent build trees. Current development reuses the
 primary checkout's target/derived data under [TASK-COORDINATION.md](TASK-COORDINATION.md),
 without a project build lock; check completed batches and avoid duplicate builds.
+
+## Native sketch offset edges
+
+Choose **Offset edges** in the sketch toolbar and drag a source edge toward the
+wanted side. This previews the engine's connected-chain offset and commits one
+undo step on release. A tap selects the edge without creating an offset. For an
+exact distance, select sketch curves and choose **Offset edges** again, or use
+its inspector button. Enter a length expression, choose **Connected chain** or
+individual selected edges, and optionally **Reverse side**. **Preview** evaluates
+on scratch; **Apply** accepts once; **Cancel** discards the draft. The engine keeps
+the expression as a driving offset dimension. Invalid distances leave the design
+unchanged. Drag distance for freeform curves follows their displayed outline;
+exact-distance entry uses the engine's full offset operation.
+
+Focused adapter regressions use the `sketch_offset_` filter. The real viewport/GPU
+capture exercises synthetic Pencil input, outward chain preview/commit and undo/redo:
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-sketch-offset.png --sketch-offset
+```
+
+The resulting `-before`, `-preview`, `-committed`, `-undo` and `-redo` PNGs are macOS
+GPU evidence. They do not verify UIKit controls or physical iPad/Pencil input.

@@ -1,0 +1,10 @@
+{
+  "en": {
+    "ui.ipados.sketch.offset": "Offset edges",
+    "ui.ipados.sketch.offset_chain": "Connected chain",
+    "ui.ipados.sketch.offset_distance": "Offset distance",
+    "ui.ipados.sketch.offset_exact_hint": "Enter a distance or length expression. Positive distances offset to the left of the source direction; use Reverse side to offset the other way.",
+    "ui.ipados.sketch.offset_flip": "Reverse side",
+    "ui.ipados.sketch.offset_hint": "Drag an edge toward the offset side, or tap it and choose Offset edges in the inspector for an exact distance."
+  }
+}

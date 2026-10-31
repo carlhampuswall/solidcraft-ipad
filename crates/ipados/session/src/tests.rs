@@ -5146,6 +5146,123 @@ fn sketch_trim_extend_and_transform_proposals_use_native_commands_once() {
 }
 
 #[test]
+fn sketch_offset_drag_previews_a_chain_and_commits_one_undo_step_on_each_plane() {
+    for plane in ["XY", "XZ", "YZ"] {
+        for y in [-5., 5.] {
+            let (mut engine, mut view) = sketch_input_fixture(json!(plane), "sketch.offset");
+            engine.execute("sketch.rectangle.two_point", json!({"p0":[-20,-15],"p1":[20,0],"connect":false})).unwrap();
+            view.begin_update(2);
+            view.install(2, engine.snapshot().unwrap());
+            let original = engine.sketch_snapshot().unwrap();
+            let undo = engine.session.undo.len();
+            assert!(engine.workspace(view.selection(), false, false)["tools"].as_array().unwrap().iter().any(|tool| tool["id"] == "sketch.offset"));
+            let start = point(&view, original.plane.to_world(solidcraft_engine::geom::Vec2::new(0., 0.)));
+            let end = point(&view, original.plane.to_world(solidcraft_engine::geom::Vec2::new(0., y)));
+            feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, start, 1.);
+            feed(&mut view, InputSource::Pencil, InputPhase::Moved, 1, end, 2.);
+            assert!(!run_tool(&mut engine, &mut view));
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, original.sketch);
+            assert_eq!(engine.session.undo.len(), undo);
+            let preview = view.display_model().unwrap().sketch.as_ref().unwrap();
+            assert_eq!(preview.sketch.curves.len(), 8, "the whole connected rectangle is offset");
+            let source_ids: Vec<_> = original.sketch.curves.iter().map(|c| c.id.as_str()).collect();
+            let ys: Vec<_> = preview
+                .sketch
+                .curves
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| !source_ids.contains(&c.id.as_str()))
+                .flat_map(|(i, _)| preview.sketch.polyline(i))
+                .map(|p| p.y)
+                .collect();
+            assert!((ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) - y).abs() < 1e-6, "pointer chooses inside/outside");
+            feed(&mut view, InputSource::Pencil, InputPhase::Ended, 1, end, 3.);
+            assert!(run_tool(&mut engine, &mut view));
+            assert_eq!(engine.session.undo.len(), undo + 1);
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 8);
+            engine.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, original.sketch);
+            engine.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 8);
+        }
+    }
+}
+
+#[test]
+fn sketch_offset_round_curve_drag_cancel_and_zero_distance_leave_history_untouched() {
+    for radius in [7., 13.] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.offset");
+        engine.execute("sketch.circle.center", json!({"center":[0,0],"radius":10})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        let original = engine.sketch_snapshot().unwrap().sketch;
+        let undo = engine.session.undo.len();
+        let start = point(&view, Vec3::new(10., 0., 0.));
+        let end = point(&view, Vec3::new(radius, 0., 0.));
+        feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, start, 1.);
+        feed(&mut view, InputSource::Pencil, InputPhase::Moved, 1, end, 2.);
+        assert!(!run_tool(&mut engine, &mut view));
+        let model = view.display_model().unwrap();
+        let sk = &model.sketch.as_ref().unwrap().sketch;
+        assert!(matches!(sk.curves[1].kind, solidcraft_engine::sketch::CurveKind::Circle { r, .. } if (r-radius).abs()<1e-6));
+        feed(&mut view, InputSource::Pencil, InputPhase::Cancelled, 1, end, 3.);
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+        assert_eq!(engine.session.undo.len(), undo);
+        assert!(view.take_tool_work().is_none());
+        // Moving along a straight source edge must not create a zero offset.
+        engine.execute("sketch.line", json!({"points":[[-20,-20],[20,-20]],"infer":false})).unwrap();
+        view.begin_update(3);
+        view.install(3, engine.snapshot().unwrap());
+        let start = point(&view, Vec3::new(0., -20., 0.));
+        let end = point(&view, Vec3::new(5., -20., 0.));
+        feed(&mut view, InputSource::Pencil, InputPhase::Began, 2, start, 4.);
+        feed(&mut view, InputSource::Pencil, InputPhase::Moved, 2, end, 5.);
+        feed(&mut view, InputSource::Pencil, InputPhase::Ended, 2, end, 6.);
+        assert!(view.take_tool_work().is_none());
+        assert_eq!(engine.session.undo.len(), undo + 1);
+    }
+}
+
+#[test]
+fn sketch_offset_exact_expression_preview_cancel_flip_invalid_and_single_edge() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.offset");
+    engine.execute("parameters.add", json!({"name":"gap","expression":"3 mm"})).unwrap();
+    let curves = engine.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30],"connect":false})).unwrap().value["curves"].clone();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let original = engine.sketch_snapshot().unwrap().sketch;
+    let undo = engine.session.undo.len();
+    let params = json!({"curves":[curves[0]],"distance":"gap * 2","chain":false,"flip":true});
+    view.command("tool.propose", &json!({"command":"sketch.offset","params":params,"commit":false})).unwrap();
+    assert!(!run_tool(&mut engine, &mut view));
+    assert_eq!(view.display_model().unwrap().sketch.as_ref().unwrap().sketch.curves.len(), 5);
+    view.command("tool.cancel", &json!({})).unwrap();
+    assert_eq!(engine.session.undo.len(), undo);
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+    view.command("tool.propose", &json!({"command":"sketch.offset","params":params,"commit":true})).unwrap();
+    assert!(run_tool(&mut engine, &mut view));
+    let sk = engine.sketch_snapshot().unwrap().sketch;
+    let line = sk.polyline(4);
+    assert!(line.iter().all(|p| (p.y + 6.).abs() < 1e-6));
+    assert_eq!(engine.session.undo.len(), undo + 1);
+    engine.execute("parameters.change", json!({"name":"gap","expression":"4 mm"})).unwrap();
+    assert!(engine.sketch_snapshot().unwrap().sketch.polyline(4).iter().all(|p| (p.y + 8.).abs() < 1e-6), "offset retains its driving expression");
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    let before = engine.session.doc.clone();
+    view.command("tool.propose", &json!({"command":"sketch.offset","params":{"curves":[curves[0]],"distance":"0 mm"},"commit":true})).unwrap();
+    let work = view.take_tool_work().unwrap();
+    assert!(engine.prepare_tool(work).is_err());
+    assert!(Arc::ptr_eq(&before, &engine.session.doc));
+    view.command("tool.cancel", &json!({})).unwrap();
+    // Tapping a curve selects it for exact entry, without creating geometry.
+    view.command("tool.set", &json!({"tool":"sketch.offset"})).unwrap();
+    sketch_tap(&mut view, 7, [20., 0.]);
+    assert!(matches!(view.selection(), [Sel::SketchCurve { .. }]));
+    assert!(view.take_tool_work().is_none());
+}
+
+#[test]
 fn sketch_previous_tool_and_plane_preview_preserve_camera_and_modelling_history() {
     let (engine, mut view) = sketch_input_fixture(json!("YZ"), "sketch.circle.center");
     view.command("tool.previous", &json!({})).unwrap();

@@ -141,6 +141,7 @@ impl SketchInput {
             "sketch.delete" => "delete_hint",
             "sketch.trim" => "trim",
             "sketch.extend" => "extend",
+            "sketch.offset" => "offset_hint",
             "sketch.dimension" => "dimension_place",
             "sketch.point" => "point_place",
             "sketch.arc.three_point" if self.points.len() == 2 => "arc_through",
@@ -191,6 +192,21 @@ impl SketchInput {
         self.moving_measurement = None;
         self.snap = None;
     }
+}
+
+/// Pointer distance uses the same upstream outline as native picking.
+fn curve_distance(sketch: &Sketch, curve: usize, point: Vec2) -> Option<f64> {
+    sketch.shape(curve).map(|shape| shape.dist(point)).or_else(|| {
+        sketch
+            .polyline(curve)
+            .windows(2)
+            .map(|pair| {
+                let d = pair[1] - pair[0];
+                let t = if d.len2() > 0.0 { ((point - pair[0]).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
+                (pair[0] + d * t).dist(point)
+            })
+            .min_by(f64::total_cmp)
+    })
 }
 
 impl Viewport {
@@ -373,11 +389,14 @@ impl Viewport {
             return false;
         };
         let local = snapshot.plane.to_local(world);
-        if direct || matches!(self.contacts.sketch.tool.as_str(), "sketch.move" | "sketch.delete" | "sketch.trim" | "sketch.extend") {
+        if direct || matches!(self.contacts.sketch.tool.as_str(), "sketch.move" | "sketch.delete" | "sketch.trim" | "sketch.extend" | "sketch.offset")
+        {
             let Some(selection) = self.pick_sketch(screen) else {
                 return false;
             };
-            if direct && !matches!(selection, Sel::SketchPoint { .. } | Sel::SketchCurve { .. }) {
+            if (direct && !matches!(selection, Sel::SketchPoint { .. } | Sel::SketchCurve { .. }))
+                || (self.contacts.sketch.tool == "sketch.offset" && !matches!(selection, Sel::SketchCurve { .. }))
+            {
                 return false;
             }
             let modifying = matches!(self.contacts.sketch.tool.as_str(), "sketch.trim" | "sketch.extend");
@@ -586,6 +605,23 @@ impl Viewport {
                     let (entity, _, _) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select a curve"))?;
                     (state.tool.clone(), json!({"curve":entity,"at":[last.at.x,last.at.y]}))
                 }
+                "sketch.offset" => {
+                    let (entity, _, _) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select a curve"))?;
+                    let curve = snapshot
+                        .sketch
+                        .curves
+                        .iter()
+                        .position(|curve| &curve.id == entity)
+                        .ok_or_else(|| error("sketch", "The source curve is no longer available"))?;
+                    // Measure the pointer against the upstream curve presentation. The
+                    // engine alone constructs the exact offset and connected chain.
+                    let distance =
+                        curve_distance(&snapshot.sketch, curve, last.at).ok_or_else(|| error("sketch", "The source curve has no outline"))?;
+                    if !distance.is_finite() || distance <= 1e-8 {
+                        return Err(error("sketch", "Drag away from the source edge"));
+                    }
+                    ("sketch.offset".into(), json!({"curves":[entity],"distance":distance,"side":[last.at.x,last.at.y],"chain":true}))
+                }
                 "sketch.line" if nonzero => {
                     let id = format!("ipad_line_{}_{}", model.geometry_revision, self.contacts.next_interaction);
                     after = Some(Placement { at: last.at, argument: json!(format!("{id}.end")) });
@@ -653,7 +689,10 @@ impl Viewport {
             || self.contacts.sketch.moving_measurement.is_some()
             || !self.contacts.sketch.snapping
             || snapshot.sketch.view.no_snap
-            || matches!(self.contacts.sketch.tool.as_str(), "sketch.delete" | "sketch.trim" | "sketch.extend" | "sketch.dimension" | "sketch.move")
+            || matches!(
+                self.contacts.sketch.tool.as_str(),
+                "sketch.delete" | "sketch.trim" | "sketch.extend" | "sketch.dimension" | "sketch.move" | "sketch.offset"
+            )
         {
             return placement;
         }
@@ -758,7 +797,7 @@ impl Viewport {
         let snapshot = self.model.as_ref()?.sketch.as_ref()?;
         let point = snapshot.plane.to_local(self.plane_point(screen, snapshot.plane)?);
         let tolerance = 10.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        let curves_only = self.contacts.sketch.tool == "sketch.delete";
+        let curves_only = matches!(self.contacts.sketch.tool.as_str(), "sketch.delete" | "sketch.offset");
         if !curves_only
             && (!constraint_filter || self.constraint_tool().is_none())
             && let Some((id, _, _)) = self.visible_glyphs().into_iter().find(|(_, _, at)| at.dist(point) <= tolerance)
@@ -787,9 +826,10 @@ impl Viewport {
             .points
             .iter()
             .filter(|p| {
-                !curves_only
-                    || p.id != "origin"
-                        && snapshot.sketch.resolve_point(&p.id).is_some_and(|i| !snapshot.sketch.curves.iter().any(|c| c.kind.uses(i)))
+                self.contacts.sketch.tool != "sketch.offset"
+                    && (!curves_only
+                        || p.id != "origin"
+                            && snapshot.sketch.resolve_point(&p.id).is_some_and(|i| !snapshot.sketch.curves.iter().any(|c| c.kind.uses(i))))
             })
             .filter(|p| {
                 !constraint_filter || self.constraint_tool() != Some("coincident") || !self.is_selected(&Sel::SketchPoint { id: p.id.clone() })
@@ -805,18 +845,7 @@ impl Viewport {
             .iter()
             .enumerate()
             .filter_map(|(i, c)| {
-                let distance = snapshot.sketch.shape(i).map(|sh| sh.dist(point)).or_else(|| {
-                    snapshot
-                        .sketch
-                        .polyline(i)
-                        .windows(2)
-                        .map(|pair| {
-                            let d = pair[1] - pair[0];
-                            let t = if d.len2() > 0.0 { ((point - pair[0]).dot(d) / d.len2()).clamp(0.0, 1.0) } else { 0.0 };
-                            (pair[0] + d * t).dist(point)
-                        })
-                        .min_by(f64::total_cmp)
-                });
+                let distance = curve_distance(&snapshot.sketch, i, point);
                 distance.map(|d| (d, c))
             })
             .filter(|(d, c)| {

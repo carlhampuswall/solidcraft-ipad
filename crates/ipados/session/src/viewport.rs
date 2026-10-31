@@ -452,6 +452,7 @@ impl Viewport {
                         | "sketch.delete"
                         | "sketch.trim"
                         | "sketch.extend"
+                        | "sketch.offset"
                 ) {
                     return Err(error("bad_params", "unsupported native sketch tool"));
                 }
