@@ -879,6 +879,11 @@ struct WorkspaceChecks {
         let libraryRoot = FileManager.default.temporaryDirectory.appendingPathComponent("SolidCraft-Library-Check-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: libraryRoot) }
         let library = ProjectLibrary(root: libraryRoot)
+        guard let defaults = UserDefaults(suiteName: "SolidCraft-Projects-Check-" + UUID().uuidString) else { throw ProjectLibrary.failure("defaults_unavailable") }
+        try require(ProjectLibrary.showsBrowserOnLaunch(defaults: defaults), "Projects must open on launch by default")
+        defaults.set(false, forKey: ProjectLibrary.showBrowserOnLaunchKey)
+        try require(!ProjectLibrary.showsBrowserOnLaunch(defaults: defaults), "previous launch behaviour is not reachable")
+        defaults.removeObject(forKey: ProjectLibrary.showBrowserOnLaunchKey)
         let emptyProjects = try library.projects()
         try require(emptyProjects.isEmpty, "new library is not empty")
         let projectA = try library.reserve(name: "  Bracket  ")
@@ -889,7 +894,23 @@ struct WorkspaceChecks {
         try Data("second design".utf8).write(to: projectB.file)
         let projectList = try library.projects()
         try require(Set(projectList.map(\.id)) == Set([projectA.id, projectB.id]) && projectList.allSatisfy { $0.name == "Bracket" }, "library loses project identity or display name")
-        try library.remove(projectA)
+        let renamed = try library.rename(projectA, to: "  Support 界  ")
+        let renamedBytes = try Data(contentsOf: renamed.file)
+        try require(renamed.id == projectA.id && renamed.name == "Support 界" && renamedBytes == Data("first design".utf8), "renaming lost identity, name or design bytes")
+        try require(!FileManager.default.fileExists(atPath: projectA.file.path), "rename left an old project file")
+        let unchanged = try library.rename(renamed, to: renamed.name)
+        try require(unchanged == renamed, "unchanged name did not preserve the project")
+        do {
+            _ = try library.rename(renamed, to: "Failed rename") { _ in throw ProjectLibrary.failure("save_failed") }
+            throw ProjectLibrary.failure("accepted_failed_save")
+        } catch {
+            try require((error as NSError).localizedDescription == "ui.ipados.projects.save_failed", "failed persistence was not reported")
+        }
+        try require(FileManager.default.fileExists(atPath: renamed.file.path), "failed save did not restore the previous name")
+        let restored = try library.rename(renamed, to: "Bracket")
+        let caseOnly = try library.rename(restored, to: "bracket")
+        try require(caseOnly.id == projectA.id && caseOnly.name == "bracket", "case-only rename failed")
+        try library.remove(caseOnly)
         try require(FileManager.default.fileExists(atPath: projectB.file.path), "deleting one project erased an equally named design")
         for name in ["", "  ", "../Design", "a/b", "a\\b", "a:b", ".", "..", ".Hidden", "a\n", String(repeating: "界", count: 100)] {
             // Trailing whitespace is allowed and removed; an embedded control is not.
@@ -900,6 +921,10 @@ struct WorkspaceChecks {
         let forged = ProjectRecord(id: projectB.id, file: libraryRoot.appendingPathComponent("elsewhere/Bracket.solidcraft"), modified: Date())
         do { try library.remove(forged); throw ProjectLibrary.failure("accepted_bad_path") }
         catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_bad_path", "deletion escaped the checked project path") }
+        do { _ = try library.rename(forged, to: "Outside"); throw ProjectLibrary.failure("accepted_bad_path") }
+        catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_bad_path", "rename escaped the checked project path") }
+        do { _ = try library.rename(projectB, to: "../Outside"); throw ProjectLibrary.failure("accepted_bad_name") }
+        catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_bad_name", "rename accepted path traversal") }
         try require(FileManager.default.fileExists(atPath: projectB.file.path), "invalid deletion touched the current library")
         let stepFile = libraryRoot.appendingPathComponent("Bracket.STP")
         try Data("ISO-10303-21;".utf8).write(to: stepFile)
@@ -927,6 +952,10 @@ struct WorkspaceChecks {
         try require(desktopProjects.first?.file.resolvingSymlinksInPath().standardizedFileURL == desktopFile.resolvingSymlinksInPath().standardizedFileURL, "desktop native discovery changed the project path")
         let desktopBytes = try Data(contentsOf: desktopFile)
         try require(desktopProjects.first?.file.pathExtension == "sc" && desktopBytes == Data("second design".utf8), "desktop native discovery lost its extension or bytes")
+        if let desktop = desktopProjects.first {
+            let renamedDesktop = try library.rename(desktop, to: "Desktop renamed")
+            try require(renamedDesktop.file.pathExtension == "sc", "rename changed the native format extension")
+        }
         let empty = libraryRoot.appendingPathComponent("Empty.step")
         try Data().write(to: empty)
         do { _ = try ProjectLibrary.stageImport(empty); throw ProjectLibrary.failure("accepted_empty") }

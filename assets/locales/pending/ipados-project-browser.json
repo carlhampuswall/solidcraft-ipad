@@ -1,0 +1,27 @@
+{
+  "en": {
+    "ui.ipados.projects.current_actions": "Export and Share use the current project: {name}",
+    "ui.ipados.projects.rename": "Rename project",
+    "ui.ipados.projects.show_on_launch": "Show Projects on launch"
+  },
+  "de": {
+    "ui.ipados.projects.current_actions": "Exportieren und Teilen verwenden das aktuelle Projekt: {name}",
+    "ui.ipados.projects.rename": "Projekt umbenennen",
+    "ui.ipados.projects.show_on_launch": "Projekte beim Start anzeigen"
+  },
+  "ja": {
+    "ui.ipados.projects.current_actions": "書き出しと共有の対象は現在のプロジェクトです：{name}",
+    "ui.ipados.projects.rename": "プロジェクト名を変更",
+    "ui.ipados.projects.show_on_launch": "起動時にプロジェクトを表示"
+  },
+  "ko": {
+    "ui.ipados.projects.current_actions": "내보내기 및 공유 대상은 현재 프로젝트입니다: {name}",
+    "ui.ipados.projects.rename": "프로젝트 이름 변경",
+    "ui.ipados.projects.show_on_launch": "시작 시 프로젝트 표시"
+  },
+  "zh": {
+    "ui.ipados.projects.current_actions": "导出和共享使用当前项目：{name}",
+    "ui.ipados.projects.rename": "重命名项目",
+    "ui.ipados.projects.show_on_launch": "启动时显示项目"
+  }
+}

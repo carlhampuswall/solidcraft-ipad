@@ -194,6 +194,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var selectedAssemblyRowID: String?
     private var lastOperationFeedback: [String] = []
     private weak var projectsBrowser: ProjectBrowserController?
+    private var projectsStartupReady = false
+    private var projectsStartupHandled = false
     private var importingIntoProject = false
     private var pendingExport: URL?
     private var preparingExport = false
@@ -476,6 +478,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         session.onStatus = { [weak self] message in
             guard let self else { return }
             self.pending = message; self.failure = nil; self.updateStatus(); self.updateAvailability()
+            self.showStartupProjectsIfReady()
         }
         session.onFrame = { [weak self] presented, revision, epoch, cameraEpoch, documentID, metrics, preview, previewStale, _ in
             guard let self, self.active else { return }
@@ -552,7 +555,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkViewControlsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-actions-check") {
                     self.developmentCheckStarted = true; self.checkHistoryActionsOnDevice()
-                } else if ProcessInfo.processInfo.arguments.contains("--step-share-check") {
+                } else if ProcessInfo.processInfo.arguments.contains("--step-share-check") || ProcessInfo.processInfo.arguments.contains("--projects-check") {
                     self.developmentCheckStarted = true; self.checkStepSharingOnDevice()
                 }
             }
@@ -594,7 +597,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.session.command("view.origin", params: ["item": item, "visible": visible])
                 }
                 self.updateSurface()
-            case .failure(let error): self.showFailure(error)
+                self.projectsStartupReady = true
+                self.showStartupProjectsIfReady()
+            case .failure(let error):
+                self.showFailure(error)
+                self.projectsStartupReady = true
+                self.showStartupProjectsIfReady()
             }
         }
         rebuildMenus(); rebuildInspector(); updateAvailability()
@@ -779,6 +787,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if !numericEditing && !modellingEditing { rebuildInspector() }
         if modellingToken != nil && previous?.selection != value.selection { inspectModelling() }
         updateAvailability(); rebuildMenus(); updateStatus(); view.setNeedsLayout()
+        showStartupProjectsIfReady()
 #if DEBUG
         assemblyCheckWorkspace?(value)
         browserCheckWorkspace?(value)
@@ -2049,21 +2058,29 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let attributes: UIMenuElement.Attributes = numericEditing || modellingEditing || !pending.isEmpty || preparingExport || pendingExport != nil ? .disabled : []
         return [
             UIAction(title: ProjectText.text("title"), image: WorkspaceIcon.image("folder", traits: traitCollection), attributes: attributes) { [weak self] _ in self?.showProjects() },
-            UIAction(title: ProjectText.text("save"), image: WorkspaceIcon.image("save", traits: traitCollection), attributes: attributes) { [weak self] _ in self?.localDocument(reopen: false) },
-            UIAction(title: ProjectText.text("import"), attributes: attributes) { [weak self] _ in self?.chooseProjectImport() },
-            UIMenu(title: ProjectText.text("export"), children: ["step", "solidcraft", "stl", "obj", "3mf"].map { format in
-                UIAction(title: ProjectText.text("export_" + (format == "solidcraft" ? "native" : format)), attributes: attributes) { [weak self] _ in self?.exportProject(format: format) }
-            }),
-            UIAction(title: ProjectText.text("share_step"), attributes: attributes) { [weak self] _ in self?.exportProject(format: "step", share: true) }
+            UIAction(title: ProjectText.text("save"), image: WorkspaceIcon.image("save", traits: traitCollection), attributes: attributes) { [weak self] _ in self?.localDocument(reopen: false) }
         ]
     }
 
+    private func showStartupProjectsIfReady() {
+        guard projectsStartupReady, !projectsStartupHandled, active, viewIfLoaded?.window != nil,
+              presentedViewController == nil, pending.isEmpty else { return }
+        projectsStartupHandled = true
+        // Keep opt-in diagnostics on their disposable fixture and out of the library.
+        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--") && $0.contains("-check") && $0 != "--projects-check" }),
+              ProjectLibrary.showsBrowserOnLaunch() else { return }
+        if ProcessInfo.processInfo.arguments.contains("--projects-check"), session.currentProject == nil { return }
+        showProjects()
+    }
+
     private func showProjects() {
-        guard !numericEditing, !modellingEditing, presentedViewController == nil, pending.isEmpty else { return }
+        guard !numericEditing, !modellingEditing, presentedViewController == nil, pending.isEmpty,
+              !preparingExport, pendingExport == nil else { return }
         canvas.cancelInput(); session.command("tool.cancel")
         if planeChoosing || planeDraft != nil { cancelSketchPlane() }
         let browser = ProjectBrowserController()
         let navigation = UINavigationController(rootViewController: browser)
+        navigation.overrideUserInterfaceStyle = workspaceInterfaceStyle
         navigation.modalPresentationStyle = .formSheet
         navigation.preferredContentSize = CGSize(width: 680, height: 720)
         projectsBrowser = browser
@@ -2086,8 +2103,24 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
             }
         }
+        browser.onRename = { [weak self, weak browser] project, name in
+            guard let self, let browser else { return }; browser.setBusy(true)
+            self.session.renameProject(project, to: name) { [weak self, weak browser] result in
+                guard let self, let browser else { return }
+                switch result {
+                case .failure(let error): browser.showError(error)
+                case .success: self.loadProjects(browser)
+                }
+            }
+        }
         browser.onImport = { [weak self, weak browser] in
             browser?.dismiss(animated: true) { [weak self] in self?.chooseProjectImport() }
+        }
+        browser.onExport = { [weak self, weak browser] format in
+            browser?.dismiss(animated: true) { [weak self] in self?.exportProject(format: format) }
+        }
+        browser.onShare = { [weak self, weak browser] in
+            browser?.dismiss(animated: true) { [weak self] in self?.exportProject(format: "step", share: true) }
         }
         present(navigation, animated: true) { [weak self, weak browser] in if let browser { self?.loadProjects(browser) } }
     }
@@ -2175,8 +2208,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func presentExportShare(_ file: URL) {
         let controller = UIActivityViewController(activityItems: [file], applicationActivities: nil)
         let expected = generation
-        // Both the document menu and Tools menu reach this action. Anchor to the
-        // visible document control, with Tools as the compact-layout fallback.
+        // The Projects sheet closes before sharing. Anchor to its workspace
+        // launcher, with Tools as the compact-layout fallback.
         let source = documentActionsButton.isHidden ? moreButton : documentActionsButton
         controller.popoverPresentationController?.sourceView = source
         controller.popoverPresentationController?.sourceRect = source.bounds
@@ -3183,6 +3216,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             homeToolbar, historyGestures, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
+        let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
+        moreActions.append(UIAction(title: ProjectText.text("show_on_launch"), state: showProjectsOnLaunch ? .on : .off) { [weak self] _ in
+            UserDefaults.standard.set(!showProjectsOnLaunch, forKey: ProjectLibrary.showBrowserOnLaunchKey)
+            self?.rebuildMenus()
+        })
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
             UserDefaults.standard.set(!restoreLastProject, forKey: "SolidCraft.projects.restoreLast")
             self?.rebuildMenus()
@@ -3340,6 +3378,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         applyAppearance()
+    }
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        showStartupProjectsIfReady()
     }
 
     private func updateCanvasAppearance() {
@@ -3611,6 +3653,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 private extension FoundationController {
     func checkStepSharingOnDevice() {
         let expected = generation
+        let checksProjects = ProcessInfo.processInfo.arguments.contains("--projects-check")
+        let savedAppearance = appearance
+        let defaults = UserDefaults.standard
+        let savedLaunchPreference = defaults.object(forKey: ProjectLibrary.showBrowserOnLaunchKey)
+        let savedProjectSelection = defaults.string(forKey: "SolidCraft.projects.selected")
+        if checksProjects { defaults.set(true, forKey: ProjectLibrary.showBrowserOnLaunchKey) }
         var finished = false
         var fixture: URL?
         var issues: [String] = []
@@ -3619,6 +3667,12 @@ private extension FoundationController {
         func report(_ problem: String? = nil) {
             guard !finished else { return }; finished = true
             if let problem { issues.append(problem) }
+            if checksProjects {
+                appearance = savedAppearance; applyAppearance()
+                if let savedLaunchPreference { defaults.set(savedLaunchPreference, forKey: ProjectLibrary.showBrowserOnLaunchKey) }
+                else { defaults.removeObject(forKey: ProjectLibrary.showBrowserOnLaunchKey) }
+                if defaults.string(forKey: "SolidCraft.projects.selected") != savedProjectSelection { issues.append("Diagnostic changed saved project selection") }
+            }
             if let fixture { session.developmentClearExportFixture(fixture) }
             do {
                 guard let documents else { return }
@@ -3691,12 +3745,79 @@ private extension FoundationController {
                 }
             }
         }
+        func checkBrowser() {
+            if presentedViewController == nil { projectsStartupHandled = false; showStartupProjectsIfReady() }
+            wait({ self.projectsBrowser?.tableView.numberOfRows(inSection: 0) == 1 }) {
+                guard let browser = self.projectsBrowser, let project = self.session.currentProject else { report("Missing startup project browser"); return }
+                let oldDocument = self.state?.document_id
+                let oldUndo = self.state?.can_undo
+                let oldRows = self.state?.rows.count
+                if browser.navigationController !== self.presentedViewController { issues.append("Startup browser was not presented") }
+                if browser.navigationController?.isToolbarHidden != false { issues.append("Project transfer toolbar hidden") }
+                let identifiers = Set((browser.navigationItem.rightBarButtonItems ?? []).compactMap(\.accessibilityIdentifier) + (browser.toolbarItems ?? []).compactMap(\.accessibilityIdentifier))
+                if !Set(["project-import", "project-export", "project-share"]).isSubset(of: identifiers) { issues.append("Project transfer actions missing") }
+                if self.projectMenuActions().count != 2 { issues.append("Transfer actions still in workspace menus") }
+                browser.setBusy(true)
+                if browser.toolbarItems?.contains(where: { $0.isEnabled }) == true { issues.append("Busy project transfer actions enabled") }
+                browser.setBusy(false)
+                self.appearance = 2; self.applyAppearance()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    if browser.traitCollection.userInterfaceStyle != .dark { issues.append("Projects ignored Dark appearance") }
+                    capture("projects-dark")
+                    self.appearance = 1; self.applyAppearance()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        if browser.traitCollection.userInterfaceStyle != .light { issues.append("Projects ignored Light appearance") }
+                        capture("projects-light")
+                        self.appearance = 0; self.applyAppearance()
+                        if browser.navigationController?.overrideUserInterfaceStyle != .unspecified { issues.append("Projects ignored System appearance") }
+                        self.appearance = 2; self.applyAppearance()
+                        guard let action = browser.tableView(browser.tableView, trailingSwipeActionsConfigurationForRowAt: IndexPath(row: 0, section: 0))?.actions.first else { report("Missing Rename action"); return }
+                        action.handler(action, browser.tableView) { _ in }
+                        wait({ browser.presentedViewController is UIAlertController && browser.presentedViewController?.isBeingPresented == false }) {
+                            guard let alert = browser.presentedViewController as? UIAlertController,
+                                  let field = alert.textFields?.first, let submit = alert.actions.last else { report("Missing rename form"); return }
+                            if field.text != project.name { issues.append("Rename did not prefill the project name") }
+                            field.text = "../Invalid"; field.sendActions(for: .editingChanged)
+                            if submit.isEnabled { issues.append("Rename accepted an unsafe name") }
+                            field.text = "Renamed project"; field.sendActions(for: .editingChanged)
+                            if !submit.isEnabled { issues.append("Rename refused a valid name") }
+                            capture("projects-rename")
+                            alert.dismiss(animated: false) {
+                                browser.onRename?(project, "Renamed project")
+                                wait({ self.session.currentProject?.name == "Renamed project" && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 0))?.contentConfiguration as? UIListContentConfiguration)?.text == "Renamed project" }) {
+                                    guard let renamed = self.session.currentProject else { report("Rename lost current project"); return }
+                                    if renamed.id != project.id || FileManager.default.fileExists(atPath: project.file.path) { issues.append("Rename lost identity or left old file") }
+                                    if self.state?.document_id != oldDocument || self.state?.can_undo != oldUndo || self.state?.rows.count != oldRows { issues.append("Rename replaced document/history") }
+                                    capture("projects-renamed")
+                                    self.session.saveProject { result in
+                                        if case .failure(let error) = result { report(error.description); return }
+                                        if FileManager.default.fileExists(atPath: project.file.path) { issues.append("Save resurrected old project name") }
+                                        browser.onRename?(renamed, "STEP Share Check")
+                                        wait({ self.session.currentProject?.name == "STEP Share Check" && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 0))?.contentConfiguration as? UIListContentConfiguration)?.text == "STEP Share Check" }) {
+                                            browser.onShare?()
+                                            wait({ self.pendingExport != nil && self.presentedViewController is UIActivityViewController }) {
+                                                guard let activity = self.presentedViewController as? UIActivityViewController else { report("Projects Share did not open activity controller"); return }
+                                                activity.dismiss(animated: false) {
+                                                    wait({ self.pendingExport == nil }) { run(0) }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 75) { report("STEP share diagnostic timed out") }
         wait({ self.pending.isEmpty }) {
             self.session.developmentPrepareExportFixture { result in
                 switch result {
                 case .failure(let error): report(error.description)
-                case .success(let root): fixture = root; run(0)
+                case .success(let root):
+                    fixture = root
+                    if checksProjects { checkBrowser() } else { run(0) }
                 }
             }
         }

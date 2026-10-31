@@ -216,6 +216,9 @@ final class NativeSession {
     private var autosaveFailure: (document: String, revision: UInt64)?
     private let fileExport = DispatchQueue(label: "SolidCraft.export", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private static let selectedProjectKey = "SolidCraft.projects.selected"
+    #if DEBUG
+    private var projectLibraryOverride: ProjectLibrary?
+    #endif
     var onSketchInput: ((SketchInputPresentation?) -> Void)?
     var onSketchAnnotations: (([SketchAnnotationPresentation]) -> Void)?
     var onConstraintIndicators: (([SketchConstraintIndicator]) -> Void)?
@@ -411,7 +414,11 @@ final class NativeSession {
     private func selectProject(_ project: ProjectRecord) {
         currentProject = project
         autosaveFailure = nil
+        #if DEBUG
+        if projectLibraryOverride == nil { UserDefaults.standard.set(project.id.uuidString, forKey: Self.selectedProjectKey) }
+        #else
         UserDefaults.standard.set(project.id.uuidString, forKey: Self.selectedProjectKey)
+        #endif
         onProjectChange?(project)
     }
 
@@ -424,8 +431,13 @@ final class NativeSession {
         projectBusy = true
         let current = currentProject
         let activity = UUID(); commandActivities.insert(activity); publishActivityStatus()
+        #if DEBUG
+        let libraryOverride = projectLibraryOverride
+        #else
+        let libraryOverride: ProjectLibrary? = nil
+        #endif
         engine.async { [weak self, state] in
-            let result = Result { try operation(state, ProjectLibrary.applicationLibrary(), current) }.mapError(BridgeState.error)
+            let result = Result { try operation(state, libraryOverride ?? ProjectLibrary.applicationLibrary(), current) }.mapError(BridgeState.error)
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.alive else { return }
                 self.projectBusy = false
@@ -474,6 +486,18 @@ final class NativeSession {
             catch { try? library.remove(project); throw error }
         }) { [weak self] result in
             if case .success(let project) = result { self?.selectProject(project) }
+            completion(result.map { _ in () })
+        }
+    }
+
+    func renameProject(_ project: ProjectRecord, to name: String, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        projectTask({ state, library, current in
+            if current?.id == project.id { try Self.saveProject(state, current) }
+            return try library.rename(project, to: name) { renamed in
+                if current?.id == project.id { try Self.saveProject(state, renamed) }
+            }
+        }) { [weak self] result in
+            if case .success(let project) = result, self?.currentProject?.id == project.id { self?.selectProject(project) }
             completion(result.map { _ in () })
         }
     }
@@ -570,13 +594,17 @@ final class NativeSession {
                 return (root, project)
             } catch { try? FileManager.default.removeItem(at: root); throw error }
         }) { [weak self] result in
-            if case .success(let value) = result { self?.currentProject = value.1; self?.onProjectChange?(value.1) }
+            if case .success(let value) = result {
+                self?.projectLibraryOverride = ProjectLibrary(root: value.0)
+                self?.currentProject = value.1; self?.onProjectChange?(value.1)
+            }
             completion(result.map { $0.0 })
         }
     }
 
     func developmentClearExportFixture(_ root: URL) {
         autosave?.cancel(); autosave = nil; currentProject = nil
+        projectLibraryOverride = nil
         try? FileManager.default.removeItem(at: root)
     }
     #endif

@@ -11,6 +11,10 @@ struct ProjectRecord: Equatable {
 
 struct ProjectLibrary {
     let root: URL
+    static let showBrowserOnLaunchKey = "SolidCraft.projects.showBrowserOnLaunch"
+    static func showsBrowserOnLaunch(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: showBrowserOnLaunchKey) as? Bool ?? true
+    }
     static let maximumImportBytes: Int64 = 512 * 1024 * 1024
     static let nativeExtensions: Set<String> = ["sc", "solidcraft"]
     static let importExtensions = nativeExtensions.union(["step", "stp", "stl", "obj", "3mf"])
@@ -45,7 +49,7 @@ struct ProjectLibrary {
             guard files.count == 1, let file = files.first else { return nil }
             let values = try file.resourceValues(forKeys: [.contentModificationDateKey, .isRegularFileKey, .isSymbolicLinkKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true else { return nil }
-            return ProjectRecord(id: id, file: file, modified: values.contentModificationDate ?? .distantPast)
+            return ProjectRecord(id: id, file: file.resolvingSymlinksInPath().standardizedFileURL, modified: values.contentModificationDate ?? .distantPast)
         }.sorted { $0.modified == $1.modified ? $0.id.uuidString < $1.id.uuidString : $0.modified > $1.modified }
     }
 
@@ -54,14 +58,34 @@ struct ProjectLibrary {
         let id = UUID()
         let directory = root.appendingPathComponent(id.uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return ProjectRecord(id: id, file: directory.appendingPathComponent(name).appendingPathExtension("solidcraft"), modified: Date())
+        return ProjectRecord(id: id, file: directory.resolvingSymlinksInPath().appendingPathComponent(name).appendingPathExtension("solidcraft"), modified: Date())
     }
 
     func remove(_ project: ProjectRecord) throws {
         // Re-derive every destructive path from the library and checked UUID.
         let directory = root.appendingPathComponent(project.id.uuidString, isDirectory: true)
-        guard project.file.deletingLastPathComponent().standardizedFileURL == directory.standardizedFileURL else { throw Self.failure("invalid_project") }
+        guard project.file.deletingLastPathComponent().standardizedFileURL == directory.resolvingSymlinksInPath().standardizedFileURL else { throw Self.failure("invalid_project") }
         try FileManager.default.removeItem(at: directory)
+    }
+
+    /// Keep identity, relative component links and the native extension in place.
+    /// The current session can persist its new path without replacing its history.
+    func rename(_ project: ProjectRecord, to input: String,
+                persist: (ProjectRecord) throws -> Void = { _ in }) throws -> ProjectRecord {
+        let name = try Self.validName(input)
+        guard try projects().contains(where: { $0.id == project.id && $0.file == project.file }) else {
+            throw Self.failure("invalid_project")
+        }
+        let file = project.file.deletingLastPathComponent().appendingPathComponent(name).appendingPathExtension(project.file.pathExtension)
+        guard file != project.file else { return project }
+        try FileManager.default.moveItem(at: project.file, to: file)
+        let renamed = ProjectRecord(id: project.id, file: file, modified: project.modified)
+        do { try persist(renamed) }
+        catch {
+            try FileManager.default.moveItem(at: file, to: project.file)
+            throw error
+        }
+        return renamed
     }
 
     /// Copy a provider-coordinated import before invoking Rust. No external URL
