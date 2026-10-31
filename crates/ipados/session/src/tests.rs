@@ -1073,6 +1073,74 @@ fn history_feature_selection_highlights_visible_sketches_construction_and_exact_
 }
 
 #[test]
+fn history_navigation_preserves_undo_and_redo_while_publishing_model_stages() {
+    let mut adapter = SessionAdapter::new();
+    for size in [10, 20, 30] {
+        adapter.execute("solid.box", json!({"length":size,"width":size,"height":size,"corner":[size * 3,0,0],"operation":"new"})).unwrap();
+    }
+    adapter.execute("edit.undo", json!({})).unwrap();
+    let undo = adapter.session.undo.clone();
+    let redo = adapter.session.redo.clone();
+    assert!(!undo.is_empty() && !redo.is_empty());
+    for command in ["timeline.roll_to", "timeline.rollback"] {
+        for (position, volume) in [(0, 0.), (1, 1000.), (2, 9000.), (1, 1000.), (0, 0.), (2, 9000.)] {
+            let revision = adapter.geometry_revision;
+            let reply = adapter.execute(command, json!({"position":position})).unwrap();
+            assert!(reply.changed && reply.geometry_revision > revision);
+            assert_eq!(reply.value["marker"], position);
+            assert!((adapter.snapshot().unwrap().volume_mm3 - volume).abs() < 1e-6);
+            assert_eq!(adapter.workspace(&[], false, false)["modelling"]["position"], position);
+            for (actual, expected) in [(&adapter.session.undo, &undo), (&adapter.session.redo, &redo)] {
+                assert_eq!(actual.len(), expected.len(), "{command} must preserve both history stacks");
+                for (actual, expected) in actual.iter().zip(expected) {
+                    assert!(Arc::ptr_eq(&actual.doc, &expected.doc));
+                    assert_eq!(actual.label, expected.label);
+                    assert_eq!(actual.active_sketch, expected.active_sketch);
+                    assert_eq!(actual.pending_moves, expected.pending_moves);
+                    assert_eq!(actual.visibility, expected.visibility);
+                }
+            }
+        }
+        let doc = adapter.session.doc.clone();
+        assert!(adapter.execute(command, json!({"position":-1})).is_err());
+        assert!(Arc::ptr_eq(&adapter.session.doc, &doc));
+        assert_eq!((adapter.session.undo.len(), adapter.session.redo.len()), (undo.len(), redo.len()));
+    }
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.features.len(), 3, "redo must restore the actual model edit");
+    assert!((modelling_volume(&adapter) - 36_000.).abs() < 1e-6);
+    adapter.execute("timeline.roll_to", json!({"position":0})).unwrap();
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.features.len(), 2, "undo must remove the model edit instead of moving the marker");
+}
+
+#[test]
+fn history_navigation_keeps_native_edits_undoable_and_new_edits_clear_redo() {
+    let (mut adapter, _, _, extrude) = modelling_plate(40., "10 mm");
+    let undo = adapter.session.undo.len();
+    adapter.execute("timeline.roll_to", json!({"position":1})).unwrap();
+    let edit = adapter.begin_model(819, None, Some(extrude), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("20 mm");
+    modelling_commit(&mut adapter, &edit, params);
+    assert_eq!(adapter.session.undo.len(), undo + 1);
+    adapter.execute("timeline.roll_to", json!({"position":"end"})).unwrap();
+    assert!((modelling_volume(&adapter) - 24_000.).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.marker, Some(1));
+    adapter.execute("timeline.roll_to", json!({"feature":extrude})).unwrap();
+    assert!((modelling_volume(&adapter) - 12_000.).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    adapter.execute("timeline.roll_to", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 24_000.).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    adapter.execute("timeline.roll_to", json!({"position":"end"})).unwrap();
+    adapter.execute("timeline.rename", json!({"feature":extrude,"name":"Edited plate"})).unwrap();
+    assert!(adapter.session.redo.is_empty(), "a real edit must still discard the redo branch");
+    assert_eq!(adapter.session.undo.len(), undo + 1);
+}
+
+#[test]
 fn history_rollback_displays_each_stage_and_rebuilds_all_downstream_features_after_native_edit() {
     let (mut adapter, _, _, extrude) = modelling_plate(40., "10 mm");
     let body = adapter.session.world_state().bodies[0].name.clone();

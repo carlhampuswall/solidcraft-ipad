@@ -452,7 +452,11 @@ The existing modelling projection additionally exposes `position`, the number of
 features active at the shared document marker. Swift decodes it optionally, with
 the end of the timeline as the fallback for older payloads. `timeline.roll_to`
 runs on the engine lane and publishes a revisioned snapshot through the existing
-command path; the display lane never moves the marker independently. UIKit uses
+command path; the display lane never moves the marker independently. The iPad
+session adapter preserves the engine's undo and redo snapshots around
+`timeline.roll_to` and its `timeline.rollback` alias: arrows and scrubbing are
+history navigation, so they neither add undo steps nor discard pending redo.
+Model edits continue to record normal engine undo steps and clear redo. UIKit uses
 the existing `modelling.timeline`, `select.entity` and `timeline.roll_to` commands;
 expansion is disposable presentation state. A future-feature tap waits for the
 roll command to finish before selecting it. Native edits and future regeneration

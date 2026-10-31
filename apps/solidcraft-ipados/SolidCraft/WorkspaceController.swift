@@ -5049,6 +5049,49 @@ private extension FoundationController {
     func checkHistoryOnDevice() {
         let expected = generation
         var finished = false
+        var historyFeature: UInt64?
+        var originalName = ""
+        let editedName = "History navigation verification"
+        func fail(_ reason: String) {
+            finished = true; historyCheckWorkspace = nil
+            print("History check FAIL: " + reason)
+        }
+        func wait(_ condition: @escaping () -> Bool, then next: @escaping () -> Void) {
+            guard !finished, active, generation == expected else { return }
+            if condition() { next(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(condition, then: next) }
+        }
+        func featureName() -> String? { state?.modelling?.timeline.first(where: { $0.id == historyFeature })?.name }
+        func rename(_ next: @escaping () -> Void) {
+            guard let historyFeature else { fail("missing history verification feature"); return }
+            session.command("timeline.rename", params: ["feature": historyFeature, "name": editedName]) { result in
+                guard case .success = result else { fail("rename failed"); return }
+                wait({ featureName() == editedName && self.pending.isEmpty }, then: next)
+            }
+        }
+        func verifyHistoryEdits() {
+            guard state?.can_redo == true, redoButton.isEnabled else { fail("navigation discarded redo"); return }
+            redoButton.sendActions(for: .touchUpInside)
+            wait({ featureName() == editedName && self.pending.isEmpty }) {
+                self.undoButton.sendActions(for: .touchUpInside)
+                wait({ featureName() == originalName && self.state?.can_redo == true && self.pending.isEmpty }) {
+                    rename {
+                        guard self.state?.can_redo == false else { fail("real edit retained obsolete redo"); return }
+                        capture("undo-redo-verified")
+                        finished = true
+                        print("History check PASS: icon-only, toggle, selection, arrows, scrub routing, reverse drag, empty stage, final lift, navigation preserves redo, Undo reverses the actual edit, Redo restores it, and new edits clear redo")
+                    }
+                }
+            }
+        }
+        func prepareHistoryEdits() {
+            guard let feature = state?.modelling?.timeline.first else { fail("missing fixture feature"); return }
+            historyFeature = feature.id; originalName = feature.name
+            rename {
+                self.undoButton.sendActions(for: .touchUpInside)
+                wait({ featureName() == originalName && self.state?.can_redo == true && self.pending.isEmpty }) { navigate() }
+            }
+        }
         func button(_ id: String, in parent: UIView) -> UIControl? {
             if parent.accessibilityIdentifier == id { return parent as? UIControl }
             return parent.subviews.compactMap { button(id, in: $0) }.first
@@ -5066,8 +5109,7 @@ private extension FoundationController {
         func scrubHistory(_ index: Int = 0) {
             let paths = [[2, 1], [2, 0, 1], [0, 2, 3], [2, 0], [1, 3]]
             guard index < paths.count else {
-                finished = true
-                print("History check PASS: icon-only, toggle, selection, arrows, scrub routing, reverse drag, empty stage and final lift")
+                verifyHistoryEdits()
                 return
             }
             let path = paths[index]
@@ -5077,6 +5119,7 @@ private extension FoundationController {
                       value.modelling?.activeFeatureCount == position, !self.featureHistory.isScrubbing else { return }
                 self.historyCheckWorkspace = nil
                 let bodies = position == 0 ? 0 : (position == 1 ? 1 : 2)
+                guard value.can_redo, featureName() == originalName else { fail("scrubbing changed edit history"); return }
                 guard value.rows.filter({ $0.kind == "body" }).count == bodies else {
                     finished = true; print("History check FAIL: scrub geometry at stage \(position)"); return
                 }
@@ -5102,6 +5145,7 @@ private extension FoundationController {
             historyCheckWorkspace = { [weak self] value in
                 guard let self, self.active, self.generation == expected, value.modelling?.activeFeatureCount == position else { return }
                 self.historyCheckWorkspace = nil
+                guard value.can_redo, featureName() == originalName else { fail("history arrows changed edit history"); return }
                 guard value.rows.filter({ $0.kind == "body" }).count == bodies else {
                     finished = true; print("History check FAIL: incorrect geometry at stage \(position)"); return
                 }
@@ -5138,7 +5182,7 @@ private extension FoundationController {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                         guard let self, self.active, self.generation == expected else { return }
                         capture("browser")
-                        navigate()
+                        prepareHistoryEdits()
                     }
                 }
                 self.closePanels()
@@ -5148,7 +5192,7 @@ private extension FoundationController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self] in
             guard !finished else { return }
             self?.historyCheckWorkspace = nil
-            print("History check FAIL: timed out")
+            fail("timed out")
         }
         if let state { start(state) }
         else {

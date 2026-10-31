@@ -129,7 +129,16 @@ impl SessionAdapter {
     pub fn execute(&mut self, id: &str, params: Value) -> Result<CommandReply, AdapterError> {
         let before = (self.session.document_id.clone(), self.session.revision);
         let doc = self.session.doc.clone();
+        // Native history navigation still uses the engine's marker command and
+        // evaluation, but must neither record an undo step nor discard redo.
+        // Move both stacks aside first, so even a full undo stack loses no entry.
+        let history = matches!(id, "timeline.roll_to" | "timeline.rollback")
+            .then(|| (std::mem::take(&mut self.session.undo), std::mem::take(&mut self.session.redo)));
         let result = self.session.execute(id, &params);
+        if let Some((undo, redo)) = history {
+            self.session.undo = undo;
+            self.session.redo = redo;
+        }
         // select.set increments the engine's general view revision but does not change
         // geometry. Other revision changes include visibility and occurrence placement.
         let geometry_changed = !Arc::ptr_eq(&doc, &self.session.doc)
