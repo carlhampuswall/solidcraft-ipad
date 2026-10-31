@@ -477,6 +477,9 @@ final class WorkspaceButton: UIButton {
     private var systemIcon: String?
     private var compactIcon = false
     private var choiceCheck: UIImageView?
+    private var isHistoryAction: Bool {
+        iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"
+    }
     init(_ title: String, prominent: Bool = false, viewportPoint: Bool = false,
          activationEvent: UIControl.Event = .touchUpInside, action: @escaping () -> Void) {
         fullTitle = title
@@ -530,7 +533,9 @@ final class WorkspaceButton: UIButton {
             ?? iconID.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
             ?? systemIcon.flatMap { UIImage(systemName: $0) }
         var config = configuration
-        config?.image = image
+        // History arrows are monochrome artwork. Template rendering lets their
+        // colour follow availability instead of retaining an always-original ink.
+        config?.image = isHistoryAction ? image?.withRenderingMode(.alwaysTemplate) : image
         config?.imagePadding = compactIcon ? 0 : 8
         config?.title = compactIcon && image != nil ? nil : fullTitle
         config?.contentInsets = NSDirectionalEdgeInsets(top: compactIcon ? 8 : 10, leading: 8, bottom: compactIcon ? 8 : 10, trailing: 8)
@@ -538,6 +543,18 @@ final class WorkspaceButton: UIButton {
         accessibilityLabel = fullTitle
         largeContentImage = image
         if choiceCheck != nil { styleChoice() }
+        setNeedsUpdateConfiguration()
+    }
+
+    override func updateConfiguration() {
+        super.updateConfiguration()
+        guard isHistoryAction else { return }
+        var config = configuration
+        config?.baseForegroundColor = isEnabled ? WorkspaceStyle.accent : .tertiaryLabel
+        config?.background.backgroundColor = isEnabled ? WorkspaceStyle.accent.withAlphaComponent(isHighlighted ? 0.24 : 0.12) : .clear
+        config?.background.strokeColor = isEnabled ? WorkspaceStyle.accent.withAlphaComponent(0.45) : .clear
+        config?.background.strokeWidth = isEnabled ? 1 : 0
+        configuration = config
     }
 
     func choiceArtwork(_ id: String, selected: Bool) {
@@ -579,9 +596,10 @@ final class WorkspaceButton: UIButton {
 
     func availability(enabled: Bool, reason: String? = nil) {
         isEnabled = enabled
-        accessibilityHint = reason
-        accessibilityValue = reason
-        toolTip = reason.map { fullTitle + " · " + $0 } ?? fullTitle
+        let visibleReason = isHistoryAction && enabled ? nil : reason
+        accessibilityHint = visibleReason
+        accessibilityValue = visibleReason
+        toolTip = visibleReason.map { fullTitle + " · " + $0 } ?? fullTitle
     }
     func active(_ value: Bool) {
         isSelected = value
