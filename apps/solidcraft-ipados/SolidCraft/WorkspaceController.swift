@@ -536,6 +536,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                         self.receive(workspace); self.inspectorOpen = true; self.browserOpen = false
                         self.rebuildInspector(); self.relayoutPanels()
                     }
+                } else if ProcessInfo.processInfo.arguments.contains("--surface-handles-check") {
+                    self.developmentCheckStarted = true; self.checkSurfaceHandlesOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--numeric-entry-check") {
                     self.developmentCheckStarted = true; self.checkNumericEntryOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--inline-dimension-check") {
@@ -3921,6 +3923,170 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 /// Opt-in device evidence driver. It uses the ordinary controller forms and their
 /// Preview/Apply/Cancel callbacks. It never synthesizes a hardware Pencil event.
 private extension FoundationController {
+    /// Production forms, numeric controls and native input mailbox on a disposable document.
+    func checkSurfaceHandlesOnDevice() {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let started = Date().timeIntervalSince1970, expected = generation
+        let candidate = Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"
+        let run = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--surface-handles-run=") }) ?? UUID().uuidString
+        let cases: [(String, String, InputSample.Source)] = [("fillet", "radius", .pencil), ("chamfer", "distance", .pencil),
+            ("fillet", "radius", .finger), ("chamfer", "distance", .finger)]
+        var finished = false, completed = 0
+        var stages: [[String: Any]] = []
+        func finish(_ problem: String? = nil) {
+            guard !finished else { return }; finished = true
+            let report: [String: Any] = ["passed": problem == nil && completed == cases.count, "failure": problem ?? "",
+                "candidate": candidate, "run_id": run, "started_at": started, "completed_at": Date().timeIntervalSince1970,
+                "cases_completed": completed, "stages": stages, "library_project_untouched": session.currentProject == nil,
+                "coverage": "Physical iPad runtime; real UIKit controls, synthetic Pencil/finger samples through InputMailbox; physical contact delivery unverified"]
+            do { try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("surface-handles-check.json"), options: .atomic) }
+            catch { NSLog("Surface handles evidence write failed: %@", String(describing: error)) }
+            NSLog("Surface handles check %@", String(describing: report))
+        }
+        func wait(_ name: String, _ ready: @escaping () -> Bool, attempts: Int = 250, then next: @escaping () -> Void) {
+            guard !finished else { return }
+            guard active, generation == expected else { finish("Lifecycle changed during " + name); return }
+            if ready() { next(); return }
+            guard attempts > 0 else { finish("Timeout: " + name); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(name, ready, attempts: attempts - 1, then: next) }
+        }
+        func control(_ id: String, in root: UIView) -> UIControl? {
+            if root.accessibilityIdentifier == id { return root as? UIControl }
+            return root.subviews.lazy.compactMap { control(id, in: $0) }.first
+        }
+        func capture(_ stage: String) {
+            view.layoutIfNeeded()
+            let surface: UIView = view.window ?? view
+            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+            let name = "surface-handles-" + stage + ".png"
+            do {
+                guard let png = image.pngData() else { finish("Cannot encode capture"); return }
+                try png.write(to: directory.appendingPathComponent(name), options: .atomic)
+                stages.append(["stage": stage, "screenshot": name, "geometry_revision": state?.geometry_revision ?? 0,
+                               "value": modelValue?.value ?? 0, "expression": modelValue?.expression ?? ""])
+            } catch { finish("Capture: " + String(describing: error)) }
+        }
+        func command(_ id: String, _ params: [String: Any] = [:], next: @escaping () -> Void) {
+            session.command(id, params: params) { result in
+                switch result { case .success: next(); case .failure(let error): finish(id + ": " + error.description) }
+            }
+        }
+        func begin(_ operation: String, _ parameter: String, next: @escaping (ModellingInspector) -> Void) {
+            func open() {
+                self.beginModelling(operation: "solid." + operation)
+                wait("settled " + operation + " preview", {
+                    self.modellingInspector?.handleEntryEnabled == true && self.modelValue?.token == self.modellingToken &&
+                        self.modelValue?.valid == true && self.modelValue?.value == 1 && self.canvas.displayingPreview
+                }) {
+                    guard let form = self.modellingInspector, let pick = control("workspace-model-select-edges", in: form),
+                          (pick as? UIButton)?.menu == nil, control("workspace-model-field-edges", in: form) == nil,
+                          control("workspace-model-field-" + parameter, in: form) != nil else {
+                        finish("Surface tool lacks numeric entry or still uses edge dropdowns"); return
+                    }
+                    next(form)
+                }
+            }
+            command("select.clear") {
+                wait("cleared source selection", { self.state?.selection.isEmpty == true }) {
+                    self.session.developmentSurfaceDrag(from: [20, 0, 10], to: [20, 0, 10], source: .pencil) { result in
+                        if case .failure(let error) = result { finish(error.description); return }
+                        wait("source edge pick", { self.state?.selection.count == 1 && self.state?.selection.first?.type == "edge" }) { open() }
+                    }
+                }
+            }
+        }
+        func step(_ index: Int) {
+            guard !finished else { return }
+            if index == cases.count { finish(); return }
+            let (operation, parameter, source) = cases[index]
+            let prefix = operation + "-" + (source == .pencil ? "pencil" : "finger")
+            let base = state?.modelling?.timeline.map(\.id) ?? []
+            let revision = state?.geometry_revision
+            begin(operation, parameter) { form in
+                capture(prefix + "-initial")
+                // Analytic 20 mm box fixture: front edge exterior bisector.
+                let unit = 1 / sqrt(2.0)
+                self.session.developmentSurfaceDrag(from: [20 + unit, -unit, 10], to: [20 + 3 * unit, -3 * unit, 10], source: source) { result in
+                    if case .failure(let error) = result { finish(error.description); return }
+                    wait("3 mm " + prefix + " handle", {
+                        self.modelValue?.value == 3 && self.modelValue?.valid == true && form.handleEntryEnabled && !form.hasLocalChanges
+                    }) {
+                        guard self.state?.geometry_revision == revision, self.state?.modelling?.timeline.map(\.id) == base,
+                              !self.modelValueButton.isHidden, self.modelValueButton.isEnabled else { finish("Drag committed history or lost the numeric badge"); return }
+                        capture(prefix + "-dragged")
+                        self.modelValueButton.sendActions(for: .touchUpInside)
+                        wait("on-model numeric keypad", { self.modelValueEditor?.editor.field.isFirstResponder == true }) {
+                            guard let popup = self.modelValueEditor, let apply = control("workspace-expression-apply", in: popup.view) else {
+                                finish("Missing numeric Apply"); return
+                            }
+                            let editor = popup.editor
+                            editor.field.text = "2 +"; editor.field.sendActions(for: .editingChanged)
+                            apply.sendActions(for: .touchUpInside)
+                            wait("invalid numeric rejection", { !editor.busy && form.handleEntryEnabled }) {
+                                guard self.modellingToken != nil, self.state?.geometry_revision == revision,
+                                      editor.field.text == "2 +", !editor.message.isHidden else { finish("Invalid numeric input was not retained/rejected"); return }
+                                capture(prefix + "-invalid")
+                                editor.field.text = "2 mm"; editor.field.sendActions(for: .editingChanged)
+                                capture(prefix + "-numeric")
+                                apply.sendActions(for: .touchUpInside)
+                                wait("numeric Apply", { !self.modellingEditing && self.presentedViewController == nil && self.state?.modelling?.timeline.count == base.count + 1 && !self.canvas.displayingPreview }) {
+                                    let applied = self.state?.modelling?.timeline.last?.id
+                                    capture(prefix + "-applied")
+                                    self.undoButton.sendActions(for: .touchUpInside)
+                                    wait("single-step Undo", { self.state?.modelling?.timeline.map(\.id) == base && self.pending.isEmpty && !self.canvas.displayingPreview }) {
+                                        self.redoButton.sendActions(for: .touchUpInside)
+                                        wait("Redo", { self.state?.modelling?.timeline.last?.id == applied && self.pending.isEmpty }) {
+                                            self.beginModelling(feature: applied)
+                                            wait("reopened 2 mm feature", { self.modelValue?.token == self.modellingToken && self.modelValue?.value == 2 && self.modelValue?.valid == true }) {
+                                                capture(prefix + "-reopened")
+                                                self.modellingInspector?.onCancel?()
+                                                wait("cancel reopened feature", { !self.modellingEditing }) {
+                                                    command("edit.undo") {
+                                                        wait("base restored", { self.state?.modelling?.timeline.map(\.id) == base && !self.canvas.displayingPreview }) {
+                                                            let beforeCancel = self.state?.geometry_revision
+                                                            begin(operation, parameter) { _ in
+                                                                self.modelValueButton.sendActions(for: .touchUpInside)
+                                                                wait("cancel numeric keypad", { self.modelValueEditor?.editor.field.isFirstResponder == true }) {
+                                                                    guard let popup = self.modelValueEditor else { finish("Missing cancel editor"); return }
+                                                                    popup.editor.field.text = "4 mm"; popup.editor.field.sendActions(for: .editingChanged)
+                                                                    popup.editor.actionFooter.cancel.sendActions(for: .touchUpInside)
+                                                                    wait("draft cancellation", { !self.modellingEditing && self.presentedViewController == nil && !self.canvas.displayingPreview }) {
+                                                                        guard self.state?.geometry_revision == beforeCancel, self.state?.modelling?.timeline.map(\.id) == base else { finish("Cancel changed geometry/history"); return }
+                                                                        capture(prefix + "-cancelled")
+                                                                        completed += 1; step(index + 1)
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        guard session.currentProject == nil else { finish("Diagnostic cannot modify a library project"); return }
+        compactInspector = true; directHandles = true; extrudeOnFaceSelection = false
+        inspectorOpen = false; browserOpen = false; relayoutPanels()
+        let setup: [(String, [String: Any])] = [("file.new", [:]),
+            ("solid.box", ["length": 20, "width": 20, "height": 20, "body_name": "Handle block"]),
+            ("tool.set", ["tool": "select"]), ("view.tool_handles", ["enabled": true]),
+            ("select.filter", ["filter": "edge"]),
+            ("view.perspective", ["enabled": false]), ("view.isometric", [:]), ("view.fit", [:])]
+        func prepare(_ index: Int) {
+            if index == setup.count { wait("fixture", { self.state?.modelling?.timeline.count == 1 }) { step(0) }; return }
+            command(setup[index].0, setup[index].1) { prepare(index + 1) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 150) { if !finished { finish("Device check deadline exceeded") } }
+        prepare(0)
+    }
+
     func checkStepSharingOnDevice() {
         let expected = generation
         let checksProjects = ProcessInfo.processInfo.arguments.contains("--projects-check")

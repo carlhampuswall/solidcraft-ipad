@@ -90,6 +90,17 @@ It captures real 1 mm and 3 mm fillet, chamfer and shell previews with their
 source handles, plus JSON for the on-model numeric readout. This is adapter/GPU
 evidence; it does not verify UIKit layout or physical Pencil input.
 
+On a reserved physical iPad, DEBUG `--surface-handles-check` runs the real native
+forms on a disposable box without opening or autosaving a library project. It
+tests Fillet and Chamfer with injected Pencil and finger samples, 1 → 3 mm handle
+previews, the on-model numeric keypad, invalid input, exact 2 mm Apply, one-step
+Undo/Redo, original-feature reopening and Cancel. It writes the candidate-stamped
+`surface-handles-check.json` and `surface-handles-*.png` UIKit captures in Documents.
+Pass a unique `--surface-handles-run=<UUID>` and verify that exact run and candidate
+when retrieving evidence. The input uses the production native mailbox; physical
+contact delivery remains a separate hands-on check. Restore normal launch after
+the diagnostic. See TASK-COORDINATION.md for the reservation/install contract.
+
 ## Selection and targets
 
 Profile choices come from solved sketch regions and upstream

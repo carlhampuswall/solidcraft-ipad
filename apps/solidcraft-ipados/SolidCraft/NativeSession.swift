@@ -1036,6 +1036,49 @@ final class NativeSession {
     private var selectionCheckGeneration: UInt64 = 0
     private var selectionCheckFrame: (report: BridgeState.ViewportReport, completion: (Result<[WorkspaceEntity], BridgeError>) -> Void)?
 
+    /// Device acceptance only: actual samples enter the production mailbox.
+    /// World points belong to the disposable fixture, never a user's design.
+    func developmentSurfaceDrag(from start: [Double], to end: [Double], source: InputSample.Source,
+                                completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else {
+            completion(.failure(BridgeError(code: "surface_check", message: "Viewport inactive"))); return
+        }
+        display.async { [weak self, state, lifecycle] in
+            do {
+                let report = try JSONDecoder().decode(DevelopmentViewport.self,
+                    from: state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)).result
+                guard let metrics = report.metrics else { throw BridgeError(code: "surface_check", message: "Missing metrics") }
+                func project(_ world: [Double]) throws -> [Double] {
+                    let request = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": "view.project", "params": ["point": world]])
+                    let point = try JSONDecoder().decode(DevelopmentProjection.self, from: state.request(request, lane: .viewport)).result.points
+                    guard point.count == 2, point.allSatisfy(\.isFinite), point[0] >= 0, point[1] >= 0,
+                          point[0] < metrics.width_points, point[1] < metrics.height_points else {
+                        throw BridgeError(code: "surface_check", message: "Handle projection outside viewport")
+                    }
+                    return point
+                }
+                let first = try project(start), last = try project(end)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive, lifecycle.accepts(ticket) else { return }
+                    for (index, phase) in [InputSample.Phase.began, .moved, .ended].enumerated() {
+                        let point = index == 0 ? first : last
+                        var sample = InputSample(source: source, phase: phase, id: 9400,
+                            x_points: point[0], y_points: point[1], x_pixels: point[0] * metrics.scale, y_pixels: point[1] * metrics.scale,
+                            scale: metrics.scale, timestamp: ProcessInfo.processInfo.systemUptime + Double(index) * 0.001,
+                            pressure: nil, altitude: nil, geometry_revision: report.geometry_revision, consumed: false, shift: false, button: 0, scroll: 0)
+                        sample.viewport_epoch = report.viewport_epoch; sample.camera_epoch = report.camera_epoch
+                        sample.document_id = report.document_id; sample.display_preview = report.preview == true
+                        self.record(sample)
+                    }
+                    completion(.success(()))
+                }
+            } catch {
+                let failure = BridgeState.error(error)
+                DispatchQueue.main.async { completion(.failure(failure)) }
+            }
+        }
+    }
+
     /// Synthetic finger contacts in the production native bridge. Completion
     /// waits for the exact resulting frame; this is not physical touch input.
     func developmentTwist(_ angle: Double, enabled: Bool, completion: @escaping (Result<Double, BridgeError>) -> Void) {
