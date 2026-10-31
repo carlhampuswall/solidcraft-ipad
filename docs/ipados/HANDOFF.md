@@ -1291,3 +1291,33 @@ the keypad after submission.
 Build/check logs are `/tmp/solidcraft-numeric-apply-{build,workspace}.log`;
 ignored `target/numeric-apply-only-device/` contains the signed build and prepared
 verification script. This is preparation, not device acceptance evidence.
+
+### Automatic body-edge tool selection (2026-10-31)
+
+`bc1bc76a` opens a native Fillet / Chamfer selector when newly selected body
+edges belong to the same body. Either production button begins the existing
+modelling transaction with those picks. Clearing selection cancels the automatic
+draft; closing the selector and ordinary viewport refreshes do not reopen it.
+Sketch curves keep their sketch tools. Changes a default: yes — **Tools → Edge
+tools on selection** is enabled; disabling it preserves the manual Modify flow
+(`SolidCraft.workspace.edgeToolsOnSelection`).
+
+- PASS: the 692-case Foundation workspace harness, new edge-selection policy
+  regressions, canonical native icon checks, lists and pending-catalog validation.
+- PASS: unsigned arm64 Rust/UIKit build and existing-profile signed iPad build.
+- PASS: reserved physical-iPad `--edge-tools-check` on the clean candidate. It
+  selected a real box edge through synthetic Pencil samples, activated the
+  production Fillet and Chamfer buttons, validated both previews, retained the
+  selection without changing the document revision, cancelled each automatic
+  draft on deselection, and exercised the manual preference.
+- The selector and both operation-form UIKit/Metal captures were retrieved and
+  visually inspected. Icons, selected-edge feedback and touch targets were
+  present. Library projects and saved preferences were untouched; the reservation
+  was released and the tested build remains installed.
+- Physical finger/Pencil delivery, simulators, engine tests and full CI were not
+  used. No shared Rust source or dependencies changed. Nothing was pushed.
+
+Ignored `target/edge-tools-device/` contains the passing report, three captures,
+command log, candidate SHA and signed Swift-binary hash in `session.txt`.
+Build and native-check logs are `target/edge-tools-{native-build,signed-build,
+workspace-check,lists}.log`. This verification record changes no build inputs.
