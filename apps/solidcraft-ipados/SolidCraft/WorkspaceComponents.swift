@@ -1403,7 +1403,10 @@ final class ModellingInspector: UIStackView {
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
     private var validated: [String: PresentationJSON]?
-    private var entryHint: String { NumericText.text("apply_hint") }
+    private var entryHint: String {
+        ModellingFormPresentation.needsExtrusionDistance(params)
+            ? NativeText.value("ui.ipados.extrude.enter_distance") : NumericText.text("apply_hint")
+    }
     private var locallyEdited = false
     private var editors: [NumericExpressionEditor] = []
     private var textFields: [UITextField] = []
@@ -1507,7 +1510,9 @@ final class ModellingInspector: UIStackView {
             footer.addArrangedSubview(actions)
         } else { footer.addArrangedSubview(actions); footer.addArrangedSubview(cancel); addArrangedSubview(footer) }
         apply.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy, !self.contextRefreshing else { return }; self.endEditing(true); self.onApply?(self.params)
+            guard let self, !self.busy, !self.contextRefreshing,
+                  !ModellingFormPresentation.needsExtrusionDistance(self.params) else { return }
+            self.endEditing(true); self.onApply?(self.params)
         }, for: .touchUpInside)
         cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
         select.addAction(UIAction { [weak self] _ in self?.endEditing(true); self?.onSelect?(nil) }, for: .touchUpInside)
@@ -1584,7 +1589,7 @@ final class ModellingInspector: UIStackView {
         if !busy { message.show(entryHint) }
     }
     private func updateAvailability() {
-        apply.availability(enabled: !busy && !contextRefreshing)
+        apply.availability(enabled: !busy && !contextRefreshing && !ModellingFormPresentation.needsExtrusionDistance(params))
         cancel.availability(enabled: !committing)
         select.availability(enabled: !busy && !contextRefreshing)
         fieldViews.forEach { $0.isUserInteractionEnabled = !contextRefreshing && (!busy || inputWhileBusy) }

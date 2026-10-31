@@ -23,6 +23,29 @@ struct WorkspaceChecks {
                         "an unavailable or invalid edge produced a length readout")
         }
         // Boolean presentation follows typed options, never labels or truthy strings.
+        let automatic = ModellingFormPresentation.initialParameters(operation: "solid.extrude", feature: nil,
+            automatic: true, legacyDepth: false, supplied: nil)
+        try require(automatic == ["distance": .string("")], "automatic Extrude proposed a default distance")
+        for (operation, feature, enabled, legacy) in [("solid.extrude", UInt64?.none, false, false),
+            ("solid.extrude", UInt64(7), true, false), ("solid.revolve", nil, true, false),
+            ("solid.extrude", nil, true, true)] {
+            try require(ModellingFormPresentation.initialParameters(operation: operation, feature: feature,
+                automatic: enabled, legacyDepth: legacy, supplied: nil) == nil,
+                "manual/feature editing or the legacy preference lost its initial value")
+        }
+        let supplied: [String: PresentationJSON] = ["distance": .string("7 mm"), "operation": .string("join")]
+        try require(ModellingFormPresentation.initialParameters(operation: "solid.extrude", feature: nil,
+            automatic: true, legacyDepth: false, supplied: supplied) == supplied, "explicit user distance was overwritten")
+        for source in [PresentationJSON.object(["sketch": .integer(1)]), .object(["face_body": .string("Stock")])] {
+            var params: [String: PresentationJSON] = ["profile": source, "distance": .string("")]
+            try require(ModellingFormPresentation.needsExtrusionDistance(params), "empty face/sketch depth allowed confirmation")
+            params["distance"] = .string(" \n ")
+            try require(ModellingFormPresentation.needsExtrusionDistance(params), "whitespace depth allowed confirmation")
+            params["through_all"] = .bool(true)
+            try require(!ModellingFormPresentation.needsExtrusionDistance(params), "Through All incorrectly required a blind depth")
+            params["through_all"] = .bool(false); params["distance"] = .string("7 mm")
+            try require(!ModellingFormPresentation.needsExtrusionDistance(params), "entered distance was ignored")
+        }
         let booleanOptions: [PresentationJSON] = [.bool(false), .bool(true)]
         for options in [booleanOptions, Array(booleanOptions.reversed())] {
             for value in [false, true] {

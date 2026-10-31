@@ -643,7 +643,7 @@ fn modelling_sketch(id: u64) -> u64 {
 #[test]
 fn modelling_extrusion_drag_survives_preview_publication_and_form_inspection() {
     let _serial = isolated_registry();
-    for creating in [false, true] {
+    for (creating, empty_distance) in [(false, false), (true, false), (true, true)] {
         let id = sc_session_create();
         let sketch = modelling_sketch(id);
         if !creating {
@@ -662,13 +662,27 @@ fn modelling_extrusion_drag_survives_preview_publication_and_form_inspection() {
         view_request(id, json!({"kind":"command","command":"view.home","params":{}}));
         view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
         assert_eq!(
-            request(id, &json!({"kind":"model","action":"begin","feature":feature,"operation":creating.then_some("solid.extrude")}).to_string()),
+            request(
+                id,
+                &json!({"kind":"model","action":"begin","feature":feature,"operation":creating.then_some("solid.extrude"),
+                "params":empty_distance.then(|| json!({"distance":""}))})
+                .to_string()
+            ),
             0,
             "{}",
             response(id)
         );
         let token = response(id)["result"]["token"].as_u64().unwrap();
-        if creating {
+        if empty_distance {
+            let params = response(id)["result"]["params"].clone();
+            assert_eq!(params["distance"], "");
+            assert_eq!(response(id)["result"]["valid"], false);
+            assert_eq!(response(id)["result"]["handle"]["distance"], 0.0);
+            assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":params}).to_string()), -1);
+            assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token,"params":params}).to_string()), 0);
+            assert_eq!(response(id)["result"]["params"]["distance"], "");
+            assert_eq!(response(id)["result"]["viewport"]["preview"], false);
+        } else if creating {
             let params = response(id)["result"]["params"].clone();
             assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":params}).to_string()), 0, "{}", response(id));
             view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
@@ -690,7 +704,7 @@ fn modelling_extrusion_drag_survives_preview_publication_and_form_inspection() {
                 }}),
             )
         };
-        assert_eq!(input("began", 10.0, 1.0)["result"]["handled"], true);
+        assert_eq!(input("began", if empty_distance { 0.0 } else { 10.0 }, 1.0)["result"]["handled"], true);
         for (index, depth) in [15.0, 20.0, 12.0].into_iter().enumerate() {
             input("moved", depth, 2.0 + index as f64);
             assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
@@ -711,6 +725,57 @@ fn modelling_extrusion_drag_survives_preview_publication_and_form_inspection() {
         assert_eq!(engine_command(id, "document.inspect", json!({}))["undo"], history.as_u64().unwrap() + 1);
         assert_eq!(sc_session_destroy(id), 0);
     }
+}
+
+#[test]
+fn modelling_face_extrusion_waits_for_user_distance_and_clearing_restores_source() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    engine_command(id, "solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Stock"}));
+    let faces = engine_command(id, "model.faces", json!({"body":"Stock"}));
+    let top = faces["faces"].as_array().unwrap().iter().find(|face| face["plane_normal"][2].as_f64().is_some_and(|z| z > 0.999)).unwrap();
+    let entry = lookup(id).unwrap();
+    view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
+    view_request(id, json!({"kind":"command","command":"view.top","params":{}}));
+    view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
+    view_request(id, json!({"kind":"command","command":"select.filter","params":{"filter":"face"}}));
+    let projected = view_request(id, json!({"kind":"command","command":"view.project","params":{"point":top["point"]}}));
+    let viewport = view_request(id, json!({"kind":"snapshot"}))["result"].clone();
+    for (index, phase) in ["began", "ended"].into_iter().enumerate() {
+        view_request(
+            id,
+            json!({"kind":"input","event":{
+                "source":"pencil","phase":phase,"id":91,"timestamp":1. + index as f64,
+                "x_points":projected["result"]["points"][0],"y_points":projected["result"]["points"][1],
+                "x_pixels":projected["result"]["pixels"][0],"y_pixels":projected["result"]["pixels"][1],"scale":2,
+                "geometry_revision":viewport["geometry_revision"],"document_id":viewport["document_id"],
+                "viewport_epoch":viewport["viewport_epoch"],"camera_epoch":viewport["camera_epoch"]
+            }}),
+        );
+    }
+    assert_eq!(request(id, r#"{"kind":"model","action":"begin","operation":"solid.extrude","params":{"distance":""}}"#), 0);
+    let model = response(id)["result"].clone();
+    let token = model["token"].as_u64().unwrap();
+    let empty = model["params"].clone();
+    assert_eq!(empty["profile"]["face_body"], "Stock");
+    assert_eq!(empty["distance"], "");
+    assert_eq!(model["handle"]["distance"], 0.0);
+    assert_eq!(model["valid"], false);
+    assert_eq!(model["viewport"]["preview"], false);
+    assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":empty}).to_string()), -1);
+    let mut typed = empty.clone();
+    typed["distance"] = json!("5 mm");
+    assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":typed}).to_string()), 0, "{}", response(id));
+    assert!((response(id)["result"]["viewport"]["preview_volume_mm3"].as_f64().unwrap() - 18_000.).abs() < 1e-5);
+    // The host inspects an empty form instead of evaluating an empty extrusion.
+    assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token,"params":empty}).to_string()), 0);
+    assert_eq!(response(id)["result"]["valid"], false);
+    assert_eq!(response(id)["result"]["viewport"]["preview"], false);
+    assert_eq!(response(id)["result"]["handle"]["distance"], 0.0);
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 12_000.).abs() < 1e-6);
+    assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":typed}).to_string()), 0);
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 18_000.).abs() < 1e-5);
+    assert_eq!(sc_session_destroy(id), 0);
 }
 
 #[test]

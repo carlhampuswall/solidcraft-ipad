@@ -644,7 +644,13 @@ impl SessionAdapter {
             return None;
         }
         let distance = edit.params["distance"].as_str().or_else(|| edit.params["extent"]["distance"].as_str())?;
-        let distance = self.session.doc.eval(distance, solidcraft_engine::doc::expr::Kind::Length).ok()?;
+        // An automatic extrusion starts without a proposed depth. Keep its
+        // handle on the source so the first drag supplies the actual distance.
+        let distance = if edit.feature.is_none() && distance.trim().is_empty() {
+            0.
+        } else {
+            self.session.doc.eval(distance, solidcraft_engine::doc::expr::Kind::Length).ok()?
+        };
         let direction = edit.params["direction"].as_str().or_else(|| edit.params["extent"]["direction"].as_str()).unwrap_or("positive");
         let factor = match direction {
             "negative" => -1.,

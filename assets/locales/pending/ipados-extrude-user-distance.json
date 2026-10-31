@@ -1,0 +1,27 @@
+{
+  "en": {
+    "ui.ipados.extrude.enter_distance": "Enter a distance or drag to extrude.",
+    "ui.ipados.workspace.automatic_extrude_depth": "Start automatic Extrude at 10 mm",
+    "ui.ipados.workspace.automatic_extrude_depth_help": "Use the previous 10 mm starting depth. When off, set the distance by entering a value or dragging."
+  },
+  "de": {
+    "ui.ipados.extrude.enter_distance": "Abstand eingeben oder zum Extrudieren ziehen.",
+    "ui.ipados.workspace.automatic_extrude_depth": "Automatisches Extrudieren bei 10 mm starten",
+    "ui.ipados.workspace.automatic_extrude_depth_help": "Die bisherige Anfangstiefe von 10 mm verwenden. Wenn deaktiviert, den Abstand durch Eingabe oder Ziehen festlegen."
+  },
+  "ja": {
+    "ui.ipados.extrude.enter_distance": "距離を入力するか、ドラッグして押し出してください。",
+    "ui.ipados.workspace.automatic_extrude_depth": "自動押し出しを10 mmから開始",
+    "ui.ipados.workspace.automatic_extrude_depth_help": "以前の初期深さ10 mmを使用します。オフの場合、値の入力またはドラッグで距離を設定します。"
+  },
+  "ko": {
+    "ui.ipados.extrude.enter_distance": "거리를 입력하거나 드래그하여 돌출하세요.",
+    "ui.ipados.workspace.automatic_extrude_depth": "자동 돌출을 10 mm에서 시작",
+    "ui.ipados.workspace.automatic_extrude_depth_help": "이전의 초기 깊이 10 mm를 사용합니다. 끄면 값을 입력하거나 드래그하여 거리를 설정합니다."
+  },
+  "zh": {
+    "ui.ipados.extrude.enter_distance": "输入距离或拖动以拉伸。",
+    "ui.ipados.workspace.automatic_extrude_depth": "自动拉伸从 10 mm 开始",
+    "ui.ipados.workspace.automatic_extrude_depth_help": "使用之前的 10 mm 初始深度。关闭后，通过输入数值或拖动设置距离。"
+  }
+}

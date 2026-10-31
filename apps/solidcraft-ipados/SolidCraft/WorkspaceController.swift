@@ -224,6 +224,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnSketchSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnSketchSelection") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
+    private var automaticExtrudeDepth = UserDefaults.standard.bool(forKey: ModellingFormPresentation.automaticExtrudeDepthKey)
     private var edgeLengthReadout = EdgeLengthReadout.restored(UserDefaults.standard.object(forKey: EdgeLengthReadout.key) as? Bool)
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
     private var legacyOriginPlanes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.legacyOriginPlanes")
@@ -1653,7 +1654,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modellingStartedFromSelection = fromSelection
         modellingStarting = true; modellingContext = (context.document_id, context.geometry_revision)
         updateAvailability()
-        session.requestModelling(action: "begin", operation: operation, feature: feature, params: initialParams) { [weak self] result in
+        let params = ModellingFormPresentation.initialParameters(operation: operation, feature: feature,
+            automatic: fromSelection, legacyDepth: automaticExtrudeDepth, supplied: initialParams)
+        session.requestModelling(action: "begin", operation: operation, feature: feature, params: params) { [weak self] result in
             guard let self, self.modellingGeneration == expected else { return }
             self.modellingStarting = false
             switch result {
@@ -1719,6 +1722,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if ProcessInfo.processInfo.arguments.contains("--auto-face-extrude-check"),
                    operation == "solid.extrude", feature == nil {
                     NSLog("Automatic face extrude check PASS: selected face opened the production Extrude form; source=%@", String(describing: model.params?["profile"]))
+                    if fromSelection && !self.automaticExtrudeDepth {
+                        let waiting = model.params?["distance"] == .string("") && model.handle?.distance == 0 && model.valid != true
+                        NSLog("Automatic extrusion user distance check %@: empty distance, source-surface handle, unvalidated draft", waiting ? "PASS" : "FAIL")
+                    }
                 }
 #endif
             }
@@ -1740,6 +1747,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func evaluateModelling(_ params: [String: PresentationJSON], commit: Bool, live: Bool = false) {
         modellingAutomaticPreview.cancel()
         guard let token = modellingToken, let form = modellingInspector, !modellingCommitting else { return }
+        if !commit && ModellingFormPresentation.needsExtrusionDistance(params) {
+            // Keep a source-surface handle without evaluating an empty solid.
+            // Inspection also clears any previous preview when depth is erased.
+            refreshModellingContext(params)
+            return
+        }
         if modellingContextNeedsRefresh || modellingContextInspectInFlight {
             refreshModellingContext(params, submitAfter: commit ? .commit : .preview)
             return
@@ -3021,11 +3034,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.rebuildMenus()
             }
         }
+        let automaticDepth = UIAction(title: WorkspaceStyle.text("automatic_extrude_depth"),
+            subtitle: WorkspaceStyle.text("automatic_extrude_depth_help"), attributes: modellingEditing ? .disabled : [],
+            state: automaticExtrudeDepth ? .on : .off) { [weak self] _ in
+            guard let self, !self.modellingEditing else { return }
+            self.automaticExtrudeDepth.toggle()
+            UserDefaults.standard.set(self.automaticExtrudeDepth, forKey: ModellingFormPresentation.automaticExtrudeDepthKey)
+            self.rebuildMenus()
+        }
         var moreActions: [UIMenuElement] = [
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in

@@ -1207,6 +1207,15 @@ fn face_extrude_proof(destination: &str) -> Result<(), Box<dyn std::error::Error
     };
     capture(&view, "before")?;
     let edit = engine.begin_model(771, Some("solid.extrude"), None, &selection)?;
+    let mut empty = edit.params.clone();
+    empty["distance"] = json!("");
+    let waiting = engine.refresh_model(&edit, &selection, Some(empty))?;
+    view.begin_model(waiting)?;
+    if view.diagnostic()["model_value"]["value"] != 0. || view.diagnostic()["preview"] != false {
+        return Err("automatic extrusion must wait at the source for a user distance".into());
+    }
+    capture(&view, "waiting-for-distance")?;
+    view.cancel_model();
     let mut params = edit.params.clone();
     params["distance"] = json!("5 mm");
     params["operation"] = json!("join");

@@ -128,11 +128,21 @@ Stages are `face-inline-new`, `face-inline-subtract` and
 `face-inline-distance-editor`; capture with `devicectl device capture screenshot`
 and send SIGUSR1 to continue using the device workflow in BUILDING.md.
 
+Automatic Extrude opens with an empty distance for selected faces and sketch
+regions. The handle starts on the source surface; typing an expression or
+dragging supplies the depth. Empty-distance drafts use form inspection without
+evaluating geometry, and Apply is disabled until a distance is entered (or
+Through All is selected). Clearing the distance restores the source display.
+**Tools > Start automatic Extrude at 10 mm**, stored as
+`SolidCraft.workspace.automaticExtrudeDepth`, opts back into the previous starting
+depth. It is off by default. Manually opened tools and edits of existing features
+retain their existing initial values.
+
 Face-extrusion regression coverage lives in the existing session tests under
 `modelling_face_extrusion`. It checks selection before and after opening the
 tool, source switching, measured material changes, handles, body scope,
 invalid inputs, cancellation, history and native save/reopen. To capture a
-40 × 30 × 10 mm block before, during and after a 5 mm face extrusion on the Mac
+40 × 30 × 10 mm block before, awaiting a user distance, during and after a 5 mm face extrusion on the Mac
 GPU, plus the New Body, Intersect and Subtract results (without launching an
 iPad app or simulator), run:
 
