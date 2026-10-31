@@ -312,6 +312,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         table.dataSource = self; table.delegate = self
         table.register(UITableViewCell.self, forCellReuseIdentifier: "model-row")
         table.accessibilityIdentifier = "workspace-model-browser"
+        // Avoid UIKit's context-menu preview, which can summon the keyboard.
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(browserRowHeld(_:)))
+        hold.cancelsTouchesInView = true
+        table.addGestureRecognizer(hold)
+        let secondary = UITapGestureRecognizer(target: self, action: #selector(browserRowHeld(_:)))
+        secondary.buttonMaskRequired = .secondary
+        secondary.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        table.addGestureRecognizer(secondary)
         browserPanel.content.addSubview(table)
         browserFindButton.systemArtwork("magnifyingglass", compact: true)
         browserFindButton.accessibilityIdentifier = "browser-find"
@@ -543,7 +551,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.startGroupedInspectorCheckIfReady()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
                     self.developmentCheckStarted = true; self.checkChromeOnDevice()
-                } else if ProcessInfo.processInfo.arguments.contains("--browser-check") {
+                } else if ProcessInfo.processInfo.arguments.contains("--browser-check") || ProcessInfo.processInfo.arguments.contains("--browser-actions-check") {
                     self.developmentCheckStarted = true; self.checkBrowserOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-check") {
                     self.developmentCheckStarted = true; self.checkHistoryOnDevice()
@@ -896,6 +904,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "model-row", for: indexPath)
+        cell.accessibilityCustomActions = nil
         if indexPath.section == 0 {
             guard visibleOriginRows.indices.contains(indexPath.row) else { return cell }
             let id = visibleOriginRows[indexPath.row]
@@ -955,6 +964,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         cell.accessoryView = controls.arrangedSubviews.isEmpty ? nil : controls
         cell.accessibilityLabel = browserName(row)
         cell.accessibilityValue = row.browser?.drawn.map { BrowserText.text($0 ? "visible" : "hidden") }
+        cell.accessibilityCustomActions = browserMenu(row).children.map { item in
+            UIAccessibilityCustomAction(name: item.title) { [weak self, weak cell] _ in
+                guard let self, let cell, self.browserCanChange, self.presentedViewController == nil else { return false }
+                if let action = item.action { self.canvas.cancelInput(); self.view.endEditing(true); action() }
+                else { self.showBrowserActions(row, source: cell, menu: BrowserActionMenu(title: item.title, children: item.children)) }
+                return true
+            }
+        }
         cell.accessibilityTraits = selected ? [.button, .selected] : .button
         cell.accessibilityHint = numericEditing ? WorkspaceStyle.text("editing_lock") : BrowserText.text("hold_for_actions")
         cell.selectionStyle = .none
@@ -1103,32 +1120,47 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         run("browser.visibility", params: params)
     }
 
-    func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
-        guard indexPath.section == 1, browserCanChange, visibleRows.indices.contains(indexPath.row) else { return nil }
-        let row = visibleRows[indexPath.row]
-        let document = state?.document_id, revision = state?.geometry_revision
-        return UIContextMenuConfiguration(identifier: row.id as NSString, previewProvider: nil) { [weak self] _ in
-            guard let self, let current = self.currentBrowserRow(row.id, document: document, revision: revision) else { return nil }
-            return self.browserMenu(current)
-        }
+    @objc private func browserRowHeld(_ gesture: UIGestureRecognizer) {
+        guard gesture.state == .began || (gesture is UITapGestureRecognizer && gesture.state == .ended),
+              let index = table.indexPathForRow(at: gesture.location(in: table)), index.section == 1,
+              visibleRows.indices.contains(index.row), let cell = table.cellForRow(at: index) else { return }
+        showBrowserActions(visibleRows[index.row], source: cell)
     }
 
-    private func browserMenu(_ row: WorkspaceRow) -> UIMenu {
-        guard let browser = row.browser else { return UIMenu(children: []) }
+    private func showBrowserActions(_ row: WorkspaceRow, source: UIView, menu: BrowserActionMenu? = nil) {
+        guard browserCanChange, presentedViewController == nil, source.window != nil,
+              rowByID[row.id] != nil else { return }
+        let menu = menu ?? browserMenu(row)
+        guard !menu.children.isEmpty else { return }
+        canvas.cancelInput(); view.endEditing(true)
+        let picker = BrowserActionController(menu: menu)
+        let navigation = UINavigationController(rootViewController: picker)
+        navigation.modalPresentationStyle = .popover
+        navigation.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        navigation.preferredContentSize = picker.preferredContentSize
+        if let popover = navigation.popoverPresentationController {
+            popover.sourceView = source; popover.sourceRect = source.bounds
+            popover.delegate = self
+        }
+        present(navigation, animated: true)
+    }
+
+    private func browserMenu(_ row: WorkspaceRow) -> BrowserActionMenu {
+        guard let browser = row.browser else { return BrowserActionMenu(title: browserName(row), children: []) }
         let document = state?.document_id, revision = state?.geometry_revision
         func current(_ controller: FoundationController) -> WorkspaceRow? {
             controller.currentBrowserRow(row.id, document: document, revision: revision)
         }
-        var actions: [UIMenuElement] = []
+        var actions: [BrowserActionMenu.Item] = []
         if browser.rename != nil {
-            actions.append(UIAction(title: BrowserText.text("rename"), image: WorkspaceIcon.image("rename", traits: traitCollection)) { [weak self] _ in
+            actions.append(BrowserActionMenu.Item(title: BrowserText.text("rename"), icon: "rename") { [weak self] in
                 guard let self, let row = current(self), let rename = row.browser?.rename else { return }
                 self.askBrowserName(title: BrowserText.text("rename"), initial: row.label, command: rename.command,
                                     params: rename.params.mapValues(\.value), rowID: row.id)
             })
         }
         if let visible = browser.visible, browser.visibility != nil {
-            actions.append(UIAction(title: BrowserText.text(visible ? "hide" : "show"), image: WorkspaceIcon.image("eye", traits: traitCollection)) { [weak self] _ in
+            actions.append(BrowserActionMenu.Item(title: BrowserText.text(visible ? "hide" : "show"), icon: "eye") { [weak self] in
                 guard let self, let row = current(self) else { return }
                 self.setBrowserVisibility(row)
             })
@@ -1137,33 +1169,33 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             var params: [String: Any] = ["component": component, "folder": folder]
             if let key = browser.key { params["items"] = [key] }
             let groupParams = params
-            actions.append(UIAction(title: BrowserText.text(browser.key == nil ? "new_folder" : "new_folder_with_item"), image: WorkspaceIcon.image("folder", traits: traitCollection)) { [weak self] _ in
+            actions.append(BrowserActionMenu.Item(title: BrowserText.text(browser.key == nil ? "new_folder" : "new_folder_with_item"), icon: "folder") { [weak self] in
                 guard let self, current(self) != nil else { return }
                 self.askBrowserName(title: BrowserText.text("new_folder"), initial: "", command: "browser.group", params: groupParams, rowID: row.id)
             })
             if let key = browser.key {
                 let groups = state?.rows.filter { $0.kind == "folder" && $0.browser?.component == component && $0.browser?.folder == folder && $0.browser?.group != nil } ?? []
                 var seen: Set<UInt64> = []
-                var destinations: [UIMenuElement] = [UIAction(title: BrowserText.text("outside_folders"), state: browser.group == nil ? .on : .off) { [weak self] _ in
+                var destinations: [BrowserActionMenu.Item] = [BrowserActionMenu.Item(title: BrowserText.text("outside_folders"), selected: browser.group == nil) { [weak self] in
                     guard let self, current(self) != nil else { return }
                     self.run("browser.move", params: ["component": component, "folder": folder, "items": [key]])
                 }]
                 for group in groups {
                     guard let id = group.browser?.group, seen.insert(id).inserted else { continue }
-                    destinations.append(UIAction(title: browserName(group), state: browser.group == id ? .on : .off) { [weak self] _ in
+                    destinations.append(BrowserActionMenu.Item(title: browserName(group), selected: browser.group == id) { [weak self] in
                         guard let self, current(self) != nil, self.rowByID[group.id]?.browser?.group == id else { return }
                         self.run("browser.move", params: ["component": component, "folder": folder, "items": [key], "group": id])
                     })
                 }
-                actions.append(UIMenu(title: BrowserText.text("move_to_folder"), image: WorkspaceIcon.image("folder", traits: traitCollection), children: destinations))
+                actions.append(BrowserActionMenu.Item(title: BrowserText.text("move_to_folder"), icon: "folder", children: destinations))
             } else if let group = browser.group {
-                actions.append(UIAction(title: BrowserText.text("remove_folder")) { [weak self] _ in
+                actions.append(BrowserActionMenu.Item(title: BrowserText.text("remove_folder")) { [weak self] in
                     guard let self, current(self) != nil else { return }
                     self.run("browser.ungroup", params: ["group": group])
                 })
             }
         }
-        return UIMenu(title: browserName(row), children: actions)
+        return BrowserActionMenu(title: browserName(row), children: actions)
     }
 
     private func askBrowserName(title: String, initial: String, command: String, params: [String: Any], rowID: String) {
@@ -5688,6 +5720,10 @@ private extension FoundationController {
                       let row = self.visibleRows.first(where: { $0.id == "body:Post" }), let button = eye(row) else {
                     print("Browser check FAIL: browser or eye unavailable"); return
                 }
+                if ProcessInfo.processInfo.arguments.contains("--browser-actions-check") {
+                    self.checkBrowserActionsOnDevice(row, source: self.table.cellForRow(at: IndexPath(row: self.visibleRows.firstIndex(where: { $0.id == row.id }) ?? 0, section: 1)), capture: capture)
+                    return
+                }
                 var issues: [String] = []
                 for cell in self.table.visibleCells where cell.accessibilityIdentifier?.hasPrefix("workspace-row-") == true {
                     guard let content = cell.contentConfiguration as? UIListContentConfiguration else { issues.append("missing content"); continue }
@@ -5723,6 +5759,104 @@ private extension FoundationController {
             }
         }
         session.command("browser.group", params: ["folder": "bodies", "name": "Frame", "items": ["Base"]])
+    }
+
+    /// Production menu presentation on a disposable fixture. Physical holds remain
+    /// a separate check; this driver exercises the same presenter and choices.
+    private func checkBrowserActionsOnDevice(_ row: WorkspaceRow, source: UIView?, capture: @escaping (String) -> Void) {
+        var issues: [String] = []
+        let original = state
+        func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
+        func finish() {
+            check(self.state?.selection == original?.selection && self.state?.geometry_revision == original?.geometry_revision && self.state?.can_undo == original?.can_undo,
+                  "opening or cancelling actions changed the design")
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let receipt: [String: Any] = ["pass": issues.isEmpty, "issues": issues, "timestamp": Date().timeIntervalSince1970,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "input": "synthetic production menu presentation; no physical hold"]
+                try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys]).write(to: directory.appendingPathComponent("browser-actions-check.json"), options: .atomic)
+            } catch { issues.append("receipt: \(error)") }
+            print("Browser actions check \(issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")); complete")
+        }
+        func settled(_ next: @escaping () -> Void) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+                guard let self, self.active else { return }
+                self.view.layoutIfNeeded(); next()
+            }
+        }
+        guard let source else { issues.append("missing browser cell"); finish(); return }
+        check(!responds(to: #selector(UITableViewDelegate.tableView(_:contextMenuConfigurationForRowAt:point:))), "system context menu remains installed")
+        check(table.gestureRecognizers?.contains { $0 is UILongPressGestureRecognizer && $0.cancelsTouchesInView } == true, "missing cancelling hold")
+        let frame = canvas.frame
+        func open(_ next: @escaping (UINavigationController, BrowserActionController) -> Void) {
+            self.showBrowserActions(row, source: source)
+            settled {
+                guard let navigation = self.presentedViewController as? UINavigationController,
+                      let picker = navigation.topViewController as? BrowserActionController else {
+                    issues.append("missing action popover"); finish(); return
+                }
+                check(self.keyboardTop == nil && !self.textEntryActive, "opening actions raised keyboard or text focus")
+                check(self.canvas.frame == frame, "opening actions resized canvas")
+                check(picker.menu.children.contains { $0.title == BrowserText.text("rename") }, "missing Rename")
+                check(picker.menu.children.contains { $0.title == BrowserText.text("hide") }, "missing visibility")
+                next(navigation, picker)
+            }
+        }
+        open { navigation, picker in
+            capture("actions-dark")
+            guard let index = picker.menu.children.firstIndex(where: { $0.title == BrowserText.text("move_to_folder") }) else {
+                issues.append("missing folder choices"); finish(); return
+            }
+            picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: index, section: 0))
+            settled {
+                guard let folders = navigation.topViewController as? BrowserActionController, folders !== picker else {
+                    issues.append("folder navigation failed"); finish(); return
+                }
+                check(folders.menu.children.contains { $0.title == "Frame" }, "missing destination folder")
+                check(folders.menu.children.contains { $0.selected }, "missing current folder state")
+                check(self.keyboardTop == nil && !self.textEntryActive, "folder choices raised keyboard")
+                capture("actions-folders")
+                navigation.dismiss(animated: true) {
+                    // Search deliberately owns the keyboard before this menu opens.
+                    self.toggleBrowserSearch()
+                    check(self.browserSearchField.isFirstResponder, "Find stopped accepting text")
+                    self.browserSearchField.text = "post"; self.browserSearchField.sendActions(for: .editingChanged)
+                    settled {
+                        self.appearance = 1; self.applyAppearance()
+                        guard let index = self.visibleRows.firstIndex(where: { $0.id == row.id }),
+                              let filteredCell = self.table.cellForRow(at: IndexPath(row: index, section: 1)) else {
+                            issues.append("missing filtered row"); finish(); return
+                        }
+                        self.showBrowserActions(row, source: filteredCell)
+                        settled {
+                            guard let filteredNavigation = self.presentedViewController as? UINavigationController,
+                                  let filtered = filteredNavigation.topViewController as? BrowserActionController,
+                                  let rename = filtered.menu.children.firstIndex(where: { $0.title == BrowserText.text("rename") }) else {
+                                issues.append("missing filtered actions"); finish(); return
+                            }
+                            check(self.keyboardTop == nil && !self.textEntryActive, "filtered actions kept or raised keyboard")
+                            capture("actions-light")
+                            filtered.tableView(filtered.tableView, didSelectRowAt: IndexPath(row: rename, section: 0))
+                            settled {
+                                guard let alert = self.presentedViewController as? UIAlertController, let field = alert.textFields?.first else {
+                                    issues.append("Rename failed to open text form"); finish(); return
+                                }
+                                check(field.isFirstResponder && self.keyboardTop != nil, "Rename lost intentional keyboard entry")
+                                capture("actions-rename")
+                                alert.dismiss(animated: true) {
+                                    self.dismissBrowserSearch()
+                                    settled {
+                                        check(self.keyboardTop == nil && !self.textEntryActive, "cancelling Rename left keyboard open")
+                                        finish()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Extends the existing disposable browser driver through production search,

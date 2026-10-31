@@ -433,6 +433,18 @@ Native presentation preferences use UserDefaults keys
 
 ## Presentation mapping and browser
 
+Holding a model row opens an anchored action popover built from ordinary table
+choices. Secondary pointer clicks and VoiceOver custom actions reach the same
+guarded Rename, visibility and folder operations. Native context-menu previews
+are excluded because they can summon the software keyboard on iPadOS. Opening
+the popover ends text entry without clearing a Find query; choosing Rename or
+New folder opens its intentional text form after the popover finishes closing.
+Nested folder destinations retain their current-location checkmark and Back.
+The disposable DEBUG `--browser-actions-check` exercises opening, folder
+navigation, reopening from Find, intentional Rename focus and cancellation,
+writing `browser-actions-check.json` and `browser-check-actions-*.png` in Documents.
+Its synthetic presenter calls do not verify a physical finger/Pencil hold.
+
 **Views > Visibility** contains the origin point, X/Y/Z axes and XY/XZ/YZ planes,
 alongside Grid lines. **Origin controls in Model** optionally restores an
 expandable **Origin references** group in the browser; each row and its eye button

@@ -618,6 +618,73 @@ final class WorkspaceButton: UIButton {
     }
 }
 
+/// Browser choices share one guarded command path for touch, pointer and VoiceOver.
+struct BrowserActionMenu {
+    struct Item {
+        let title: String
+        var icon: String? = nil
+        var selected = false
+        var children: [Item] = []
+        var action: (() -> Void)? = nil
+    }
+    let title: String
+    let children: [Item]
+}
+
+/// Ordinary table choices avoid the system context-menu preview's keyboard path.
+/// Navigation retains nested folder choices and system Back/Cancel accessibility.
+final class BrowserActionController: UITableViewController {
+    let menu: BrowserActionMenu
+    private var choosing = false
+    init(menu: BrowserActionMenu) {
+        self.menu = menu
+        super.init(style: .insetGrouped)
+        title = menu.title
+        preferredContentSize = CGSize(width: 340, height: min(560, 64 + 56 * CGFloat(menu.children.count)))
+    }
+    required init?(coder: NSCoder) { nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tableView.accessibilityIdentifier = "browser-actions"
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 56
+        navigationItem.rightBarButtonItem = UIBarButtonItem(systemItem: .cancel, primaryAction: UIAction { [weak self] _ in
+            self?.navigationController?.dismiss(animated: true)
+        })
+    }
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        navigationController?.preferredContentSize = preferredContentSize
+    }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { menu.children.count }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "action") ?? UITableViewCell(style: .default, reuseIdentifier: "action")
+        guard menu.children.indices.contains(indexPath.row) else { return cell }
+        let item = menu.children[indexPath.row]
+        var content = cell.defaultContentConfiguration()
+        content.text = item.title
+        content.textProperties.numberOfLines = 0
+        content.image = item.icon.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
+        content.directionalLayoutMargins.top = 14; content.directionalLayoutMargins.bottom = 14
+        cell.contentConfiguration = content
+        cell.accessoryType = item.children.isEmpty ? (item.selected ? .checkmark : .none) : .disclosureIndicator
+        cell.accessibilityTraits = item.selected ? [.button, .selected] : [.button]
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard !choosing, menu.children.indices.contains(indexPath.row) else { return }
+        let item = menu.children[indexPath.row]
+        if !item.children.isEmpty {
+            navigationController?.pushViewController(BrowserActionController(menu: BrowserActionMenu(title: item.title, children: item.children)), animated: true)
+        } else if let action = item.action {
+            // Finish dismissal before Rename presents its intentional text form.
+            choosing = true; tableView.isUserInteractionEnabled = false
+            navigationController?.dismiss(animated: true, completion: action)
+        }
+    }
+}
+
 /// Shared chrome for docked panels and compact contextual sheets.
 /// Retain UIKit's standard clear action and accessibility with a full touch target.
 final class BrowserSearchField: UITextField {
