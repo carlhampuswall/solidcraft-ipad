@@ -738,6 +738,7 @@ final class WorkspaceMessage: UIStackView {
 /// Editing text is deliberately provisional. Only explicit Preview/Apply invoke
 /// the upstream expression evaluator; cancellation never rewrites the document.
 final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
+    let readOnly: Bool
     let field = UITextField()
     let message = WorkspaceMessage()
     let actionFooter: NumericEditorActions
@@ -752,6 +753,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     var onApply: ((String) -> Void)?
     var onCancel: (() -> Void)?
     var onDelete: (() -> Void)?
+    var onToggleMode: (() -> Void)?
     var onFocus: (() -> Void)?
     var onChange: (() -> Void)?
     var onLayoutChange: (() -> Void)?
@@ -763,10 +765,11 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     private var closeButton: WorkspaceButton?
     private let suppressedInput = UIInputView(frame: .zero, inputViewStyle: .default)
     var onRequestEntry: (() -> Bool)?
-    var panelKeypadVisible: Bool { panelInput && !padArea.isHidden }
+    var panelKeypadVisible: Bool { !readOnly && panelInput && !padArea.isHidden }
 
     init(expression: String, units: String, showsActions: Bool = true, numericKeyboard: Bool = false,
-         label: String? = nil, compact: Bool = false, primary: Bool = false, context: String? = nil) {
+         label: String? = nil, compact: Bool = false, primary: Bool = false, context: String? = nil, readOnly: Bool = false) {
+        self.readOnly = readOnly
         actionFooter = NumericEditorActions()
         self.showsActions = showsActions
         panelInput = numericKeyboard
@@ -798,6 +801,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
             addArrangedSubview(unitLabel)
         }
         field.text = expression
+        field.isEnabled = !readOnly
         field.borderStyle = .none
         field.backgroundColor = WorkspaceStyle.fieldBackground
         field.textColor = WorkspaceStyle.foreground
@@ -837,8 +841,8 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         evaluation.isHidden = true
         evaluation.accessibilityIdentifier = "workspace-numeric-evaluation"
         addArrangedSubview(message); addArrangedSubview(evaluation)
-        if numericKeyboard { buildPanelKeypad(units: units) }
-        if !compact {
+        if numericKeyboard && !readOnly { buildPanelKeypad(units: units) }
+        if !compact && !readOnly {
             let help = InspectorDisclosure(title: NumericText.text("help"), framed: numericKeyboard, onToggle: { [weak self] _ in self?.onLayoutChange?() })
             help.accessibilityIdentifier = "workspace-expression-help"
             let hint = WorkspaceStyle.label(.footnote, secondary: true)
@@ -856,13 +860,18 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         actionFooter.delete.addAction(UIAction { [weak self] _ in
             guard let self, !self.busy else { return }; self.onDelete?()
         }, for: .touchUpInside)
+        actionFooter.mode.addAction(UIAction { [weak self] _ in
+            guard let self, !self.busy else { return }; self.onToggleMode?()
+        }, for: .touchUpInside)
+        actionFooter.apply.isHidden = readOnly
+        if readOnly { actionFooter.cancel.updateTitle(WorkspaceStyle.text("close")) }
         updateAvailability()
         updateInputAppearance()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (editor: NumericExpressionEditor, _: UITraitCollection) in editor.updateInputAppearance() }
-        if showsActions { message.show(entryHint) }
+        if showsActions && !readOnly { message.show(entryHint) }
     }
     required init(coder: NSCoder) {
-        actionFooter = NumericEditorActions(); showsActions = false; panelInput = false
+        readOnly = false; actionFooter = NumericEditorActions(); showsActions = false; panelInput = false
         super.init(coder: coder)
     }
     private var entryHint: String { NumericText.text("apply_hint") }
@@ -914,6 +923,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         onLayoutChange?()
     }
     private func confirmInput() {
+        guard !readOnly else { return }
         guard showsActions else { dismissInput(); return }
         guard !busy else { return }
         field.resignFirstResponder()
@@ -965,11 +975,11 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         busy = value; self.committing = value && committing
         // Preview leaves the input and first responder intact. Only acceptance
         // locks editing; asynchronous results never rewrite the raw expression.
-        field.isEnabled = !self.committing
+        field.isEnabled = !readOnly && !self.committing
         padArea.isUserInteractionEnabled = !self.committing
         updateAvailability()
         if value { message.show(NativeText.value("ui.ipados.updating"), busy: true) }
-        else { message.show(showsActions ? entryHint : nil) }
+        else { message.show(showsActions && !readOnly ? entryHint : nil) }
     }
     private func updateAvailability() {
         actionFooter.apply.availability(enabled: !busy)
@@ -977,6 +987,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         actionFooter.cancel.availability(enabled: !committing)
         closeButton?.availability(enabled: !committing)
         actionFooter.delete.availability(enabled: !busy)
+        actionFooter.mode.availability(enabled: !busy)
     }
     private func updateInputAppearance() {
         let style = traitCollection.userInterfaceStyle
@@ -986,6 +997,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         updateFieldOutline()
     }
     func textFieldShouldBeginEditing(_ textField: UITextField) -> Bool {
+        guard !readOnly else { return false }
         if !panelInput, onRequestEntry?() == true { return false }
         if panelInput && usesNumericKeyboard { padArea.isHidden = false }
         return !committing
@@ -1004,6 +1016,7 @@ final class NumericEditorActions: UIStackView {
     let apply = WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true, action: {})
     let cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
     let delete = WorkspaceButton("", action: {})
+    let mode = WorkspaceButton("", action: {})
     private let row = UIStackView()
     init() {
         super.init(frame: .zero)
@@ -1011,6 +1024,9 @@ final class NumericEditorActions: UIStackView {
         let divider = UIView(); divider.backgroundColor = WorkspaceStyle.separator
         divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
         addArrangedSubview(divider)
+        mode.isHidden = true
+        mode.accessibilityIdentifier = "workspace-numeric-dimension-mode"
+        addArrangedSubview(mode)
         delete.isHidden = true
         delete.configuration?.baseForegroundColor = WorkspaceStyle.error
         delete.accessibilityIdentifier = "workspace-numeric-delete"
@@ -1275,12 +1291,12 @@ final class NumericValueEditorController: UIViewController {
         disclosure.content.addArrangedSubview(choices)
         inlineChoices.addArrangedSubview(disclosure)
     }
-    init(expression: String, units: String, name: String? = nil, context: String? = nil, parameter: String? = nil) {
+    init(expression: String, units: String, name: String? = nil, context: String? = nil, parameter: String? = nil, readOnly: Bool = false) {
         self.parameter = parameter
-        editor = NumericExpressionEditor(expression: expression, units: units, numericKeyboard: true, label: name, context: context)
+        editor = NumericExpressionEditor(expression: expression, units: units, numericKeyboard: true, label: name, context: context, readOnly: readOnly)
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .popover
-        preferredContentSize = CGSize(width: 400, height: 640)
+        preferredContentSize = CGSize(width: 400, height: readOnly ? 280 : 640)
         popoverPresentationController?.adaptiveSheetPresentationController.detents = [.large()]
     }
     required init?(coder: NSCoder) { nil }
@@ -1329,7 +1345,7 @@ final class NumericValueEditorController: UIViewController {
     }
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
-        guard !focusedInitially else { return }
+        guard !focusedInitially, !editor.readOnly else { return }
         focusedInitially = true
         editor.field.becomeFirstResponder(); editor.field.selectAll(nil)
     }

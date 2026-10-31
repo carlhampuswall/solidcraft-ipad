@@ -140,6 +140,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var layout: WorkspaceLayout?
     private var numericToken: UInt64?
     private var numericContext: (document: String, revision: UInt64)?
+    private var referenceDimensionID: String?
     private var editor: NumericExpressionEditor?
     private weak var inlineNumericEditor: NumericValueEditorController?
     private var numericStarting = false
@@ -239,7 +240,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private static let originPlanes = ["XY", "XZ", "YZ"]
     private var originExpanded = true
 
-    private var numericEditing: Bool { numericStarting || numericToken != nil || transformDraft != nil }
+    private var numericEditing: Bool { numericStarting || numericToken != nil || referenceDimensionID != nil || transformDraft != nil }
     private var topStripHeaderEnabled: Bool {
         // Older iPadOS versions reserve the top centre for multitasking controls.
         if #available(iOS 26.0, *) { return useTopSafeArea && traitCollection.userInterfaceIdiom == .pad }
@@ -2382,7 +2383,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func annotationEditable(_ annotation: SketchAnnotationPresentation) -> Bool {
-        inlineDimensions && !annotation.driven && state?.sketch != nil && state?.active_tool == "select" &&
+        inlineDimensions && state?.sketch != nil && state?.active_tool == "select" &&
             !numericEditing && !modellingEditing && pending.isEmpty && presentedViewController == nil
     }
 
@@ -2401,7 +2402,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                   self.state?.geometry_revision == context.geometry_revision else { self.updateAvailability(); return }
             switch result {
             case .failure(let error): self.showFailure(error); self.updateAvailability()
-            case .success: self.beginNumeric(dimension: annotation.dimension_type, source: source)
+            case .success:
+                if annotation.driven {
+                    guard let dimension = self.state?.sketch?.constraints.first(where: { $0.id == id && $0.dimension && $0.driven }) else { return }
+                    self.referenceDimensionID = id
+                    self.numericContext = (context.document_id, context.geometry_revision)
+                    self.installEditor(expression: source.accessibilityValue ?? String(annotation.value), units: annotation.units, source: source, dimension: dimension)
+                } else { self.beginNumeric(dimension: annotation.dimension_type, source: source) }
             }
         }
     }
@@ -2676,16 +2683,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.numericContext = (value.workspace.document_id, value.workspace.geometry_revision)
                 let selection = value.workspace.selection
                 let dimensionID = selection.count == 1 && selection[0].type == "sketch_constraint" ? selection[0].id?.readout : nil
-                let deletableDimension = value.workspace.sketch?.constraints.first { $0.id == dimensionID && $0.dimension && !$0.driven }
-                self.installEditor(expression: expression, units: value.units, source: source, deletableDimension: deletableDimension?.id)
+                let dimension = value.workspace.sketch?.constraints.first { $0.id == dimensionID && $0.dimension && !$0.driven }
+                self.installEditor(expression: expression, units: value.units, source: source, dimension: dimension)
                 if let number = value.value { self.editor?.setEvaluation(value: number, units: value.units) }
             }
         }
     }
 
-    private func installEditor(expression: String, units: String, source: UIView? = nil, deletableDimension: String? = nil) {
-        let name = state?.sketch == nil ? WorkspaceStyle.text("radius") : SketchText.text("dimension")
-        let controller = NumericValueEditorController(expression: expression, units: units, name: name)
+    private func installEditor(expression: String, units: String, source: UIView? = nil, dimension: WorkspaceConstraint? = nil) {
+        let readOnly = dimension?.driven == true
+        let name = readOnly ? SketchText.text("reference_dimension") : (state?.sketch == nil ? WorkspaceStyle.text("radius") : SketchText.text("dimension"))
+        let controller = NumericValueEditorController(expression: expression, units: units, name: name, readOnly: readOnly)
         controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
         let editor = controller.editor
         self.editor = editor
@@ -2693,10 +2701,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         editor.onChange = { [weak self] in self?.scheduleNumericPreview() }
         editor.onApply = { [weak self] expression in self?.evaluateNumeric(expression, commit: true) }
         editor.onCancel = { [weak self] in self?.cancelNumeric() }
-        if let id = deletableDimension {
+        if let dimension {
+            editor.actionFooter.mode.updateTitle(SketchText.text(dimension.driven ? "make_driving" : "make_reference"))
+            editor.actionFooter.mode.commandArtwork("sketch.toggle_driven")
+            editor.actionFooter.mode.isHidden = false
+            editor.onToggleMode = { [weak self] in self?.togglePopoverDimension(dimension) }
+        }
+        if let dimension, !dimension.driven {
             editor.actionFooter.delete.updateTitle(SketchText.text("delete_dimension"))
             editor.actionFooter.delete.isHidden = false
-            editor.onDelete = { [weak self] in self?.deleteNumericDimension(id) }
+            editor.onDelete = { [weak self] in self?.deleteNumericDimension(dimension.id) }
         }
         editor.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.updateAvailability() }
         let anchor = source ?? inspectorButton
@@ -2708,7 +2722,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         present(controller, animated: true)
         failure = nil
         updateAvailability(); updateStatus(); view.setNeedsLayout()
-        scheduleNumericPreview()
+        if !readOnly { scheduleNumericPreview() }
     }
 
     private func scheduleNumericPreview() {
@@ -2758,8 +2772,25 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func togglePopoverDimension(_ dimension: WorkspaceConstraint) {
+        guard let context = numericContext, editor?.busy == false else { return }
+        // Discard any numeric preview before converting the committed dimension.
+        cancelNumeric { [weak self] in
+            guard let self, self.state?.document_id == context.document,
+                  self.state?.geometry_revision == context.revision,
+                  self.state?.sketch?.constraints.contains(where: { $0.id == dimension.id && $0.dimension && $0.driven == dimension.driven }) == true else { return }
+            self.run("sketch.toggle_driven", params: ["constraint": dimension.id, "driven": !dimension.driven])
+        }
+    }
+
     private func cancelNumeric(then completion: (() -> Void)? = nil) {
-        guard let token = numericToken else { return }
+        guard let token = numericToken else {
+            guard referenceDimensionID != nil else { return }
+            numericGeneration &+= 1; numericContext = nil
+            clearNumericEditor(); rebuildInspector(); updateAvailability()
+            completion?()
+            return
+        }
         numericGeneration &+= 1
         let expected = numericGeneration
         editor?.field.resignFirstResponder(); editor?.setBusy(true, committing: true)
@@ -2783,6 +2814,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func clearNumericEditor() {
         numericAutomaticPreview.cancel()
+        referenceDimensionID = nil
         editor?.field.resignFirstResponder(); editor = nil
         let controller = inlineNumericEditor
         inlineNumericEditor = nil
@@ -4958,14 +4990,44 @@ private extension FoundationController {
             }
         }
         func toggle(to driven: Bool, _ next: @escaping () -> Void) {
-            selectDimension {
-                guard let toggle = button("workspace-toggle-reference-dimension"),
-                      toggle.accessibilityLabel == SketchText.text(driven ? "make_reference" : "make_driving") else {
-                    record("Reference dimension check FAIL: wrong toggle label"); return
+            wait("dimension ready to tap", until: {
+                self.sketchAnnotations.values.contains { $0.dimension_type == nil && self.annotationEditable($0) }
+            }) {
+                guard let annotation = self.sketchAnnotations.values.first(where: { $0.dimension_type == nil }) else { return }
+                self.canvas.onDimensionTap?(annotation.id)
+                wait("tapped dimension popover", until: {
+                    self.inlineNumericEditor?.view.window != nil && self.inlineNumericEditor?.isBeingPresented == false && self.editor?.busy == false
+                }) {
+                    guard let editor = self.editor,
+                          editor.readOnly == !driven,
+                          editor.actionFooter.apply.isHidden == !driven,
+                          editor.field.isEnabled == driven,
+                          !editor.actionFooter.mode.isHidden,
+                          editor.actionFooter.mode.accessibilityLabel == SketchText.text(driven ? "make_reference" : "make_driving"),
+                          driven || (!editor.field.isFirstResponder && !editor.panelKeypadVisible && self.numericToken == nil) else {
+                        record("Reference dimension check FAIL: incorrect popover mode"); return
+                    }
+                    capture(driven ? "driving-selected" : "reference-selected")
+                    func convert() {
+                        editor.actionFooter.mode.sendActions(for: .touchUpInside)
+                        wait(driven ? "made reference" : "made driving", until: {
+                            hasDimension(driven: driven) && !self.numericEditing && self.pending.isEmpty && self.presentedViewController == nil
+                        }, then: next)
+                    }
+                    if driven {
+                        editor.field.text = "100 mm"; editor.field.sendActions(for: .editingChanged)
+                        editor.onPreview?("100 mm")
+                        wait("uncommitted driving preview", until: {
+                            !editor.busy && self.sketchAnnotations.values.contains { $0.dimension_type == nil && abs($0.value - 100) < 0.001 }
+                        }) {
+                            editor.field.text = "1 / 0"; editor.field.sendActions(for: .editingChanged)
+                            let revision = editor.draft.revision
+                            wait("invalid expression still permits conversion", until: {
+                                !editor.busy && editor.completedPreviewRevision == revision && !editor.draft.isValidated && editor.actionFooter.mode.isEnabled
+                            }, then: convert)
+                        }
+                    } else { convert() }
                 }
-                capture(driven ? "driving-selected" : "reference-selected")
-                toggle.sendActions(for: .touchUpInside)
-                wait(driven ? "made reference" : "made driving", until: { hasDimension(driven: driven) && self.pending.isEmpty }, then: next)
             }
         }
         let commands: [(String, [String: Any])] = [
@@ -4985,7 +5047,9 @@ private extension FoundationController {
                             button("workspace-create-reference-dimension")?.menu?.children.contains { $0.title == SketchText.text("length") } == true
                         }) {
                             capture("create")
-                            self.createReferenceDimension(entities: ["reference-check"], type: "length")
+                            guard let reference = button("workspace-create-reference-dimension"),
+                                  let action = reference.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == SketchText.text("length") }) else { return }
+                            action.performWithSender(reference, target: nil)
                             wait("reference created without numeric editor", until: { hasDimension(driven: true) && !self.numericEditing && self.pending.isEmpty }) {
                                 toggle(to: false) {
                                     toggle(to: true) {
@@ -4995,7 +5059,15 @@ private extension FoundationController {
                                             wait("redo restores reference", until: { hasDimension(driven: true) && self.pending.isEmpty }) {
                                                 selectDimension {
                                                     guard button("workspace-edit-dimension") == nil else { record("Reference dimension check FAIL: reference is editable"); return }
-                                                    capture("reference-final"); record("Reference dimension check PASS")
+                                                    capture("reference-final")
+                                                    guard let annotation = self.sketchAnnotations.values.first(where: { $0.dimension_type == nil }) else { return }
+                                                    self.canvas.onDimensionTap?(annotation.id)
+                                                    wait("reference reopened after conversion", until: { self.editor?.readOnly == true && self.inlineNumericEditor?.isBeingPresented == false }) {
+                                                        self.editor?.actionFooter.cancel.sendActions(for: .touchUpInside)
+                                                        wait("reference Close releases editing context", until: { !self.numericEditing && self.numericContext == nil && self.presentedViewController == nil }) {
+                                                            record("Reference dimension check PASS")
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -5219,8 +5291,8 @@ private extension FoundationController {
                       editor.field.offset(from: range.start, to: range.end) == (editor.field.text ?? "").utf16.count else {
                     print("Inline dimension check FAIL: expression was not selected"); return
                 }
-                guard editor.actionFooter.delete.isHidden else {
-                    print("Inline dimension check FAIL: free helper has a Delete action"); return
+                guard editor.actionFooter.delete.isHidden && editor.actionFooter.mode.isHidden else {
+                    print("Inline dimension check FAIL: free helper has a saved-dimension action"); return
                 }
                 capture("initial-editor")
                 editor.field.insertText("80 mm"); editor.onApply?(editor.field.text ?? "")

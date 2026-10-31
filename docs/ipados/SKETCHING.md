@@ -236,7 +236,13 @@ above Cancel and Apply. Tap its value, then Delete dimension to remove only that
 constraint and keep the geometry. Any uncommitted expression or preview is
 discarded first; deletion is one undo step. Free-size helpers have no delete
 action because they do not yet represent a saved dimension.
-Parenthesised reference values remain read-only. A drag continues moving the
+Parenthesised reference values remain read-only. Tapping one opens a compact
+popover with the measured value, **Make driving**, and **Close**. Existing driving
+dimension popovers also offer **Make reference**. Switching modes closes the
+popover and converts the committed dimension in one undo step; any uncommitted
+expression or preview is discarded first. Tap the value again to use its new
+mode. Free-size helpers have no mode switch until a dimension is applied.
+A drag continues moving the
 annotation rather than opening the editor. Multi-touch navigation, cancellation,
 display changes and suspension cannot turn an interrupted contact into an edit.
 The DEBUG `--inline-dimension-check` launch flag prepares a disposable rectangle
