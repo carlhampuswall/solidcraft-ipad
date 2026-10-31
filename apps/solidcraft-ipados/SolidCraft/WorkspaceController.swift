@@ -5183,6 +5183,14 @@ private extension FoundationController {
                 wait("inspector numeric popup", { self.modelValueEditor?.editor.panelKeypadVisible == true && self.modelValueEditor?.editor.field.isFirstResponder == true }) {
                     guard let popup = self.modelValueEditor else { issues.append("missing inspector popup"); finish(); return }
                     check(popup.parameter == descriptor.key && popup.editor.field.text == raw, "inspector opened the wrong raw expression")
+                    let choiceID = "workspace-model-inline-operation-0"
+                    let originalChoice = find(choiceID, in: popup.view)
+                    check(originalChoice != nil, "missing extrude operation choices")
+                    for _ in 0..<20 {
+                        self.view.setNeedsLayout(); self.view.layoutIfNeeded()
+                        self.updateAvailability()
+                        check(find(choiceID, in: popup.view) === originalChoice, "workspace layout rebuilt the numeric popup choices")
+                    }
                     capture("inspector-entry")
                     popup.editor.actionFooter.preview.sendActions(for: .touchUpInside)
                     wait("inspector preview", { !popup.editor.busy }) {

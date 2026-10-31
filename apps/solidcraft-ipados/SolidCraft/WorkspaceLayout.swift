@@ -586,8 +586,8 @@ struct ModellingPresentation: Decodable {
 
 struct ModellingResponse<Workspace: Decodable>: Decodable {
     struct Handle: Decodable { let distance: Double; let units: String }
-    struct Field: Decodable {
-        struct Option: Decodable { let label: String; let value: PresentationJSON }
+    struct Field: Decodable, Equatable {
+        struct Option: Decodable, Equatable { let label: String; let value: PresentationJSON }
         let key: String
         let label: String
         let kind: String

@@ -1212,12 +1212,31 @@ final class NumericValueEditorController: UIViewController {
     private let scroll = UIScrollView()
     private let content = UIStackView()
     private var focusedInitially = false
+    private var inlineChoiceField: ModellingState.Field?
+    private var inlineChoiceSelection: PresentationJSON?
+    private var inlineChoiceControls: ModellingInlineChoices?
+    private var inlineChoiceAction: ((PresentationJSON) -> Void)?
     func setInlineChoices(_ field: ModellingState.Field?, selected: PresentationJSON?, enabled: Bool, action: @escaping (PresentationJSON) -> Void) {
+        // Availability is refreshed during workspace layout. Replacing these
+        // views on every refresh schedules another layout and can starve input.
+        // Keep the latest callback even when the visible choices are unchanged.
+        inlineChoiceAction = action
+        if field == inlineChoiceField, selected == inlineChoiceSelection {
+            if inlineChoiceControls?.isUserInteractionEnabled != enabled {
+                inlineChoiceControls?.isUserInteractionEnabled = enabled
+            }
+            return
+        }
+        inlineChoiceField = field; inlineChoiceSelection = selected
+        inlineChoiceControls = nil
         inlineChoices.arrangedSubviews.forEach { inlineChoices.removeArrangedSubview($0); $0.removeFromSuperview() }
         inlineChoices.isHidden = field == nil
         guard let field else { return }
         let disclosure = InspectorDisclosure(title: ModellingText.label(field.label))
-        let choices = ModellingInlineChoices(field: field, selected: selected, action: action)
+        let choices = ModellingInlineChoices(field: field, selected: selected) { [weak self] value in
+            self?.inlineChoiceAction?(value)
+        }
+        inlineChoiceControls = choices
         choices.isUserInteractionEnabled = enabled
         disclosure.content.addArrangedSubview(choices)
         inlineChoices.addArrangedSubview(disclosure)
