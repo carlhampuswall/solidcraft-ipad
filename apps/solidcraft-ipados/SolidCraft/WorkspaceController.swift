@@ -5504,7 +5504,7 @@ private extension FoundationController {
                             numeric.field.text = expression; numeric.field.sendActions(for: .editingChanged)
                         } else { form.editExpression("distance", expression: expression) }
                     }
-                    let submit = numeric?.actionFooter.apply ?? apply
+                    let submit = popup.flatMap { find("workspace-expression-apply", in: $0.view) as? UIButton } ?? apply
                     enter("2 +")
                     check(submit.isEnabled, "unpreviewed extrude expression disabled Apply")
                     submit.sendActions(for: .touchUpInside)
@@ -5643,7 +5643,6 @@ private extension FoundationController {
             }) {
                 guard let controller = self.inlineNumericEditor else { issues.append("missing editor"); finish(); return }
                 let editor = controller.editor, field = editor.field
-                let token = self.numericToken
                 let revision = self.state?.geometry_revision
                 let expectedStyle = style == 1 ? UIUserInterfaceStyle.light : (style == 2 ? .dark : self.traitCollection.userInterfaceStyle)
                 check(controller.traitCollection.userInterfaceStyle == expectedStyle, "popover appearance \(style)")
@@ -5697,12 +5696,8 @@ private extension FoundationController {
                                    let numeric = find("workspace-expression-keyboard", in: accessory) as? UIControl { numeric.sendActions(for: .touchUpInside) }
                                 check(editor.panelKeypadVisible && field.inputView != nil && field.text == text && selectedOffsets() == selection, "123 switch lost text/caret")
                             } else { issues.append("missing keyboard switch") }
-                            _ = editor.textFieldShouldReturn(field)
-                            check(!field.isFirstResponder && self.numericToken == token && self.state?.geometry_revision == revision, "Return committed or cancelled geometry")
-                            field.becomeFirstResponder()
-                            if let done = find("workspace-expression-done", in: controller.view) as? UIControl { done.sendActions(for: .touchUpInside) }
-                            check(!editor.panelKeypadVisible, "Done left the embedded pad open")
-                            check(!field.isFirstResponder && self.numericToken == token && self.state?.geometry_revision == revision, "Done committed or cancelled geometry")
+                            check(find("workspace-expression-done", in: controller.view) == nil, "numeric pad still requires Done before Apply")
+                            check(find("workspace-expression-apply", in: controller.view) is UIControl, "missing one-step keypad Apply")
                             editor.actionFooter.cancel.sendActions(for: .touchUpInside)
                             wait("cancel", { self.numericToken == nil && self.inlineNumericEditor == nil && self.presentedViewController == nil }) {
                                 check(self.state?.geometry_revision == revision, "Cancel changed authoritative geometry")
@@ -5713,29 +5708,44 @@ private extension FoundationController {
                 }
             }
         }
-        func directApply() {
+        func directApply(_ confirmation: Int = 0) {
             let before = self.state?.radius?.value
             let revision = self.state?.geometry_revision
             self.beginNumeric(source: self.browserButton)
             wait("direct Apply editor", { self.inlineNumericEditor?.editor.field.isFirstResponder == true }) {
                 guard let editor = self.editor else { issues.append("missing direct Apply editor"); finish(); return }
                 let token = self.numericToken
+                func confirm() {
+                    check(editor.field.isFirstResponder, "confirmation required dismissing input first")
+                    if confirmation == 1 { _ = editor.textFieldShouldReturn(editor.field) }
+                    else {
+                        let root: UIView = confirmation == 2 ? editor.field.inputAccessoryView ?? self.view : self.inlineNumericEditor?.view ?? self.view
+                        let id = confirmation == 2 ? "workspace-expression-confirm" : "workspace-expression-apply"
+                        guard let button = find(id, in: root) as? UIControl else { issues.append("missing confirmation " + id); finish(); return }
+                        button.sendActions(for: .touchUpInside)
+                    }
+                }
+                if confirmation == 2, let popup = self.inlineNumericEditor,
+                   let mode = find("workspace-expression-keyboard", in: popup.view) as? UIControl {
+                    mode.sendActions(for: .touchUpInside)
+                }
                 editor.field.text = "2 +"; editor.field.sendActions(for: .editingChanged)
                 check(editor.actionFooter.apply.isEnabled && !editor.draft.isValidated, "direct Apply required a preview")
-                editor.actionFooter.apply.sendActions(for: .touchUpInside)
+                confirm()
                 wait("direct Apply rejects invalid expression", { !editor.busy }) {
                     check(self.numericToken == token && self.state?.geometry_revision == revision && self.state?.radius?.value == before,
                           "invalid direct Apply changed the document or closed the editor")
                     check(editor.field.text == "2 +" && !editor.message.isHidden && !editor.draft.isValidated,
                           "invalid direct Apply lost its expression or error")
-                    capture("direct-apply-invalid")
+                    capture("direct-apply-invalid-\(confirmation)")
+                    editor.field.becomeFirstResponder()
                     editor.field.text = "9 mm"; editor.field.sendActions(for: .editingChanged)
                     check(!editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "corrected direct Apply required Preview")
-                    capture("direct-apply-ready")
-                    editor.actionFooter.apply.sendActions(for: .touchUpInside)
+                    capture("direct-apply-ready-\(confirmation)")
+                    confirm()
                     wait("direct Apply committed", { self.inlineNumericEditor == nil && self.presentedViewController == nil && self.state?.geometry_revision != revision }) {
                         check(self.numericToken == nil, "direct Apply did not finish its transaction")
-                        capture("direct-apply-committed")
+                        capture("direct-apply-committed-\(confirmation)")
                         // Successful commits clear selection. Reselect before
                         // reading the radius; Undo also replaces the scene.
                         self.session.command("select.entity", params: ["entity": ["type": "body", "name": "Post"]]) { _ in
@@ -5744,7 +5754,9 @@ private extension FoundationController {
                                 self.run("edit.undo")
                                 wait("direct Apply single undo", { self.pending.isEmpty && self.state?.geometry_revision != committedRevision }) {
                                     self.session.command("select.entity", params: ["entity": ["type": "body", "name": "Post"]]) { _ in
-                                        wait("restored radius", { self.state?.radius?.value == before }) { runStyle(0) }
+                                        wait("restored radius", { self.state?.radius?.value == before }) {
+                                            if confirmation < 2 { directApply(confirmation + 1) } else { runStyle(0) }
+                                        }
                                     }
                                 }
                             }

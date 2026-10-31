@@ -850,8 +850,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         }
         addArrangedSubview(actionFooter); actionFooter.isHidden = !showsActions
         actionFooter.apply.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy else { return }
-            self.field.resignFirstResponder(); self.onApply?(self.field.text ?? "")
+            self?.confirmInput()
         }, for: .touchUpInside)
         actionFooter.cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
         actionFooter.delete.addAction(UIAction { [weak self] _ in
@@ -868,7 +867,9 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     }
     private var entryHint: String { NumericText.text("apply_hint") }
     private func makeAccessory() -> ExpressionAccessory {
-        ExpressionAccessory(field: field, numeric: usesNumericKeyboard) { [weak self] in
+        ExpressionAccessory(field: field, numeric: usesNumericKeyboard,
+            confirmationTitle: WorkspaceStyle.text(showsActions ? "apply" : "keyboard_done"),
+            confirm: { [weak self] in self?.confirmInput() }) { [weak self] in
             guard let self else { return false }
             self.setNumericInput(!self.usesNumericKeyboard)
             return self.usesNumericKeyboard
@@ -892,7 +893,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         mode.accessibilityIdentifier = "workspace-expression-keyboard"
         mode.accessibilityLabel = NumericText.text("full_keyboard_label")
         padUnits.addArrangedSubview(mode)
-        let pad = ExpressionKeypad(field: field) { [weak self] in self?.dismissInput() }
+        let pad = ExpressionKeypad(field: field) { [weak self] in self?.confirmInput() }
         keypad = pad
         padArea.addArrangedSubview(padUnits); padArea.addArrangedSubview(pad)
         addArrangedSubview(padArea)
@@ -911,6 +912,12 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         if field.isFirstResponder { field.reloadInputViews() }
         else { field.becomeFirstResponder() }
         onLayoutChange?()
+    }
+    private func confirmInput() {
+        guard showsActions else { dismissInput(); return }
+        guard !busy else { return }
+        field.resignFirstResponder()
+        onApply?(field.text ?? "")
     }
     func dismissInput() {
         field.resignFirstResponder()
@@ -966,6 +973,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     }
     private func updateAvailability() {
         actionFooter.apply.availability(enabled: !busy)
+        keypad?.setApplyEnabled(!busy)
         actionFooter.cancel.availability(enabled: !committing)
         closeButton?.availability(enabled: !committing)
         actionFooter.delete.availability(enabled: !busy)
@@ -984,7 +992,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     }
     func textFieldDidBeginEditing(_ textField: UITextField) { updateFieldOutline(); onFocus?() }
     func textFieldDidEndEditing(_ textField: UITextField) { updateFieldOutline() }
-    func textFieldShouldReturn(_ textField: UITextField) -> Bool { dismissInput(); return true }
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool { confirmInput(); return true }
 }
 
 enum NumericText {
@@ -1056,10 +1064,10 @@ private final class NumericPadButton: UIButton {
 }
 
 /// A scrollable insertion strip retains every expression character. Keyboard
-/// switching and Done remain reachable without scrolling the strip to its end.
+/// switching and confirmation remain reachable without scrolling the strip to its end.
 private final class ExpressionAccessory: UIInputView {
     private var height: NSLayoutConstraint?
-    init(field: UITextField, numeric: Bool, toggle: @escaping () -> Bool) {
+    init(field: UITextField, numeric: Bool, confirmationTitle: String, confirm: @escaping () -> Void, toggle: @escaping () -> Bool) {
         super.init(frame: CGRect(x: 0, y: 0, width: 320, height: 56), inputViewStyle: .keyboard)
         allowsSelfSizing = true
         backgroundColor = WorkspaceStyle.surface
@@ -1073,8 +1081,8 @@ private final class ExpressionAccessory: UIInputView {
             mode?.accessibilityLabel = NumericText.text(numeric ? "full_keyboard_label" : "numeric_keyboard_label")
         }, for: .touchUpInside)
         mode.accessibilityIdentifier = "workspace-expression-keyboard"
-        let done = WorkspaceButton(WorkspaceStyle.text("keyboard_done")) { [weak field] in field?.resignFirstResponder() }
-        done.accessibilityIdentifier = "workspace-expression-done"
+        let done = WorkspaceButton(confirmationTitle, action: confirm)
+        done.accessibilityIdentifier = "workspace-expression-confirm"
         for text in ["mm", "cm", "in", "deg", "(", ")", "−", ".", ",", "+", "*", "/", "^"] {
             keys.addArrangedSubview(WorkspaceButton(text) { [weak field] in field?.insertText(text == "−" ? "-" : text) })
         }
@@ -1110,18 +1118,20 @@ enum HandleText {
 
 /// This inserts expression characters through UIKit. Parsing and units stay in Rust.
 private final class ExpressionKeypad: UIView {
-    init(field: UITextField, done: @escaping () -> Void) {
+    private var applyButton: UIButton?
+    func setApplyEnabled(_ enabled: Bool) { applyButton?.isEnabled = enabled }
+    init(field: UITextField, apply: @escaping () -> Void) {
         super.init(frame: .zero)
         accessibilityIdentifier = "workspace-embedded-keypad"
         var signEdit: (original: String, wrapped: String)?
         let rows = UIStackView(); rows.axis = .vertical; rows.spacing = 8; rows.distribution = .fillEqually
         rows.translatesAutoresizingMaskIntoConstraints = false
-        for values in [["7", "8", "9", "⌫"], ["4", "5", "6", "−"], ["1", "2", "3", "+"], ["±", "0", ".", "Done"]] {
+        for values in [["7", "8", "9", "⌫"], ["4", "5", "6", "−"], ["1", "2", "3", "+"], ["±", "0", ".", "Apply"]] {
             let row = UIStackView(); row.axis = .horizontal; row.spacing = 8; row.distribution = .fillEqually
             for value in values {
-                let key = NumericPadButton(value == "Done" ? WorkspaceStyle.text("done") : value,
-                    digit: value != "Done", prominent: value == "Done") { [weak field] in
-                    if value == "Done" { done() }
+                let key = NumericPadButton(value == "Apply" ? WorkspaceStyle.text("apply") : value,
+                    digit: value != "Apply", prominent: value == "Apply") { [weak field] in
+                    if value == "Apply" { apply() }
                     else if value == "⌫" { field?.deleteBackward() }
                     else if value == "±", let field {
                         // A text edit, not a numeric parser: negate the complete
@@ -1139,7 +1149,8 @@ private final class ExpressionKeypad: UIView {
                 }
                 if value == "⌫" { key.accessibilityLabel = HandleText.text("delete") }
                 if value == "±" { key.accessibilityLabel = NumericText.text("change_sign") }
-                key.accessibilityIdentifier = value == "Done" ? "workspace-expression-done" : "workspace-keypad-" + value
+                if value == "Apply" { applyButton = key }
+                key.accessibilityIdentifier = value == "Apply" ? "workspace-expression-apply" : "workspace-keypad-" + value
                 key.heightAnchor.constraint(greaterThanOrEqualToConstant: 52).isActive = true
                 row.addArrangedSubview(key)
             }

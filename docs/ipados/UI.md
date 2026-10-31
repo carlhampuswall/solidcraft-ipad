@@ -184,9 +184,10 @@ hardware Pencil/VoiceOver remain separate follow-ups.
 Numeric entry follows the approved keypad reference: the popup contains its own
 four-by-four number pad, a large outlined raw-expression field, field name and
 native source context, a compact units/parentheses/ABC row, framed expression
-help and one persistent Cancel/Apply row. Done is a key in that pad and
-only dismisses input. The number pad is a UIKit view inside the popup; numeric
-mode does not open a separate software-keyboard area or resize the Metal canvas.
+help and one persistent Cancel/Apply row. The pad's Apply key submits the
+current expression directly, using the same action as the footer. The number pad
+is a UIKit view inside the popup; numeric mode does not open a separate
+software-keyboard area or resize the Metal canvas.
 ABC explicitly opens full text entry for parameters, functions and additional
 operators; its 123 accessory returns to the embedded pad. The same text field
 retains caret, selection and native text undo through both modes. The sign key
@@ -214,8 +215,10 @@ their live preview path. One pending request replaces older queued edits.
 Dimension and modelling Apply validate current values before accepting one
 transaction. There is no manual Preview button or preview-required setting;
 the former preference key is ignored, as explicitly requested by the user.
-Errors appear beside the retained draft. Done and Return leave the transaction
-provisional; applying an operation disables Close/Cancel and edits until completion.
+Errors appear beside the retained draft. In numeric popups, keypad Apply, the
+full-keyboard accessory's Apply and Return all submit the current expression in
+one step. Inline fields without transaction actions keep Return as input dismissal.
+Applying an operation disables Close/Cancel and edits until completion.
 The existing Rust tokens, context checks, scratch evaluation and atomic
 acceptance still own geometry and history.
 
@@ -226,11 +229,12 @@ Clippy with warnings denied and workspace formatting. The existing face-extrusio
 regression also checks the native distance-unit metadata. DEBUG
 `--numeric-entry-check` uses a disposable fixture and covers actual in-panel
 keys, sign edits, units, native Preview/Cancel, invalid expressions, rapid edits
-and stale completion, retained focus/selection, ABC/123, Done/Return without
-geometry changes, viewport invariance and opening the original Extrude Distance
-field from its inspector. It also checks offscreen UIKit layouts at 320x300,
+and stale completion, retained focus/selection, ABC/123, viewport invariance and
+opening the original Extrude Distance field from its inspector. It also checks offscreen UIKit layouts at 320x300,
 380x500 and 744x1000 with normal and accessibility XXXL text. Those sizes are
-synthetic, not physical rotation or multitasking observations.
+synthetic, not physical rotation or multitasking observations. The 2026-10-31
+one-step confirmation extension also checks invalid and valid submissions from
+the keypad, Return and full-keyboard accessory, with one Undo per acceptance.
 
 Actual native captures include the complete embedded pad and were inspected in
 light/dark and invalid/stale states. Final reports, captures and logs are local
