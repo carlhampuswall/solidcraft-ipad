@@ -534,6 +534,19 @@ struct WorkspaceChecks {
         try require(!scrub.complete(returnToStart, succeeded: true) && scrub.inFlight == replacement, "completion from a cancelled document moved its replacement")
         scrub.complete(replacement, succeeded: false)
         try require(!scrub.active && scrub.next() == nil, "failed timeline command continued the drag")
+        // A long View page must scroll above History, including in short windows;
+        // a short page should retain its natural height without empty space.
+        for container in [CGRect(x: 0, y: 24, width: 1366, height: 976),
+                          CGRect(x: 0, y: 24, width: 1024, height: 720),
+                          CGRect(x: 0, y: 24, width: 390, height: 400)] {
+            let source = CGRect(x: container.maxX - 100, y: container.minY + 8, width: 88, height: 44)
+            let large = ViewPopoverLayout.size(contentHeight: 1400, container: container, source: source)
+            try require(large.height <= 560 && source.maxY + large.height + 80 <= container.maxY,
+                        "View covered the workspace bottom controls")
+            try require(large.width <= container.width - 24, "View exceeded a narrow window")
+            let short = ViewPopoverLayout.size(contentHeight: 180, container: container, source: source)
+            try require(short.height == 180, "short View page expanded unnecessarily")
+        }
         // Decode the existing Rust viewport projection, including automatic
         // effective visibility; every subset must advertise the correct action.
         for mask in 0..<128 {

@@ -91,8 +91,10 @@ Debug `--deferred-changes-check` verifies View menu icons, Light/Dark canvas
 appearance, neutral/legacy origin planes through the production View controls, and
 clockwise/counterclockwise two-finger twist plus its disabled behavior. It uses
 a disposable fixture, restores preferences, and writes
-`deferred-changes-check.json` and eight `deferred-*.png` UIKit/Metal captures in
-Documents. Popovers follow the saved workspace appearance preference.
+`deferred-changes-check.json` and ten `deferred-*.png` UIKit/Metal captures in
+Documents. It also checks View title/icon alignment, minimum touch sizes,
+scrolling bounds above History, and Light/Dark plus accessibility text layouts.
+Popovers follow the saved workspace appearance preference.
 Twist contacts are injected through the native bridge; completion
 waits for the matching presented frame. This verifies physical iPad runtime,
 not physical finger or Pencil delivery. Reserve the iPad through the task

@@ -4064,6 +4064,21 @@ private extension FoundationController {
             let icons = nodes.compactMap { $0 as? UIImageView }.filter { $0.accessibilityIdentifier?.hasPrefix("workspace-view-icon-") == true }
             require(icons.count >= (mainPage ? 4 : 11) && icons.allSatisfy { $0.image != nil }, "View reference/switch icon missing")
             require(self.keyboardTop == nil, "View popup opened the keyboard")
+            require(root.backgroundColor == .clear, "Opaque View background leaked outside native corners")
+            require(root.bounds.height <= 561, "View popup exceeded its scrolling height limit")
+            if let window = root.window {
+                let panelFrame = root.convert(root.bounds, to: window)
+                let historyFrame = self.featureHistory.convert(self.featureHistory.bounds, to: window)
+                require(panelFrame.maxY + 8 <= historyFrame.minY, "View popup covered History")
+            }
+            for button in buttons {
+                button.layoutIfNeeded()
+                guard let label = button.titleLabel, let icon = button.imageView else { continue }
+                let titleFrame = label.convert(label.bounds, to: button)
+                let iconFrame = icon.convert(icon.bounds, to: button)
+                require(abs(titleFrame.minX - iconFrame.maxX - 8) < 2, "View title separated from its icon: " + (button.accessibilityIdentifier ?? "unknown"))
+                require(button.bounds.height >= WorkspaceStyle.touch, "View action lost its touch target")
+            }
         }
         func twists(_ index: Int) {
             let cases: [(Bool, Double, String)] = [(false, 0.4, "twist-disabled"), (true, 0.4, "twist-clockwise"), (true, -0.4, "twist-counterclockwise")]
@@ -4110,9 +4125,18 @@ private extension FoundationController {
                     wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
                         frame("menu-light") {
                             inspectIcons()
-                            control("individual-references")?.sendActions(for: .primaryActionTriggered)
-                            self.overrideUserInterfaceStyle = .dark
-                            frame("references-dark") { inspectIcons(); planes() }
+                            self.viewControlsPopover?.overrideUserInterfaceStyle = .dark
+                            frame("menu-dark") {
+                                inspectIcons()
+                                self.viewControlsPopover?.traitOverrides.preferredContentSizeCategory = .accessibilityLarge
+                                frame("menu-large-text") {
+                                    inspectIcons()
+                                    self.viewControlsPopover?.traitOverrides.preferredContentSizeCategory = .unspecified
+                                    control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                                    self.overrideUserInterfaceStyle = .dark
+                                    frame("references-dark") { inspectIcons(); planes() }
+                                }
+                            }
                         }
                     }
                 }

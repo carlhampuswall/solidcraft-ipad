@@ -1951,7 +1951,7 @@ private final class ViewOptionButton: UIButton {
         indicator.tintColor = WorkspaceStyle.accent
         indicator.isHidden = !disclosure && !selected
         indicator.alpha = enabled ? 1 : 0.5
-        contentHorizontalAlignment = .fill
+        contentHorizontalAlignment = .leading
         if selected { accessibilityTraits.insert(.selected) } else { accessibilityTraits.remove(.selected) }
     }
 }
@@ -1964,8 +1964,9 @@ private final class ViewSwitchRow: UIButton {
     private let icon = UIImageView()
     private let iconID: String
     private let detail: String?
-    init(_ label: String, subtitle detail: String? = nil, id: String, icon iconID: String, action: @escaping () -> Void) {
-        self.detail = detail; self.iconID = iconID
+    private let showsSubtitle: Bool
+    init(_ label: String, subtitle detail: String? = nil, showsSubtitle: Bool = true, id: String, icon iconID: String, action: @escaping () -> Void) {
+        self.detail = detail; self.iconID = iconID; self.showsSubtitle = showsSubtitle
         super.init(frame: .zero)
         isAccessibilityElement = false
         isPointerInteractionEnabled = true
@@ -1975,7 +1976,7 @@ private final class ViewSwitchRow: UIButton {
         title.text = label; subtitle.text = detail
         title.isAccessibilityElement = false; subtitle.isAccessibilityElement = false
         let labels = UIStackView(arrangedSubviews: [title, subtitle]); labels.axis = .vertical; labels.spacing = 2
-        subtitle.isHidden = detail == nil
+        subtitle.isHidden = !showsSubtitle || detail == nil
         toggle.accessibilityIdentifier = "workspace-view-" + id
         toggle.accessibilityLabel = label
         toggle.addAction(UIAction { _ in action() }, for: .valueChanged)
@@ -1987,7 +1988,7 @@ private final class ViewSwitchRow: UIButton {
         [icon, labels, toggle, mixedMark].forEach { $0.translatesAutoresizingMaskIntoConstraints = false }
         addSubview(icon); addSubview(labels); addSubview(toggle); toggle.addSubview(mixedMark)
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(greaterThanOrEqualToConstant: 48),
+            heightAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch),
             icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             icon.centerYAnchor.constraint(equalTo: centerYAnchor),
             icon.widthAnchor.constraint(equalToConstant: 24),
@@ -2022,7 +2023,7 @@ private final class ViewSwitchRow: UIButton {
         toggle.onTintColor = mixed ? .systemGray : WorkspaceStyle.accent
         mixedMark.isHidden = !mixed
         subtitle.text = mixed ? [detail, ViewText.text("some_visible")].compactMap { $0 }.joined(separator: " · ") : detail
-        subtitle.isHidden = subtitle.text?.isEmpty != false
+        subtitle.isHidden = !showsSubtitle || subtitle.text?.isEmpty != false
         toggle.accessibilityValue = mixed ? ViewText.text("some_visible") : nil
         toggle.accessibilityHint = detail
         layer.borderColor = WorkspaceStyle.separator.cgColor
@@ -2045,15 +2046,14 @@ final class WorkspaceViewPopover: UIViewController {
     private let main = UIStackView()
     private let individuals = UIStackView()
     private let views = UIStackView()
-    private let heading = WorkspaceStyle.label(.title2)
     private let separator = UIView()
     private var viewButtons: [String: ViewOptionButton] = [:]
     private lazy var fit = ViewOptionButton(WorkspaceStyle.text("fit"), id: "fit", icon: "fit") { [weak self] in self?.onCommand?("view.fit") }
     private lazy var exitPlanar = ViewOptionButton(NativeText.value("ui.ipados.exit_planar"), id: "exit-planar", icon: "finish") { [weak self] in self?.onCommand?("view.exit_planar") }
     private lazy var perspective = ViewSwitchRow(NativeText.value("ui.ipados.perspective"), id: "perspective", icon: "perspective") { [weak self] in self?.onPerspective?() }
     private lazy var grid = ViewSwitchRow(ViewText.text("grid"), id: "grid", icon: "grid") { [weak self] in self?.onGrid?() }
-    private lazy var integratedAxes = ViewSwitchRow(ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), id: "integrated-axes", icon: "axis") { [weak self] in self?.onIntegratedAxes?() }
-    private lazy var origin = ViewSwitchRow(SketchText.text("origin_references"), subtitle: ViewText.text("origin_subtitle"), id: "origin", icon: "origin") { [weak self] in self?.onOrigin?() }
+    private lazy var integratedAxes = ViewSwitchRow(ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), showsSubtitle: false, id: "integrated-axes", icon: "axis") { [weak self] in self?.onIntegratedAxes?() }
+    private lazy var origin = ViewSwitchRow(SketchText.text("origin_references"), subtitle: ViewText.text("origin_subtitle"), showsSubtitle: false, id: "origin", icon: "origin") { [weak self] in self?.onOrigin?() }
     private lazy var individualButton = ViewOptionButton(ViewText.text("individual_references"), id: "individual-references", icon: "origin", disclosure: true) { [weak self] in self?.showIndividuals(true) }
     private lazy var automatic = ViewOptionButton(SketchText.text("automatic_origin"), id: "automatic", icon: "origin") { [weak self] in self?.onReference?(nil, nil, nil) }
     private lazy var originInModel = ViewSwitchRow(WorkspaceStyle.text("origin_in_model"), id: "origin-in-model", icon: "origin") { [weak self] in self?.onOriginInModel?() }
@@ -2068,45 +2068,48 @@ final class WorkspaceViewPopover: UIViewController {
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .popover
         traitOverrides.userInterfaceLevel = .base
-        preferredContentSize = CGSize(width: 340, height: 590)
+        preferredContentSize = CGSize(width: 340, height: 560)
     }
     required init?(coder: NSCoder) { nil }
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = WorkspaceStyle.surface
+        // UIKit owns the popover surface and its rounded corners. An opaque
+        // rectangular child background leaks beyond that surface on iPadOS.
+        view.backgroundColor = .clear
         scroll.contentInsetAdjustmentBehavior = .never
         root.axis = .vertical; root.spacing = 0
-        for stack in [main, individuals, views] { stack.axis = .vertical; stack.spacing = 8 }
+        for stack in [main, individuals, views] { stack.axis = .vertical; stack.spacing = 6 }
         root.addArrangedSubview(main); root.addArrangedSubview(individuals)
         scroll.translatesAutoresizingMaskIntoConstraints = false; root.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scroll); scroll.addSubview(root)
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: view.leadingAnchor), scroll.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             scroll.topAnchor.constraint(equalTo: view.topAnchor), scroll.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            root.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 16),
-            root.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -16),
-            root.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 16),
-            root.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -16),
-            root.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -32)
+            root.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor, constant: 12),
+            root.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor, constant: -12),
+            root.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor, constant: 12),
+            root.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor, constant: -12),
+            root.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor, constant: -24)
         ])
-        heading.text = WorkspaceStyle.text("view"); heading.accessibilityTraits.insert(.header)
-        main.addArrangedSubview(heading); main.setCustomSpacing(16, after: heading)
         main.addArrangedSubview(fit)
         let standard = WorkspaceStyle.label(.subheadline, secondary: true); standard.text = ViewText.text("standard_views")
         views.addArrangedSubview(standard)
-        for names in [["front", "back"], ["left", "right"], ["top", "bottom"], ["isometric"]] {
+        let directions = [[("front", "view_front"), ("back", "view_back")],
+                          [("left", "view_left"), ("right", "view_right")],
+                          [("top", "view_top"), ("bottom", "view_bottom")], [("isometric", "view_isometric")]]
+        for names in directions {
             let row = UIStackView(); row.axis = .horizontal; row.spacing = 8; row.distribution = .fillEqually
-            for name in names {
-                let button = ViewOptionButton(NativeText.value("ui.ipados." + name), id: name, icon: "camera") { [weak self] in self?.onCommand?("view." + name) }
+            for (name, icon) in names {
+                let button = ViewOptionButton(NativeText.value("ui.ipados." + name), id: name, icon: icon) { [weak self] in self?.onCommand?("view." + name) }
                 viewButtons[name] = button; row.addArrangedSubview(button)
             }
             views.addArrangedSubview(row)
         }
-        main.setCustomSpacing(16, after: fit); main.addArrangedSubview(views)
+        main.setCustomSpacing(12, after: fit); main.addArrangedSubview(views)
         main.addArrangedSubview(exitPlanar)
         separator.backgroundColor = WorkspaceStyle.separator
         separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
-        main.addArrangedSubview(separator); main.setCustomSpacing(12, after: separator)
+        main.addArrangedSubview(separator); main.setCustomSpacing(8, after: separator)
         [perspective, grid, integratedAxes, origin, individualButton].forEach(main.addArrangedSubview)
         let back = ViewOptionButton(WorkspaceStyle.text("view"), id: "back", icon: "chevron_right") { [weak self] in self?.showIndividuals(false) }
         back.imageView?.transform = CGAffineTransform(rotationAngle: .pi)
@@ -2142,10 +2145,15 @@ final class WorkspaceViewPopover: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         popoverPresentationController?.backgroundColor = WorkspaceStyle.surface.resolvedColor(with: traitCollection)
-        let width = min(340, max(240, (presentingViewController?.view.bounds.width ?? 372) - 32))
-        let size = root.systemLayoutSizeFitting(CGSize(width: width - 32, height: 0),
+        guard let presenter = presentingViewController else { return }
+        let container = presenter.view.safeAreaLayoutGuide.layoutFrame
+        let source = popoverPresentationController.flatMap { popover in
+            popover.sourceView?.convert(popover.sourceRect, to: presenter.view)
+        } ?? CGRect(origin: container.origin, size: .zero)
+        let width = ViewPopoverLayout.size(contentHeight: 0, container: container, source: source).width
+        let size = root.systemLayoutSizeFitting(CGSize(width: max(0, width - 24), height: 0),
             withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-        let desired = CGSize(width: width, height: ceil(size.height) + 32)
+        let desired = ViewPopoverLayout.size(contentHeight: ceil(size.height) + 24, container: container, source: source)
         if preferredContentSize != desired { preferredContentSize = desired }
     }
     private func showIndividuals(_ visible: Bool) {
@@ -2158,8 +2166,7 @@ final class WorkspaceViewPopover: UIViewController {
                 inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool, axisLabels: Bool) {
         loadViewIfNeeded(); current = state
         fit.render(selected: false, enabled: cameraEnabled)
-        fit.contentHorizontalAlignment = .leading
-        var arranged: [UIView] = [heading, fit]
+        var arranged: [UIView] = [fit]
         if !inSketch { arranged.append(views) }
         if !inSketch && state?.planar == true { arranged.append(exitPlanar) }
         arranged.append(separator)
@@ -2168,7 +2175,7 @@ final class WorkspaceViewPopover: UIViewController {
         if main.arrangedSubviews.count != arranged.count || !zip(main.arrangedSubviews, arranged).allSatisfy({ $0 === $1 }) {
             for child in main.arrangedSubviews { main.removeArrangedSubview(child); child.removeFromSuperview() }
             arranged.forEach(main.addArrangedSubview)
-            main.setCustomSpacing(16, after: heading); main.setCustomSpacing(16, after: fit); main.setCustomSpacing(12, after: separator)
+            main.setCustomSpacing(12, after: fit); main.setCustomSpacing(8, after: separator)
         }
         exitPlanar.render(selected: false, enabled: cameraEnabled)
         for (name, button) in viewButtons { button.render(selected: state?.camera.standardView == name, enabled: cameraEnabled && state?.planar != true) }

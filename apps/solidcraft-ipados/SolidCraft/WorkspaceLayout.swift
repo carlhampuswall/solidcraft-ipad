@@ -844,6 +844,16 @@ struct BrowserScrollBookmark {
     }
 }
 
+/// Keep View below its source and above the workspace's bottom controls. Long
+/// pages and larger text scroll inside this viewport instead of growing it.
+enum ViewPopoverLayout {
+    static func size(contentHeight: CGFloat, container: CGRect, source: CGRect) -> CGSize {
+        let width = min(340, max(0, container.width - 24))
+        let availableHeight = max(0, container.maxY - max(container.minY, source.maxY) - 80)
+        return CGSize(width: width, height: min(max(0, contentHeight), 560, availableHeight))
+    }
+}
+
 /// Effective state is decoded from the same Rust viewport used by rendering.
 /// Preferences describe overrides, never whether an automatic guide is visible.
 struct ViewControlsPresentation: Decodable, Equatable {
