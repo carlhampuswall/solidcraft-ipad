@@ -9,6 +9,36 @@ use crate::issue_851_tests::planned_volume;
 use crate::{Body, BoolOp, boolean, cylinder, fillet};
 
 #[test]
+fn chamfer_across_a_rounds_tangent_rails_has_equal_surface_setbacks() {
+    for (source, rails) in [
+        (Vec3::new(20., 0., 10.), [Vec3::new(20., 2., 10.), Vec3::new(18., 0., 10.)]),
+        (Vec3::new(10., 0., 0.), [Vec3::new(10., 2., 0.), Vec3::new(10., 0., 2.)]),
+    ] {
+        for scale in [0.5, 1., 5.] {
+            let block = crate::box_solid(Vec3::ZERO, Vec3::new(20., 20., 20.) * scale).unwrap();
+            let rounded = fillet(&block, &[source * scale], 2. * scale).unwrap();
+            for rail in rails {
+                let result = crate::chamfer(&rounded, &[rail * scale], scale).unwrap();
+                assert!(result.validity().is_empty(), "{:?}", result.validity());
+                assert_eq!(result.crossed_face_loops().unwrap(), 0);
+                // Cross-section bounded by the new chord, a length-d planar setback
+                // and an arc of length d on the radius-R cylinder. Green's theorem:
+                // A = (R²(θ - sin θ) + R d(1 - cos θ)) / 2, θ = d/R.
+                let angle: f64 = 0.5;
+                let expected = (4. * (angle - angle.sin()) + 2. * (1. - angle.cos())) * 10. * scale.powi(3);
+                let volume = |body: &Body| body.tessellate_with(0.0001 * scale, true).unwrap().measure().volume;
+                let removed = volume(&rounded) - volume(&result);
+                assert!((removed - expected).abs() < 0.01 * scale.powi(3), "{rail:?}: removed {removed}, expected {expected}");
+                assert!(crate::chamfer(&rounded, &[rail * scale], 4. * scale).is_err(), "cannot run past the existing round");
+                assert!(fillet(&rounded, &[rail * scale], scale).is_err(), "the original rail remains tangent");
+            }
+            let both = rails.map(|rail| rail * scale);
+            assert!(crate::chamfer(&rounded, &both, 2. * scale).is_err(), "overlapping setbacks must not consume the round");
+        }
+    }
+}
+
+#[test]
 fn issue_1303_chamfer_open_rim_after_end_chamfer() {
     use solidcraft_geom::{Loop2, Plane, Region2, Seg2, Vec2};
     let rim = Region2 {

@@ -2079,7 +2079,8 @@ fn interacting_groups(body: &Body, pts: &[Vec3]) -> Option<Vec<Vec<usize>>> {
 
 /// Equal-distance chamfer of the edges nearest to the given points. Each edge is cut with a
 /// prism whose only face inside the body is the chamfer plane (so neighbouring chamfers meet in
-/// a mitre); the local operation is the fallback.
+/// a mitre); the local operation is the fallback. A straight convex tangent plane/cylinder
+/// join uses equal setbacks along the plane and the cylinder's circular arc.
 pub fn chamfer(body: &Body, edges: &[Vec3], distance: f64) -> Result<Body> {
     body.require_brep("chamfer")?;
     if !(distance.is_finite() && distance > 1e-6 && distance < 1e6) {
@@ -2194,7 +2195,7 @@ fn chamfer_built(body: &Body, edges: &[Vec3], distance: f64) -> Result<Body> {
                 .or_else(|e| {
                     chamfer_tool_curved(cur, *p, distance)
                         .and_then(|tool| cut_one(cur, &tool)?.ok_or_else(|| KernelError::Failed("the chamfer removed everything".into())))
-                        .map_err(|_| e)
+                        .map_err(|e2| keep_size(e, e2))
                 })
         };
         for p in edges {
@@ -2466,9 +2467,13 @@ fn chamfer_tool_curved(cur: &Body, pick: Vec3, distance: f64) -> Result<Cutter> 
         let faces: Vec<_> = cur.solid.face_iter().filter(|f| f.edge_iter().any(|e| e.id() == edge.id())).collect();
         let [f1, f2] = faces.as_slice() else { return Err(unsupported("the edge must have two faces")) };
         let kinds = (crate::surface_kind::surface_of(f1, size), crate::surface_kind::surface_of(f2, size));
-        let (normal, axis) = match kinds {
-            (Some(crate::FaceSurface::Plane { normal, .. }), Some(crate::FaceSurface::Cylinder { axis, .. }))
-            | (Some(crate::FaceSurface::Cylinder { axis, .. }), Some(crate::FaceSurface::Plane { normal, .. })) => (normal, axis),
+        let (normal, origin, axis, radius, planar) = match kinds {
+            (Some(crate::FaceSurface::Plane { normal, .. }), Some(crate::FaceSurface::Cylinder { origin, axis, radius })) => {
+                (normal, origin, axis, radius, *f1)
+            }
+            (Some(crate::FaceSurface::Cylinder { origin, axis, radius }), Some(crate::FaceSurface::Plane { normal, .. })) => {
+                (normal, origin, axis, radius, *f2)
+            }
             _ => return Err(unsupported("a straight plane/cylinder edge is required")),
         };
         // A boolean intersection can carry slightly displaced ends and supporting surfaces.
@@ -2484,11 +2489,32 @@ fn chamfer_tool_curved(cur: &Body, pick: Vec3, distance: f64) -> Result<Cutter> 
         );
         let used = f1.boundary_iters().into_iter().flatten().find(|e| e.id() == edge.id()).ok_or_else(|| unsupported("chamfer edge use"))?;
         let tangent = (vtx(used.back()) - vtx(used.front())).normalized().ok_or_else(|| unsupported("chamfer tangent"))?;
-        if tangent.dot(n1.cross(n2)) <= 1e-9 {
-            return Err(unsupported("a convex chamfer edge is required"));
-        }
-        let (a, b) = crate::curveblend::straight_chamfer_contacts(f1, f2, mid, *d, distance, tolerance)
-            .ok_or_else(|| unsupported("the chamfer section does not fit"))?;
+        let (a, b) = if n1.dot(n2) > 1.0 - 1e-6 {
+            // A round's tangent rail has no rolling-ball section. A bevel can still cut
+            // across it: equal setbacks along the plane and the cylinder's circular arc.
+            // Use the plane's oriented boundary to choose the actual trimmed side.
+            let radial = mid - origin - axis * (mid - origin).dot(axis);
+            if radial.normalized().is_none_or(|n| n.dot(normal) < 1.0 - 1e-6) {
+                return Err(unsupported("a convex tangent cylinder is required"));
+            }
+            let angle = distance / radius;
+            if !(angle.is_finite() && angle > 0.0 && angle < std::f64::consts::FRAC_PI_2) {
+                return Err(too_large("the chamfer runs past the round"));
+            }
+            let used =
+                planar.boundary_iters().into_iter().flatten().find(|e| e.id() == edge.id()).ok_or_else(|| unsupported("chamfer plane edge use"))?;
+            let along = (vtx(used.back()) - vtx(used.front())).normalized().ok_or_else(|| unsupported("chamfer tangent"))?;
+            let into_plane = normal.cross(along);
+            let a = mid + into_plane * distance;
+            let b = mid + radial * (angle.cos() - 1.0) - into_plane * (radius * angle.sin());
+            if std::ptr::eq(planar, *f1) { (a, b) } else { (b, a) }
+        } else {
+            if tangent.dot(n1.cross(n2)) <= 1e-9 {
+                return Err(unsupported("a convex chamfer edge is required"));
+            }
+            crate::curveblend::straight_chamfer_contacts(f1, f2, mid, *d, distance, tolerance)
+                .ok_or_else(|| unsupported("the chamfer section does not fit"))?
+        };
         let fit_tolerance = (size * 1e-5).clamp(1e-5, 0.001);
         for (face, point) in [(*f1, a), (*f2, b)] {
             for along in [-0.5, -0.25, 0.0, 0.25, 0.5] {

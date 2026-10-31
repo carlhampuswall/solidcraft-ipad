@@ -6823,6 +6823,76 @@ fn modelling_surface_source_picks_replace_old_references_without_resetting_size(
 }
 
 #[test]
+fn modelling_blends_accept_sharp_borders_of_existing_treatments() {
+    for first in ["solid.fillet", "solid.chamfer"] {
+        for second in ["solid.fillet", "solid.chamfer"] {
+            let mut adapter = SessionAdapter::new();
+            adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();
+            let first_field = if first == "solid.fillet" { "radius" } else { "distance" };
+            adapter.execute(first, json!({"body":"Block","edges":[[20,0,10]],first_field:2})).unwrap();
+            let before = modelling_volume(&adapter);
+            let near = if first == "solid.fillet" { Vec3::new(19.414213562, 0.585786438, 20.) } else { Vec3::new(19., 1., 20.) };
+            let world = adapter.session.world_state();
+            let mesh = world.body("Block").unwrap().mesh();
+            let index = mesh
+                .edges
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| {
+                    let distance = |points: &[Vec3]| points.windows(2).map(|s| near.dist_to_segment(s[0], s[1])).fold(f64::INFINITY, f64::min);
+                    distance(a).total_cmp(&distance(b))
+                })
+                .unwrap()
+                .0;
+            let selection = [Sel::Edge { body: "Block".into(), index, point: near }];
+            let edit = adapter.begin_model(715, Some(second), None, &selection).unwrap();
+            let mut params = edit.params.clone();
+            params[if second == "solid.fillet" { "radius" } else { "distance" }] = json!("0.5 mm");
+            let result = adapter.prepare_model(&edit, params, true);
+            let prepared = result.unwrap_or_else(|e| panic!("{first} then {second}: {e}"));
+            adapter.accept_model(&edit, prepared).unwrap();
+            assert!(modelling_volume(&adapter) < before - 0.01);
+            assert_eq!(adapter.session.doc.features.len(), 3);
+        }
+    }
+}
+
+#[test]
+fn modelling_chamfer_cuts_across_a_fillet_face_join_without_replacing_the_fillet() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();
+    let fillet = adapter.execute("solid.fillet", json!({"body":"Block","edges":[[20,0,10]],"radius":2})).unwrap().value["feature"].as_u64().unwrap();
+    let original = adapter.session.doc.feature(fillet).unwrap().clone();
+    let before = modelling_volume(&adapter);
+    let selection = [modelling_edge(&mut adapter, "Block", Vec3::new(20., 2., 10.))];
+    let edit = adapter.begin_model(716, Some("solid.chamfer"), None, &selection).unwrap();
+    assert_eq!(edit.feature, None);
+    let mut params = edit.params.clone();
+    params["distance"] = json!("1 mm");
+    modelling_commit(&mut adapter, &edit, params);
+    let after = modelling_volume(&adapter);
+    assert!(after < before - 0.1, "the new bevel must remove material");
+    assert_eq!(adapter.session.doc.feature(fillet).unwrap(), &original);
+    assert_eq!(adapter.session.doc.features.len(), 3);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - before).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - after).abs() < 1e-6);
+    let mut loaded = modelling_roundtrip(&adapter);
+    assert!((modelling_volume(&loaded) - after).abs() < 1e-6);
+    // The bevel introduces a real corner on the flat face, which can receive
+    // a further round without touching the original Fillet feature.
+    let border = modelling_edge(&mut loaded, "Block", Vec3::new(20., 3., 10.));
+    let edit = loaded.begin_model(717, Some("solid.fillet"), None, &[border]).unwrap();
+    let mut params = edit.params.clone();
+    params["radius"] = json!("1 mm");
+    modelling_commit(&mut loaded, &edit, params);
+    assert!(modelling_volume(&loaded) < after);
+    assert_eq!(loaded.session.doc.feature(fillet).unwrap(), &original);
+    assert_eq!(loaded.session.doc.features.len(), 4);
+}
+
+#[test]
 fn modelling_fillet_and_chamfer_use_real_edges_edit_original_and_refuse_invalid_sizes() {
     for (operation, field) in [("solid.fillet", "radius"), ("solid.chamfer", "distance")] {
         let mut adapter = SessionAdapter::new();

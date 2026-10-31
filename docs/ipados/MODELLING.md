@@ -77,6 +77,15 @@ an edge or removes a face. Pencil, finger and pointer drags update the same scra
 transaction as numeric entry. Lifting finishes the draft; Apply creates one undo
 step, and Cancel discards it. Unsupported anchors retain exact numeric entry.
 
+An equal-distance Chamfer can also cut across the straight tangent join between
+an existing cylindrical fillet and its planar neighbor. Its distance is measured
+along the plane and along the round's circular arc. This adds a separate bevel;
+the original Fillet feature remains in the timeline. Oversized cuts that pass
+the round or its neighboring faces are refused. Sharp borders of fillets and
+chamfers can receive further supported treatments. A second constant-radius
+Fillet on the original tangent join has no corner to round; change the original
+radius through its timeline feature instead.
+
 Focused adapter regressions use the `modelling_surface` name filter in the
 existing session tests. The native workspace harness checks compact/expanded
 presentation and active chamfer fields. A repeatable macOS GPU capture is:

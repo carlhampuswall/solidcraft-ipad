@@ -126,6 +126,16 @@ an internally failed handle must be destroyed and recreated.
 
 ## Upstream delta ledger
 
+`crates/kernel/src/blend.rs` extends the existing guarded straight plane/cylinder
+chamfer cutter to convex tangent joins, including a fillet's rail against a flat
+face. The section uses equal distances along the plane and the cylinder's arc;
+existing contact, clearance, Boolean and history checks remain in force. This
+belongs in the shared kernel because it changes geometry, rather than native
+selection or presentation. It adds no platform dependency, public API or saved
+format, and applies equally to desktop and web. Tangent joins still have no
+corner for a second constant-radius fillet. This small geometric extension is
+independently upstream-suitable when kernel contributions resume.
+
 `cmd/face.rs` and `cmd/features.rs` partition multi-face extrusions by oriented
 plane and capture all linked profiles before applying any extrusion. Each plane
 uses the existing Extrude feature along its own normal; the engine transaction
