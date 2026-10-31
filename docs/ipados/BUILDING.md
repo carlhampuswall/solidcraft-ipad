@@ -91,7 +91,7 @@ Debug `--deferred-changes-check` verifies View menu icons, Light/Dark canvas
 appearance, neutral/legacy origin planes through the production View controls, and
 clockwise/counterclockwise two-finger twist plus its disabled behavior. It uses
 a disposable fixture, restores preferences, and writes
-`deferred-changes-check.json` and ten `deferred-*.png` UIKit/Metal captures in
+`deferred-changes-check.json` and eleven `deferred-*.png` UIKit/Metal captures in
 Documents. It also checks View title/icon alignment, minimum touch sizes,
 scrolling bounds above History, and Light/Dark plus accessibility text layouts.
 Popovers follow the saved workspace appearance preference.

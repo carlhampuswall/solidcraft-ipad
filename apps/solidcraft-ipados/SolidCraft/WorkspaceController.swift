@@ -1272,7 +1272,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let popover = panel.popoverPresentationController {
             popover.sourceView = viewButton; popover.sourceRect = viewButton.bounds
             popover.permittedArrowDirections = .up; popover.delegate = self
-            popover.backgroundColor = WorkspaceStyle.surface
         }
         viewControlsPopover = panel
         rebuildViewMenu()
@@ -4065,7 +4064,7 @@ private extension FoundationController {
             require(icons.count >= (mainPage ? 4 : 11) && icons.allSatisfy { $0.image != nil }, "View reference/switch icon missing")
             require(self.keyboardTop == nil, "View popup opened the keyboard")
             require(root.backgroundColor == .clear, "Opaque View background leaked outside native corners")
-            require(root.bounds.height <= 561, "View popup exceeded its scrolling height limit")
+            require((self.viewControlsPopover?.preferredContentSize.height ?? .infinity) <= 560, "View popup exceeded its scrolling content height limit")
             if let window = root.window {
                 let panelFrame = root.convert(root.bounds, to: window)
                 let historyFrame = self.featureHistory.convert(self.featureHistory.bounds, to: window)
@@ -4122,19 +4121,30 @@ private extension FoundationController {
                 frame("planes-neutral-light") {
                     self.updateAvailability()
                     self.showViewControls(animated: false)
+                    self.viewControlsPopover?.overrideUserInterfaceStyle = .light
                     wait({ self.viewControlsPopover?.view.window != nil && self.viewControlsPopover?.isBeingPresented == false }) {
                         frame("menu-light") {
                             inspectIcons()
                             self.viewControlsPopover?.overrideUserInterfaceStyle = .dark
                             frame("menu-dark") {
                                 inspectIcons()
+                                let category = self.viewControlsPopover?.traitCollection.preferredContentSizeCategory ?? .large
                                 self.viewControlsPopover?.traitOverrides.preferredContentSizeCategory = .accessibilityLarge
                                 frame("menu-large-text") {
                                     inspectIcons()
-                                    self.viewControlsPopover?.traitOverrides.preferredContentSizeCategory = .unspecified
-                                    control("individual-references")?.sendActions(for: .primaryActionTriggered)
-                                    self.overrideUserInterfaceStyle = .dark
-                                    frame("references-dark") { inspectIcons(); planes() }
+                                    let scroll = self.viewControlsPopover?.view.subviews.compactMap { $0 as? UIScrollView }.first
+                                    require((scroll?.contentSize.height ?? 0) > (scroll?.bounds.height ?? 0), "Large View page did not scroll")
+                                    if let scroll { scroll.setContentOffset(CGPoint(x: 0, y: max(0, scroll.contentSize.height - scroll.bounds.height)), animated: false) }
+                                    frame("menu-large-text-scrolled") {
+                                        inspectIcons()
+                                        if let button = control("individual-references"), let scroll {
+                                            require(scroll.bounds.contains(button.convert(button.bounds, to: scroll)), "Last View option was unreachable")
+                                        }
+                                        self.viewControlsPopover?.traitOverrides.preferredContentSizeCategory = category
+                                        control("individual-references")?.sendActions(for: .primaryActionTriggered)
+                                        self.overrideUserInterfaceStyle = .dark
+                                        frame("references-dark") { inspectIcons(); planes() }
+                                    }
                                 }
                             }
                         }

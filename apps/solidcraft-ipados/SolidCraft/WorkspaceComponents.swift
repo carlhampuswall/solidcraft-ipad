@@ -1924,7 +1924,7 @@ private final class ViewOptionButton: UIButton {
             indicator.widthAnchor.constraint(equalToConstant: 16),
             indicator.heightAnchor.constraint(equalToConstant: 16)
         ])
-        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (button: ViewOptionButton, _: UITraitCollection) in
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self, UITraitPreferredContentSizeCategory.self]) { (button: ViewOptionButton, _: UITraitCollection) in
             button.render(selected: button.isSelected, enabled: button.isEnabled)
         }
         render(selected: false, enabled: true)
@@ -1941,8 +1941,9 @@ private final class ViewOptionButton: UIButton {
         style.background.cornerRadius = 8
         style.background.strokeWidth = selected ? 1 : 0.5
         style.background.strokeColor = selected ? WorkspaceStyle.accent : WorkspaceStyle.separator
+        let font = UIFont.preferredFont(forTextStyle: .body, compatibleWith: traitCollection)
         style.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { original in
-            var attributes = original; attributes.font = UIFont.preferredFont(forTextStyle: .body); return attributes
+            var attributes = original; attributes.font = font; return attributes
         }
         style.image = WorkspaceIcon.image(iconID, traits: traitCollection, size: 24)
         style.imagePlacement = .leading; style.imagePadding = 8
@@ -2144,7 +2145,6 @@ final class WorkspaceViewPopover: UIViewController {
     }
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        popoverPresentationController?.backgroundColor = WorkspaceStyle.surface.resolvedColor(with: traitCollection)
         guard let presenter = presentingViewController else { return }
         let container = presenter.view.safeAreaLayoutGuide.layoutFrame
         let source = popoverPresentationController.flatMap { popover in
