@@ -17,24 +17,17 @@ impl SessionAdapter {
         let frames = self.session.placed_document().body_frames_with_source(&self.session.model.state());
         for body in world.bodies.iter().filter(|body| self.session.body_visible(&body.name)) {
             let Some((_, _, _, path, _)) = frames.iter().find(|(name, ..)| name == &body.name) else { continue };
-            let names = solidcraft_engine::doc::naming::face_names(body);
             for (index, spot) in solidcraft_engine::doc::naming::face_spots(body).into_iter().enumerate() {
                 let Some(spot) = spot.filter(|spot| matches!(spot.surface, Some(solidcraft_engine::kernel::FaceSurface::Plane { .. }))) else {
                     continue;
                 };
-                if options.len() >= 256 {
-                    break;
-                }
-                let name = names.get(index).cloned().unwrap_or_else(|| index.to_string());
-                options.push(json!({"label":format!("{} · {name}", body.name),
+                options.push(json!({"label":"ui.ipados.attachment.selected_face",
                     "value":{"face":spot.point,"body":body.name,"index":index,"path":path}}));
-            }
-            if options.len() >= 256 {
-                break;
             }
         }
         edit.params = json!({"plane":null});
-        edit.fields = vec![json!({"key":"plane","label":"ui.ipados.attachment.face","kind":"reference","options":options})];
+        edit.fields = vec![json!({"key":"plane","label":"ui.ipados.attachment.face","kind":"face_pick","options":options})];
+        edit.selection_field = Some("plane".into());
         edit.feedback = vec!["ui.ipados.attachment.hint".into()];
         Ok(())
     }

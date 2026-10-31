@@ -180,6 +180,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var acceptsModelValueFrame = false
     private weak var modelValueEditor: NumericValueEditorController?
     private lazy var modelValueButton = WorkspaceButton(HandleText.text("edit_value")) { [weak self] in self?.editModelValue() }
+    private var attachmentSelectionPending = false
     private var modellingInspectPending = false
     private var modellingCommitting = false
     private var modellingPreviewQueue = ModellingPreviewQueue()
@@ -1755,21 +1756,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 form.onInlineChoice = { [weak self] params in self?.refreshModellingContext(params, submitAfter: .preview) }
                 form.onApply = { [weak self] params in self?.evaluateModelling(params, commit: true) }
                 form.onCancel = { [weak self] in self?.cancelModelling() }
-                form.onReferenceChoices = { [weak self] menu, source in
-                    guard let self, self.modellingToken == token, !self.modellingCommitting,
-                          self.presentedViewController == nil, source.window != nil else { return }
-                    self.canvas.cancelInput(); self.view.endEditing(true)
-                    let picker = BrowserActionController(menu: menu)
-                    let navigation = UINavigationController(rootViewController: picker)
-                    navigation.modalPresentationStyle = .popover
-                    navigation.overrideUserInterfaceStyle = self.workspaceInterfaceStyle
-                    navigation.preferredContentSize = picker.preferredContentSize
-                    if let popover = navigation.popoverPresentationController {
-                        popover.sourceView = source; popover.sourceRect = source.bounds
-                        popover.delegate = self
-                    }
-                    self.present(navigation, animated: true)
-                }
                 form.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.revealField(); self?.updateAvailability() }
                 form.onEditValue = form.compact ? { [weak self] field, expression, source in
                     self?.presentModelValue(parameter: field.key, expression: expression, units: field.units ?? "",
@@ -1782,6 +1768,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 form.onSelect = { [weak self, weak form] field in
                     guard let self, let form else { return }
+                    if form.isAttachmentRepair {
+                        self.selectAttachmentFace(token: token, form: form)
+                        return
+                    }
                     self.modellingAutomaticPreview.cancel()
                     form.beginContextRefresh()
                     self.session.requestModelling(action: "inspect", token: token, params: form.params) { [weak self, weak form] result in
@@ -1838,11 +1828,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func evaluateModelling(_ params: [String: PresentationJSON], commit: Bool, live: Bool = false) {
         modellingAutomaticPreview.cancel()
         guard let token = modellingToken, let form = modellingInspector, !modellingCommitting else { return }
-        if !commit, form.fields.contains(where: { $0.key == "plane" && $0.kind == "reference" }),
-           params["plane"] == nil || params["plane"] == .null {
-            refreshModellingContext(params)
-            return
-        }
+        if !commit, form.isAttachmentRepair, params["plane"] == nil || params["plane"] == .null { return }
         if !commit && ModellingFormPresentation.needsExtrusionDistance(params) {
             // Keep a source-surface handle without evaluating an empty solid.
             // Inspection also clears any previous preview when depth is erased.
@@ -1870,7 +1856,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             guard let self, self.modellingGeneration == expected, self.modellingToken == token else { return }
             self.modellingCommitting = false
             let queuedPreview = self.modellingPreviewQueue.complete()
-            guard self.modellingFormVersion == expectedForm else { return }
+            guard self.modellingFormVersion == expectedForm else {
+                self.drainAttachmentSelection()
+                return
+            }
             switch result {
             case .failure(let error): form?.failed(error); self.failure = error.message
             case .success(let model):
@@ -1886,6 +1875,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.failure = nil
             }
             self.updateAvailability(); self.updateStatus()
+            self.drainAttachmentSelection()
             if case .failure(let error) = result, let valueRevision, valueEditor === self.modelValueEditor?.editor {
                 valueEditor?.completePreview(revision: valueRevision, error: error.message)
                 self.updateModelValueChoices()
@@ -1898,6 +1888,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func inspectModelling() {
+        if modellingInspector?.isAttachmentRepair == true {
+            modellingAutomaticPreview.cancel()
+            modellingPreviewQueue.discardPending()
+            attachmentSelectionPending = true
+            drainAttachmentSelection()
+            return
+        }
         guard let token = modellingToken, let form = modellingInspector, !modellingInspectPending, !modellingCommitting, modellingPreviewQueue.active == nil,
               !modellingContextInspectInFlight, !modellingContextNeedsRefresh else { return }
         modellingInspectPending = true; form.invalidatePreview()
@@ -1912,6 +1909,54 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .success(let model): form?.inspected(model); self.scheduleModellingPreview()
             case .failure(let error): form?.failed(error)
             }
+        }
+    }
+
+    private func selectAttachmentFace(token: UInt64, form: ModellingInspector) {
+        guard modellingToken == token, !modellingCommitting else { return }
+        canvas.cancelInput(); modellingAutomaticPreview.cancel(); modellingPreviewQueue.discardPending()
+        modellingFormVersion &+= 1
+        pendingModellingContext = nil; submitAfterModellingContext = nil; modellingContextNeedsRefresh = false
+        modellingContextInspectInFlight = true
+        form.beginContextRefresh()
+        let expected = modellingGeneration
+        session.requestModelling(action: "selection", token: token, params: ["field": .string("plane")]) { [weak self, weak form] result in
+            guard let self, self.modellingGeneration == expected, self.modellingToken == token else { return }
+            self.modellingContextInspectInFlight = false
+            switch result {
+            case .success(let model):
+                form?.contextRefreshed(model); self.failure = nil
+                self.inspectorOpen = true; self.browserOpen = false; self.relayoutPanels()
+            case .failure(let error): form?.failed(error); self.failure = error.message
+            }
+            self.drainAttachmentSelection(); self.updateAvailability(); self.updateStatus()
+        }
+    }
+
+    /// A tap arriving during a preview/context refresh must be inspected after
+    /// that work finishes. Coalesce to the viewport's latest real selection.
+    private func drainAttachmentSelection() {
+        guard attachmentSelectionPending, let token = modellingToken, let form = modellingInspector, form.isAttachmentRepair,
+              !modellingInspectPending, !modellingCommitting, modellingPreviewQueue.active == nil,
+              !modellingContextInspectInFlight, !modellingContextNeedsRefresh else { return }
+        attachmentSelectionPending = false; modellingInspectPending = true; form.invalidatePreview()
+        let expected = modellingGeneration, expectedForm = modellingFormVersion
+        session.requestModelling(action: "inspect", token: token) { [weak self, weak form] result in
+            guard let self, self.modellingGeneration == expected, self.modellingToken == token else { return }
+            self.modellingInspectPending = false
+            if self.modellingFormVersion == expectedForm {
+                switch result {
+                case .success(let model):
+                    form?.inspected(model)
+                    if model.params?["plane"] != nil && model.params?["plane"] != .null {
+                        self.inspectorOpen = true; self.browserOpen = false; self.relayoutPanels()
+                    }
+                    if !self.attachmentSelectionPending { self.scheduleModellingPreview() }
+                case .failure(let error):
+                    if !self.attachmentSelectionPending { form?.failed(error) }
+                }
+            }
+            self.drainAttachmentSelection()
         }
     }
 
@@ -1962,6 +2007,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.modelValueEditor?.editor.setBusy(false)
             }
             if self.pendingModellingContext != nil { self.drainModellingContext() }
+            self.drainAttachmentSelection()
             self.updateAvailability()
         }
     }
@@ -1989,7 +2035,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorPanel.setFooter(nil); inspectorPanel.setTitle(WorkspaceStyle.text("inspector"))
         previewStale = false
         modellingToken = nil; modellingFeature = nil; modellingContext = nil; modellingStarting = false
-        modellingCommitting = false; modellingInspectPending = false
+        modellingCommitting = false; modellingInspectPending = false; attachmentSelectionPending = false
         modellingPreviewQueue.clear()
         modellingFormVersion &+= 1; modellingContextInspectInFlight = false
         pendingModellingContext = nil; modellingContextNeedsRefresh = false; submitAfterModellingContext = nil
@@ -4138,7 +4184,7 @@ private extension FoundationController {
                 let report: [String: Any] = ["passed": failure == nil, "error": failure ?? "", "stages": stages,
                     "library_project_untouched": session.currentProject == nil,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
-                    "coverage": "Production UIKit repair action, face menu, preview, Cancel, Apply, undo/redo and extrusion on physical iPad. Software input; physical Pencil unverified."]
+                    "coverage": "Production UIKit repair action, visual face picking through synthetic Pencil input, preview, Cancel, Apply, undo/redo and extrusion on physical iPad. Physical Pencil delivery unverified."]
                 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("sketch-attachment-check.json"), options: .atomic)
             } catch { NSLog("Attachment evidence failed: %@", String(describing: error)) }
@@ -4170,28 +4216,24 @@ private extension FoundationController {
             session.command("view.grid", params: ["visible":gridVisible])
         }
         func chooseFace(then next: @escaping () -> Void) {
-            wait({ self.modellingInspector?.handleEntryEnabled == true && control("workspace-model-field-plane")?.isEnabled == true }) {
-                guard let form = self.modellingInspector, let field = form.fields.first(where: { $0.key == "plane" }),
-                      let option = field.options?.first(where: { option in
-                          guard case .object(let plane) = option.value, case .array(let point)? = plane["face"], point.count == 3,
-                                let z = point[2].value as? NSNumber else { return false }
-                          return abs(z.doubleValue - 10) < 0.00001
-                      }), let button = control("workspace-model-field-plane") else {
-                    finish("Current top face choice unavailable"); return
+            wait({ self.modellingInspector?.handleEntryEnabled == true && control("workspace-model-select-plane")?.isEnabled == true }) {
+                guard let form = self.modellingInspector, form.fields.contains(where: { $0.kind == "face_pick" }),
+                      let button = control("workspace-model-select-plane"), button.menu == nil else {
+                    finish("Visual face picker missing or exposes a face list"); return
                 }
                 button.sendActions(for: .touchUpInside)
-                wait({
-                    guard let navigation = self.presentedViewController as? UINavigationController else { return false }
-                    return navigation.topViewController is BrowserActionController && !navigation.isBeingPresented && navigation.transitionCoordinator == nil
-                }) {
-                    guard let picker = (self.presentedViewController as? UINavigationController)?.topViewController as? BrowserActionController,
-                          let index = picker.menu.children.firstIndex(where: { $0.title == ModellingText.label(option.label) }),
-                          self.keyboardTop == nil, !self.textEntryActive else {
-                        finish("Face chooser missing or raised the keyboard"); return
-                    }
-                    capture("face-list-" + String(stages.count)) {
-                        picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: index, section: 0))
-                        wait({ self.presentedViewController == nil && control("workspace-model-apply")?.isEnabled == true }, then: next)
+                wait({ self.modellingInspector?.handleEntryEnabled == true && self.modellingInspector?.params["plane"] == .null && !self.canvas.displayingPreview }) {
+                    capture("picking-" + String(stages.count)) {
+                        self.session.developmentSketchTap([10,10,10]) { result in
+                            guard case .success = result else { finish("Viewport face tap failed"); return }
+                            self.session.command("view.grid", params: ["visible":self.gridVisible]) { _ in
+                                self.session.refreshWorkspace()
+                                wait({ self.modellingInspector?.params["plane"] != .null && control("workspace-model-apply")?.isEnabled == true && self.inspectorOpen }) {
+                                    if self.keyboardTop != nil || self.presentedViewController != nil { finish("Face picking opened a keyboard or list"); return }
+                                    next()
+                                }
+                            }
+                        }
                     }
                 }
             }

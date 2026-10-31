@@ -848,6 +848,7 @@ fn modelling_sketch_attachment_uses_exact_face_form_preview_cancel_and_single_co
     engine_command(id, "sketch.finish", json!({}));
     let entry = lookup(id).unwrap();
     let original = entry.adapter.lock().unwrap().execute("document.inspect", json!({})).unwrap().value;
+    view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
     for commit in [false, true] {
         assert_eq!(
             request(id, &json!({"kind":"model","action":"begin","operation":"sketch.redefine","feature":sketch}).to_string()),
@@ -867,6 +868,26 @@ fn modelling_sketch_attachment_uses_exact_face_form_preview_cancel_and_single_co
             .unwrap()["value"]
             .clone();
         assert_eq!(request(id, &json!({"kind":"model","action":"selection","token":token,"params":{"field":"plane"}}).to_string()), 0);
+        assert_eq!(result["fields"][0]["kind"], "face_pick");
+        view_request(id, json!({"kind":"command","command":"view.top","params":{}}));
+        view_request(id, json!({"kind":"command","command":"view.fit","params":{}}));
+        let projected = view_request(id, json!({"kind":"command","command":"view.project","params":{"point":plane["face"]}}));
+        let viewport = view_request(id, json!({"kind":"snapshot"}))["result"].clone();
+        for (index, phase) in ["began", "ended"].into_iter().enumerate() {
+            view_request(
+                id,
+                json!({"kind":"input","event":{
+                    "source":"pencil","phase":phase,"id":92,"timestamp":1. + index as f64,
+                    "x_points":projected["result"]["points"][0],"y_points":projected["result"]["points"][1],
+                    "x_pixels":projected["result"]["pixels"][0],"y_pixels":projected["result"]["pixels"][1],"scale":2,
+                    "geometry_revision":viewport["geometry_revision"],"document_id":viewport["document_id"],
+                    "viewport_epoch":viewport["viewport_epoch"],"camera_epoch":viewport["camera_epoch"]
+                }}),
+            );
+        }
+        assert_eq!(request(id, &json!({"kind":"model","action":"inspect","token":token}).to_string()), 0);
+        assert_eq!(response(id)["result"]["params"]["plane"], plane);
+
         assert_eq!(
             request(id, &json!({"kind":"model","action":"preview","token":token,"params":{"plane":plane}}).to_string()),
             0,

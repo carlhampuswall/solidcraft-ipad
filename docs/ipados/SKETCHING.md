@@ -27,9 +27,11 @@ verify UIKit runtime or physical iPad input.
 
 After finishing or cancelling the current tool, select a sketch in the browser
 and choose **Repair sketch attachment** in Properties, or hold its browser row
-and choose the same action. Select the intended planar face from **Change** or
-choose **Select in viewport** and tap the face. Only bodies preceding the sketch
-are offered, so a later extrusion cannot become its own supporting geometry.
+and choose the same action. Tap the intended planar face directly in the model.
+The form stays visible and reports **Face selected** after the pick; it never
+offers a list of internal face names. Use **Change face** to clear the selection
+and pick again. Only bodies preceding the sketch are available, so a later
+extrusion cannot become its own supporting geometry.
 Face picking replaces the previous choice even when Multiple selection is on.
 
 The repair form previews the existing sketch and regenerated model through
@@ -45,7 +47,8 @@ sketch edit. Re-selecting an extrusion profile alone does not repair the sketch'
 face attachment. Once the attachment is repaired, retry the extrusion.
 
 The Debug-only `--sketch-attachment-check` exercises the production Properties
-and browser actions, face menu, preview, Cancel, Apply, undo/redo and an 18.8 mm
+and browser actions, visual face picking through synthetic Pencil input,
+preview, Cancel, Apply, undo/redo and an 18.8 mm
 extrusion on a disposable changed-face fixture. It writes
 `sketch-attachment-check.json` and `attachment-*.png` to Documents. It does not
 load or autosave a library project. Reserve the physical iPad before running or
@@ -53,7 +56,7 @@ retrieving evidence. Software-driven UIKit actions do not verify physical Pencil
 delivery. Focused regressions live in the existing session and bridge test files;
 the engine test suite requires an explicit user request.
 
-Verified on 2026-10-31 with signed candidate
+The earlier face-list flow was verified on 2026-10-31 with signed candidate
 `a2971510ad7b0585123129310568c5246697ade3`, including the separately committed
 constrained-colour work. The physical-iPad diagnostic passed Properties/browser
 entry, initially disabled Apply, the keyboard-free face chooser, preview,
@@ -72,9 +75,10 @@ retains the existing engine dead-code warning. Device coverage uses programmatic
 UIKit actions; physical Pencil/finger input, simulators, the engine suite and
 full CI were not run for this repair. The native face payload is recanonicalised
 after typed-coordinate comparison so Swift's `10.0` → `10` JSON round trip does
-not reject an unchanged face. Open face choices survive presentation refreshes
-only while the option remains current; the native edit token still rejects a
-changed document.
+not reject an unchanged face. That earlier diagnostic did not exercise viewport
+face picking. The replacement visual picker coalesces selection updates during
+preview/context work and rejects a preview whose selected face changed before
+publication; the native edit token still rejects a changed document.
 
 ## Construction geometry
 

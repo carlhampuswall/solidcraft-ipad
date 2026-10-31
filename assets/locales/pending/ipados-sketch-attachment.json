@@ -1,10 +1,15 @@
 {
   "en": {
-    "ui.ipados.attachment.choose_face": "Choose one current planar face from the list or select it in the model.",
+    "ui.ipados.attachment.change_face": "Change face",
+    "ui.ipados.attachment.choose_face": "Tap a planar face in the model to attach this sketch.",
     "ui.ipados.attachment.choose_sketch": "Choose an unsuppressed sketch to repair its attachment.",
     "ui.ipados.attachment.face": "Attach sketch to face",
-    "ui.ipados.attachment.hint": "Choose the intended face before this sketch in History. Preview the sketch placement, then Apply to repair its attachment.",
+    "ui.ipados.attachment.hint": "Tap the supporting face in the model. Check the sketch placement in the preview, then Apply.",
+    "ui.ipados.attachment.pick_changed": "The selected face changed. Updating the preview.",
     "ui.ipados.attachment.preview_hint": "Check the sketch position and orientation before applying. This repair is one undoable change.",
-    "ui.ipados.attachment.repair": "Repair sketch attachment"
+    "ui.ipados.attachment.repair": "Repair sketch attachment",
+    "ui.ipados.attachment.select_face": "Select face",
+    "ui.ipados.attachment.selected_face": "Face selected",
+    "ui.ipados.attachment.tap_face": "Tap a planar face in the model"
   }
 }

@@ -1510,10 +1510,10 @@ final class ModellingInspector: UIStackView {
     private(set) var fields: [ModellingState.Field]
     private var validated: [String: PresentationJSON]?
     private var attachmentReady: Bool {
-        !fields.contains(where: { $0.key == "plane" && $0.kind == "reference" }) || validated == params
+        !fields.contains(where: { $0.key == "plane" && $0.kind == "face_pick" }) || validated == params
     }
     private var entryHint: String {
-        if fields.contains(where: { $0.key == "plane" && $0.kind == "reference" }), params["plane"] == nil || params["plane"] == .null {
+        if fields.contains(where: { $0.key == "plane" && $0.kind == "face_pick" }), params["plane"] == nil || params["plane"] == .null {
             return NativeText.value("ui.ipados.attachment.choose_face")
         }
         return ModellingFormPresentation.needsExtrusionDistance(params)
@@ -1548,7 +1548,6 @@ final class ModellingInspector: UIStackView {
     var onFocus: (() -> Void)?
     var onChange: (() -> Void)?
     var onSelect: ((String?) -> Void)?
-    var onReferenceChoices: ((BrowserActionMenu, UIView) -> Void)?
     var onEditValue: ((ModellingState.Field, String, UIView) -> Void)?
     var focusedField: UITextField? { editors.first(where: { $0.field.isFirstResponder })?.field ?? textFields.first(where: { $0.isFirstResponder }) }
     var textEntryActive: Bool { focusedField != nil }
@@ -1616,7 +1615,7 @@ final class ModellingInspector: UIStackView {
                 addArrangedSubview(help)
             }
             addArrangedSubview(feedback)
-        } else { addArrangedSubview(select) }
+        } else if !isAttachmentRepair { addArrangedSubview(select) }
         footer.axis = .vertical; footer.spacing = 8
         if compact {
             let divider = UIView(); divider.backgroundColor = WorkspaceStyle.separator
@@ -1795,6 +1794,8 @@ final class ModellingInspector: UIStackView {
                 }
                 editors.append(editor); fieldViews.append(editor); stack.addArrangedSubview(editor)
                 if field.kind == "slider" { buildSlider(field, editor: editor, in: stack) }
+            } else if field.kind == "face_pick" {
+                buildFacePick(field, in: stack)
             } else if field.kind == "references" {
                 buildReferences(field, in: stack)
             } else if field.kind == "reference" && (compact || field.key == "plane") {
@@ -1830,11 +1831,28 @@ final class ModellingInspector: UIStackView {
             options.content.addArrangedSubview(additionalFields)
             fieldsStack.addArrangedSubview(options)
         }
-        if compact && !fields.contains(where: { ($0.key == "profile" || $0.key == "plane") && $0.kind == "reference" }) {
+        if compact && !isAttachmentRepair && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
             fieldsStack.addArrangedSubview(select)
         }
         updateAvailability()
     }
+    var isAttachmentRepair: Bool { fields.contains { $0.kind == "face_pick" } }
+
+    private func buildFacePick(_ field: ModellingState.Field, in stack: UIStackView) {
+        let selected = parameter(field.key).map { $0 != .null } ?? false
+        let summary = WorkspaceStyle.label(.subheadline)
+        summary.text = NativeText.value("ui.ipados.attachment." + (selected ? "selected_face" : "tap_face"))
+        summary.accessibilityIdentifier = "workspace-model-summary-plane"
+        stack.addArrangedSubview(summary)
+        let pick = WorkspaceButton(NativeText.value("ui.ipados.attachment." + (selected ? "change_face" : "select_face"))) { [weak self] in
+            guard let self, !self.committing else { return }
+            self.endEditing(true); self.onSelect?(field.key)
+        }
+        pick.artwork("select")
+        pick.accessibilityIdentifier = "workspace-model-select-plane"
+        stack.addArrangedSubview(pick); fieldViews.append(pick)
+    }
+
     private func buildSource(_ field: ModellingState.Field, in stack: UIStackView) {
         let selected = parameter(field.key)
         let summary = WorkspaceStyle.label(.subheadline)
@@ -1858,31 +1876,6 @@ final class ModellingInspector: UIStackView {
         change.menu = UIMenu(children: options + [UIAction(title: ModellingText.text("select_in_viewport")) { [weak self] _ in
             self?.endEditing(true); self?.onSelect?(field.key)
         }])
-        if field.key == "plane" {
-            // The repair has no text inputs. Reuse ordinary table choices so
-            // UIKit's system menu cannot activate its keyboard/type-ahead path.
-            change.menu = nil; change.showsMenuAsPrimaryAction = false
-            let generation = fieldGeneration
-            change.addAction(UIAction { [weak self, weak change] _ in
-                guard let self, let change, self.canEditFields(generation) else { return }
-                var choices = (field.options ?? []).map { option in
-                    BrowserActionMenu.Item(title: ModellingText.label(option.label), selected: option.value == self.parameter(field.key)) { [weak self] in
-                        // A workspace refresh can rebuild the underlying row
-                        // while this picker is open. Keep a still-current choice;
-                        // the native edit token validates document/face identity.
-                        guard let self, !self.committing,
-                              self.fields.contains(where: { $0.key == field.key && $0.options?.contains(where: { $0.value == option.value }) == true }) else { return }
-                        self.setParameter(field.key, value: option.value); self.changed(); self.rebuildFields()
-                        self.onContextChange?(self.params)
-                    }
-                }
-                choices.append(BrowserActionMenu.Item(title: ModellingText.text("select_in_viewport"), icon: "select") { [weak self] in
-                    guard let self, !self.committing, self.fields.contains(where: { $0.key == field.key }) else { return }
-                    self.endEditing(true); self.onSelect?(field.key)
-                })
-                self.onReferenceChoices?(BrowserActionMenu(title: ModellingText.label(field.label), children: choices), change)
-            }, for: .touchUpInside)
-        }
         change.setContentCompressionResistancePriority(.required, for: .horizontal)
         change.setContentHuggingPriority(.required, for: .horizontal)
         let row = UIStackView(arrangedSubviews: [summary, change])

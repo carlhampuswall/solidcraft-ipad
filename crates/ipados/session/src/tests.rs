@@ -5475,12 +5475,9 @@ fn modelling_sketch_attachment_cancel_and_exact_selection_reject_invalid_or_futu
             index: top["index"].as_u64().unwrap() as usize,
             point: serde_json::from_value(top["face"].clone()).unwrap(),
         };
-        let menu = adapter.refresh_model(&edit, &[], Some(json!({"plane":top}))).unwrap();
-        assert_eq!(
-            adapter.refresh_model(&menu, &[], None).unwrap().params["plane"],
-            top,
-            "inspection preserves a menu choice outside viewport picking"
-        );
+        assert_eq!(edit.fields[0]["kind"], "face_pick");
+        assert_eq!(edit.selection_field.as_deref(), Some("plane"), "repair starts ready for a visual face pick");
+        assert!(edit.fields[0]["options"].as_array().unwrap().iter().all(|option| option["label"] == "ui.ipados.attachment.selected_face"));
         let mut selecting = edit.clone();
         selecting.selection_field = Some("plane".into());
         let refreshed = adapter.refresh_model(&selecting, std::slice::from_ref(&selected), None).unwrap();
@@ -5499,8 +5496,18 @@ fn modelling_sketch_attachment_cancel_and_exact_selection_reject_invalid_or_futu
             assert!(matches!(viewport.selection.as_slice(), [Sel::Face { .. }]), "repair picks one face even with Multiple enabled");
         }
         let current = viewport.model_edit(892).unwrap();
-        let preview = adapter.prepare_model(&current, json!({"plane":top}), false).unwrap();
+        let current = adapter.refresh_model(&current, viewport.selection(), None).unwrap();
+        assert_eq!(current.params["plane"], top, "the real viewport selection reaches the repair form");
+        viewport.update_model(current.clone()).unwrap();
+        let preview = adapter.prepare_model(&current, current.params.clone(), false).unwrap();
+        let chosen = viewport.selection.clone();
+        viewport.selection.clear();
+        assert_eq!(viewport.publish_model(892, &preview).unwrap_err().code, "stale_preview", "late results cannot consume a newer face pick");
+        viewport.selection = chosen;
         viewport.publish_model(892, &preview).unwrap();
+        viewport.select_model_inputs(892, Some("plane")).unwrap();
+        assert!(viewport.model_edit(892).unwrap().params["plane"].is_null(), "changing the face clears the previous input and preview");
+        assert!(!viewport.diagnostic()["preview"].as_bool().unwrap());
         viewport.finish_model(892, None).unwrap();
         assert_eq!(viewport.is_updating(), changed, "cancel restores the original scene's validity");
         if !changed {
@@ -5510,6 +5517,34 @@ fn modelling_sketch_attachment_cancel_and_exact_selection_reject_invalid_or_futu
         adapter.execute("body.rename", json!({"body":"Future","name":"Later"})).unwrap();
         assert!(adapter.prepare_model(&refreshed, refreshed.params.clone(), true).is_err(), "a document change invalidates old repair choices");
     }
+}
+
+#[test]
+fn modelling_sketch_attachment_visual_pick_has_no_dropdown_face_count_limit() {
+    let mut adapter = SessionAdapter::new();
+    for index in 0..44 {
+        adapter.execute("solid.box", json!({"length":2,"width":2,"height":2,"corner":[index*4,0,0],"body_name":format!("Part{index}")})).unwrap();
+    }
+    let sketch =
+        adapter.execute("sketch.create", json!({"plane":{"face":[173,1,2]},"project_edges":false})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let edit = adapter.begin_model(893, Some("sketch.redefine"), Some(sketch), &[]).unwrap();
+    assert!(edit.fields[0]["options"].as_array().unwrap().len() > 256);
+    let top = edit.fields[0]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["value"]["body"] == "Part43" && option["value"]["face"][2] == 2.0)
+        .unwrap()["value"]
+        .clone();
+    let selection = Sel::Face {
+        body: "Part43".into(),
+        index: top["index"].as_u64().unwrap() as usize,
+        point: serde_json::from_value(top["face"].clone()).unwrap(),
+    };
+    let refreshed = adapter.refresh_model(&edit, &[selection], None).unwrap();
+    let prepared = adapter.prepare_model(&refreshed, refreshed.params.clone(), false).unwrap();
+    assert!((prepared.model.volume_mm3 - 44. * 8.).abs() < 1e-5);
 }
 
 fn modelling_plate(width: f64, depth: &str) -> (SessionAdapter, u64, String, u64) {

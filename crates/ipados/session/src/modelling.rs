@@ -1620,6 +1620,13 @@ impl Viewport {
         if edit.version != prepared.version {
             return Err(error("stale_preview", "A newer modelling proposal replaced this result."));
         }
+        if edit.operation == "sketch.redefine" && edit.selection_field.as_deref() == Some("plane") {
+            let current = matches!(self.selection.as_slice(), [Sel::Face { body, index, .. }]
+                if prepared.params["plane"]["body"] == *body && prepared.params["plane"]["index"] == *index);
+            if !current {
+                return Err(error("stale_preview", "ui.ipados.attachment.pick_changed"));
+            }
+        }
         if let Some(e) = &mut self.modelling {
             e.preview = Some(prepared.model.clone());
             e.selection_field = None;
@@ -1659,6 +1666,9 @@ impl Viewport {
         self.selection.clear();
         if let Some(edit) = &mut self.modelling {
             edit.selection_field = field.map(str::to_string);
+            if edit.operation == "sketch.redefine" {
+                edit.params["plane"] = Value::Null;
+            }
             edit.handle = None;
             edit.version = edit.version.saturating_add(1);
         }
