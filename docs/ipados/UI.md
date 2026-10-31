@@ -12,8 +12,8 @@ the source history and current verification scope.
 `WorkspaceController.swift` hosts one real `MetalCanvas` behind native floating
 controls. The document header is a centred surface, normally 340 × 52 points,
 showing the actual document name and app-private persistence status. Its folder
-menu opens Projects and Save project. Import, Export and Share STEP live in the
-Projects panel. The separate top-left
+button opens Projects directly. Save project remains in Tools → Projects.
+Import, Export and Share STEP live in the Projects panel. The separate top-left
 Model button opens the model browser. Projects presents the native design library
 with search, create/open, swipe or context-menu rename, and context-menu
 duplicate/delete actions. Switching
@@ -395,7 +395,8 @@ on the current project named in the footer. Each transfer closes the panel befor
 presenting the native file or share controller.
 
 Debug `--projects-check` extends the existing STEP share acceptance driver with
-the startup panel, Light/Dark/System appearance, busy controls, rename validation,
+the startup panel, a direct tap on the top folder button, Light/Dark/System
+appearance, busy controls, rename validation,
 identity/history preservation, saving to the new path and Projects → Share STEP.
 It uses a temporary project library and restores launch/appearance preferences;
 no saved project selection or library design is changed. Captures and the report

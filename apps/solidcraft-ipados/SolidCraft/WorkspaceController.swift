@@ -64,7 +64,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         self.endpointFinishButton.isHidden = true
         self.run("tool.finish_chain")
     }
-    private lazy var documentActionsButton = WorkspaceButton(WorkspaceStyle.text("document_actions"), action: {})
+    private lazy var documentActionsButton = WorkspaceButton(ProjectText.text("title")) { [weak self] in self?.showProjects() }
     private lazy var homeButton = WorkspaceButton(WorkspaceStyle.text("home")) { [weak self] in
         guard let self else { return }
         self.runViewCommand(self.homeToolbar ? "view.home" : "view.fit")
@@ -3011,9 +3011,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             sketchToolsButton.isHidden = !inSketch || editing
             finishSketchButton.isHidden = !inSketch || editing
             finishChainButton.isHidden = finishChainButton.isHidden || editing
-            [projectionButton, documentActionsButton].forEach {
-                $0.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
-            }
+            projectionButton.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
+            documentActionsButton.availability(enabled: !numericEditing && !modellingEditing && pending.isEmpty && !preparingExport && pendingExport == nil)
             projectionButton.active(perspective)
             projectionButton.isHidden = inSketch
             constraintsButton.isHidden = !inSketch || editing
@@ -3056,8 +3055,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modifyButton.showsMenuAsPrimaryAction = true; patternButton.showsMenuAsPrimaryAction = true
         modellingButton.showsMenuAsPrimaryAction = true
         rebuildViewMenu()
-        documentActionsButton.menu = UIMenu(children: projectMenuActions())
-        documentActionsButton.showsMenuAsPrimaryAction = true
         let filters = WorkspaceSelectionFilter.allCases.map { option in
             let name = option.rawValue
             return UIAction(title: NativeText.value(option == .occurrence ? "ui.ipados.assembly.occurrence" : "ui.ipados." + name), state: filter == option ? .on : .off) { [weak self] _ in
@@ -3745,10 +3742,18 @@ private extension FoundationController {
                 }
             }
         }
-        func checkBrowser() {
-            if presentedViewController == nil { projectsStartupHandled = false; showStartupProjectsIfReady() }
+        func checkBrowser(openedByButton: Bool = false) {
+            if presentedViewController == nil {
+                if openedByButton { documentActionsButton.sendActions(for: .touchUpInside) }
+                else { projectsStartupHandled = false; showStartupProjectsIfReady() }
+            }
             wait({ self.projectsBrowser?.tableView.numberOfRows(inSection: 0) == 1 }) {
                 guard let browser = self.projectsBrowser, let project = self.session.currentProject else { report("Missing startup project browser"); return }
+                if !openedByButton {
+                    browser.dismiss(animated: false) { checkBrowser(openedByButton: true) }
+                    return
+                }
+                if self.documentActionsButton.menu != nil || self.documentActionsButton.showsMenuAsPrimaryAction { issues.append("Top Projects button still opens a menu") }
                 let oldDocument = self.state?.document_id
                 let oldUndo = self.state?.can_undo
                 let oldRows = self.state?.rows.count
