@@ -299,8 +299,12 @@ claim a full Rust workspace CI run or physical Pencil verification.
 DEBUG `--constraints-menu-check` selects two real sketch edges in a disposable
 fixture and opens the production Constraints control. It checks that opening,
 dismissing and reopening preserve selection, document/history and the canvas
-frame without text focus or a keyboard, verifies disabled choices, then applies
-Parallel and undoes it through the native command path. It writes
+frame without text focus or a keyboard. It verifies canonical SolidCraft icons
+and touch targets on every choice, then activates the real Parallel button and
+undoes it through the native command path. It also arms Parallel before selecting
+its two edges. The scrollable icon popover uses ordinary buttons, a persistent
+Cancel button and outside dismissal; it contains no text input or button-menu
+preview. It writes
 `constraints-menu-check.json` and `constraints-menu-*.png` in Documents. Normal
 launch never runs this diagnostic or replaces a library project. The selections
 are synthetic; separately check pointer/Pencil opening and outside dismissal.

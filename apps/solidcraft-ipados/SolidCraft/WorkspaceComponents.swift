@@ -1967,6 +1967,90 @@ final class ModellingInspector: UIStackView {
     }
 }
 
+/// Icon choices use ordinary controls, never a button menu preview or text input.
+final class WorkspaceConstraintPicker: UIViewController {
+    var onChoose: ((String) -> Void)?
+    private(set) var buttons: [String: WorkspaceButton] = [:]
+    private let choices: [String]
+    private let scroll = UIScrollView()
+    private let rows = UIStackView()
+    private(set) lazy var cancelButton = WorkspaceButton(WorkspaceStyle.text("cancel"), activationEvent: .primaryActionTriggered) { [weak self] in
+        self?.dismiss(animated: true)
+    }
+
+    init(choices: [String]) {
+        self.choices = choices
+        super.init(nibName: nil, bundle: nil)
+        modalPresentationStyle = .popover
+        traitOverrides.userInterfaceLevel = .base
+        preferredContentSize = CGSize(width: 340, height: 560)
+    }
+    required init?(coder: NSCoder) { nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+        view.accessibilityIdentifier = "workspace-constraint-picker"
+        rows.axis = .vertical; rows.spacing = 6
+        let heading = WorkspaceStyle.label(.headline)
+        heading.text = WorkspaceStyle.text("constraints"); heading.accessibilityTraits.insert(.header)
+        rows.addArrangedSubview(heading)
+        for key in choices {
+            let button = WorkspaceButton(SketchText.text(key), activationEvent: .primaryActionTriggered) { [weak self] in
+                guard let self else { return }
+                let choose = self.onChoose
+                self.onChoose = nil
+                self.dismiss(animated: true) { choose?(key) }
+            }
+            // Horizontal and Vertical are modes of the same upstream command.
+            let command = ["horizontal", "vertical"].contains(key) ? "horizontal_vertical" : key
+            button.commandArtwork("sketch.constraint." + command)
+            button.contentHorizontalAlignment = .leading
+            button.configuration?.titleAlignment = .leading
+            button.configuration?.titleLineBreakMode = .byWordWrapping
+            button.titleLabel?.numberOfLines = 0
+            button.accessibilityIdentifier = "workspace-constraint-choice-" + key
+            buttons[key] = button; rows.addArrangedSubview(button)
+        }
+        cancelButton.accessibilityIdentifier = "workspace-constraint-cancel"
+        scroll.contentInsetAdjustmentBehavior = .never
+        for child in [scroll, cancelButton] { child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child) }
+        rows.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(rows)
+        let safe = view.safeAreaLayoutGuide
+        NSLayoutConstraint.activate([
+            scroll.topAnchor.constraint(equalTo: safe.topAnchor, constant: 12),
+            scroll.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+            scroll.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
+            scroll.bottomAnchor.constraint(equalTo: cancelButton.topAnchor, constant: -6),
+            rows.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            rows.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            rows.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            rows.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            rows.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor),
+            cancelButton.leadingAnchor.constraint(equalTo: safe.leadingAnchor, constant: 12),
+            cancelButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
+            cancelButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12)
+        ])
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (picker: WorkspaceConstraintPicker, _: UITraitCollection) in
+            picker.view.setNeedsLayout()
+        }
+    }
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let presenter = presentingViewController else { return }
+        let container = presenter.view.safeAreaLayoutGuide.layoutFrame
+        let source = popoverPresentationController.flatMap { popover in
+            popover.sourceView?.convert(popover.sourceRect, to: presenter.view)
+        } ?? CGRect(origin: container.origin, size: .zero)
+        let width = min(340, max(0, container.width - 24))
+        let fitting = CGSize(width: max(0, width - 24), height: 0)
+        let content = rows.systemLayoutSizeFitting(fitting, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        let footer = cancelButton.systemLayoutSizeFitting(fitting, withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
+        let room = max(source.minY - container.minY, container.maxY - source.maxY)
+        let size = CGSize(width: width, height: min(ceil(content.height + footer.height) + 30, max(0, room - 40)))
+        if preferredContentSize != size { preferredContentSize = size }
+    }
+}
+
 /// View-only controls: the tool menus and model browser keep their own chrome.
 /// This popover contains no text input and dispatches existing viewport commands.
 private final class ViewOptionButton: UIButton {
