@@ -1098,3 +1098,31 @@ build output, `build.json` binding the clean candidate to signed binary hashes,
 installation/launch records, console acceptance, screenshots, `ipad-session.json`
 and `reservation.log`. Signing reused the existing team and profile. Fix commit
 `058b71a3` is local on `develop`; nothing was pushed.
+
+## One-step numeric confirmation — 2026-10-31
+
+Source candidate `e2e6710523bf09525f8ea5bdfb1285059c0df7fb` replaces the numeric
+popup's keypad Done key with Apply. Keypad Apply, Return and the full-keyboard
+accessory's Apply submit the current expression through the existing transaction
+callback. The footer shares that callback. Invalid input retains the draft and
+error; inline fields without transaction actions retain input dismissal.
+
+All 692 deterministic workspace cases and native icon checks pass. The shared
+unsigned native build completed in `target/dimension-appearance-build.log` with
+both concurrent UI changes present; the signed build also passes. Earlier local
+attempts encountered the outer sandbox, the other task's subsequently fixed
+UIKit property collision and Xcode's build-database lock; none is reported as a
+passing attempt. No engine tests, full CI or simulator were run.
+
+The exclusive physical iPad session passed the extended `--numeric-entry-check`:
+invalid and corrected expressions through all three confirmation paths, one Undo
+per acceptance, direct extrusion keypad acceptance, preview/cancel, retained
+caret/focus, ABC/123 and synthetic layout variants. Thirteen UIKit captures were
+retrieved; keypad entry, extrusion entry and invalid full-keyboard submission
+were visually inspected. These are real device runtime checks with synthetic
+control actions; physical finger/Pencil and VoiceOver delivery remain unverified.
+Normal launch was restored and the reservation released.
+
+Evidence is in ignored `target/numeric-confirm-device/`: build hash manifest,
+signed build log, console, acceptance report, thirteen captures and the fresh
+`ipad-session.json` receipt. The update is installed on the iPad. Nothing was pushed.
