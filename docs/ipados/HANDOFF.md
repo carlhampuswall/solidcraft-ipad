@@ -971,3 +971,48 @@ Log: `/tmp/solidcraft-continuous-resize-gpu.log`. Physical iPad/Pencil retesting
 remains required; no simulator was used. Full repository CI was not run by this
 fix task because no commit was requested; the integration owner must run its
 required final gates before committing the combined workspace.
+
+## Selected edge length and automatic extrusion depth — 2026-10-31
+
+Source candidate `70afff53de8485659e218ab3b96d3b1222e9d6e5` contains
+edge-length commit `564d557a` and the separate automatic-extrusion-distance commit
+`70afff53`. The checkout was clean for the reserved physical iPad session.
+
+Selecting a part edge now shows its length in millimetres in the bottom status
+area. The latest selected edge supplies the readout; clearing selection or
+selecting another entity removes it. Circular rims use the existing engine's
+circumference, arcs its arc length, and other edges its measured length, through
+`inspect.measure` on scratch. Tools → Show selected edge length disables the
+readout (`SolidCraft.workspace.edgeLengthReadout`, default enabled).
+
+Verification:
+
+- Two focused `workspace_edge_length` session tests passed: 40/30 mm selection
+  updates, clear/non-edge/unavailable selection, unchanged document/history and
+  the analytic circumference of a radius-7 mm circular rim.
+- The existing bridge workspace test passed. Native workspace/icon checks passed
+  all 692 adaptive cases, including localised numeric formatting and the disabled
+  preference. Rust formatting, affected adapter Clippy, session wasm32 check,
+  lists and i18n passed. The wasm check retained an existing engine dead-code
+  warning. No engine suite, full CI or simulator was run.
+- Unsigned and signed device-target builds passed. Signing reused the existing
+  team/profile; no provisioning/account settings changed. Xcode build scripts and
+  native file-coordination harness required execution outside the sandbox.
+- Reserved device check `--edge-length-check` passed on the physical iPad:
+  synthetic Pencil samples selected a 40 mm edge, added a 30 mm edge, then cleared
+  selection. All three UIKit screenshots were captured and visually inspected;
+  bottom captions were `Edge length: 40 mm`, `Edge length: 30 mm` and
+  `Model · No selection`. The check also verified disabling the readout.
+- During the same reservation, `--viewport-check --viewport-check-hold-face
+  --auto-face-extrude-check` opened the production Extrude form and logged
+  `Automatic extrusion user distance check PASS: empty distance, source-surface
+  handle, unvalidated draft`. This is console evidence, not a native extrusion
+  screenshot. Normal app launch was restored and the iPad reservation released.
+
+Local evidence is under `target/edge-length-device-20261031/`: signed build log,
+`build.json` with candidate and signed binary hashes, `ipad-session.json`,
+`edge-length-check.json`, three `edge-length-*.png` captures, console log and
+reservation receipt. The app's optional Info.plist candidate stamp was absent;
+the clean source candidate and signed binary hashes bind this build to the test.
+These checks verify physical iPad runtime with synthetic input; physical finger
+and Pencil contact remain unverified. Nothing was pushed.
