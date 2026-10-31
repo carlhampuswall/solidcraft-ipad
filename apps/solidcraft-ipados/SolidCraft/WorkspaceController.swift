@@ -5287,12 +5287,21 @@ private extension FoundationController {
                     check(!editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "corrected direct Apply required Preview")
                     capture("direct-apply-ready")
                     editor.actionFooter.apply.sendActions(for: .touchUpInside)
-                    wait("direct Apply committed", { self.inlineNumericEditor == nil && self.presentedViewController == nil && self.state?.radius?.value == 9 }) {
-                        check(self.state?.geometry_revision != revision && self.numericToken == nil, "direct Apply did not finish its transaction")
+                    wait("direct Apply committed", { self.inlineNumericEditor == nil && self.presentedViewController == nil && self.state?.geometry_revision != revision }) {
+                        check(self.numericToken == nil, "direct Apply did not finish its transaction")
                         capture("direct-apply-committed")
-                        self.run("edit.undo")
-                        wait("direct Apply single undo", { self.pending.isEmpty && self.state?.radius?.value == before }) {
-                            runStyle(0)
+                        // Successful commits clear selection. Reselect before
+                        // reading the radius; Undo also replaces the scene.
+                        self.session.command("select.entity", params: ["entity": ["type": "body", "name": "Post"]]) { _ in
+                            wait("direct Apply radius", { self.state?.radius?.value == 9 }) {
+                                let committedRevision = self.state?.geometry_revision
+                                self.run("edit.undo")
+                                wait("direct Apply single undo", { self.pending.isEmpty && self.state?.geometry_revision != committedRevision }) {
+                                    self.session.command("select.entity", params: ["entity": ["type": "body", "name": "Post"]]) { _ in
+                                        wait("restored radius", { self.state?.radius?.value == before }) { runStyle(0) }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
