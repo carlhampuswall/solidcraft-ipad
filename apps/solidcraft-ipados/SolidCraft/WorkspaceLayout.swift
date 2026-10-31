@@ -146,8 +146,8 @@ enum WorkspaceSelectionFilter: String, CaseIterable {
 }
 
 /// Consume every selection report, including those received while another tool
-/// owns input. Only newly selected compatible sources in the same model open Extrude.
-struct SelectionExtrudeTrigger<Selection: Equatable> {
+/// owns input. Only newly selected compatible sources in the same model open a tool.
+struct SelectionToolTrigger<Selection: Equatable> {
     private var document: String?
     private var revision: UInt64?
     private var selection: [Selection] = []
@@ -157,13 +157,28 @@ struct SelectionExtrudeTrigger<Selection: Equatable> {
         automatic && !committing && !selection.contains { source($0) != nil }
     }
 
+    static func isCompatible(_ selection: [Selection], source: (Selection) -> String?) -> Bool {
+        guard let first = selection.first, let key = source(first) else { return false }
+        return selection.allSatisfy { source($0) == key }
+    }
+
     mutating func update(document: String, revision: UInt64, selection: [Selection],
                          enabled: Bool, idle: Bool, source: (Selection) -> String?) -> Bool {
         defer { self.document = document; self.revision = revision; self.selection = selection }
-        guard let first = selection.first, let key = source(first) else { return false }
         return enabled && idle && self.document == document && self.revision == revision &&
-            selection.allSatisfy { source($0) == key } &&
+            Self.isCompatible(selection, source: source) &&
             selection.contains { !self.selection.contains($0) }
+    }
+}
+
+/// Only real body edges offer solid edge tools; sketch curves keep sketch tools.
+enum EdgeToolSelection {
+    static let key = "SolidCraft.workspace.edgeToolsOnSelection"
+    static let operations = ["solid.fillet", "solid.chamfer"]
+    static func restored(_ value: Bool?) -> Bool { value ?? true }
+    static func source(type: String, body: String?) -> String? {
+        guard type == "edge", let body, !body.isEmpty else { return nil }
+        return body
     }
 }
 

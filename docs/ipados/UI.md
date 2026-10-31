@@ -68,6 +68,15 @@ in the opposite rail only while sketching. Constraint menu eligibility and
 dimension types come from `eligible_constraints` / `eligible_dimensions`; the UI
 does not decide geometry compatibility or construct new constraint semantics.
 
+Selecting one or more edges of the same body in Select automatically opens a
+**Fillet / Chamfer** selector in Properties. Choose either icon to open the
+existing operation form with those edges; selection alone makes no document
+change. More edges can be selected while the selector is open. Clearing the
+selection, selecting incompatible geometry, changing documents or closing the
+panel dismisses it. Refreshes do not reopen a dismissed selector. **Tools →
+Edge tools on selection** restores the previous manual Modify workflow when
+disabled. Sketch curves keep their existing sketch tools.
+
 View orientation, Fit, projection and Properties use the existing viewport
 commands. Active sketches omit unavailable 3D orientation/projection actions.
 **Views → Visibility → Axes in grid** is enabled by default. The current XY,

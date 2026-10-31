@@ -134,7 +134,7 @@ struct WorkspaceChecks {
             try require(WorkspaceSelectionFilter(storedValue: filter.rawValue) == filter, "saved selection filter was not restored")
         }
         func dismissFaceExtrude(_ selection: [String], automatic: Bool = true, committing: Bool = false) -> Bool {
-            SelectionExtrudeTrigger<String>.shouldDismiss(automatic: automatic, committing: committing,
+            SelectionToolTrigger<String>.shouldDismiss(automatic: automatic, committing: committing,
                                                      selection: selection, source: { $0.hasPrefix("face:") ? "face" : nil })
         }
         try require(dismissFaceExtrude([]), "deselecting the last face left automatic Extrude active")
@@ -142,7 +142,7 @@ struct WorkspaceChecks {
         try require(!dismissFaceExtrude(["face:top"]), "a remaining face dismissed automatic Extrude")
         try require(!dismissFaceExtrude([], automatic: false), "deselection cancelled a manually opened tool")
         try require(!dismissFaceExtrude([], committing: true), "deselection interrupted Apply")
-        var faceExtrude = SelectionExtrudeTrigger<String>()
+        var faceExtrude = SelectionToolTrigger<String>()
         func selectionReport(_ selection: [String], enabled: Bool = true, idle: Bool = true,
                              document: String = "part", revision: UInt64 = 1) -> Bool {
             faceExtrude.update(document: document, revision: revision, selection: selection,
@@ -165,7 +165,7 @@ struct WorkspaceChecks {
         try require(!selectionReport(["face:top"], document: "other", revision: 2), "document replacement opened Extrude")
         _ = selectionReport([], document: "other", revision: 2)
         try require(selectionReport(["face:top"], document: "other", revision: 2), "reselecting a face did not reopen Extrude")
-        var sketchExtrude = SelectionExtrudeTrigger<String>()
+        var sketchExtrude = SelectionToolTrigger<String>()
         func extrudeSource(_ value: String) -> String? {
             let parts = value.split(separator: ":")
             if parts.first == "face" { return "face" }
@@ -198,15 +198,51 @@ struct WorkspaceChecks {
         _ = sketchSelectionReport([], revision: 2)
         try require(sketchSelectionReport(["profile:1:0"], revision: 2), "reselecting a sketch region did not reopen Extrude")
         for selection in [["profile:1:0"], ["face:top"]] {
-            try require(!SelectionExtrudeTrigger<String>.shouldDismiss(automatic: true, committing: false,
+            try require(!SelectionToolTrigger<String>.shouldDismiss(automatic: true, committing: false,
                 selection: selection, source: extrudeSource), "an extrusion source dismissed automatic Extrude")
         }
-        try require(SelectionExtrudeTrigger<String>.shouldDismiss(automatic: true, committing: false,
+        try require(SelectionToolTrigger<String>.shouldDismiss(automatic: true, committing: false,
             selection: [], source: extrudeSource), "clearing sketch selection left automatic Extrude open")
-        try require(!SelectionExtrudeTrigger<String>.shouldDismiss(automatic: true, committing: true,
+        try require(!SelectionToolTrigger<String>.shouldDismiss(automatic: true, committing: true,
             selection: [], source: extrudeSource), "clearing sketch selection interrupted Apply")
-        try require(!SelectionExtrudeTrigger<String>.shouldDismiss(automatic: false, committing: false,
+        try require(!SelectionToolTrigger<String>.shouldDismiss(automatic: false, committing: false,
             selection: [], source: extrudeSource), "clearing sketch selection cancelled a manual tool")
+        try require(EdgeToolSelection.restored(nil) && EdgeToolSelection.restored(true) && !EdgeToolSelection.restored(false),
+                    "edge tools did not preserve the enabled default and manual preference")
+        struct EdgePick: Equatable { let type: String; let body: String?; let index: Int }
+        let edge1 = EdgePick(type: "edge", body: "Base", index: 1)
+        let edge2 = EdgePick(type: "edge", body: "Base", index: 2)
+        let otherBody = EdgePick(type: "edge", body: "Post", index: 1)
+        func edgeSource(_ pick: EdgePick) -> String? { EdgeToolSelection.source(type: pick.type, body: pick.body) }
+        var edgeTrigger = SelectionToolTrigger<EdgePick>()
+        func edgeReport(_ picks: [EdgePick], enabled: Bool = true, idle: Bool = true,
+                        document: String = "part", revision: UInt64 = 1) -> Bool {
+            edgeTrigger.update(document: document, revision: revision, selection: picks,
+                               enabled: enabled, idle: idle, source: edgeSource)
+        }
+        try require(!edgeReport([]) && edgeReport([edge1]), "selecting a body edge did not offer edge tools")
+        try require(!edgeReport([edge1]), "refresh reopened a dismissed edge selector")
+        try require(edgeReport([edge1, edge2]) && !edgeReport([edge2]), "edge addition/removal did not preserve selection intent")
+        for pick in [EdgePick(type: "sketch_curve", body: nil, index: 1), EdgePick(type: "face", body: "Base", index: 1),
+                     EdgePick(type: "vertex", body: "Base", index: 1), EdgePick(type: "edge", body: nil, index: 1),
+                     EdgePick(type: "edge", body: "", index: 1)] {
+            try require(edgeSource(pick) == nil && !edgeReport([pick]), "non-body-edge selection offered solid edge tools")
+            try require(!SelectionToolTrigger<EdgePick>.isCompatible([edge1, pick], source: edgeSource), "mixed picks kept the edge selector")
+        }
+        try require(!edgeReport([edge1, otherBody]) && !SelectionToolTrigger<EdgePick>.isCompatible([edge1, otherBody], source: edgeSource),
+                    "edges of different bodies offered one edge operation")
+        try require(!edgeReport([edge1], enabled: false) && !edgeReport([edge1]), "manual preference or preference change opened edge tools")
+        _ = edgeReport([])
+        try require(!edgeReport([edge1], idle: false) && !edgeReport([edge1]), "edge selection interrupted another tool or opened later")
+        try require(!edgeReport([edge2], revision: 2) && !edgeReport([edge1], document: "other", revision: 2),
+                    "geometry or document publication opened edge tools")
+        _ = edgeReport([], document: "other", revision: 2)
+        try require(edgeReport([edge1], document: "other", revision: 2), "reselecting an edge did not reopen edge tools")
+        try require(SelectionToolTrigger<EdgePick>.shouldDismiss(automatic: true, committing: false, selection: [], source: edgeSource),
+                    "deselecting the last edge left an automatic edge draft open")
+        try require(!SelectionToolTrigger<EdgePick>.shouldDismiss(automatic: true, committing: true, selection: [], source: edgeSource) &&
+                    !SelectionToolTrigger<EdgePick>.shouldDismiss(automatic: false, committing: false, selection: [], source: edgeSource),
+                    "edge deselection interrupted Apply or a manually opened draft")
         let dimensionContext = DimensionTapTracker.Context(document: "sketch", geometry: 1, viewport: 2, camera: 3)
         let wideCaption = CGRect(x: -14, y: 58, width: 100, height: 44)
         let helperTarget = DimensionTapTracker.hitFrame(wideCaption, helper: true)

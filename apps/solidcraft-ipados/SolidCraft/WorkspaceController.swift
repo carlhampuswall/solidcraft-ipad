@@ -89,7 +89,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
     }
     private var state: WorkspaceState?
-    private var selectionExtrudeTrigger = SelectionExtrudeTrigger<WorkspaceEntity>()
+    private var selectionExtrudeTrigger = SelectionToolTrigger<WorkspaceEntity>()
+    private var selectionEdgeTrigger = SelectionToolTrigger<WorkspaceEntity>()
+    private var edgeSelectorContext: (document: String, revision: UInt64)?
+    private enum AutomaticModellingSource { case extrude, edges }
     private var historyActivation: (feature: UInt64, document: String)?
     private var visibleRows: [WorkspaceRow] = []
     private var rowByID: [String: WorkspaceRow] = [:]
@@ -172,7 +175,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var transformGeneration: UInt64 = 0
     private var transformMessage: WorkspaceMessage?
     private var transformBusy = false
-    private var modellingStartedFromSelection = false
+    private var modellingSelectionSource: AutomaticModellingSource?
     private var modellingStarting = false
     private var modellingToken: UInt64?
     private var modellingFeature: UInt64?
@@ -235,6 +238,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnSketchSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnSketchSelection") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
+    private var edgeToolsOnSelection = EdgeToolSelection.restored(UserDefaults.standard.object(forKey: EdgeToolSelection.key) as? Bool)
     private var automaticExtrudeDepth = UserDefaults.standard.bool(forKey: ModellingFormPresentation.automaticExtrudeDepthKey)
     private var edgeLengthReadout = EdgeLengthReadout.restored(UserDefaults.standard.object(forKey: EdgeLengthReadout.key) as? Bool)
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
@@ -558,6 +562,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.startAssemblyCheck()
                 } else if ProcessInfo.processInfo.arguments.contains("--tool-dismissal-check") {
                     self.developmentCheckStarted = true; self.checkToolDismissalOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--edge-tools-check") {
+                    self.developmentCheckStarted = true; self.checkEdgeToolsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--edge-length-check") {
                     self.developmentCheckStarted = true; self.checkEdgeLengthOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--selection-taps-check") {
@@ -745,9 +751,18 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         let previous = state
         state = value
-        if SelectionExtrudeTrigger<WorkspaceEntity>.shouldDismiss(
-            automatic: modellingStartedFromSelection, committing: modellingCommitting,
-            selection: value.selection, source: { self.extrudeSelectionSource($0) }) {
+        if let context = edgeSelectorContext,
+           context.document != value.document_id || context.revision != value.geometry_revision ||
+            value.sketch != nil || value.active_tool != "select" ||
+            !SelectionToolTrigger<WorkspaceEntity>.isCompatible(value.selection, source: { self.edgeSelectionSource($0) }) {
+            edgeSelectorContext = nil; inspectorOpen = false
+            relayoutPanels()
+        }
+        if SelectionToolTrigger<WorkspaceEntity>.shouldDismiss(
+            automatic: modellingSelectionSource != nil, committing: modellingCommitting,
+            selection: value.selection, source: {
+                self.modellingSelectionSource == .edges ? self.edgeSelectionSource($0) : self.extrudeSelectionSource($0)
+            }) {
             // Cancel the draft as well as its chrome, including a begin request
             // still in flight. The generation guards discard its late callback.
             cancelModelling()
@@ -825,8 +840,41 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if selectionExtrudeTrigger.update(document: value.document_id, revision: value.geometry_revision,
                                      selection: value.selection, enabled: true, idle: idle,
                                      source: { self.extrudeSelectionSource($0, respectingPreferences: true) }) {
-            beginModelling(operation: "solid.extrude", fromSelection: true)
+            beginModelling(operation: "solid.extrude", fromSelection: .extrude)
         }
+        if selectionEdgeTrigger.update(document: value.document_id, revision: value.geometry_revision,
+                                       selection: value.selection, enabled: edgeToolsOnSelection, idle: idle,
+                                       source: { self.edgeSelectionSource($0) }),
+           EdgeToolSelection.operations.allSatisfy({ operation in value.modelling?.tools.contains { $0.id == operation } == true }) {
+            edgeSelectorContext = (value.document_id, value.geometry_revision)
+            inspectorOpen = true; browserOpen = false
+            rebuildInspector(); relayoutPanels()
+        }
+    }
+
+    private func edgeSelectionSource(_ entity: WorkspaceEntity) -> String? {
+        EdgeToolSelection.source(type: entity.type, body: entity.body)
+    }
+
+    private func rebuildEdgeSelector(_ context: WorkspaceState) {
+        inspectorPanel.setTitle(WorkspaceStyle.text("edge_tools"))
+        let hint = WorkspaceStyle.label(.body, secondary: true)
+        hint.text = WorkspaceStyle.text("edge_tools_hint"); properties.addArrangedSubview(hint)
+        for operation in EdgeToolSelection.operations {
+            guard let tool = context.modelling?.tools.first(where: { $0.id == operation }) else { continue }
+            let button = WorkspaceButton(ModellingText.label(tool.label)) { [weak self] in
+                guard let self, self.active, self.pending.isEmpty, !self.numericEditing, !self.modellingEditing,
+                      self.edgeSelectorContext != nil, let current = self.state,
+                      current.document_id == context.document_id, current.geometry_revision == context.geometry_revision,
+                      current.sketch == nil, current.active_tool == "select",
+                      SelectionToolTrigger<WorkspaceEntity>.isCompatible(current.selection, source: { self.edgeSelectionSource($0) }) else { return }
+                self.beginModelling(operation: operation, fromSelection: .edges)
+            }
+            button.commandArtwork(operation)
+            button.accessibilityIdentifier = "workspace-edge-" + operation
+            properties.addArrangedSubview(button)
+        }
+        properties.addArrangedSubview(WorkspacePropertyRow(label: WorkspaceStyle.text("selected_count"), value: String(context.selection.count)))
     }
 
     private func extrudeSelectionSource(_ entity: WorkspaceEntity, respectingPreferences: Bool = false) -> String? {
@@ -1489,6 +1537,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         guard let state else {
             let loading = WorkspaceMessage(); loading.show(WorkspaceStyle.text("loading"), busy: true); properties.addArrangedSubview(loading); return
         }
+        if edgeSelectorContext != nil { rebuildEdgeSelector(state); return }
         if let projection = sketchInput?.projection { rebuildProjectionInspector(projection); return }
         if !lastOperationFeedback.isEmpty {
             let message = WorkspaceMessage(); message.show(lastOperationFeedback.map(ModellingText.label).joined(separator: "\n")); properties.addArrangedSubview(message)
@@ -1728,16 +1777,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func beginModelling(operation: String? = nil, feature: UInt64? = nil, initialParams: [String: PresentationJSON]? = nil, fromSelection: Bool = false) {
+    private func beginModelling(operation: String? = nil, feature: UInt64? = nil, initialParams: [String: PresentationJSON]? = nil, fromSelection: AutomaticModellingSource? = nil) {
         guard !numericEditing, !modellingEditing, let context = state else { return }
         historyActivation = nil
         canvas.cancelInput(); modellingGeneration &+= 1; lastOperationFeedback = []
         let expected = modellingGeneration
-        modellingStartedFromSelection = fromSelection
+        edgeSelectorContext = nil
+        modellingSelectionSource = fromSelection
         modellingStarting = true; modellingContext = (context.document_id, context.geometry_revision)
         updateAvailability()
         let params = ModellingFormPresentation.initialParameters(operation: operation, feature: feature,
-            automatic: fromSelection, legacyDepth: automaticExtrudeDepth, supplied: initialParams)
+            automatic: fromSelection != nil, legacyDepth: automaticExtrudeDepth, supplied: initialParams)
         session.requestModelling(action: "begin", operation: operation, feature: feature, params: params) { [weak self] result in
             guard let self, self.modellingGeneration == expected else { return }
             self.modellingStarting = false
@@ -1789,13 +1839,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                             let selectionParams: [String: PresentationJSON] = field.map { ["field": .string($0)] } ?? [:]
                             // Explicit picking continues this draft after the adapter clears
                             // the original source selection. It is no longer an automatic popup.
-                            let automatic = self.modellingStartedFromSelection
-                            self.modellingStartedFromSelection = false
+                            let automatic = self.modellingSelectionSource
+                            self.modellingSelectionSource = nil
                             if form?.hasBodyPicks == true { form?.beginContextRefresh() }
                             self.session.requestModelling(action: "selection", token: token, params: selectionParams) { [weak self, weak form] result in
                                 guard let self, self.modellingToken == token else { return }
                                 if case .failure(let error) = result {
-                                    self.modellingStartedFromSelection = automatic
+                                    self.modellingSelectionSource = automatic
                                     if form?.hasBodyPicks == true { form?.failed(error) }
                                     self.showFailure(error); return
                                 }
@@ -1813,7 +1863,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if ProcessInfo.processInfo.arguments.contains("--auto-face-extrude-check"),
                    operation == "solid.extrude", feature == nil {
                     NSLog("Automatic face extrude check PASS: selected face opened the production Extrude form; source=%@", String(describing: model.params?["profile"]))
-                    if fromSelection && !self.automaticExtrudeDepth {
+                    if fromSelection != nil && !self.automaticExtrudeDepth {
                         let waiting = model.params?["distance"] == .string("") && model.handle?.distance == 0 && model.valid != true
                         NSLog("Automatic extrusion user distance check %@: empty distance, source-surface handle, unvalidated draft", waiting ? "PASS" : "FAIL")
                     }
@@ -2039,7 +2089,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func clearModelling() {
         modellingAutomaticPreview.cancel()
-        modellingStartedFromSelection = false
+        modellingSelectionSource = nil
         modellingGeneration &+= 1
         if let editor = modelValueEditor { editor.dismiss(animated: false) { [weak self] in self?.updateAvailability() } }
         modelValueEditor = nil; modelValue = nil; modelValueButton.isHidden = true
@@ -3115,6 +3165,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func toggleBrowser() {
         guard !numericEditing, !modellingCommitting else { return }
+        if edgeSelectorContext != nil { edgeSelectorContext = nil; rebuildInspector() }
         if inspectorOpen && cancelToolsOnDismiss { cancelModelling() }
         modellingInspector?.endEditing(true)
         canvas.cancelInput(); browserOpen.toggle(); inspectorOpen = false
@@ -3133,6 +3184,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if sketchInput?.projection != nil { projectionAction("cancel") }
         guard !numericEditing else { editor?.message.show(WorkspaceStyle.text("editing_lock")); return }
         guard !modellingCommitting else { return }
+        if edgeSelectorContext != nil { edgeSelectorContext = nil; rebuildInspector() }
         if cancelToolsOnDismiss { cancelModelling() }
         canvas.cancelInput(); browserOpen = false; inspectorOpen = false
         relayoutPanels()
@@ -3422,6 +3474,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.extrudeOnFaceSelection, forKey: "SolidCraft.workspace.extrudeOnFaceSelection")
             self.rebuildMenus()
         }
+        let edgeTools = UIAction(title: WorkspaceStyle.text("edge_tools_on_selection"), subtitle: WorkspaceStyle.text("edge_tools_on_selection_help"), state: edgeToolsOnSelection ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.edgeToolsOnSelection.toggle()
+            UserDefaults.standard.set(self.edgeToolsOnSelection, forKey: EdgeToolSelection.key)
+            if !self.edgeToolsOnSelection, self.edgeSelectorContext != nil {
+                self.edgeSelectorContext = nil; self.inspectorOpen = false
+                self.rebuildInspector(); self.relayoutPanels()
+            }
+            self.rebuildMenus()
+        }
         let edgeLength = UIAction(title: WorkspaceStyle.text("edge_length_readout"), state: edgeLengthReadout ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.edgeLengthReadout.toggle()
@@ -3457,7 +3519,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -3908,6 +3970,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
         historyActivation = nil
         featureHistory.cancelScrub()
+        edgeSelectorContext = nil
         active = false
         endpointFinishButton.isHidden = true
 #if DEBUG
@@ -5097,6 +5160,116 @@ private extension FoundationController {
             report.append("PASS complete; library projects and saved preferences unchanged")
         } catch { report.append("FAIL " + error.localizedDescription) }
         saveReport()
+    }
+
+    /// Real body-edge picks and production chooser buttons on a disposable box.
+    private func checkEdgeToolsOnDevice() {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+              session.currentProject == nil else { return }
+        let expected = generation, started = Date().timeIntervalSince1970
+        var finished = false, stages: [String] = []
+        func finish(_ error: String? = nil) {
+            guard !finished else { return }; finished = true
+            assemblyCheckWorkspace = nil
+            let report: [String: Any] = ["passed": error == nil, "failure": error ?? "", "stages": stages,
+                "started_at": started, "completed_at": Date().timeIntervalSince1970,
+                "library_project_untouched": session.currentProject == nil,
+                "coverage": "Physical iPad runtime; production UIKit buttons and synthetic Pencil input; physical Pencil unverified"]
+            do { try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("edge-tools-check.json"), options: .atomic) }
+            catch { NSLog("Edge tools evidence write failed: %@", error.localizedDescription) }
+            NSLog("Edge tools check %@", String(describing: report))
+        }
+        func wait(_ name: String, _ ready: @escaping () -> Bool, attempts: Int = 200, then next: @escaping () -> Void) {
+            guard !finished else { return }
+            guard active, generation == expected else { finish("Lifecycle changed during " + name); return }
+            if ready() { next(); return }
+            guard attempts > 0 else { finish("Timeout: " + name); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(name, ready, attempts: attempts - 1, then: next) }
+        }
+        func control(_ id: String, in root: UIView) -> UIControl? {
+            if root.accessibilityIdentifier == id { return root as? UIControl }
+            return root.subviews.lazy.compactMap { control(id, in: $0) }.first
+        }
+        func capture(_ name: String) {
+            view.layoutIfNeeded()
+            let surface: UIView = view.window ?? view
+            let capture = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+            do {
+                guard let png = capture.pngData() else { finish("Missing screenshot pixels"); return }
+                try png.write(to: directory.appendingPathComponent("edge-tools-" + name + ".png"), options: .atomic)
+                stages.append(name)
+            } catch { finish(error.localizedDescription) }
+        }
+        func command(_ id: String, _ params: [String: Any] = [:], next: @escaping () -> Void) {
+            session.command(id, params: params) { result in
+                switch result { case .success: next(); case .failure(let error): finish(error.description) }
+            }
+        }
+        func pick(_ next: @escaping () -> Void) {
+            command("select.clear") {
+                wait("empty selection", { self.state?.selection.isEmpty == true && self.pending.isEmpty }) {
+                    self.session.developmentSurfaceDrag(from: [20, 0, 10], to: [20, 0, 10], source: .pencil) { result in
+                        if case .failure(let error) = result { finish(error.description); return }
+                        wait("edge selection", { self.state?.selection.count == 1 && self.state?.selection.first?.type == "edge" }) { next() }
+                    }
+                }
+            }
+        }
+        func verifyManualPreference() {
+            edgeToolsOnSelection = false
+            pick {
+                guard self.edgeSelectorContext == nil, !self.modellingEditing else { finish("Manual preference opened edge tools"); return }
+                stages.append("manual-preference")
+                self.edgeToolsOnSelection = true
+                pick {
+                    wait("final selector", { self.edgeSelectorContext != nil && self.inspectorOpen }) {
+                        capture("selector"); finish()
+                    }
+                }
+            }
+        }
+        func operation(_ index: Int) {
+            if index == EdgeToolSelection.operations.count { verifyManualPreference(); return }
+            pick {
+                wait("selector", { self.edgeSelectorContext != nil && self.inspectorOpen && self.pending.isEmpty }) {
+                    let id = EdgeToolSelection.operations[index]
+                    guard let button = control("workspace-edge-" + id, in: self.properties),
+                          button.bounds.height >= 44, button.bounds.width >= 44,
+                          (button as? UIButton)?.configuration?.image != nil,
+                          !self.textEntryActive, self.modellingToken == nil else { finish("Chooser lost its icon, touch target or idle state"); return }
+                    let revision = self.state?.geometry_revision
+                    let selection = self.state?.selection
+                    button.sendActions(for: .touchUpInside)
+                    wait("operation form", { self.modellingInspector?.handleEntryEnabled == true && self.modelValue?.valid == true }) {
+                        guard let form = self.modellingInspector, form.params["edges"] != nil,
+                              form.fields.contains(where: { $0.key == (index == 0 ? "radius" : "distance") }),
+                              self.state?.geometry_revision == revision, self.state?.selection == selection,
+                              self.edgeSelectorContext == nil else { finish("Choice changed the document or lost selected edges"); return }
+                        capture(index == 0 ? "fillet" : "chamfer")
+                        command("select.clear") {
+                            wait("automatic draft dismissal", { !self.modellingEditing && !self.inspectorOpen }) {
+                                stages.append("deselected-" + id); operation(index + 1)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        guard session.currentProject == nil else { finish("Diagnostic requires a disposable document"); return }
+        edgeToolsOnSelection = true; compactInspector = true; directHandles = true
+        browserOpen = false; inspectorOpen = false; relayoutPanels()
+        let setup: [(String, [String: Any])] = [("file.new", [:]),
+            ("solid.box", ["length": 20, "width": 20, "height": 20, "body_name": "Edge block"]),
+            ("tool.set", ["tool": "select"]), ("select.filter", ["filter": "edge"]),
+            ("select.multiple", ["enabled": true]), ("view.tool_handles", ["enabled": true]),
+            ("view.perspective", ["enabled": false]), ("view.isometric", [:]), ("view.fit", [:])]
+        func prepare(_ index: Int) {
+            if index == setup.count { operation(0); return }
+            command(setup[index].0, setup[index].1) { prepare(index + 1) }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 120) { if !finished { finish("Device check deadline exceeded") } }
+        prepare(0)
     }
 
     private func checkEdgeLengthOnDevice() {

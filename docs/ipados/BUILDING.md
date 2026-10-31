@@ -279,6 +279,14 @@ loaded nor autosaved by this diagnostic.
 Rebuild both Rust and Swift after adapter protocol changes; ABI 3 symbols remain
 unchanged. Current observed results and the inherited full-CI blocker are in HANDOFF.
 
+DEBUG `--edge-tools-check` uses a disposable box, synthetic Pencil edge picks and
+production Fillet/Chamfer selector buttons. It checks both operation forms retain
+the selected edges without committing geometry, clearing selection cancels the
+automatic draft, and disabling the preference preserves manual operation.
+It writes `edge-tools-check.json` and `edge-tools-{selector,fillet,chamfer}.png`
+in Documents. Normal launches never run it or replace library projects.
+Physical Pencil delivery remains separate coverage.
+
 ## Step 6 sketch checks
 
 The same adapter tests, native layout/focus harness, unsigned build and wasm
