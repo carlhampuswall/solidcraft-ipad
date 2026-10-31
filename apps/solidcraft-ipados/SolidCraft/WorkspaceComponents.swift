@@ -1867,13 +1867,17 @@ final class ModellingInspector: UIStackView {
                 guard let self, let change, self.canEditFields(generation) else { return }
                 var choices = (field.options ?? []).map { option in
                     BrowserActionMenu.Item(title: ModellingText.label(option.label), selected: option.value == self.parameter(field.key)) { [weak self] in
-                        guard let self, self.canEditFields(generation) else { return }
+                        // A workspace refresh can rebuild the underlying row
+                        // while this picker is open. Keep a still-current choice;
+                        // the native edit token validates document/face identity.
+                        guard let self, !self.committing,
+                              self.fields.contains(where: { $0.key == field.key && $0.options?.contains(where: { $0.value == option.value }) == true }) else { return }
                         self.setParameter(field.key, value: option.value); self.changed(); self.rebuildFields()
                         self.onContextChange?(self.params)
                     }
                 }
                 choices.append(BrowserActionMenu.Item(title: ModellingText.text("select_in_viewport"), icon: "select") { [weak self] in
-                    guard let self, self.canEditFields(generation) else { return }
+                    guard let self, !self.committing, self.fields.contains(where: { $0.key == field.key }) else { return }
                     self.endEditing(true); self.onSelect?(field.key)
                 })
                 self.onReferenceChoices?(BrowserActionMenu(title: ModellingText.label(field.label), children: choices), change)
