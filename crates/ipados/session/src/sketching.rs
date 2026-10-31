@@ -2,11 +2,79 @@
 use serde_json::{Value, json};
 use solidcraft_engine::{
     Sel,
-    geom::Plane,
+    geom::{Plane, Vec2},
     sketch::{Analysis, ConstraintKind, CurveKind, Hold, Sketch, measure_dimension, solve_with},
 };
 
 use crate::SessionAdapter;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub(crate) struct RectangleMeasurement {
+    pub center: Vec2,
+    pub preferred: bool,
+}
+
+/// Recognise isolated H/V-constrained rectangular loops once on the engine worker.
+/// These are display hints only; dimensions and freedom still come from upstream.
+fn rectangle_measurements(sk: &Sketch) -> BTreeMap<usize, RectangleMeasurement> {
+    let mut incident: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (index, curve) in sk.curves.iter().enumerate() {
+        if let CurveKind::Line { a, b } = curve.kind {
+            incident.entry(a).or_default().push(index);
+            incident.entry(b).or_default().push(index);
+        }
+    }
+    let axes: BTreeMap<_, _> = sk
+        .constraints
+        .iter()
+        .filter(|c| !c.driven)
+        .filter_map(|c| match c.kind {
+            ConstraintKind::Horizontal { l } => Some((l, true)),
+            ConstraintKind::Vertical { l } => Some((l, false)),
+            _ => None,
+        })
+        .collect();
+    let mut rectangles = BTreeMap::new();
+    let mut visited = BTreeSet::new();
+    for (start, curve) in sk.curves.iter().enumerate() {
+        if visited.contains(&start) {
+            continue;
+        }
+        let CurveKind::Line { a: first, .. } = curve.kind else { continue };
+        let mut edges = Vec::new();
+        let (mut edge, mut point) = (start, first);
+        for _ in 0..4 {
+            if !axes.contains_key(&edge) {
+                break;
+            }
+            let Some(CurveKind::Line { a, b }) = sk.curves.get(edge).map(|c| &c.kind) else { break };
+            let next = if *a == point { *b } else { *a };
+            let (Some(p), Some(q)) = (sk.point(point), sk.point(next)) else { break };
+            let Some(direction) = (q - p).normalized() else { break };
+            edges.push((edge, (p + q) * 0.5, direction));
+            let Some(neighbours) = incident.get(&next) else { break };
+            let [one, two] = neighbours.as_slice() else { break };
+            edge = if *one == edge { *two } else { *one };
+            point = next;
+            if edge == start {
+                break;
+            }
+        }
+        let [(a, ma, da), (b, _, db), (c, mc, dc), (d, _, dd)] = edges.as_slice() else { continue };
+        if edge != start || point != first || da.dot(*db).abs() > 1e-8 || da.dot(*dc) > -1.0 + 1e-8 || db.dot(*dd) > -1.0 + 1e-8 {
+            continue;
+        }
+        let center = (*ma + *mc) * 0.5;
+        for ((i, m, direction), (opposite, other, _)) in edges.iter().zip(edges.iter().cycle().skip(2)) {
+            // Horizontal sides prefer top; vertical sides prefer right, independent
+            // of drawing order and endpoint direction.
+            let order = if direction.x.abs() >= direction.y.abs() { m.y.total_cmp(&other.y) } else { m.x.total_cmp(&other.x) };
+            rectangles.insert(*i, RectangleMeasurement { center, preferred: order.is_gt() || (order.is_eq() && i < opposite) });
+        }
+        visited.extend([*a, *b, *c, *d]);
+    }
+    rectangles
+}
 
 pub struct SketchSnapshot {
     pub id: u64,
@@ -17,6 +85,7 @@ pub struct SketchSnapshot {
     pub solved: bool,
     pub dof: usize,
     pub glyphs: Vec<Value>,
+    pub(crate) rectangle_measurements: BTreeMap<usize, RectangleMeasurement>,
     pub(crate) free_measurements: Vec<(usize, ConstraintKind, &'static str)>,
 }
 
@@ -84,6 +153,7 @@ impl SessionAdapter {
         };
         Some(SketchSnapshot {
             glyphs,
+            rectangle_measurements: rectangle_measurements(&ss.sketch),
             free_measurements,
             id,
             name: ss.name.clone(),

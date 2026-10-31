@@ -271,3 +271,25 @@ the retained expression. It leaves the real UIKit dimension inspector visible.
 This driver is software injection, not a test of physical Pencil hardware or
 human UI taps. Its actual run result, build/gate results, volume/serialization
 acceptance and device evidence must be recorded after execution in HANDOFF.md.
+
+## Rectangle dimension helpers
+
+Free rectangle sizes display two editable helpers by default: width above the
+sketch's top edge and height outside its right edge, with a 36-point offset.
+The adapter recognises closed H/V-constrained rectangular line loops once per
+scene publication; it does not infer relationships between separate lines of
+equal length or change CAD constraints. Existing dimensions continue to replace determined free sizes,
+and dragged helper positions override the initial placement.
+
+Rectangles with horizontal/vertical constraints use this layout automatically;
+there is no separate preference for duplicate rectangle dimensions. Loops without
+those relationships retain independent size helpers. The existing Show free
+dimension helpers switch still restores selected-edge-only helpers.
+
+Verified on 2026-10-31: 199 session and 28 bridge tests, Clippy with warnings
+denied, Rust formatting, the native workspace harness (692 adaptive cases), and
+the unsigned iPad device-target build.
+`render_proof /tmp/solidcraft-rectangle-dimensions.png --rectangle-dimensions`
+captures the actual shared-GPU arrows above and right of a 40 × 30 rectangle,
+checks the projected helper positions, and tests hiding/restoring them. UIKit
+labels and physical iPad interaction are not covered by the Mac GPU capture.

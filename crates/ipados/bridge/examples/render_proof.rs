@@ -116,6 +116,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--sketch") {
         return sketch_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--rectangle-dimensions") {
+        return rectangle_dimensions_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--sketch-drag") {
         return sketch_drag_proof(&destination);
     }
@@ -1456,6 +1459,52 @@ fn input_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     capture(&view, "cancelled")?;
     println!(
         "PASS: synthetic Pencil selects Post; actual engine preview; finger suspension/rebase; one timeline.edit; geometry changes; undo/redo restore; cancellation preserves committed geometry."
+    );
+    Ok(())
+}
+
+/// Actual shared-GPU dimension lines/arrows. UIKit text is a separate native layer.
+fn rectangle_dimensions_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    let rectangle = engine.execute("sketch.rectangle.two_point", json!({"p0":[10,10],"p1":[50,40],"connect":false}))?.value;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("view.navigate", &json!({"motion":"zoom","factor":0.8}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    for (stage, visible) in [("default", true), ("hidden", false), ("restored", true)] {
+        view.command("tool.free_dimensions", &json!({"enabled":visible}))?;
+        let annotations = view.diagnostic()["annotations"].clone();
+        if annotations.as_array().map(Vec::len) != Some(if visible { 2 } else { 0 }) {
+            return Err("rectangle helper count mismatch".into());
+        }
+        if visible {
+            for (side, midpoint, axis, sign) in [("top", [30., 40., 0.], 1, -1.), ("right", [50., 25., 0.], 0, 1.)] {
+                let curve = rectangle["sides"][side].as_str().ok_or("missing rectangle side")?;
+                let annotation = annotations
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|row| row["id"] == format!("edge:{curve}")))
+                    .ok_or("missing preferred helper")?;
+                let edge = view.command("view.project", &json!({"point":midpoint}))?;
+                let separation = sign
+                    * (annotation["points"][axis].as_f64().ok_or("missing label position")?
+                        - edge["points"][axis].as_f64().ok_or("missing edge position")?);
+                if (separation - 36.).abs() > 1e-6 {
+                    return Err("helper is not outside its preferred edge".into());
+                }
+            }
+        }
+        let snapshot = view.snapshot().ok_or("no rectangle frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{stage}: {annotations}; {path}");
+    }
+    println!(
+        "PASS: two exterior top/right helpers; visibility toggle and restoration. Actual macOS GPU lines/arrows; UIKit labels and physical input unverified."
     );
     Ok(())
 }

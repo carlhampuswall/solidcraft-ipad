@@ -4415,9 +4415,10 @@ private extension FoundationController {
                 try data.write(to: directory.appendingPathComponent("inline-dimension-" + stage + ".png"), options: .atomic)
             } catch { print("Inline dimension check FAIL: \(error)") }
         }
+        var helperEntity: SketchAnnotationPresentation?
         func selectEdge(_ next: @escaping () -> Void) {
-            guard let sketch = state?.sketch, let curve = sketch.curves.first else { print("Inline dimension check FAIL: missing edge"); return }
-            session.selectEntity(["type": "sketch_curve", "id": curve.id, "sketch": sketch.id], additive: false) { result in
+            guard let entity = helperEntity else { print("Inline dimension check FAIL: missing edge"); return }
+            session.selectEntity(entity.entity.dictionary, additive: false) { result in
                 switch result {
                 case .failure(let error): print("Inline dimension check FAIL: \(error)")
                 case .success:
@@ -4427,7 +4428,7 @@ private extension FoundationController {
         }
         func openEditor(selectedOnly: Bool = true, _ next: @escaping () -> Void) {
             func eligible(_ annotation: SketchAnnotationPresentation) -> Bool {
-                self.annotationEditable(annotation) && (selectedOnly ? annotation.selected : annotation.id == "edge:" + (self.state?.sketch?.curves.first?.id ?? ""))
+                self.annotationEditable(annotation) && (selectedOnly ? annotation.selected : annotation.id == helperEntity?.id)
             }
             wait("available dimension value", until: { self.sketchAnnotations.values.contains(where: eligible) }) {
                 guard let annotation = self.sketchAnnotations.values.first(where: eligible) else { return }
@@ -4447,18 +4448,19 @@ private extension FoundationController {
                     selectEdge {
                         openEditor {
                             capture("editor")
-                            print("Inline dimension check PASS: rectangle returns to Select; 4 unselected helpers without automatic editor; direct helper editing; opposite size helper suppressed after dimension; focused UIKit popover, native Apply, repeat edit, Preview/Cancel, Undo/Redo; physical contacts unverified")
+                            print("Inline dimension check PASS: rectangle returns to Select; 2 exterior top/right helpers without automatic editor; direct helper editing; opposite size helper suppressed after dimension; focused UIKit popover, native Apply, repeat edit, Preview/Cancel, Undo/Redo; physical contacts unverified")
                         }
                     }
                 }
             }
         }
-        wait("rectangle fixture and free helpers", until: { self.state?.sketch?.curves.count == 4 && self.state?.active_tool == "select" && self.sketchAnnotations.values.filter { $0.dimension_type != nil }.count == 4 }) {
+        wait("rectangle fixture and free helpers", until: { self.state?.sketch?.curves.count == 4 && self.state?.active_tool == "select" && self.sketchAnnotations.values.filter { $0.dimension_type != nil }.count == 2 }) {
             guard self.state?.active_tool == "select", self.state?.selection.isEmpty == true,
                   self.sketchAnnotations.values.allSatisfy({ !$0.selected }), !self.numericEditing,
                   self.inlineNumericEditor == nil else {
                 print("Inline dimension check FAIL: rectangle did not return to unselected helpers without an automatic editor"); return
             }
+            helperEntity = self.sketchAnnotations.values.filter { $0.dimension_type != nil }.min { $0.points[1] < $1.points[1] }
             capture("helpers")
             openEditor(selectedOnly: false) {
                 guard let editor = self.editor, let range = editor.field.selectedTextRange,
@@ -4467,7 +4469,7 @@ private extension FoundationController {
                 }
                 capture("initial-editor")
                 editor.field.insertText("80 mm"); editor.onApply?(editor.field.text ?? "")
-                wait("apply and opposite helper suppression", until: { !self.numericEditing && hasDimension("80 mm") && self.sketchAnnotations.values.contains { abs($0.value - 80) < 0.001 } && self.sketchAnnotations.values.filter { $0.dimension_type != nil }.count == 2 }) {
+                wait("apply and opposite helper suppression", until: { !self.numericEditing && hasDimension("80 mm") && self.sketchAnnotations.values.contains { abs($0.value - 80) < 0.001 } && self.sketchAnnotations.values.filter { $0.dimension_type != nil }.count == 1 }) {
                     capture("applied")
                     selectEdge {
                         openEditor {

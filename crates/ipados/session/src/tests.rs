@@ -3556,7 +3556,7 @@ fn sketch_free_dimensions_are_visible_without_selection_and_preserve_legacy_pref
     let history = engine.session.undo.len();
     let original = engine.session.doc.clone();
     let annotations = view.sketch_annotations();
-    assert_eq!(annotations.as_array().unwrap().len(), 4, "every free rectangle edge has a size helper");
+    assert_eq!(annotations.as_array().unwrap().len(), 2, "only the top and right rectangle edges have size helpers");
     assert!(annotations.as_array().unwrap().iter().all(|a| a["selected"] == false && a["dimension_type"] == "length"));
     assert!(view.selection().is_empty());
     assert!(view.diagnostic()["numeric_token"].is_null(), "helpers never automatically open an editor");
@@ -3570,10 +3570,73 @@ fn sketch_free_dimensions_are_visible_without_selection_and_preserve_legacy_pref
     assert_eq!(view.sketch_annotations().as_array().unwrap().len(), 1);
     view.command("tool.free_dimensions", &json!({"enabled":true})).unwrap();
     let annotations = view.sketch_annotations();
-    assert_eq!(annotations.as_array().unwrap().len(), 4);
+    assert_eq!(annotations.as_array().unwrap().len(), 2);
     assert_eq!(annotations.as_array().unwrap().iter().filter(|a| a["selected"] == true).count(), 1);
     assert!(Arc::ptr_eq(&original, &engine.session.doc), "helpers and their preference cannot modify the design");
     assert_eq!(engine.session.undo.len(), history);
+}
+
+#[test]
+fn sketch_rectangle_helpers_use_top_and_right_outside_in_each_drawing_direction() {
+    for (p0, p1) in [([10, 10], [50, 40]), ([50, 40], [10, 10]), ([50, 10], [10, 40]), ([10, 40], [50, 10])] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        let rectangle = engine.execute("sketch.rectangle.two_point", json!({"p0":p0,"p1":p1,"connect":false})).unwrap().value;
+        // An unrelated edge with the same length still needs its own helper.
+        engine.execute("sketch.line", json!({"points":[[70,10],[110,10]],"ids":["unrelated"],"infer":false,"connect":false})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        let original = engine.session.doc.clone();
+        let history = engine.session.undo.len();
+        let annotations = view.sketch_annotations();
+        assert_eq!(annotations.as_array().unwrap().len(), 3);
+        for (side, midpoint, axis, sign) in [("top", [30., 40., 0.], 1, -1.), ("right", [50., 25., 0.], 0, 1.)] {
+            let id = format!("edge:{}", rectangle["sides"][side].as_str().unwrap());
+            let annotation = annotations.as_array().unwrap().iter().find(|a| a["id"] == id).unwrap();
+            let edge = view.command("view.project", &json!({"point":midpoint})).unwrap();
+            let separation = sign * (annotation["points"][axis].as_f64().unwrap() - edge["points"][axis].as_f64().unwrap());
+            assert!((separation - 36.).abs() < 1e-6, "{side} must be 36 display points outside, got {separation}");
+        }
+        // Selecting a bottom edge must not create a third rectangle helper.
+        view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":rectangle["sides"]["bottom"]}})).unwrap();
+        assert_eq!(view.sketch_annotations(), annotations);
+        assert!(Arc::ptr_eq(&original, &engine.session.doc));
+        assert_eq!(engine.session.undo.len(), history);
+    }
+}
+
+#[test]
+fn sketch_unconstrained_rectangular_loop_keeps_independent_edge_helpers() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[10,10],[50,10],[50,40],[10,40]],"closed":true,"infer":false,"connect":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    assert_eq!(view.sketch_annotations().as_array().unwrap().len(), 4, "without H/V constraints the four lengths can vary independently");
+}
+
+#[test]
+fn sketch_rectangle_helpers_are_grouped_per_loop_and_keep_dragged_positions() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    let mut top = String::new();
+    for x in [10, 80] {
+        let rectangle = engine.execute("sketch.rectangle.two_point", json!({"p0":[x,10],"p1":[x+40,40],"connect":false})).unwrap().value;
+        top = format!("edge:{}", rectangle["sides"]["top"].as_str().unwrap());
+    }
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let annotations = view.sketch_annotations();
+    assert_eq!(annotations.as_array().unwrap().len(), 4, "each rectangle has its own width and height");
+    let annotation = annotations.as_array().unwrap().iter().find(|a| a["id"] == top).unwrap();
+    let p = [annotation["points"][0].as_f64().unwrap(), annotation["points"][1].as_f64().unwrap()];
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, p, 1.0);
+    feed(&mut view, InputSource::Pencil, InputPhase::Moved, 1, [p[0], p[1] + 80.], 1.1);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 1, [p[0], p[1] + 80.], 1.2);
+    assert!(view.take_tool_work().is_none());
+    let moved = view.sketch_annotations();
+    let annotation = moved.as_array().unwrap().iter().find(|a| a["id"] == top).unwrap();
+    assert!((annotation["points"][1].as_f64().unwrap() - p[1] - 80.).abs() < 1e-6);
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    assert_eq!(view.sketch_annotations(), moved, "manual placement overrides the outside default");
 }
 
 #[test]
@@ -3603,7 +3666,7 @@ fn sketch_free_dimensions_hide_indirectly_determined_sizes_while_the_sketch_can_
     view.install(2, engine.snapshot().unwrap());
     let annotations = view.sketch_annotations();
     let helpers: Vec<_> = annotations.as_array().unwrap().iter().filter(|a| a["dimension_type"].is_string()).collect();
-    assert_eq!(helpers.len(), 2, "a width dimension also determines the opposite side");
+    assert_eq!(helpers.len(), 1, "only the right height helper remains after width is dimensioned");
     assert!(helpers.iter().all(|a| (a["value"].as_f64().unwrap() - 30.).abs() < 1e-8));
     numeric_apply(&mut engine, &curve_selection(sketch_id, right), Some("length"), "30 mm");
     let snapshot = engine.sketch_snapshot().unwrap();

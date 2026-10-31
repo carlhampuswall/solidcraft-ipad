@@ -845,8 +845,9 @@ impl Viewport {
             .free_measurements
             .iter()
             .filter(move |(index, _, _)| {
-                show_all
-                    || (selected_curve == Some(*index)
+                (show_all && snapshot.rectangle_measurements.get(index).is_none_or(|side| side.preferred))
+                    || (!show_all
+                        && selected_curve == Some(*index)
                         && !snapshot.sketch.constraints.iter().any(|c| dimension_on_curve(&snapshot.sketch, &c.kind, *index)))
             })
             .cloned()
@@ -868,13 +869,18 @@ impl Viewport {
             }
             let frame = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, kind)?;
             let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
+            let index = snapshot.sketch.curve_index(curve)?;
+            if let Some(side) = snapshot.rectangle_measurements.get(&index)
+                && let Some(offset) = solidcraft_engine::sketch::default_text(&frame, side.center, unit)
+            {
+                return Some(offset + offset.normalized().unwrap_or(Vec2::Y) * (14.0 * unit));
+            }
             let offset = solidcraft_engine::sketch::default_text_offset(&frame, unit);
             // Keep the native 44-point label target clear of the edge's own
             // selection tolerance; showing a helper must not steal geometry drags.
             let text = offset + offset.normalized().unwrap_or(Vec2::Y) * (14.0 * unit);
             // A reference or partial dimension can coexist with a free size.
             // Put the new helper on the opposite side to keep both numbers usable.
-            let index = snapshot.sketch.curve_index(curve)?;
             Some(if snapshot.sketch.constraints.iter().any(|c| dimension_on_curve(&snapshot.sketch, &c.kind, index)) { -text } else { text })
         })
     }
