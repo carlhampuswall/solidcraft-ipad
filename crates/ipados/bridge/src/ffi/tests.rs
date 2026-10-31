@@ -780,6 +780,67 @@ fn modelling_face_extrusion_waits_for_user_distance_and_clearing_restores_source
 }
 
 #[test]
+fn modelling_sketch_attachment_uses_exact_face_form_preview_cancel_and_single_commit() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    engine_command(id, "solid.box", json!({"length":40,"width":20,"height":10,"body_name":"Base"}));
+    let sketch = engine_command(id, "sketch.create", json!({"plane":{"face":[10,10,10]},"project_edges":false}))["sketch"].as_u64().unwrap();
+    engine_command(id, "sketch.rectangle.two_point", json!({"p0":[2,2],"p1":[8,8]}));
+    engine_command(id, "sketch.finish", json!({}));
+    let entry = lookup(id).unwrap();
+    let original = entry.adapter.lock().unwrap().execute("document.inspect", json!({})).unwrap().value;
+    for commit in [false, true] {
+        assert_eq!(
+            request(id, &json!({"kind":"model","action":"begin","operation":"sketch.redefine","feature":sketch}).to_string()),
+            0,
+            "{}",
+            response(id)
+        );
+        let result = response(id)["result"].clone();
+        let token = result["token"].as_u64().unwrap();
+        assert_eq!(result["operation"], "sketch.redefine");
+        assert!(result["params"]["plane"].is_null());
+        let plane = result["fields"][0]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["value"]["face"][2].as_f64() == Some(10.0))
+            .unwrap()["value"]
+            .clone();
+        assert_eq!(request(id, &json!({"kind":"model","action":"selection","token":token,"params":{"field":"plane"}}).to_string()), 0);
+        assert_eq!(
+            request(id, &json!({"kind":"model","action":"preview","token":token,"params":{"plane":plane}}).to_string()),
+            0,
+            "{}",
+            response(id)
+        );
+        assert_eq!(response(id)["result"]["valid"], true);
+        assert_eq!(entry.adapter.lock().unwrap().execute("document.inspect", json!({})).unwrap().value, original);
+        assert_eq!(
+            request(
+                id,
+                &json!({"kind":"model","action":if commit { "commit" } else { "cancel" },"token":token,"params":{"plane":plane}}).to_string()
+            ),
+            0,
+            "{}",
+            response(id)
+        );
+        assert!(!entry.viewport.lock().unwrap().is_updating());
+    }
+    assert_eq!(
+        entry.adapter.lock().unwrap().execute("document.inspect", json!({})).unwrap().value["undo"].as_u64().unwrap(),
+        original["undo"].as_u64().unwrap() + 1
+    );
+    assert_eq!(request(id, &json!({"kind":"model","action":"begin","operation":"sketch.redefine"}).to_string()), -1);
+    engine_command(id, "edit.undo", json!({}));
+    let mut restored = entry.adapter.lock().unwrap().execute("document.inspect", json!({})).unwrap().value;
+    restored["revision"] = original["revision"].clone();
+    restored["redo"] = original["redo"].clone();
+    assert_eq!(restored, original);
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
 fn modelling_boundary_previews_real_sketch_then_commits_once_and_cancels_cleanly() {
     let _serial = isolated_registry();
     let id = sc_session_create();

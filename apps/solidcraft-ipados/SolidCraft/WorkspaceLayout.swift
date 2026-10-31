@@ -643,6 +643,7 @@ struct ModellingPresentation: Decodable {
         let error: String?
         let warning: String?
         let stale: Bool?
+        let can_reattach: Bool?
         let order: Int
         let document_order: Int?
     }

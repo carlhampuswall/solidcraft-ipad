@@ -1510,7 +1510,10 @@ final class ModellingInspector: UIStackView {
     private(set) var fields: [ModellingState.Field]
     private var validated: [String: PresentationJSON]?
     private var entryHint: String {
-        ModellingFormPresentation.needsExtrusionDistance(params)
+        if fields.contains(where: { $0.key == "plane" && $0.kind == "reference" }), params["plane"] == nil || params["plane"] == .null {
+            return NativeText.value("ui.ipados.attachment.choose_face")
+        }
+        return ModellingFormPresentation.needsExtrusionDistance(params)
             ? NativeText.value("ui.ipados.extrude.enter_distance") : NumericText.text("apply_hint")
     }
     private var locallyEdited = false
@@ -1568,7 +1571,10 @@ final class ModellingInspector: UIStackView {
 
     init(state: ModellingState, compact: Bool = true) {
         self.compact = compact
-        if let id = state.feature, let feature = state.workspace.modelling?.timeline.first(where: { $0.id == id }) {
+        if state.operation == "sketch.redefine" {
+            let name = state.workspace.modelling?.timeline.first(where: { $0.id == state.feature })?.name
+            title = NativeText.value("ui.ipados.attachment.repair") + (name.map { ": " + $0 } ?? "")
+        } else if let id = state.feature, let feature = state.workspace.modelling?.timeline.first(where: { $0.id == id }) {
             title = ModellingText.text("editing") + ": " + feature.name
         } else if let operation = state.operation {
             title = ((state.workspace.modelling?.tools ?? []) + (state.workspace.assembly?.tools ?? [])).first(where: { $0.id == operation }).map { ModellingText.label($0.label) }
@@ -1589,15 +1595,22 @@ final class ModellingInspector: UIStackView {
         let hint = WorkspaceStyle.label(.footnote, secondary: true)
         hint.text = ModellingText.text("draft_hint")
         if !compact { addArrangedSubview(hint) }
+        if state.operation == "sketch.redefine" {
+            let guidance = WorkspaceStyle.label(.footnote, secondary: true)
+            guidance.text = NativeText.value("ui.ipados.attachment.hint")
+            addArrangedSubview(guidance)
+        }
         fieldsStack.axis = .vertical; fieldsStack.spacing = compact ? 6 : 16
         additionalFields.axis = .vertical; additionalFields.spacing = 6
         addArrangedSubview(fieldsStack)
         if compact {
-            let help = InspectorDisclosure(title: InspectorText.text("expression_help"))
-            let syntax = WorkspaceStyle.label(.footnote, secondary: true)
-            syntax.text = WorkspaceStyle.text("decimal_help") + "\n" + ModellingText.text("draft_hint")
-            help.content.addArrangedSubview(syntax)
-            addArrangedSubview(help)
+            if state.operation != "sketch.redefine" {
+                let help = InspectorDisclosure(title: InspectorText.text("expression_help"))
+                let syntax = WorkspaceStyle.label(.footnote, secondary: true)
+                syntax.text = WorkspaceStyle.text("decimal_help") + "\n" + ModellingText.text("draft_hint")
+                help.content.addArrangedSubview(syntax)
+                addArrangedSubview(help)
+            }
             addArrangedSubview(feedback)
         } else { addArrangedSubview(select) }
         footer.axis = .vertical; footer.spacing = 8
@@ -1796,7 +1809,7 @@ final class ModellingInspector: UIStackView {
                     let hint = WorkspaceStyle.label(.footnote, secondary: true); hint.text = ModellingText.text("no_inputs"); stack.addArrangedSubview(hint)
                 }
             }
-            if !compact && field.key == "profile" {
+            if !compact && (field.key == "profile" || field.key == "plane" && field.kind == "reference") {
                 let pick = WorkspaceButton(ModellingText.text("select_in_viewport")) { [weak self] in
                     self?.endEditing(true); self?.onSelect?(field.key)
                 }
@@ -1813,7 +1826,7 @@ final class ModellingInspector: UIStackView {
             options.content.addArrangedSubview(additionalFields)
             fieldsStack.addArrangedSubview(options)
         }
-        if compact && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
+        if compact && !fields.contains(where: { ($0.key == "profile" || $0.key == "plane") && $0.kind == "reference" }) {
             fieldsStack.addArrangedSubview(select)
         }
         updateAvailability()

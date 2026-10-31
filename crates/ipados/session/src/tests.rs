@@ -5375,6 +5375,141 @@ fn modelling_commit(adapter: &mut SessionAdapter, edit: &ModelEdit, params: Valu
     model
 }
 
+fn attachment_repair_fixture(changed: bool) -> (SessionAdapter, u64) {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("sketch.create", json!({"plane":"XY","name":"Base outline"})).unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,20]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("solid.extrude", json!({"distance":"10 mm","name":"Extrude1","body_name":"Base"})).unwrap();
+    let sketch =
+        adapter.execute("sketch.create", json!({"plane":{"face":[10,10,10]},"name":"Stand Base","project_edges":false})).unwrap().value["sketch"]
+            .as_u64()
+            .unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[2,2],"p1":[8,8]})).unwrap();
+    adapter.execute("sketch.dimension", json!({"entities":["l1"],"value":"6 mm"})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    if changed {
+        adapter.execute("sketch.edit", json!({"sketch":"Base outline"})).unwrap();
+        adapter.execute("sketch.delete", json!({"entities":["l2"]})).unwrap();
+        adapter.execute("sketch.line", json!({"points":[[40,0],[40,20]]})).unwrap();
+        adapter.execute("sketch.finish", json!({})).unwrap();
+        // Explicitly repair the base extrusion's profile first, leaving only
+        // the dependent sketch's changed face certificate to be rebound.
+        adapter.execute("timeline.edit", json!({"feature":"Extrude1","set":{"profiles":[{"point":[10,10]}]}})).unwrap();
+        assert!(adapter.session.model.result(sketch).unwrap().warning.as_ref().unwrap().contains("the face this sketch sits on"));
+        assert!(adapter.session.model.results.iter().filter(|r| r.name != "Stand Base").all(|r| r.warning.is_none()));
+    }
+    (adapter, sketch)
+}
+
+fn attachment_top(edit: &ModelEdit) -> Value {
+    edit.fields[0]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["value"]["face"][2].as_f64().is_some_and(|z| (z - 10.).abs() < 1e-8))
+        .unwrap()["value"]
+        .clone()
+}
+
+#[test]
+fn modelling_sketch_attachment_repairs_changed_cap_with_preview_undo_roundtrip_and_extrusion() {
+    let (mut adapter, sketch) = attachment_repair_fixture(true);
+    let original = adapter.session.doc.clone();
+    let geometry = adapter.session.doc.sketch(sketch).unwrap().clone();
+    let ids: Vec<_> = adapter.session.doc.features.iter().map(|f| f.id).collect();
+    let undo = adapter.session.undo.len();
+    let plane = adapter.session.world_state().sketch(sketch).unwrap().plane;
+    let edit = adapter.begin_model(890, Some("sketch.redefine"), Some(sketch), &[]).unwrap();
+    assert!(edit.repair_source.is_some());
+    assert!(edit.params["plane"].is_null(), "opening a repair must not silently choose a face");
+    assert!(adapter.prepare_model(&edit, edit.params.clone(), true).is_err());
+    let mut params = edit.params.clone();
+    params["plane"] = attachment_top(&edit);
+    let preview = adapter.prepare_model(&edit, params.clone(), false).unwrap();
+    assert!((preview.model.volume_mm3 - 8000.).abs() < 1e-5);
+    assert!(Arc::ptr_eq(&original, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), undo);
+    modelling_commit(&mut adapter, &edit, params);
+    assert_eq!(adapter.session.doc.marker, original.marker);
+    assert_eq!(adapter.session.doc.features.iter().map(|f| f.id).collect::<Vec<_>>(), ids);
+    assert_eq!(*adapter.session.doc.sketch(sketch).unwrap(), geometry, "authored geometry and dimensions survive the repair");
+    assert_eq!(adapter.session.world_state().sketch(sketch).unwrap().plane, plane);
+    assert!(adapter.session.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*adapter.session.doc, *original);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let mut reopened = modelling_roundtrip(&adapter);
+    let extrude = reopened.begin_model(891, Some("solid.extrude"), None, &[Sel::Feature { id: sketch }]).unwrap();
+    let mut params = extrude.params.clone();
+    params["distance"] = json!("18.8 mm");
+    modelling_commit(&mut reopened, &extrude, params);
+    assert!((modelling_volume(&reopened) - (8000. + 36. * 18.8)).abs() < 1e-5);
+}
+
+#[test]
+fn modelling_sketch_attachment_cancel_and_exact_selection_reject_invalid_or_future_faces() {
+    for changed in [false, true] {
+        let (mut adapter, sketch) = attachment_repair_fixture(changed);
+        adapter.execute("solid.box", json!({"length":2,"width":2,"height":2,"corner":[60,0,0],"body_name":"Future"})).unwrap();
+        let original = adapter.session.doc.clone();
+        let mut viewport = Viewport::default();
+        viewport.set_metrics(metrics(800., 600., 2.)).unwrap();
+        let original_scene = adapter.snapshot().unwrap();
+        viewport.begin_update(1);
+        assert!(viewport.install(1, original_scene.clone()));
+        if changed {
+            viewport.begin_update(2);
+            viewport.fail_update(2);
+        }
+        let edit = adapter.begin_model(892, Some("sketch.redefine"), Some(sketch), &[]).unwrap();
+        assert!(edit.fields[0]["options"].as_array().unwrap().iter().all(|option| option["value"]["body"] != "Future"));
+        for plane in [Value::Null, json!({"face":[10,10,10]}), json!({"body":"Future","index":0,"face":[60,0,0],"path":[]})] {
+            assert!(adapter.prepare_model(&edit, json!({"plane":plane}), true).is_err());
+        }
+        let top = attachment_top(&edit);
+        let selected = Sel::Face {
+            body: "Base".into(),
+            index: top["index"].as_u64().unwrap() as usize,
+            point: serde_json::from_value(top["face"].clone()).unwrap(),
+        };
+        let menu = adapter.refresh_model(&edit, &[], Some(json!({"plane":top}))).unwrap();
+        assert_eq!(
+            adapter.refresh_model(&menu, &[], None).unwrap().params["plane"],
+            top,
+            "inspection preserves a menu choice outside viewport picking"
+        );
+        let mut selecting = edit.clone();
+        selecting.selection_field = Some("plane".into());
+        let refreshed = adapter.refresh_model(&selecting, std::slice::from_ref(&selected), None).unwrap();
+        assert_eq!(refreshed.params["plane"], top);
+        assert!(adapter.refresh_model(&refreshed, &[], None).unwrap().params["plane"].is_null());
+        viewport.begin_model(edit).unwrap();
+        viewport.select_model_inputs(892, Some("plane")).unwrap();
+        viewport.command("view.top", &json!({})).unwrap();
+        viewport.command("view.fit", &json!({})).unwrap();
+        let position = point(&viewport, serde_json::from_value(top["face"].clone()).unwrap());
+        for id in 1..=2 {
+            for phase in [InputPhase::Began, InputPhase::Ended] {
+                let input = sample(&viewport, InputSource::Pencil, phase, id, position, id as f64);
+                viewport.input(input).unwrap();
+            }
+            assert!(matches!(viewport.selection.as_slice(), [Sel::Face { .. }]), "repair picks one face even with Multiple enabled");
+        }
+        let current = viewport.model_edit(892).unwrap();
+        let preview = adapter.prepare_model(&current, json!({"plane":top}), false).unwrap();
+        viewport.publish_model(892, &preview).unwrap();
+        viewport.finish_model(892, None).unwrap();
+        assert_eq!(viewport.is_updating(), changed, "cancel restores the original scene's validity");
+        if !changed {
+            assert!(Arc::ptr_eq(viewport.model.as_ref().unwrap(), &original_scene));
+        }
+        assert!(Arc::ptr_eq(&original, &adapter.session.doc));
+        adapter.execute("body.rename", json!({"body":"Future","name":"Later"})).unwrap();
+        assert!(adapter.prepare_model(&refreshed, refreshed.params.clone(), true).is_err(), "a document change invalidates old repair choices");
+    }
+}
+
 fn modelling_plate(width: f64, depth: &str) -> (SessionAdapter, u64, String, u64) {
     let mut adapter = SessionAdapter::new();
     let sketch = adapter.execute("sketch.create", json!({"plane":"XY","name":"Parametric plate sketch"})).unwrap().value["sketch"].as_u64().unwrap();

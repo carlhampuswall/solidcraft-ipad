@@ -1,5 +1,37 @@
 # Sketching (Step 6)
 
+## Repair a sketch attachment
+
+After finishing or cancelling the current tool, select a sketch in the browser
+and choose **Repair sketch attachment** in Properties, or hold its browser row
+and choose the same action. Select the intended planar face from **Change** or
+choose **Select in viewport** and tap the face. Only bodies preceding the sketch
+are offered, so a later extrusion cannot become its own supporting geometry.
+Face picking replaces the previous choice even when Multiple selection is on.
+
+The repair form previews the existing sketch and regenerated model through
+`sketch.redefine`. Check position and orientation, then **Apply**. Opening the
+form, selecting a face and previewing do not change the saved document. Cancel
+discards the proposal; Apply preserves the sketch feature ID and history marker
+and adds one undoable change. The engine retains ownership of geometry,
+dimensions, face certificates and author occurrence paths. Warnings and failed
+downstream features still block Apply and must be repaired in history order.
+
+Use this when a sketch reports that its supporting face changed after an earlier
+sketch edit. Re-selecting an extrusion profile alone does not repair the sketch's
+face attachment. Once the attachment is repaired, retry the extrusion.
+
+The Debug-only `--sketch-attachment-check` exercises the production Properties
+and browser actions, face menu, preview, Cancel, Apply, undo/redo and an 18.8 mm
+extrusion on a disposable changed-face fixture. It writes
+`sketch-attachment-check.json` and `attachment-*.png` to Documents. It does not
+load or autosave a library project. Reserve the physical iPad before running or
+retrieving evidence. Software-driven UIKit actions do not verify physical Pencil
+delivery. Focused regressions live in the existing session and bridge test files;
+the engine test suite requires an explicit user request.
+
+## Construction geometry
+
 Tap **Construction** before drawing to create construction lines, rectangles,
 circles, arcs and splines. The highlighted toolbar button stays on while
 switching tools; tap it again for ordinary profile geometry. This changes only

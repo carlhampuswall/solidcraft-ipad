@@ -1031,7 +1031,8 @@ impl Viewport {
                 let hit = self.pick(tap_point, revision);
                 // Accumulate real picks, while an ordinary empty-space tap
                 // clears the set without requiring a trip through Tools.
-                let add = e.shift || self.multiple && hit.is_some();
+                let reattaching = self.modelling.as_ref().is_some_and(|edit| edit.operation == "sketch.redefine");
+                let add = !reattaching && (e.shift || self.multiple && hit.is_some());
                 if self.constraint_tool().is_some() {
                     // Ineligible geometry is still occupied space. Only a true
                     // miss dismisses the constraint tool.

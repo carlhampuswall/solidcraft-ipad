@@ -47,6 +47,7 @@ pub struct ModelEdit {
     pub(crate) last_preview: Option<Arc<SceneSnapshot>>,
     pub(crate) handle: Option<ModelHandle>,
     pub(crate) repair_source: Option<Arc<SceneSnapshot>>,
+    pub(crate) repair_original: Option<Arc<SceneSnapshot>>,
     pub reply: Value,
     pub feedback: Vec<String>,
 }
@@ -386,7 +387,8 @@ impl SessionAdapter {
             .map(|(order, (document_order, f))| {
                 let result = self.session.model.result(f.id);
                 json!({"id":f.id,"name":f.name,"kind":f.kind.type_name(),"order":order,"document_order":document_order,"suppressed":f.suppressed,
-                "error":result.and_then(|r|r.error.as_ref()),"warning":result.and_then(|r|r.warning.as_ref()),"stale":result.is_some_and(|r|r.stale)})
+                "error":result.and_then(|r|r.error.as_ref()),"warning":result.and_then(|r|r.warning.as_ref()),"stale":result.is_some_and(|r|r.stale),
+                "can_reattach":matches!(f.kind, FeatureKind::Sketch { .. }) && !f.suppressed})
             })
             .collect();
         let parameters: Vec<_> = self
@@ -404,16 +406,22 @@ impl SessionAdapter {
         if self.session.active_sketch.is_some() {
             return Err(error("disabled", "Finish the sketch before modelling."));
         }
+        let reattach = operation == Some("sketch.redefine");
+        if reattach && feature.is_none() {
+            return Err(error("bad_params", "ui.ipados.attachment.choose_sketch"));
+        }
         let mut context = Self { session: self.session.scratch(), geometry_revision: self.geometry_revision, workspace_cache: None };
         let mut params = json!({});
         let operation = if let Some(id) = feature {
             let position =
                 self.session.doc.features.iter().position(|f| f.id == id).ok_or_else(|| error("stale_edit", "The feature no longer exists."))?;
-            let inspect = context.execute("timeline.inspect", json!({"feature":id}))?.value;
-            params = inspect["definition"].clone();
+            if !reattach {
+                let inspect = context.execute("timeline.inspect", json!({"feature":id}))?.value;
+                params = inspect["definition"].clone();
+            }
             // Offer only geometry before the edited feature. No authoritative marker is moved.
             context.execute("timeline.roll_to", json!({"position":position}))?;
-            "timeline.edit"
+            if reattach { "sketch.redefine" } else { "timeline.edit" }
         } else {
             let id = operation.ok_or_else(|| error("bad_params", "Choose a modelling operation."))?;
             if !TOOLS.contains(&id) && !crate::assembly::supported(id) {
@@ -435,10 +443,13 @@ impl SessionAdapter {
             last_preview: None,
             handle: None,
             repair_source: None,
+            repair_original: None,
             reply: Value::Null,
             feedback: Vec::new(),
         };
-        if feature.is_some() {
+        if reattach {
+            context.sketch_attachment_form(&mut edit)?;
+        } else if feature.is_some() {
             // A complete native definition is retained unchanged. Only real expression
             // leaves are exposed; reference payloads are never rewritten as display IDs.
             let inputs = self.session.doc.feature(feature.unwrap_or_default()).map(|f| f.kind.inputs()).unwrap_or_default();
@@ -626,7 +637,9 @@ impl SessionAdapter {
         } else {
             context.create_model_form(&mut edit, selection)?;
         }
-        if feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err()) {
+        if reattach
+            || feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err())
+        {
             let mut source = context.snapshot()?;
             let model = Arc::get_mut(&mut source).ok_or_else(|| error("preview", "The repair source must be uniquely owned."))?;
             model.geometry_revision = self.geometry_revision;
@@ -769,6 +782,9 @@ impl SessionAdapter {
         .then(|| (refreshed.params["faces"].clone(), refreshed.params["body"].clone()));
         let canvas_selection = params.is_none();
         refreshed.params = params.unwrap_or_else(|| edit.params.clone());
+        if edit.operation == "sketch.redefine" && canvas_selection && edit.selection_field.as_deref() == Some("plane") {
+            refreshed.params["plane"] = self.sketch_attachment_selection(edit, selection);
+        }
         invalidate_automatic_subtract_scope(&edit.params, &mut refreshed.params);
         if selecting_targets && canvas_selection {
             if let Some(fields) = refreshed.params.as_object_mut() {
@@ -1368,7 +1384,9 @@ impl SessionAdapter {
         {
             return Err(error("selection", "Choose explicit target bodies for this operation."));
         }
-        let (command, p) = if let Some(feature) = edit.feature {
+        let (command, p) = if edit.operation == "sketch.redefine" {
+            ("sketch.redefine", self.sketch_attachment_command(edit, &params)?)
+        } else if let Some(feature) = edit.feature {
             if hole && let Some(targets) = p.as_object_mut().and_then(|m| m.remove("targets")) {
                 p["participants"] = targets;
             }
@@ -1402,7 +1420,7 @@ impl SessionAdapter {
         scratch.validate_model_references()?;
         scratch.validate_joint_references()?;
         let mut model = scratch.snapshot()?;
-        let mut feedback = Vec::new();
+        let mut feedback = if edit.operation == "sketch.redefine" { vec!["ui.ipados.attachment.preview_hint".into()] } else { Vec::new() };
         if !commit {
             let feature = edit.feature.or_else(|| reply["feature"].as_u64());
             if let Some(feature) =
@@ -1576,11 +1594,18 @@ impl Viewport {
             .cloned()
             .ok_or_else(|| error("stale_edit", "The modelling interaction was cancelled or the document changed."))
     }
-    pub fn begin_model(&mut self, edit: ModelEdit) -> Result<(), AdapterError> {
+    pub fn begin_model(&mut self, mut edit: ModelEdit) -> Result<(), AdapterError> {
         if self.numeric.is_some() || self.modelling.is_some() || (self.updating && edit.repair_source.is_none()) {
             return Err(error("disabled", "Finish the current operation."));
         }
         self.cancel_interactions();
+        if edit.operation == "sketch.redefine" && !self.updating {
+            edit.repair_original = self
+                .model
+                .as_ref()
+                .filter(|model| model.document_id == edit.document_id && model.geometry_revision == edit.geometry_revision)
+                .cloned();
+        }
         if let Some(source) = &edit.repair_source {
             self.model = Some(source.clone());
             self.selection.clear();
@@ -1621,9 +1646,13 @@ impl Viewport {
     pub fn select_model_inputs(&mut self, token: u64, field: Option<&str>) -> Result<(), AdapterError> {
         let edit = self.model_edit(token)?;
         let field = field.or_else(|| {
-            (edit.operation == "solid.extrude" && edit.params["operation"] != "new" && edit.params["profile"].is_object()).then_some("targets")
+            if edit.operation == "sketch.redefine" {
+                Some("plane")
+            } else {
+                (edit.operation == "solid.extrude" && edit.params["operation"] != "new" && edit.params["profile"].is_object()).then_some("targets")
+            }
         });
-        if field.is_some_and(|field| !matches!(field, "profile" | "targets") || !edit.fields.iter().any(|input| input["key"] == field)) {
+        if field.is_some_and(|field| !matches!(field, "profile" | "targets" | "plane") || !edit.fields.iter().any(|input| input["key"] == field)) {
             return Err(error("bad_params", "Choose a modelling source or target field."));
         }
         self.fail_model(token)?;
@@ -1654,7 +1683,10 @@ impl Viewport {
         self.modelling = None;
         self.cancel_interactions();
         if model.is_none() && edit.repair_source.is_some() {
-            self.updating = true;
+            self.updating = edit.repair_original.is_none();
+            if let Some(original) = edit.repair_original {
+                self.model = Some(original);
+            }
             self.selection.clear();
         }
         if let Some(model) = model {
@@ -1666,8 +1698,11 @@ impl Viewport {
         Ok(())
     }
     pub fn cancel_model(&mut self) {
-        if self.modelling.as_ref().is_some_and(|e| e.repair_source.is_some()) {
-            self.updating = true;
+        if let Some(edit) = self.modelling.as_ref().filter(|edit| edit.repair_source.is_some()) {
+            self.updating = edit.repair_original.is_none();
+            if let Some(original) = &edit.repair_original {
+                self.model = Some(original.clone());
+            }
             self.selection.clear();
         }
         self.modelling = None;

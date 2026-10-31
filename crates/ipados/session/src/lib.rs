@@ -15,6 +15,7 @@ mod origin;
 mod picking;
 mod recovery;
 mod references;
+mod sketch_attachment;
 mod sketch_input;
 mod sketch_projection;
 mod sketching;

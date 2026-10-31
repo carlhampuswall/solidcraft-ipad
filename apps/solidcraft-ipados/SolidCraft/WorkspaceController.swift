@@ -540,6 +540,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-projection-check") {
                     self.developmentCheckStarted = true; self.checkSketchProjectionOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--sketch-attachment-check") {
+                    self.developmentCheckStarted = true; self.checkSketchAttachmentOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--line-finish-check") {
                     self.developmentCheckStarted = true; self.checkLineFinishOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--constraints-menu-check") {
@@ -1157,6 +1159,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             controller.currentBrowserRow(row.id, document: document, revision: revision)
         }
         var actions: [BrowserActionMenu.Item] = []
+        if let id = row.entity?.id, case .number(let sketch) = id,
+           state?.modelling?.timeline.first(where: { $0.id == sketch })?.can_reattach == true, state?.sketch == nil {
+            actions.append(BrowserActionMenu.Item(title: NativeText.value("ui.ipados.attachment.repair"), icon: "plane") { [weak self] in
+                guard let self, current(self) != nil else { return }
+                self.beginModelling(operation: "sketch.redefine", feature: sketch)
+            })
+        }
         if browser.rename != nil {
             actions.append(BrowserActionMenu.Item(title: BrowserText.text("rename"), icon: "rename") { [weak self] in
                 guard let self, let row = current(self), let rename = row.browser?.rename else { return }
@@ -1568,6 +1577,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         if let warning = feature.warning { let message = WorkspaceMessage(); message.show(warning); properties.addArrangedSubview(message) }
         if feature.stale == true { let message = WorkspaceMessage(); message.show(ModellingText.text("stale_geometry"), error: true); properties.addArrangedSubview(message) }
+        if feature.can_reattach == true {
+            let repair = WorkspaceButton(NativeText.value("ui.ipados.attachment.repair")) { [weak self] in
+                self?.beginModelling(operation: "sketch.redefine", feature: feature.id)
+            }
+            repair.accessibilityIdentifier = "workspace-repair-sketch-attachment"
+            properties.addArrangedSubview(repair)
+        }
         if state?.rows.first(where: { $0.id == "feature:" + String(feature.id) })?.kind != "sketch" {
             action(ModellingText.text("edit_feature"), command: "timeline.edit", prominent: true) { [weak self] in self?.beginModelling(feature: feature.id) }
         }
@@ -1806,6 +1822,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func evaluateModelling(_ params: [String: PresentationJSON], commit: Bool, live: Bool = false) {
         modellingAutomaticPreview.cancel()
         guard let token = modellingToken, let form = modellingInspector, !modellingCommitting else { return }
+        if !commit, form.fields.contains(where: { $0.key == "plane" && $0.kind == "reference" }),
+           params["plane"] == nil || params["plane"] == .null {
+            refreshModellingContext(params)
+            return
+        }
         if !commit && ModellingFormPresentation.needsExtrusionDistance(params) {
             // Keep a source-surface handle without evaluating an empty solid.
             // Inspection also clears any previous preview when depth is erased.
@@ -4079,6 +4100,145 @@ private extension FoundationController {
             }
             self.checkGroupedInspectorOnDevice()
         }
+    }
+
+    /// Production repair controls on a disposable changed-face fixture. No library
+    /// project is loaded or autosaved; software input is separate from physical Pencil.
+    private func checkSketchAttachmentOnDevice() {
+        let expected = generation
+        var finished = false
+        var stages: [String] = []
+        func finish(_ failure: String? = nil) {
+            guard !finished else { return }; finished = true
+            gridAxesCheckAfterFrame = nil
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let report: [String: Any] = ["passed": failure == nil, "error": failure ?? "", "stages": stages,
+                    "library_project_untouched": session.currentProject == nil,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "coverage": "Production UIKit repair action, face menu, preview, Cancel, Apply, undo/redo and extrusion on physical iPad. Software input; physical Pencil unverified."]
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("sketch-attachment-check.json"), options: .atomic)
+            } catch { NSLog("Attachment evidence failed: %@", String(describing: error)) }
+        }
+        func wait(_ ready: @escaping () -> Bool, remaining: Int = 150, then action: @escaping () -> Void) {
+            guard !finished, active, generation == expected else { return }
+            if ready() { action(); return }
+            guard remaining > 0 else { finish("Timed out waiting for attachment state"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(ready, remaining: remaining - 1, then: action) }
+        }
+        func control(_ id: String, in root: UIView? = nil) -> UIButton? {
+            guard let root = root ?? view else { return nil }
+            if root.accessibilityIdentifier == id { return root as? UIButton }
+            return root.subviews.compactMap { control(id, in: $0) }.first
+        }
+        func capture(_ stage: String, then next: @escaping () -> Void) {
+            view.layoutIfNeeded()
+            gridAxesCheckAfterFrame = {
+                guard !finished else { return }
+                do {
+                    let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                    let surface: UIView = self.view.window ?? self.view
+                    let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                    guard let png = image.pngData() else { finish("Missing screenshot pixels"); return }
+                    try png.write(to: directory.appendingPathComponent("attachment-" + stage + ".png"), options: .atomic)
+                    stages.append(stage); next()
+                } catch { finish(String(describing: error)) }
+            }
+            session.command("view.grid", params: ["visible":gridVisible])
+        }
+        func chooseFace(then next: @escaping () -> Void) {
+            guard let form = modellingInspector, let field = form.fields.first(where: { $0.key == "plane" }),
+                  let option = field.options?.first(where: { option in
+                      guard case .object(let plane) = option.value, case .array(let point)? = plane["face"], point.count == 3,
+                            let z = point[2].value as? NSNumber else { return false }
+                      return abs(z.doubleValue - 10) < 0.00001
+                  }), let button = control("workspace-model-field-plane"),
+                  let action = button.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == ModellingText.label(option.label) }) else {
+                finish("Current top face menu choice unavailable"); return
+            }
+            action.performWithSender(button, target: nil)
+            wait({ control("workspace-model-apply")?.isEnabled == true }, then: next)
+        }
+        func exercise(_ sketch: UInt64) {
+            guard let row = state?.rows.first(where: { $0.id == "feature:" + String(sketch) }),
+                  browserMenu(row).children.contains(where: { $0.title == NativeText.value("ui.ipados.attachment.repair") }) else {
+                finish("Sketch context menu repair action missing"); return
+            }
+            session.selectEntity(["type":"feature", "id":sketch], additive: false) { result in
+                guard case .success = result else { finish("Cannot select repair sketch"); return }
+                self.inspectorOpen = true; self.browserOpen = false; self.rebuildInspector(); self.relayoutPanels()
+                guard let repair = control("workspace-repair-sketch-attachment") else { finish("Sketch properties repair action missing"); return }
+                repair.sendActions(for: .touchUpInside)
+                wait({ self.modellingToken != nil && self.modellingInspector != nil }) {
+                    if control("workspace-model-apply")?.isEnabled != false { finish("Repair silently accepted an unselected face"); return }
+                    capture("choose-face") {
+                        chooseFace {
+                            capture("preview") {
+                                control("workspace-model-cancel")?.sendActions(for: .touchUpInside)
+                                wait({ self.modellingToken == nil && !self.modellingStarting }) {
+                                    guard let row = self.state?.rows.first(where: { $0.id == "feature:" + String(sketch) }),
+                                          self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning != nil,
+                                          let repair = self.browserMenu(row).children.first(where: { $0.title == NativeText.value("ui.ipados.attachment.repair") }) else {
+                                        finish("Cancel changed the original attachment"); return
+                                    }
+                                    repair.action?()
+                                    wait({ self.modellingToken != nil && self.modellingInspector != nil }) {
+                                        chooseFace {
+                                            control("workspace-model-apply")?.sendActions(for: .touchUpInside)
+                                            wait({ self.modellingToken == nil && self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning == nil }) {
+                                                capture("repaired") {
+                                                    self.session.command("edit.undo") { _ in
+                                                        wait({ self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning != nil }) {
+                                                            self.session.command("edit.redo") { _ in
+                                                                wait({ self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning == nil }) {
+                                                                    self.session.command("solid.extrude", params: ["sketch":sketch,"distance":"18.8 mm","operation":"new"]) { result in
+                                                                        guard case .success = result else { finish("Extrusion after repair failed"); return }
+                                                                        wait({ self.state?.modelling?.timeline.count == 4 }) {
+                                                                            capture("extruded") { finish() }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let fixture: [(String, [String: Any])] = [
+            ("file.new", [:]), ("sketch.create", ["plane":"XY","name":"Base outline"]),
+            ("sketch.rectangle.two_point", ["p0":[0,0],"p1":[40,20]]), ("sketch.finish", [:]),
+            ("solid.extrude", ["distance":"10 mm","name":"Extrude1","body_name":"Base"]),
+            ("sketch.create", ["plane":["face":[10,10,10]],"name":"Stand Base","project_edges":false]),
+            ("sketch.rectangle.two_point", ["p0":[2,2],"p1":[8,8]]), ("sketch.finish", [:]),
+            ("sketch.edit", ["sketch":"Base outline"]), ("sketch.delete", ["entities":["l2"]]),
+            ("sketch.line", ["points":[[40,0],[40,20]]]), ("sketch.finish", [:]),
+            ("timeline.edit", ["feature":"Extrude1","set":["profiles":[["point":[10,10]]]]]), ("view.iso", [:]), ("view.fit", [:])]
+        func prepare(_ index: Int) {
+            guard !finished else { return }
+            guard index < fixture.count else {
+                wait({ self.state?.modelling?.timeline.first(where: { $0.name == "Stand Base" })?.warning != nil && self.pending.isEmpty }) {
+                    if let sketch = self.state?.modelling?.timeline.first(where: { $0.name == "Stand Base" })?.id { exercise(sketch) }
+                    else { finish("Fixture sketch unavailable") }
+                }; return
+            }
+            session.command(fixture[index].0, params: fixture[index].1) { result in
+                // Finishing the changed base exposes its intentionally stale profile
+                // before the next command explicitly repairs that upstream input.
+                if case .failure(let error) = result, index != 11 { finish("Fixture: " + error.message); return }
+                prepare(index + 1)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 50) { if !finished { finish("Attachment diagnostic timed out") } }
+        prepare(0)
     }
 
     /// Real UIKit sizing, scrolling and completion on a disposable native sketch.

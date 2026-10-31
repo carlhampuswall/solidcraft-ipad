@@ -1,0 +1,10 @@
+{
+  "en": {
+    "ui.ipados.attachment.choose_face": "Choose one current planar face from the list or select it in the model.",
+    "ui.ipados.attachment.choose_sketch": "Choose an unsuppressed sketch to repair its attachment.",
+    "ui.ipados.attachment.face": "Attach sketch to face",
+    "ui.ipados.attachment.hint": "Choose the intended face before this sketch in History. Preview the sketch placement, then Apply to repair its attachment.",
+    "ui.ipados.attachment.preview_hint": "Check the sketch position and orientation before applying. This repair is one undoable change.",
+    "ui.ipados.attachment.repair": "Repair sketch attachment"
+  }
+}

@@ -710,13 +710,18 @@ impl Viewport {
             PickFilter::Face
         } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("targets")) {
             PickFilter::Body
-        } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("profile")) {
+        } else if self
+            .modelling
+            .as_ref()
+            .is_some_and(|edit| edit.selection_field.as_deref() == Some("profile") || edit.operation == "sketch.redefine")
+        {
             PickFilter::Face
         } else {
             self.filter
         };
         let picked = model.picks.pick(&self.camera, self.vp(), self.metrics, pixel, filter);
         if !self.origin.choosing
+            && self.modelling.as_ref().is_none_or(|edit| edit.operation != "sketch.redefine")
             && matches!(filter, PickFilter::Auto | PickFilter::Face)
             && !matches!(picked, Some(Sel::Edge { .. } | Sel::Vertex { .. }))
             && let Some(profile) = model.picks.pick_profile(&self.camera, self.vp(), self.metrics, pixel)
