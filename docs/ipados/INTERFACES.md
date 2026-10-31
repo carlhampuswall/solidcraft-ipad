@@ -50,6 +50,16 @@ validated before changes apply. The overrides survive scene publication and
 preview changes without rebuilding model geometry, changing the camera or
 adding document history.
 
+Optional `sketch: [r,g,b]` overrides ordinary free, determined and finished
+sketch strokes; null or omission restores their shared light colours. The
+diagnostic includes `sketch_color`. Dark UIKit appearance resolves the native
+`systemCyan` token to a bright cyan-blue, distinct from the deep-blue Z axis.
+Construction, fixed/locked and projected geometry, body/face appearances, axes
+and selection feedback retain their colours. The renderer refreshes its model
+buffers when this stroke override changes, without engine evaluation or
+retessellation; subsequent frames reuse them. Light restores the original
+strokes. This repairs dark-mode contrast rather than adding a new preference.
+
 `view.grid` accepts `{"visible": boolean}` and returns the viewport diagnostic,
 including `grid.visible` and `grid.colors`. It defaults to visible and changes
 only the grid guide geometry; origin axes, planes, the origin point and the

@@ -25,6 +25,7 @@ pub struct NativeRenderer {
     lost: Arc<AtomicBool>,
     error: Arc<Mutex<Option<String>>>,
     uploaded: Option<Arc<solidcraft_ipados_session::SceneSnapshot>>,
+    uploaded_sketch_color: Option<solidcraft_render::Rgb>,
     scene_key: u64,
     scene: SceneSlot,
     guides: SceneSlot,
@@ -88,6 +89,7 @@ impl NativeRenderer {
             lost,
             error,
             uploaded: None,
+            uploaded_sketch_color: None,
             scene_key: 0,
             scene: Arc::new(Mutex::new(None)),
             guides: Arc::new(Mutex::new(None)),
@@ -167,12 +169,13 @@ impl NativeRenderer {
             wgpu::CurrentSurfaceTexture::Lost => return Err("Metal surface lost; recreate the renderer while retaining the CAD session".into()),
             wgpu::CurrentSurfaceTexture::Validation => return Err("Metal drawable acquisition failed validation".into()),
         };
-        if self.uploaded.as_ref().is_none_or(|model| !Arc::ptr_eq(model, &snapshot.model)) {
+        if self.uploaded.as_ref().is_none_or(|model| !Arc::ptr_eq(model, &snapshot.model)) || self.uploaded_sketch_color != snapshot.sketch_color {
             self.scene_key = self.scene_key.checked_add(1).ok_or("render scene revision exhausted")?;
             let (model, bodies) = model_geometry_cached(snapshot, self.scene_key, &mut self.meshes)?;
             *self.scene.lock().map_err(|_| "render scene lock is poisoned")? = Some(model);
             self.bodies = bodies;
             self.uploaded = Some(snapshot.model.clone());
+            self.uploaded_sketch_color = snapshot.sketch_color;
             self.highlight_revision = 0;
         }
         if self.overlay_revision != snapshot.guide_revision {
@@ -406,7 +409,7 @@ pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: 
     // sketches and guides retain their established converter and appearance.
     let line = |line: &solidcraft_render::SceneLine| solidcraft_render::SceneLine {
         points: line.points.clone(),
-        color: line.color,
+        color: snapshot.model_line_color(line.color),
         alpha: line.alpha,
         width: line.width,
         on_top: line.on_top,
@@ -522,5 +525,31 @@ pub fn capture_feedback(snapshot: &RenderSnapshot, capturer: &solidcraft_gpu::ca
     let source = snapshot.model.preview_scene.as_ref().map_or(&snapshot.model.scene, |preview| &preview.scene);
     capturer
         .rgba_viewport(source, &snapshot.camera, [width, height], model, highlight, (snapshot.hover_tint, snapshot.selection_tint))
+        .map_err(|e| e.to_string())
+}
+
+/// Offscreen appearance evidence using the production model and guide converters.
+/// Intended for an unselected scene; selection feedback is covered above.
+pub fn capture_appearance(
+    snapshot: &RenderSnapshot,
+    capturer: &solidcraft_gpu::capture::Capturer,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, String> {
+    let (model, _) = model_geometry(snapshot, 1)?;
+    let scene = solidcraft_render::Scene {
+        background: snapshot.background,
+        radius: snapshot.model.bounds.diagonal() + snapshot.camera.half_height() * 2.,
+        ..Default::default()
+    };
+    capturer
+        .rgba_viewport(
+            &scene,
+            &snapshot.camera,
+            [width, height],
+            model,
+            guide_geometry(&snapshot.guides),
+            (snapshot.hover_tint, snapshot.selection_tint),
+        )
         .map_err(|e| e.to_string())
 }

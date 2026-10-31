@@ -3120,12 +3120,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         func rgb(_ values: [CGFloat]) -> [Int] { values.map { Int((min(1, max(0, $0)) * 255).rounded()) } }
         guard let (surface, _) = components(WorkspaceStyle.surface),
+              let (sketch, _) = components(WorkspaceStyle.darkSketchLine),
               let (separator, alpha) = components(WorkspaceStyle.separator) else { return }
         // Composite the semantic separator over the canvas; minor lines are subtler.
         let grid = [CGFloat(0.5), 1].map { strength in
             rgb(zip(surface, separator).map { background, line in background + (line - background) * alpha * strength })
         }
-        session.command("view.background", params: ["color": rgb(surface), "grid": grid])
+        session.command("view.background", params: ["color": rgb(surface), "grid": grid, "sketch": rgb(sketch)])
     }
 
     private func updateStatus() {

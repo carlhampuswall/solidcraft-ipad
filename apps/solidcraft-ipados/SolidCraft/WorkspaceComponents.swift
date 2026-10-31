@@ -32,6 +32,8 @@ enum WorkspaceStyle {
     static let foreground = UIColor.label
     static let secondary = UIColor.secondaryLabel
     static let accent = UIColor.systemBlue
+    // Brighter and greener than the shared renderer's deep-blue Z axis.
+    static let darkSketchLine = UIColor.systemCyan
     static let selectedForeground = UIColor.white
     static let error = UIColor.systemRed
 

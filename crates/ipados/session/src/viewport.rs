@@ -16,6 +16,7 @@ use crate::{AdapterError, PickFilter, SceneSnapshot, ViewportMetrics, error};
 pub struct RenderSnapshot {
     pub model: Arc<SceneSnapshot>,
     pub background: Option<(Rgb, Rgb)>,
+    pub sketch_color: Option<Rgb>,
     pub camera: Camera,
     pub view_proj: Mat4,
     pub guides: Arc<Scene>,
@@ -28,6 +29,16 @@ pub struct RenderSnapshot {
     pub hovered_bodies: Vec<String>,
     pub selection_tint: [f32; 3],
     pub hover_tint: [f32; 3],
+}
+
+impl RenderSnapshot {
+    /// Native appearance changes only ordinary sketch strokes. These shared
+    /// palette entries identify free, determined and finished sketch curves;
+    /// body edges, construction/reference geometry and feedback keep their colours.
+    pub fn model_line_color(&self, color: Rgb) -> Rgb {
+        let palette = view::Palette::DEFAULT;
+        if [palette.sketch, palette.sketch_fixed, palette.sketch_done].contains(&color) { self.sketch_color.unwrap_or(color) } else { color }
+    }
 }
 
 struct HighlightKey {
@@ -69,6 +80,7 @@ pub struct Viewport {
     pub(crate) modelling: Option<crate::ModelEdit>,
     pub(crate) origin: crate::origin::OriginReferences,
     background: Option<Rgb>,
+    sketch_color: Option<Rgb>,
     grid: GridStyle,
     generation: u64,
     pub(crate) metrics_epoch: u64,
@@ -110,6 +122,7 @@ impl Default for Viewport {
             modelling: None,
             origin: crate::origin::OriginReferences::default(),
             background: None,
+            sketch_color: None,
             grid: GridStyle::default(),
             generation: 0,
             metrics_epoch: 0,
@@ -263,7 +276,9 @@ impl Viewport {
         if id == "view.background" {
             let color: Option<[u8; 3]> = serde_json::from_value(params["color"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
             let grid: Option<[[u8; 3]; 2]> = serde_json::from_value(params["grid"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
+            let sketch: Option<[u8; 3]> = serde_json::from_value(params["sketch"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
             self.background = color.map(|[r, g, b]| Rgb(r, g, b));
+            self.sketch_color = sketch.map(|[r, g, b]| Rgb(r, g, b));
             let colors = grid.map(|colors| colors.map(|[r, g, b]| Rgb(r, g, b)));
             if self.grid.colors != colors {
                 self.grid.colors = colors;
@@ -712,6 +727,7 @@ impl Viewport {
         Some(RenderSnapshot {
             geometry_revision: authoritative.geometry_revision,
             background: self.background.map(|color| (color, color)).or(model.scene.background),
+            sketch_color: self.sketch_color,
             model,
             camera: self.camera,
             view_proj: self.vp(),
@@ -764,6 +780,7 @@ impl Viewport {
             "input":input,"tool_pending":self.contacts.diagnostic()["tool_pending"],"planar":self.planar,
             "origin":self.origin,"reference_labels":self.reference_labels(),
             "background":self.background.map(|color| [color.0,color.1,color.2]),
+            "sketch_color":self.sketch_color.map(|color| [color.0,color.1,color.2]),
             "grid":{"visible":self.grid.visible,"integrated_axes":self.grid.integrated_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
             "touch_orbit":{"follows_viewpoint":self.touch_orbit_follows_viewpoint},
             "touch_twist":{"enabled":self.two_finger_twist},

@@ -516,6 +516,51 @@ fn engine_command(id: u64, command: &str, params: Value) -> Value {
 }
 
 #[test]
+fn dark_sketch_strokes_reach_gpu_for_active_finished_and_preview_scenes() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    engine_command(id, "sketch.create", json!({"plane":"XY"}));
+    engine_command(id, "sketch.line", json!({"points":[[10,10],[30,20]],"ids":["free"],"infer":false}));
+    let entry = lookup(id).unwrap();
+    let light = entry.viewport.lock().unwrap().snapshot().unwrap();
+    let original = light.model.scene.lines[0].color;
+    assert_eq!(light.model_line_color(original), original);
+    let geometry_revision = light.geometry_revision;
+    view_request(id, json!({"kind":"command","command":"view.background","params":{"color":[28,28,30],"sketch":[100,210,255]}}));
+    let dark = entry.viewport.lock().unwrap().snapshot().unwrap();
+    assert!(Arc::ptr_eq(&light.model, &dark.model));
+    assert_eq!(dark.geometry_revision, geometry_revision);
+    assert_eq!(dark.model.scene.lines[0].color, original, "the engine scene keeps its original palette");
+    let (gpu, _) = crate::renderer::model_geometry(&dark, 1).unwrap();
+    assert!(gpu.palette.entries().contains(&[100, 210, 255, 255]));
+    assert!(!gpu.palette.entries().contains(&[original.0, original.1, original.2, 255]));
+    assert!(dark.guides.grid.iter().all(|line| dark.model_line_color(line.color) == line.color), "axis and grid colours stay distinct");
+
+    // Numeric previews use a different immutable display scene, but the native
+    // appearance must persist through preview, cancel and document publication.
+    view_request(id, json!({"kind":"command","command":"select.entity","params":{"entity":{"type":"sketch_curve","id":"free"}}}));
+    assert_eq!(request(id, r#"{"kind":"numeric","action":"begin","dimension":"length"}"#), 0);
+    let token = response(id)["result"]["token"].as_u64().unwrap();
+    assert_eq!(request(id, &json!({"kind":"numeric","action":"preview","token":token,"expression":"40 mm"}).to_string()), 0);
+    let preview = entry.viewport.lock().unwrap().snapshot().unwrap();
+    assert!(!Arc::ptr_eq(&dark.model, &preview.model));
+    assert!(crate::renderer::model_geometry(&preview, 2).unwrap().0.palette.entries().contains(&[100, 210, 255, 255]));
+    assert_eq!(request(id, &json!({"kind":"numeric","action":"cancel","token":token}).to_string()), 0);
+    engine_command(id, "sketch.line", json!({"points":[[10,30],[30,40]],"ids":["guide"],"infer":false,"construction":true}));
+    engine_command(id, "sketch.finish", json!({}));
+    let finished = entry.viewport.lock().unwrap().snapshot().unwrap();
+    let (gpu, _) = crate::renderer::model_geometry(&finished, 3).unwrap();
+    assert!(gpu.palette.entries().contains(&[100, 210, 255, 255]), "finished black strokes must also become blue");
+    assert!(gpu.palette.entries().contains(&[230, 130, 40, 255]), "construction strokes keep their own colour");
+    view_request(id, json!({"kind":"command","command":"view.background","params":{"color":null}}));
+    let restored = entry.viewport.lock().unwrap().snapshot().unwrap();
+    assert_eq!(restored.sketch_color, None);
+    assert!(Arc::ptr_eq(&finished.model, &restored.model));
+    assert!(crate::renderer::model_geometry(&restored, 4).unwrap().0.palette.entries().contains(&[20, 20, 20, 255]));
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
 fn sketch_plane_preview_resolves_native_planes_without_document_or_history_changes() {
     let _serial = isolated_registry();
     let id = sc_session_create();

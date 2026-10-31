@@ -69,6 +69,12 @@ fn viewport_background_rejects_invalid_channels_without_changing_appearance() {
         assert!(viewport.command("view.background", &json!({"color":[99,99,99],"grid":grid})).is_err());
         assert_eq!(viewport.diagnostic()["background"], json!([28, 28, 30]), "invalid grid colours must not change the background either");
     }
+    viewport.command("view.background", &json!({"color":[28,28,30],"sketch":[100,210,255]})).unwrap();
+    for sketch in [json!([100, 210]), json!([100, 210, 256]), json!([-1, 210, 255]), json!([100.5, 210, 255]), json!(true)] {
+        assert!(viewport.command("view.background", &json!({"color":[99,99,99],"sketch":sketch})).is_err());
+        assert_eq!(viewport.diagnostic()["background"], json!([28, 28, 30]));
+        assert_eq!(viewport.diagnostic()["sketch_color"], json!([100, 210, 255]));
+    }
 }
 
 #[test]

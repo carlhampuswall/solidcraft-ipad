@@ -80,6 +80,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--appearance") {
         return appearance_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--dark-sketch") {
+        return dark_sketch_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--history") {
         return history_proof(&destination);
     }
@@ -1581,6 +1584,40 @@ fn sketch_drag_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>
     println!(
         "PASS: Select drags a selected rectangle by (20,15) mm, preserves constraints/profile, and undoes once. Synthetic Pencil and macOS GPU; physical iPad input unverified."
     );
+    Ok(())
+}
+
+/// Real sketch strokes and native guides through the same GPU converters as Metal.
+fn dark_sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XZ"}))?;
+    engine.execute("sketch.line", json!({"points":[[-25,15],[25,15],[25,40],[-25,40]],"closed":true,"infer":false}))?;
+    engine.execute("sketch.line", json!({"points":[[-35,28],[35,28]],"construction":true,"infer":false}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    for (stage, params) in [
+        ("before", json!({"color":[28,28,30],"grid":[[45,45,47],[62,62,65]]})),
+        ("after", json!({"color":[28,28,30],"grid":[[45,45,47],[62,62,65]],"sketch":[100,210,255]})),
+        ("light", json!({"color":null})),
+    ] {
+        view.command("view.background", &params)?;
+        let frame = view.snapshot().ok_or("missing sketch frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_appearance(&frame, &capturer, 960, 640)?;
+        if stage == "after" {
+            for color in [[100, 210, 255], [60, 100, 230]] {
+                if rgba.chunks_exact(4).filter(|pixel| pixel[..3] == color).count() < 20 {
+                    return Err(format!("missing visible sketch/axis colour {color:?}").into());
+                }
+            }
+        }
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{stage}: {path}");
+    }
     Ok(())
 }
 
