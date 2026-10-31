@@ -22,6 +22,20 @@ struct WorkspaceChecks {
             try require(EdgeLengthReadout.text(lengthMM: value, enabled: true, template: edgeTemplate) == nil,
                         "an unavailable or invalid edge produced a length readout")
         }
+        let radiusTemplate = "Radius: {radius} mm"
+        try require(EdgeLengthReadout.text(lengthMM: .pi * 7, radiusMM: 7, enabled: true, template: edgeTemplate,
+            radiusTemplate: radiusTemplate, locale: edgeLocale) == "Edge length: 21.991 mm · Radius: 7 mm",
+            "a semicircle did not display arc length together with its measured radius")
+        try require(EdgeLengthReadout.text(lengthMM: 12.34567, radiusMM: 4.12345, enabled: true, template: edgeTemplate,
+            radiusTemplate: radiusTemplate, locale: Locale(identifier: "de_DE")) == "Edge length: 12,346 mm · Radius: 4,123 mm",
+            "round-edge length and radius did not share locale-aware precision")
+        try require(EdgeLengthReadout.text(lengthMM: 40, radiusMM: 7, enabled: false, template: edgeTemplate,
+            radiusTemplate: radiusTemplate) == nil, "disabled measurement preference left a radius readout")
+        for radius: Double? in [nil, .nan, .infinity, -1] {
+            try require(EdgeLengthReadout.text(lengthMM: 40, radiusMM: radius, enabled: true, template: edgeTemplate,
+                radiusTemplate: radiusTemplate, locale: edgeLocale) == "Edge length: 40 mm",
+                "a straight or invalid-radius edge displayed a fabricated radius")
+        }
         // Boolean presentation follows typed options, never labels or truthy strings.
         let automatic = ModellingFormPresentation.initialParameters(operation: "solid.extrude", feature: nil,
             automatic: true, legacyDepth: false, supplied: nil)

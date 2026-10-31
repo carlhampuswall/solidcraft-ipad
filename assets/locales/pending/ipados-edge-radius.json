@@ -1,0 +1,17 @@
+{
+  "de": {
+    "ui.ipados.workspace.edge_radius": "Radius: {radius} mm"
+  },
+  "en": {
+    "ui.ipados.workspace.edge_radius": "Radius: {radius} mm"
+  },
+  "ja": {
+    "ui.ipados.workspace.edge_radius": "半径: {radius} mm"
+  },
+  "ko": {
+    "ui.ipados.workspace.edge_radius": "반지름: {radius} mm"
+  },
+  "zh": {
+    "ui.ipados.workspace.edge_radius": "半径：{radius} mm"
+  }
+}

@@ -3332,8 +3332,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         if !pending.isEmpty { status.text = pending; return }
         if state?.sketch == nil,
-           let length = EdgeLengthReadout.text(lengthMM: state?.selection_edge_length_mm, enabled: edgeLengthReadout,
-                                              template: WorkspaceStyle.text("edge_length")) {
+           let length = EdgeLengthReadout.text(lengthMM: state?.selection_edge_length_mm, radiusMM: state?.selection_edge_radius_mm,
+                                              enabled: edgeLengthReadout, template: WorkspaceStyle.text("edge_length"),
+                                              radiusTemplate: WorkspaceStyle.text("edge_radius")) {
             status.text = length
             return
         }
@@ -4145,7 +4146,15 @@ private extension FoundationController {
         let expectedGeneration = generation
         let started = Date().timeIntervalSince1970
         let run = UUID().uuidString
-        let cases: [(String, [Double]?, Double?)] = [("length-40", [0, -15, 10], 40), ("length-30", [-20, 0, 10], 30), ("cleared", nil, nil)]
+        let cases: [(String, [Double]?, Double?, Double?)] = [
+            ("length-40", [0, -15, 10], 40, nil), ("length-30", [-20, 0, 10], 30, nil),
+            ("cylinder-rim", [17, 4, 35], 2 * .pi * 7, 7), ("half-circle", [70, 7, 15], .pi * 7, 7),
+            ("cleared", nil, nil, nil)]
+        func matches(_ actual: Double?, _ expected: Double?) -> Bool {
+            if actual == nil || expected == nil { return actual == expected }
+            guard let actual, let expected else { return false }
+            return abs(actual - expected) < 0.000001
+        }
         var stages: [[String: Any]] = []
         var finished = false
         func finish(_ error: String? = nil) {
@@ -4165,7 +4174,7 @@ private extension FoundationController {
             guard !finished else { return }
             guard active, generation == expectedGeneration else { finish("Workspace lifecycle changed"); return }
             if index == cases.count { finish(); return }
-            let (name, point, expectedLength) = cases[index]
+            let (name, point, expectedLength, expectedRadius) = cases[index]
             session.developmentSelectionTap(point) { [weak self] result in
                 guard let self, !finished else { return }
                 switch result {
@@ -4174,11 +4183,13 @@ private extension FoundationController {
                     self.assemblyCheckWorkspace = { [weak self] workspace in
                         guard let self, !finished, workspace.selection == selected else { return }
                         self.assemblyCheckWorkspace = nil
-                        guard workspace.selection_edge_length_mm == expectedLength,
+                        guard matches(workspace.selection_edge_length_mm, expectedLength),
+                              matches(workspace.selection_edge_radius_mm, expectedRadius),
                               expectedLength == nil ? selected.isEmpty : selected.last?.type == "edge" else {
-                            finish("Incorrect selection or length at " + name); return
+                            finish("Incorrect selection, length or radius at " + name); return
                         }
-                        let readout = EdgeLengthReadout.text(lengthMM: expectedLength, enabled: true, template: WorkspaceStyle.text("edge_length"))
+                        let readout = EdgeLengthReadout.text(lengthMM: expectedLength, radiusMM: expectedRadius, enabled: true,
+                            template: WorkspaceStyle.text("edge_length"), radiusTemplate: WorkspaceStyle.text("edge_radius"))
                         if let readout {
                             guard self.status.text == readout else { finish("Status did not display " + readout); return }
                             self.edgeLengthReadout = false; self.updateStatus()
@@ -4202,7 +4213,12 @@ private extension FoundationController {
                 }
             }
         }
-        let setup: [(String, [String: Any])] = [("tool.set", ["tool": "select"]), ("select.filter", ["filter": "edge"]),
+        let setup: [(String, [String: Any])] = [
+            ("sketch.create", ["plane": "XY"]),
+            ("sketch.arc.center_point", ["center": [70, 0], "start": [77, 0], "sweep": 180, "infer": false]),
+            ("sketch.line", ["points": [[63, 0], [77, 0]], "infer": false]), ("sketch.finish", [:]),
+            ("solid.extrude", ["distance": 15, "operation": "new", "body_name": "Half"]),
+            ("tool.set", ["tool": "select"]), ("select.filter", ["filter": "edge"]),
             ("select.multiple", ["enabled": true]), ("view.perspective", ["enabled": false]), ("view.top", [:]), ("view.fit", [:]), ("select.clear", [:])]
         func prepare(_ index: Int) {
             guard !finished else { return }

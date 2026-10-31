@@ -4,13 +4,16 @@ import Foundation
 enum EdgeLengthReadout {
     static let key = "SolidCraft.workspace.edgeLengthReadout"
     static func restored(_ value: Bool?) -> Bool { value ?? true }
-    static func text(lengthMM: Double?, enabled: Bool, template: String, locale: Locale = .current) -> String? {
+    static func text(lengthMM: Double?, radiusMM: Double? = nil, enabled: Bool, template: String, radiusTemplate: String? = nil, locale: Locale = .current) -> String? {
         guard enabled, let lengthMM, lengthMM.isFinite, lengthMM >= 0 else { return nil }
         let formatter = NumberFormatter()
         formatter.locale = locale; formatter.numberStyle = .decimal
         formatter.maximumFractionDigits = 3
         guard let number = formatter.string(from: NSNumber(value: lengthMM)) else { return nil }
-        return template.replacingOccurrences(of: "{length}", with: number)
+        let length = template.replacingOccurrences(of: "{length}", with: number)
+        guard let radiusMM, radiusMM.isFinite, radiusMM >= 0, let radiusTemplate,
+              let radius = formatter.string(from: NSNumber(value: radiusMM)) else { return length }
+        return length + " · " + radiusTemplate.replacingOccurrences(of: "{radius}", with: radius)
     }
 }
 

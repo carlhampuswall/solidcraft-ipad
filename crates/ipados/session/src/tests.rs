@@ -2592,7 +2592,9 @@ fn workspace_edge_length_tracks_latest_pick_and_preserves_document_history() {
         (adapter.session.revision, adapter.geometry_revision, adapter.session.undo.len(), adapter.session.redo.len(), adapter.session.is_dirty());
     let doc = adapter.session.doc.clone();
     view.select(Some(pick(0, 40.0)), false);
-    assert_eq!(adapter.workspace(view.selection(), false, false)["selection_edge_length_mm"], 40.0);
+    let straight = adapter.workspace(view.selection(), false, false);
+    assert_eq!(straight["selection_edge_length_mm"], 40.0);
+    assert!(straight["selection_edge_radius_mm"].is_null());
     view.select(Some(pick(1, 30.0)), true);
     assert_eq!(view.selection().len(), 2);
     assert_eq!(adapter.workspace(view.selection(), false, false)["selection_edge_length_mm"], 30.0);
@@ -2616,8 +2618,34 @@ fn workspace_edge_length_uses_circular_rim_circumference() {
     let mesh = adapter.session.world_state().body("Post").unwrap().mesh();
     let (index, points) = mesh.edges.iter().enumerate().find(|(_, p)| p.len() > 2).unwrap();
     let edge = Sel::Edge { body: "Post".into(), index, point: points[points.len() / 2] };
-    let length = adapter.workspace(&[edge], false, false)["selection_edge_length_mm"].as_f64().unwrap();
+    let measured = adapter.workspace(&[edge], false, false);
+    let length = measured["selection_edge_length_mm"].as_f64().unwrap();
     assert!((length - std::f64::consts::TAU * 7.0).abs() < 1e-6, "circular edge must measure its full rim rather than a chord: {length}");
+    assert!((measured["selection_edge_radius_mm"].as_f64().unwrap() - 7.0).abs() < 1e-6);
+}
+
+#[test]
+fn workspace_edge_length_and_radius_measure_a_semicircle_and_clear_together() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap();
+    adapter.execute("sketch.arc.center_point", json!({"center":[0,0],"start":[7,0],"sweep":180,"infer":false})).unwrap();
+    adapter.execute("sketch.line", json!({"points":[[-7,0],[7,0]],"infer":false})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("solid.extrude", json!({"distance":15,"operation":"new","body_name":"Half"})).unwrap();
+    let mesh = adapter.session.world_state().body("Half").unwrap().mesh();
+    let (index, points) = mesh.edges.iter().enumerate().find(|(_, p)| p.len() > 2 && p.iter().all(|p| (p.z - 15.0).abs() < 1e-6)).unwrap();
+    let edge = Sel::Edge { body: "Half".into(), index, point: points[points.len() / 2] };
+    let document = adapter.session.doc.clone();
+    let history = (adapter.session.revision, adapter.geometry_revision, adapter.session.undo.len(), adapter.session.redo.len());
+    let measured = adapter.workspace(&[edge], false, false);
+    assert!((measured["selection_edge_length_mm"].as_f64().unwrap() - std::f64::consts::PI * 7.0).abs() < 1e-6, "{measured}");
+    assert!((measured["selection_edge_radius_mm"].as_f64().unwrap() - 7.0).abs() < 1e-6, "{measured}");
+    for selection in [vec![], vec![Sel::Body { name: "Half".into() }], vec![Sel::Edge { body: "Missing".into(), index: 0, point: Vec3::ZERO }]] {
+        let measured = adapter.workspace(&selection, false, false);
+        assert!(measured["selection_edge_length_mm"].is_null() && measured["selection_edge_radius_mm"].is_null());
+    }
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    assert_eq!(history, (adapter.session.revision, adapter.geometry_revision, adapter.session.undo.len(), adapter.session.redo.len()));
 }
 
 #[test]

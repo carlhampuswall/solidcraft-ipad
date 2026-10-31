@@ -54,15 +54,13 @@ fn selected_body(selection: &[Sel], name: &str) -> bool {
 impl SessionAdapter {
     /// Read the most recent pick through the existing measurement command. A
     /// scratch session keeps inspection out of live edits and document history.
-    fn selection_edge_length_mm(&self, selection: &[Sel]) -> Option<f64> {
+    fn selection_edge_measurement_mm(&self, selection: &[Sel]) -> Option<(f64, Option<f64>)> {
         let edge @ Sel::Edge { .. } = selection.last()? else { return None };
         let measured = self.session.scratch().execute("inspect.measure", &json!({"items":[edge]})).ok()?;
         let item = measured.get("items")?.get(0)?;
-        item.get("circumference")
-            .or_else(|| item.get("arc_length"))
-            .or_else(|| item.get("length_mm"))?
-            .as_f64()
-            .filter(|length| length.is_finite() && *length >= 0.0)
+        let valid_mm = |value: &Value| value.as_f64().filter(|value| value.is_finite() && *value >= 0.0);
+        let length = item.get("circumference").or_else(|| item.get("arc_length")).or_else(|| item.get("length_mm")).and_then(valid_mm)?;
+        Some((length, item.get("radius").and_then(valid_mm)))
     }
 
     fn radius_selected(&self, selection: &[Sel]) -> Option<RadiusHandle> {
@@ -193,11 +191,13 @@ impl SessionAdapter {
                 .map(|id| json!({"id":id,"enabled":!numeric,"reason":if numeric {Some("ui.ipados.workspace.finish_edit")} else {None}})),
             );
         }
-        let selection_edge_length_mm = self.selection_edge_length_mm(selection);
+        let measurement = self.selection_edge_measurement_mm(selection);
+        let selection_edge_length_mm = measurement.map(|(length, _)| length);
+        let selection_edge_radius_mm = measurement.and_then(|(_, radius)| radius);
         json!({"title":self.session.doc.name,"dirty":self.session.is_dirty(),"document_id":self.session.document_id,"revision":self.session.revision,
             "geometry_revision":self.geometry_revision,"can_undo":!numeric && !self.session.undo.is_empty(),"can_redo":!numeric && !self.session.redo.is_empty(),
             "rows":rows,"tools":tools,"assembly":self.workspace_cache.as_ref().map(|c|c.assembly.clone()),
-            "sketch":sketch,"planes":planes,"modelling":self.modelling_workspace(),"active_tool":if radius_tool {"post_radius"} else {"select"},"selection":selection,"selection_edge_length_mm":selection_edge_length_mm,"radius":radius})
+            "sketch":sketch,"planes":planes,"modelling":self.modelling_workspace(),"active_tool":if radius_tool {"post_radius"} else {"select"},"selection":selection,"selection_edge_length_mm":selection_edge_length_mm,"selection_edge_radius_mm":selection_edge_radius_mm,"radius":radius})
     }
 
     pub fn begin_numeric(&self, token: u64, selection: &[Sel]) -> Result<NumericEdit, AdapterError> {

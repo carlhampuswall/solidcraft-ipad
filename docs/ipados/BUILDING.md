@@ -128,6 +128,11 @@ rim circumference and read-only history preservation are covered by the focused
 session tests named `workspace_edge_length`. The readout uses `inspect.measure`
 on a scratch session; Tools → Show selected edge length restores the previous
 status display when disabled (`SolidCraft.workspace.edgeLengthReadout`).
+Round edges also expose `selection_edge_radius_mm` from the same scratch
+measurement and show radius beside length. Full circular rims use circumference;
+partial arcs use their arc length. Straight edges show length alone. The native
+`--edge-length-check` includes a circular cylinder rim and a semicircular solid
+edge, checking both values, the saved toggle, and actual UIKit captures.
 
 For split-cylinder selection evidence, use `--cylinder-selection` for walls or
 `--cylinder-edge-selection` for circular rims. Both capture independent outer
