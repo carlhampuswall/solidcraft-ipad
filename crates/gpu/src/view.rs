@@ -3712,6 +3712,10 @@ impl Renderer {
             }
         }
         tris(pass, &res.tri_hl, &h.tris);
+        // Reference lines in the sketch/guide slot sit below model and sketch
+        // strokes at equal depth, while solids still occlude them normally.
+        pass.set_bind_group(0, scene_bind(sk, &res.bind), &[]);
+        lines(pass, &res.guide_line, &sk.guide_lines);
         pass.set_bind_group(0, scene_bind(m, &res.bind), &[]);
         lines(pass, &res.line, &m.lines);
         pass.set_bind_group(0, scene_bind(sk, &res.bind), &[]);
@@ -5065,6 +5069,36 @@ mod glass_tests {
             assert!(
                 red(&render_frame(&mut r, &device, &queue, &frame, false)) && r.frame_budget == budget && r.ss.as_ref().map(|ss| ss.size) == size
             );
+        }
+    }
+
+    #[test]
+    fn sketch_strokes_win_over_coincident_reference_axes_and_keep_solid_occlusion() {
+        let Some((_, device, queue)) = crate::open_headless().ok() else { return };
+        let depth = crate::depth_format(&device, true);
+        let target = GpuTarget { format: wgpu::TextureFormat::Rgba8Unorm, depth: Some(depth), samples: 1, tess: false, oit: false };
+        let mut renderer = Renderer::new(&device, target, None);
+        for (index, (overlay, solid)) in [(false, false), (true, false), (false, true)].into_iter().enumerate() {
+            let mut model = if solid { test_scene() } else { GpuScene::default() };
+            let stroke = model.color([0, 0, 255, 255]);
+            let z = if solid { -2.0 } else { 0.0 };
+            model.line([-5.0, 0.0, z], [5.0, 0.0, z], stroke, 4.0, overlay);
+            let mut guides = GpuScene::default();
+            let axis = guides.color([0, 255, 0, 255]);
+            guides.guide_line([-8.0, 0.0, z], [8.0, 0.0, z], axis, 4.0);
+            let mut frame = test_frame(model, 1.0);
+            frame.key = index as u64 + 1;
+            frame.sketch_key = frame.key;
+            frame.sketch_slot = Arc::new(Mutex::new(Some(guides)));
+            let pixels = render_frame(&mut renderer, &device, &queue, &frame, true);
+            let middle = &pixels[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 3];
+            if solid {
+                assert!(middle[0] > 200 && middle[1] < 60 && middle[2] < 60, "the lit red solid occludes both lines: {middle:?}");
+            } else {
+                assert_eq!(middle, [0, 0, 255], "active and finished sketch strokes cover a coincident axis");
+                let outside = &pixels[(32 * 64 + 53) * 4..(32 * 64 + 53) * 4 + 3];
+                assert_eq!(outside, [0, 255, 0], "the axis remains visible beyond the sketch stroke");
+            }
         }
     }
 

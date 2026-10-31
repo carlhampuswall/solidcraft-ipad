@@ -353,6 +353,9 @@ impl NativeMeshCache {
 /// origin dot through its depth-tested, alpha-blended surface lane.
 pub fn guide_geometry(scene: &solidcraft_render::Scene) -> GpuScene {
     let mut geometry = solidcraft_gpu::capture::scene_geometry(scene);
+    // References precede sketch strokes at equal depth. Keep the corner triad
+    // in the overlay lane and retain depth testing against solid geometry.
+    geometry.guide_lines.append(&mut geometry.lines);
     geometry.trans.append(&mut geometry.tris);
     geometry.trans.append(&mut geometry.glass);
     geometry
@@ -543,12 +546,13 @@ pub fn capture_appearance(
         ..Default::default()
     };
     capturer
-        .rgba_viewport(
+        .rgba_viewport_with_guides(
             &scene,
             &snapshot.camera,
             [width, height],
             model,
             guide_geometry(&snapshot.guides),
+            GpuScene::default(),
             (snapshot.hover_tint, snapshot.selection_tint),
         )
         .map_err(|e| e.to_string())

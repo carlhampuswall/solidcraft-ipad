@@ -74,6 +74,9 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--sketch-axis-order") {
+        return sketch_axis_order_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--home") {
         return home_proof(&destination);
     }
@@ -1584,6 +1587,80 @@ fn sketch_drag_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>
     println!(
         "PASS: Select drags a selected rectangle by (20,15) mm, preserves constraints/profile, and undoes once. Synthetic Pencil and macOS GPU; physical iPad input unverified."
     );
+    Ok(())
+}
+
+/// Coincident sketch strokes and axes through the native viewport's actual slots.
+fn sketch_axis_order_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let capturer = solidcraft_gpu::capture::Capturer::headless_single_sample()?;
+    for plane in ["XY", "XZ", "YZ"] {
+        for active in [true, false] {
+            let mut engine = SessionAdapter::new();
+            engine.execute("sketch.create", json!({"plane":plane}))?;
+            engine.execute("sketch.line", json!({"points":[[-25,0],[25,0]],"infer":false}))?;
+            engine.execute("sketch.line", json!({"points":[[0,-25],[0,25]],"infer":false}))?;
+            if !active {
+                engine.execute("sketch.finish", json!({}))?;
+            }
+            let mut view = Viewport::default();
+            view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 2., origin_points: [0.; 2] })?;
+            view.begin_update(1);
+            view.install(1, engine.snapshot()?);
+            if !active {
+                view.command(
+                    match plane {
+                        "XZ" => "view.front",
+                        "YZ" => "view.right",
+                        _ => "view.top",
+                    },
+                    &json!({}),
+                )?;
+            }
+            for integrated in [true, false] {
+                view.command("view.grid", &json!({"visible":true,"integrated_axes":integrated}))?;
+                view.command("view.origin", &json!({"group":"axes","visible":true}))?;
+                for dark in [false, true] {
+                    view.command(
+                        "view.background",
+                        &if dark { json!({"color":[28,28,30],"grid":[[45,45,47],[62,62,65]],"sketch":[100,210,255]}) } else { json!({"color":null}) },
+                    )?;
+                    let frame = view.snapshot().ok_or("missing axis-order scene")?;
+                    let rgba = solidcraft_ipados_bridge::renderer::capture_appearance(&frame, &capturer, 960, 640)?;
+                    // Inspect the centre of each stroke, away from the origin and endpoints.
+                    for world in match plane {
+                        "XZ" => [[10., 0., 0.], [0., 0., 10.]],
+                        "YZ" => [[0., 10., 0.], [0., 0., 10.]],
+                        _ => [[10., 0., 0.], [0., 10., 0.]],
+                    } {
+                        let projected = view.command("view.project", &json!({"point":world}))?;
+                        let x = projected["points"][0].as_f64().ok_or("missing projected x")?.floor() as usize;
+                        let y = projected["points"][1].as_f64().ok_or("missing projected y")?.floor() as usize;
+                        let source = frame.model.scene.lines.first().ok_or("missing sketch stroke")?;
+                        let color = frame.model_line_color(source.color);
+                        let expected = [color.0, color.1, color.2];
+                        let pixel = rgba.get((y * 960 + x) * 4..(y * 960 + x) * 4 + 3).ok_or("stroke is outside capture")?;
+                        if pixel != expected {
+                            return Err(format!(
+                                "{plane} active={active} integrated={integrated} dark={dark}: stroke pixel {pixel:?}, expected {expected:?}"
+                            )
+                            .into());
+                        }
+                    }
+                    let path = destination.replace(
+                        ".png",
+                        &format!(
+                            "-{plane}-{}-{}-{}.png",
+                            if active { "active" } else { "finished" },
+                            if integrated { "grid" } else { "legacy" },
+                            if dark { "dark" } else { "light" }
+                        ),
+                    );
+                    std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("axis-order PNG")?)?;
+                    println!("PASS {path}");
+                }
+            }
+        }
+    }
     Ok(())
 }
 

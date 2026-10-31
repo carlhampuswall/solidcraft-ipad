@@ -153,6 +153,15 @@ After successful upstream integration, engine improvements
 flow through these live dependencies. New operations may still need iPad UI and
 input work; this does not promise automatic frontend parity.
 
+Native reference axes use `GpuScene::guide_lines` in the sketch/guide slot.
+The shared renderer draws that slot's reference lines before model/sketch
+strokes, retaining depth testing against solids; coincident sketch strokes
+therefore keep their own colour. Existing sketch lines and feedback keep their
+ordering. `Capturer::rgba_viewport_with_guides` exposes the same separate guide
+slot for offscreen verification and clears it between captures. These additive
+shared GPU seams introduce no Apple dependency; upstream integration must retain
+the guide-line draw and the capture slot until equivalent upstream APIs exist.
+
 Step 4 changes only the native host/adapters, a pending locale file and iPad
 documentation. No further shared-source or dependency delta is required. Its
 maintenance surface is the existing public scratch/transaction, timeline-edit,

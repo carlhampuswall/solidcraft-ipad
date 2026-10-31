@@ -111,7 +111,8 @@ fn native_origin_fills_and_dot_use_the_surface_lane_drawn_by_the_guide_slot() {
     let geometry = crate::renderer::guide_geometry(&frame.guides);
     assert!(!geometry.trans.is_empty(), "the shared guide slot draws only its trans surface lane");
     assert!(geometry.tris.is_empty() && geometry.glass.is_empty(), "unsupported lanes would silently drop reference surfaces");
-    assert!(!geometry.lines.is_empty() && !geometry.under.is_empty());
+    assert!(!geometry.guide_lines.is_empty() && !geometry.under.is_empty());
+    assert!(geometry.lines.is_empty(), "reference axes must precede sketch strokes");
     assert!(frame.model.scene.meshes.is_empty(), "reference geometry must not become CAD bodies");
     view.command("view.origin", &json!({"visible":false})).unwrap();
     assert!(crate::renderer::guide_geometry(&view.snapshot().unwrap().guides).trans.is_empty());

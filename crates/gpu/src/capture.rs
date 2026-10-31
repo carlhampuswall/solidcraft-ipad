@@ -176,7 +176,7 @@ impl Capturer {
     /// [`Capturer::rgba`] with `highlight` drawn as the viewport draws its highlight scene
     /// (selection and hover feedback), over the model scene.
     pub fn rgba_highlighted(&self, scene: &Scene, highlight: Option<GpuScene>, cam: &Camera, width: u32, height: u32) -> Result<Vec<u8>> {
-        self.rgba_prepared(scene, cam, [width, height], None, highlight, ([0.0; 3], [0.0; 3]))
+        self.rgba_prepared(scene, cam, [width, height], None, None, highlight, ([0.0; 3], [0.0; 3]))
     }
 
     /// Capture host-prepared viewport geometry and feedback, including references to
@@ -190,15 +190,33 @@ impl Capturer {
         highlight: GpuScene,
         tints: ([f32; 3], [f32; 3]),
     ) -> Result<Vec<u8>> {
-        self.rgba_prepared(scene, cam, size, Some(model), Some(highlight), tints)
+        self.rgba_prepared(scene, cam, size, Some(model), None, Some(highlight), tints)
     }
 
+    /// Capture the viewport's separate model, sketch/guide and highlight slots
+    /// with the same ordering used by an interactive host.
+    #[allow(clippy::too_many_arguments)]
+    pub fn rgba_viewport_with_guides(
+        &self,
+        scene: &Scene,
+        cam: &Camera,
+        size: [u32; 2],
+        model: GpuScene,
+        guides: GpuScene,
+        highlight: GpuScene,
+        tints: ([f32; 3], [f32; 3]),
+    ) -> Result<Vec<u8>> {
+        self.rgba_prepared(scene, cam, size, Some(model), Some(guides), Some(highlight), tints)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn rgba_prepared(
         &self,
         scene: &Scene,
         cam: &Camera,
         [width, height]: [u32; 2],
         model: Option<GpuScene>,
+        guides: Option<GpuScene>,
         highlight: Option<GpuScene>,
         (hover_tint, selection_tint): ([f32; 3], [f32; 3]),
     ) -> Result<Vec<u8>> {
@@ -222,6 +240,9 @@ impl Capturer {
         let mut frame = frame(scene, cam, [width, height], state.key, access, model);
         frame.hover_tint = hover_tint;
         frame.selection_tint = selection_tint;
+        // Clear the previous capture's guides even when this picture has none.
+        frame.sketch_key = state.key;
+        frame.sketch_slot = Arc::new(Mutex::new(Some(guides.unwrap_or_default())));
         // Always a highlight scene of the picture's own, empty without one: the renderer keeps
         // its last highlight scene while the slot is empty (as the viewport does until the next
         // is built), so the previous picture's highlight would show in this one.
