@@ -80,6 +80,25 @@ face picking. The replacement visual picker coalesces selection updates during
 preview/context work and rejects a preview whose selected face changed before
 publication; the native edit token still rejects a changed document.
 
+The viewport-only replacement was installed and verified on 2026-10-31 with
+signed candidate `5de0c271026d2d9b77b77a3895a5b5ba3b851b81`. The disposable
+physical-iPad diagnostic passed all repair stages using synthetic Pencil taps,
+including preview, Cancel, Apply, undo/redo and the 18.8 mm extrusion. All six
+native UIKit/Metal captures were inspected. A separate direct Device Hub tap
+on the model's top face, immediately after opening repair, highlighted that face
+and enabled Apply after preview. **Change face** cleared the choice and disabled
+Apply; another viewport tap restored a valid preview. That extra proposal was
+cancelled. No face list or keyboard appeared.
+
+This batch passed 244 session and 33 bridge tests, the 692-case/icon native
+harness, affected Clippy, formatting, wasm, lists/i18n and unsigned/signed builds.
+The existing engine dead-code warning remains on wasm. Evidence and binary hashes
+are in ignored `target/visual-face-device/acceptance.json`, alongside the report,
+captures and reservation evidence. Normal launch on the user's stand project was
+restored without applying a repair to it; the iPad was released. Remote viewer
+input and synthetic Pencil events do not verify physical Pencil/finger delivery.
+No simulator, engine test suite or full CI was run.
+
 ## Construction geometry
 
 Tap **Construction** before drawing to create construction lines, rectangles,
