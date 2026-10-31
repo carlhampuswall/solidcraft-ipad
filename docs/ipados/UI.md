@@ -146,9 +146,9 @@ rules still belong to Rust.
 Preview status and Cancel/Preview/Apply occupy a persistent panel footer outside
 the scroll view. The actions stack vertically when their labels cannot fit
 across, including larger text and narrow windows. Detailed engine feedback
-scrolls with the body. Apply still
-requires a matching validated parameter set; editing, reference inspection and
-operation changes invalidate it. The async generation/document/token checks,
+scrolls with the body. Apply validates the current parameters and commits directly;
+Preview is optional. The optional preview-required preference retains matching
+preview eligibility after parameter or reference changes. The async generation/document/token checks,
 preview mailbox and atomic engine acceptance are unchanged. Compact forms request
 380 points of width, bounded by available space. The floating Metal canvas retains
 its bounds when the inspector opens; the existing keyboard resize path remains.
@@ -208,13 +208,13 @@ the engine Length kind's default unit, so Swift does not infer units from labels
 or parse expressions. Other fields retain their native unit metadata.
 
 Preview leaves text editable and validates only its captured draft revision.
-Dimension edits can Apply directly: the existing engine validates the current
+Dimension and modelling edits can Apply directly: the existing engine validates the current
 expression and geometry before accepting one transaction. Preview is optional.
-Tools → Require Preview before applying dimensions restores the earlier two-step
+Tools → Require Preview before applying restores the earlier two-step
 flow (preference `SolidCraft.workspace.dimensionPreviewRequired`, off by default).
 In that mode, typing during evaluation, including editing away and back to
-identical text, keeps Apply disabled until a matching Preview completes. Other
-modelling forms retain their preview requirement. Errors appear beside the
+identical text, keeps Apply disabled until a matching Preview completes. The setting
+covers inspectors and their number popups. Errors appear beside the
 retained draft. Done and Return leave the transaction provisional; applying an
 operation disables Close/Cancel and keypad edits until completion.
 The existing Rust tokens, context checks, scratch evaluation and atomic

@@ -7,7 +7,7 @@
     "ui.ipados.modelling.delete_warning": "Delete this feature? The native document reports the following dependency effects.",
     "ui.ipados.modelling.deleted_dependents": "Features deleted with it:",
     "ui.ipados.modelling.dependencies": "Dependencies",
-    "ui.ipados.modelling.draft_hint": "Choose inputs, enter parameters and preview before applying.",
+    "ui.ipados.modelling.draft_hint": "Choose inputs and enter parameters before applying.",
     "ui.ipados.modelling.edit_feature": "Edit original feature",
     "ui.ipados.modelling.edit_parameter": "Edit named parameter",
     "ui.ipados.modelling.editing": "Editing feature",

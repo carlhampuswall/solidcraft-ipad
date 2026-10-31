@@ -182,7 +182,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var modellingContextInspectInFlight = false
     private var pendingModellingContext: [String: PresentationJSON]?
     private var modellingContextNeedsRefresh = false
-    private var previewAfterModellingContext = false
+    private enum ModellingSubmission { case preview, commit }
+    private var submitAfterModellingContext: ModellingSubmission?
     private var selectedAssemblyRowID: String?
     private var lastOperationFeedback: [String] = []
     private weak var projectsBrowser: ProjectBrowserController?
@@ -1667,7 +1668,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 form.onPreview = { [weak self] params in self?.evaluateModelling(params, commit: false) }
                 form.onLivePreview = { [weak self] params in self?.evaluateModelling(params, commit: false, live: true) }
                 form.onContextChange = { [weak self] params in self?.refreshModellingContext(params) }
-                form.onInlineChoice = { [weak self] params in self?.refreshModellingContext(params, previewAfter: true) }
+                form.onInlineChoice = { [weak self] params in self?.refreshModellingContext(params, submitAfter: .preview) }
                 form.onApply = { [weak self] params in self?.evaluateModelling(params, commit: true) }
                 form.onCancel = { [weak self] in self?.cancelModelling() }
                 form.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.revealField(); self?.updateAvailability() }
@@ -1720,7 +1721,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func evaluateModelling(_ params: [String: PresentationJSON], commit: Bool, live: Bool = false) {
         guard let token = modellingToken, let form = modellingInspector, !modellingCommitting else { return }
         if modellingContextNeedsRefresh || modellingContextInspectInFlight {
-            if !commit { refreshModellingContext(params, previewAfter: true) }
+            refreshModellingContext(params, submitAfter: commit ? .commit : .preview)
             return
         }
         if commit {
@@ -1787,12 +1788,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func refreshModellingContext(_ params: [String: PresentationJSON], previewAfter: Bool = false) {
+    private func refreshModellingContext(_ params: [String: PresentationJSON], submitAfter: ModellingSubmission? = nil) {
         guard modellingToken != nil, let form = modellingInspector, !modellingCommitting else { return }
         modellingFormVersion &+= 1
         modellingContextNeedsRefresh = true
         pendingModellingContext = params
-        previewAfterModellingContext = previewAfter
+        submitAfterModellingContext = submitAfter
         modellingPreviewQueue.discardPending()
         form.beginContextRefresh()
         modelValueEditor?.editor.setBusy(true)
@@ -1814,22 +1815,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 case .success(let model):
                     form?.contextRefreshed(model)
                     self.modellingContextNeedsRefresh = false
-                    if self.previewAfterModellingContext, let current = form?.params {
-                        self.previewAfterModellingContext = false
-                        self.evaluateModelling(current, commit: false)
+                    if let submission = self.submitAfterModellingContext, let current = form?.params {
+                        self.submitAfterModellingContext = nil
+                        self.evaluateModelling(current, commit: submission == .commit)
                     } else {
                         self.modelValueEditor?.editor.setBusy(false)
                     }
                 case .failure(let error):
-                    form?.failed(error); self.previewAfterModellingContext = false
+                    form?.failed(error); self.submitAfterModellingContext = nil
                     self.modelValueEditor?.editor.setBusy(false)
                     self.modelValueEditor?.editor.message.show(error.message, error: true)
                 }
             } else if self.pendingModellingContext == nil {
                 // Text typed after the context request remains provisional. The
-                // next explicit Preview refreshes those complete current fields;
+                // next Preview or Apply refreshes those complete current fields;
                 // typing itself never sends a new engine request.
-                form?.contextRefreshDiscarded(); self.previewAfterModellingContext = false
+                form?.contextRefreshDiscarded(); self.submitAfterModellingContext = nil
                 self.modelValueEditor?.editor.setBusy(false)
             }
             if self.pendingModellingContext != nil { self.drainModellingContext() }
@@ -1862,7 +1863,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modellingCommitting = false; modellingInspectPending = false
         modellingPreviewQueue.clear()
         modellingFormVersion &+= 1; modellingContextInspectInFlight = false
-        pendingModellingContext = nil; modellingContextNeedsRefresh = false; previewAfterModellingContext = false
+        pendingModellingContext = nil; modellingContextNeedsRefresh = false; submitAfterModellingContext = nil
         table.reloadData()
     }
 
@@ -1912,6 +1913,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let controller = NumericValueEditorController(expression: expression, units: units, name: name,
             context: form.numericContext, parameter: parameter)
         controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        controller.editor.requiresPreview = form.requiresPreview
         let expected = modellingGeneration
         controller.editor.onChange = { [weak self, weak controller, weak form] in
             guard let self, self.modellingGeneration == expected, self.modellingToken == token,
@@ -2883,6 +2885,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let dimensionPreview = UIAction(title: NumericText.text("require_preview"), state: dimensionPreviewRequired ? .on : .off) { [weak self] _ in
             UserDefaults.standard.set(!dimensionPreviewRequired, forKey: "SolidCraft.workspace.dimensionPreviewRequired")
             self?.editor?.requiresPreview = !dimensionPreviewRequired
+            self?.modellingInspector?.requiresPreview = !dimensionPreviewRequired
+            self?.modelValueEditor?.editor.requiresPreview = !dimensionPreviewRequired
             self?.rebuildMenus()
         }
         let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
@@ -5166,6 +5170,71 @@ private extension FoundationController {
                 }
             }
         }
+        func directModellingApply(inPopup: Bool) {
+            let revision = self.state?.geometry_revision
+            let features = self.state?.modelling?.timeline.map(\.id) ?? []
+            self.beginModelling(operation: "solid.extrude", initialParams: [
+                "profile": .object(["faces": .array([.array([.number(10), .number(4), .number(35)])]), "face_body": .string("Post")]),
+                "distance": .string("6 mm")
+            ])
+            wait("direct extrude form", { self.modellingInspector != nil }) {
+                guard let form = self.modellingInspector,
+                      let apply = find("workspace-model-apply", in: form.footer) as? UIButton else {
+                    issues.append("missing direct extrude Apply"); finish(); return
+                }
+                form.requiresPreview = true
+                check(!apply.isEnabled, "legacy modelling preference did not require Preview")
+                form.requiresPreview = false
+                check(apply.isEnabled, "modelling Apply required Preview")
+                func exercise(_ popup: NumericValueEditorController?) {
+                    let numeric = popup?.editor
+                    check(numeric == nil || numeric?.requiresPreview == false, "extrude popup required Preview")
+                    let token = self.modellingToken
+                    func enter(_ expression: String) {
+                        if let numeric {
+                            numeric.field.text = expression; numeric.field.sendActions(for: .editingChanged)
+                        } else { form.editExpression("distance", expression: expression) }
+                    }
+                    let submit = numeric?.actionFooter.apply ?? apply
+                    enter("2 +")
+                    check(submit.isEnabled, "unpreviewed extrude expression disabled Apply")
+                    submit.sendActions(for: .touchUpInside)
+                    wait("invalid direct extrude", { form.handleEntryEnabled && numeric?.busy != true }) {
+                        check(self.modellingToken == token && self.state?.geometry_revision == revision,
+                              "invalid extrude Apply changed geometry or closed the draft")
+                        check(form.params["distance"] == .string("2 +") && !(numeric?.message ?? form.message).isHidden,
+                              "invalid extrude Apply lost its expression or error")
+                        capture(inPopup ? "extrude-popup-invalid" : "extrude-inspector-invalid")
+                        enter("6 mm")
+                        check(submit.isEnabled, "corrected extrude expression required Preview")
+                        capture(inPopup ? "extrude-popup-ready" : "extrude-inspector-ready")
+                        submit.sendActions(for: .touchUpInside)
+                        wait("direct extrude committed", { !self.modellingEditing && self.presentedViewController == nil && self.state?.geometry_revision != revision }) {
+                            check(self.state?.modelling?.timeline.count == features.count + 1, "direct extrude did not add one feature")
+                            capture(inPopup ? "extrude-popup-applied" : "extrude-inspector-applied")
+                            self.run("edit.undo")
+                            wait("direct extrude single undo", { self.pending.isEmpty && self.state?.modelling?.timeline.map(\.id) == features }) {
+                                if inPopup { layoutVariants(); finish() }
+                                else { directModellingApply(inPopup: true) }
+                            }
+                        }
+                    }
+                }
+                if inPopup {
+                    self.presentModelValue(parameter: "distance", expression: "6 mm", units: "mm", name: "Distance", source: self.inspectorButton)
+                    wait("direct extrude popup", { self.modelValueEditor?.editor.field.isFirstResponder == true }) { exercise(self.modelValueEditor) }
+                } else {
+                    // An edit made while native references refresh discards that
+                    // response. Apply must refresh the latest draft and commit it.
+                    self.refreshModellingContext(form.params)
+                    form.editExpression("distance", expression: "7 mm")
+                    wait("discarded extrude context", { !self.modellingContextInspectInFlight && form.handleEntryEnabled }) {
+                        check(self.modellingContextNeedsRefresh, "edited context did not require a fresh native inspection")
+                        exercise(nil)
+                    }
+                }
+            }
+        }
         func inspectorEntry() {
             let revision = self.state?.geometry_revision
             self.beginModelling(operation: "solid.extrude", initialParams: [
@@ -5199,7 +5268,7 @@ private extension FoundationController {
                         popup.editor.actionFooter.cancel.sendActions(for: .touchUpInside)
                         wait("inspector cancel", { !self.modellingEditing && self.presentedViewController == nil }) {
                             check(self.state?.geometry_revision == revision, "cancelling inspector entry changed geometry")
-                            layoutVariants(); finish()
+                            directModellingApply(inPopup: false)
                         }
                     }
                 }
@@ -5598,6 +5667,7 @@ private extension FoundationController {
             self.view.layoutIfNeeded()
             let canvasFrame = self.canvas.frame
             self.assemblyCheckBegin("solid.extrude", params: fixture) { _ in
+                self.modellingInspector?.requiresPreview = true // Retain explicit coverage of the optional legacy policy.
                 guard let form = self.modellingInspector,
                       let apply = find("workspace-model-apply", in: self.inspectorPanel) as? UIButton,
                       !apply.isEnabled, verifyFooter("initial") else { self.assemblyCheckFail("unvalidated Apply enabled"); return }

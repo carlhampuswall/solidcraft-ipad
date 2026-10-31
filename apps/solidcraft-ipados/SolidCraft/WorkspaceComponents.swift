@@ -747,8 +747,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     private(set) var draft = NumericDraftValidation()
     private var committing = false
     private let showsActions: Bool
-    // Dimension commits validate through the engine themselves. Other forms
-    // retain their existing preview requirement.
+    // The owning transaction selects whether Apply needs a separate preview.
     var requiresPreview = true {
         didSet { message.show(showsActions ? entryHint : nil); updateAvailability() }
     }
@@ -1408,7 +1407,7 @@ final class ModellingInlineChoices: UIStackView {
 }
 
 /// A form over Rust-authored fields and opaque JSON. It has no operation map,
-/// topology rules or numeric parser. Only a matching validated preview enables Apply.
+/// topology rules or numeric parser. Apply validates through the engine itself.
 final class ModellingInspector: UIStackView {
     let footer = UIStackView()
     let title: String
@@ -1416,6 +1415,11 @@ final class ModellingInspector: UIStackView {
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
     private var validated: [String: PresentationJSON]?
+    var requiresPreview = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.dimensionPreviewRequired") {
+        didSet { updateAvailability(); message.show(entryHint) }
+    }
+    private var canApply: Bool { !requiresPreview || validated == params }
+    private var entryHint: String { requiresPreview ? ModellingText.text("preview_required") : NumericText.text("apply_hint") }
     private var locallyEdited = false
     private var editors: [NumericExpressionEditor] = []
     private var textFields: [UITextField] = []
@@ -1524,7 +1528,7 @@ final class ModellingInspector: UIStackView {
             guard let self, !self.busy else { return }; self.endEditing(true); self.onPreview?(self.params)
         }, for: .touchUpInside)
         apply.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy, self.validated == self.params else { return }; self.endEditing(true); self.onApply?(self.params)
+            guard let self, !self.busy, !self.contextRefreshing, self.canApply else { return }; self.endEditing(true); self.onApply?(self.params)
         }, for: .touchUpInside)
         cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
         select.addAction(UIAction { [weak self] _ in self?.endEditing(true); self?.onSelect?(nil) }, for: .touchUpInside)
@@ -1563,7 +1567,7 @@ final class ModellingInspector: UIStackView {
         showFeedback(state)
     }
     private func showFeedback(_ state: ModellingState) {
-        let status = validated == nil ? ModellingText.text("preview_required") : WorkspaceStyle.text("preview_ready")
+        let status = validated == nil ? entryHint : WorkspaceStyle.text("preview_ready")
         let details = (state.feedback ?? []).map(ModellingText.label)
         message.show(compact ? status : ([status] + details).joined(separator: "\n"))
         feedback.show(compact ? details.joined(separator: "\n") : nil)
@@ -1580,13 +1584,13 @@ final class ModellingInspector: UIStackView {
         contextRefreshing = false; busy = false; inputWhileBusy = false
         locallyEdited = false; validated = nil
         if !textEntryActive { rebuildFields() }
-        updateAvailability(); message.show(ModellingText.text("preview_required"))
+        updateAvailability(); message.show(entryHint)
     }
     func contextRefreshDiscarded() {
         contextRefreshing = false; validated = nil; busy = false; inputWhileBusy = false
         editors.forEach { $0.setBusy(false) }
         updateAvailability()
-        message.show(ModellingText.text("preview_required"))
+        message.show(entryHint)
     }
     func failed(_ error: BridgeError) {
         busy = false; committing = false; inputWhileBusy = false; contextRefreshing = false; validated = nil
@@ -1600,11 +1604,11 @@ final class ModellingInspector: UIStackView {
     }
     func invalidatePreview() {
         validated = nil; updateAvailability()
-        if !busy { message.show(ModellingText.text("preview_required")) }
+        if !busy { message.show(entryHint) }
     }
     private func updateAvailability() {
         preview.availability(enabled: !busy && !contextRefreshing)
-        apply.availability(enabled: !busy && !contextRefreshing && validated == params, reason: validated == params ? nil : ModellingText.text("preview_required"))
+        apply.availability(enabled: !busy && !contextRefreshing && canApply, reason: canApply ? nil : entryHint)
         cancel.availability(enabled: !committing)
         select.availability(enabled: !busy && !contextRefreshing)
         fieldViews.forEach { $0.isUserInteractionEnabled = !contextRefreshing && (!busy || inputWhileBusy) }
