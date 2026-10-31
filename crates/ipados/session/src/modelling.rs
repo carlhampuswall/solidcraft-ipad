@@ -353,10 +353,10 @@ impl SessionAdapter {
 
     fn model_path_options(&self) -> (Vec<Value>, Vec<Value>) {
         let state = self.session.model.state();
-        let sketches = state.sketches.iter().map(|sketch| option(sketch.name.clone(), json!(sketch.feature))).collect();
-        let curves = state
-            .sketches
-            .iter()
+        let sources: Vec<_> = state.sketches.iter().filter(|sketch| !self.internal_profile(sketch.feature)).collect();
+        let sketches = sources.iter().map(|sketch| option(sketch.name.clone(), json!(sketch.feature))).collect();
+        let curves = sources
+            .into_iter()
             .flat_map(|sketch| {
                 sketch
                     .sketch
@@ -368,16 +368,24 @@ impl SessionAdapter {
         (sketches, curves)
     }
 
+    fn internal_profile(&self, id: u64) -> bool {
+        self.session.doc.feature(id).is_some_and(|feature| feature.is_internal_profile())
+    }
+
     pub fn modelling_workspace(&self) -> Value {
+        let marker = self.session.doc.marker.unwrap_or(self.session.doc.features.len());
+        let position = self.session.doc.features.iter().take(marker).filter(|feature| !feature.is_internal_profile()).count();
         let timeline: Vec<_> = self
             .session
             .doc
             .features
             .iter()
             .enumerate()
-            .map(|(order, f)| {
+            .filter(|(_, feature)| !feature.is_internal_profile())
+            .enumerate()
+            .map(|(order, (document_order, f))| {
                 let result = self.session.model.result(f.id);
-                json!({"id":f.id,"name":f.name,"kind":f.kind.type_name(),"order":order,"suppressed":f.suppressed,
+                json!({"id":f.id,"name":f.name,"kind":f.kind.type_name(),"order":order,"document_order":document_order,"suppressed":f.suppressed,
                 "error":result.and_then(|r|r.error.as_ref()),"warning":result.and_then(|r|r.warning.as_ref()),"stale":result.is_some_and(|r|r.stale)})
             })
             .collect();
@@ -389,7 +397,7 @@ impl SessionAdapter {
             .map(|p| json!({"name":p.name,"expression":p.expression,"unit":p.unit,"value":p.value}))
             .collect();
         json!({"tools":TOOLS.iter().map(|id|json!({"id":id,"label":format!("cmd.{id}")})).collect::<Vec<_>>(),"timeline":timeline,
-            "position":self.session.doc.marker.unwrap_or(self.session.doc.features.len()),"parameters":parameters})
+            "position":position,"parameters":parameters})
     }
 
     pub fn begin_model(&self, token: u64, operation: Option<&str>, feature: Option<u64>, selection: &[Sel]) -> Result<ModelEdit, AdapterError> {
@@ -537,14 +545,16 @@ impl SessionAdapter {
             let before = context.session.world_state();
             if edit.params.get("profiles").is_some() && edit.params.get("sketch").is_some() {
                 let mut options = Vec::new();
-                for ss in &before.sketches {
+                for ss in before.sketches.iter().filter(|sketch| !context.internal_profile(sketch.feature)) {
                     for (index, _) in ss.profiles.iter().enumerate() {
                         let profiles = capture_profile_selection(ss, &[index]).map_err(|e| error("profile", e.to_string()))?;
                         options.push(option(format!("{} · region {}", ss.name, index + 1), json!({"sketch":ss.feature,"profiles":profiles})));
                     }
                 }
                 edit.params["profile"] = json!({"sketch":edit.params["sketch"],"profiles":edit.params["profiles"]});
-                edit.fields.push(field("profile", "Reselect source profile", "reference", options));
+                if !edit.params["sketch"].as_u64().is_some_and(|id| context.internal_profile(id)) {
+                    edit.fields.push(field("profile", "Reselect source profile", "reference", options));
+                }
             }
             if edit.params.get("edges").is_some() {
                 let mut options = Vec::new();
@@ -578,7 +588,7 @@ impl SessionAdapter {
             }
             if edit.params.get("sections").is_some() {
                 let mut options = Vec::new();
-                for ss in &context.session.model.state().sketches {
+                for ss in context.session.model.state().sketches.iter().filter(|sketch| !context.internal_profile(sketch.feature)) {
                     for (index, _) in ss.profiles.iter().enumerate() {
                         let profiles = capture_profile_selection(ss, &[index]).map_err(|e| error("profile", e.to_string()))?;
                         options.push(option(format!("{} · region {}", ss.name, index + 1), json!({"sketch":ss.feature,"profiles":profiles})));
@@ -901,7 +911,7 @@ impl SessionAdapter {
             .doc
             .features
             .iter()
-            .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }))
+            .filter(|f| matches!(f.kind, FeatureKind::Sketch { .. }) && !f.is_internal_profile())
             .map(|f| option(f.name.clone(), json!(f.id)))
             .collect();
         let selected_sketch = selection.iter().find_map(|s| match s {
@@ -941,7 +951,7 @@ impl SessionAdapter {
         let (path_sketches, path_curves) = self.model_path_options();
         let mut regions = Vec::new();
         let mut sections = Vec::new();
-        for ss in &state.sketches {
+        for ss in state.sketches.iter().filter(|sketch| !self.internal_profile(sketch.feature)) {
             for (index, p) in ss.profiles.iter().enumerate() {
                 let value = profile_reference(ss, &[index])?;
                 let label = format!("{} · region {} · {:.3} mm²", ss.name, index + 1, p.area);

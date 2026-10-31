@@ -5462,6 +5462,9 @@ fn modelling_face_extrusion_offers_four_boolean_results_on_the_picked_body() {
         assert!((modelling_volume(&adapter) - 2000.).abs() < 1e-5);
         modelling_commit(&mut adapter, &edit, edit.params.clone());
         assert!(adapter.snapshot().unwrap().preview_scene.is_none(), "preview colours must never become saved body appearances");
+        let workspace = adapter.workspace(&[], false, false);
+        assert!(workspace["rows"].as_array().unwrap().iter().all(|row| row["kind"] != "sketch"), "face extrusion must not add a user sketch");
+        assert_eq!(workspace["modelling"]["timeline"].as_array().unwrap().len(), 3, "only the two boxes and extrusion belong in the timeline");
         let world = adapter.session.world_state();
         assert_eq!(world.bodies.len(), body_count);
         let bounds = world.body("Stock").unwrap().mesh().bounds();
@@ -5475,6 +5478,71 @@ fn modelling_face_extrusion_offers_four_boolean_results_on_the_picked_body() {
         assert_eq!(options[0]["label"], "ui.ipados.face_extrude.new_body");
         assert_eq!(options[0]["value"], "new_body");
     }
+}
+
+#[test]
+fn modelling_face_extrusion_keeps_its_boundary_internal_and_authored_face_sketches_available() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"})).unwrap();
+    let face = modelling_face(&adapter, "Stock", Vec3::new(2., 2., 10.));
+    let Sel::Face { index, point, .. } = &face else { panic!("face") };
+    let authored =
+        adapter.execute("sketch.create", json!({"plane":{"face":point,"body":"Stock","index":index},"project_edges":false})).unwrap().value["sketch"]
+            .as_u64()
+            .unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[1,1],"p1":[3,3]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let history = adapter.session.undo.len();
+    let edit = adapter.begin_model(790, Some("solid.extrude"), None, &[face]).unwrap();
+    let mut params = edit.params.clone();
+    params["distance"] = json!("5 mm");
+    params["operation"] = json!("join");
+    modelling_commit(&mut adapter, &edit, params);
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    let extrusion = adapter.session.doc.features.last().unwrap().id;
+    let FeatureKind::Extrude { sketch, .. } = adapter.session.doc.feature(extrusion).unwrap().kind else { panic!("extrude") };
+    let internal = sketch.0;
+    assert!(adapter.session.doc.feature(internal).unwrap().is_internal_profile());
+    assert!(!adapter.session.doc.feature(authored).unwrap().is_internal_profile());
+    assert!(!solidcraft_engine::view::sketch_shown(&adapter.session, internal));
+
+    let mut loaded = modelling_roundtrip(&adapter);
+    assert_eq!(*loaded.session.doc, *adapter.session.doc);
+    let workspace = loaded.workspace(&[], false, false);
+    let sketches: Vec<_> = workspace["rows"].as_array().unwrap().iter().filter(|row| row["kind"] == "sketch").collect();
+    assert_eq!(sketches.len(), 1, "only the explicitly created face sketch is listed");
+    assert_eq!(sketches[0]["entity"]["id"], authored);
+    let timeline = workspace["modelling"]["timeline"].as_array().unwrap();
+    assert_eq!(timeline.iter().map(|row| row["id"].as_u64().unwrap()).collect::<Vec<_>>(), [1, authored, extrusion]);
+    assert_eq!(timeline.last().unwrap()["order"], 2, "visible history has no gap for the generated boundary");
+    assert_eq!(timeline.last().unwrap()["document_order"], 3, "timeline commands retain actual document positions");
+    assert_eq!(workspace["modelling"]["position"], 3);
+    let edit = loaded.begin_model(791, Some("solid.extrude"), None, &[]).unwrap();
+    let sources = edit.fields.iter().find(|field| field["key"] == "profile").unwrap()["options"].as_array().unwrap();
+    assert!(!sources.is_empty());
+    assert!(sources.iter().all(|source| source["value"]["sketch"] == authored));
+    let edit = loaded.begin_model(792, None, Some(extrusion), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["extent"]["distance"] = json!("7 mm");
+    modelling_commit(&mut loaded, &edit, params);
+    assert!((modelling_volume(&loaded) - 1700.).abs() < 1e-5);
+    // Rolling just before the operation must not expose its generated boundary.
+    loaded.execute("timeline.roll_to", json!({"position":3})).unwrap();
+    assert!(!solidcraft_engine::view::sketch_shown(&loaded.session, internal));
+    assert_eq!(loaded.modelling_workspace()["position"], 2, "rollback counts visible features before the operation");
+    // Implicit profile commands still use the last authored sketch.
+    let reply = adapter.execute("solid.extrude", json!({"distance":2,"operation":"new"})).unwrap().value;
+    let FeatureKind::Extrude { sketch, .. } = adapter.session.doc.feature(reply["feature"].as_u64().unwrap()).unwrap().kind else {
+        panic!("extrude")
+    };
+    assert_eq!(sketch.0, authored);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.doc.feature(internal).is_none());
+    assert!((modelling_volume(&adapter) - 1000.).abs() < 1e-5);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!(adapter.session.doc.feature(internal).unwrap().is_internal_profile());
+    assert!((modelling_volume(&adapter) - 1500.).abs() < 1e-5);
 }
 
 #[test]

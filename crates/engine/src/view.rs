@@ -828,6 +828,9 @@ pub fn sketch_shown(s: &Session, id: u64) -> bool {
     if s.active_sketch == Some(id) || s.feature_edit_sketch == Some(id) {
         return true;
     }
+    if s.doc.feature(id).is_some_and(|feature| feature.is_internal_profile()) {
+        return false;
+    }
     if !sketch_component_visible(s, id) || s.feature_folder_hidden(id, "sketches") {
         return false;
     }

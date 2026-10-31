@@ -2499,6 +2499,9 @@ pub struct Feature {
     pub name: String,
     #[serde(default)]
     pub suppressed: bool,
+    /// A linked boundary generated for a face-based operation, rather than a user sketch.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub internal_profile: bool,
     /// Names for the bodies this feature creates (in order); missing ones are numbered after the
     /// first (`Ribs (4)`), or get `BodyN` when there is none (or see `shell_piece_order`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2552,6 +2555,11 @@ pub struct Feature {
 }
 
 impl Feature {
+    /// Internal face boundaries remain in the parametric history, but are not user sketches.
+    pub fn is_internal_profile(&self) -> bool {
+        self.internal_profile && matches!(self.kind, FeatureKind::Sketch { .. })
+    }
+
     /// Where in `body_names` the names of the first `count` bodies the feature builds are kept,
     /// in the order it builds them. The same index for most features. An Import keeps its names
     /// by the file's body index, and builds no body for the file bodies it skips, so its built
@@ -3470,6 +3478,7 @@ impl Document {
             id,
             name,
             suppressed: false,
+            internal_profile: false,
             body_names: Vec::new(),
             param_names: Vec::new(),
             component,

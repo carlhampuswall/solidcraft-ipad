@@ -355,7 +355,7 @@ pub(super) fn feature_sketch(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
         .iter()
         .take(limit)
         .rev()
-        .find(|f| matches!(f.kind, FeatureKind::Sketch { .. }))
+        .find(|f| matches!(f.kind, FeatureKind::Sketch { .. }) && !f.is_internal_profile())
         .map(|f| f.id)
         .ok_or_else(|| bad(cmd, "there is no sketch to use (create one first)"))
 }

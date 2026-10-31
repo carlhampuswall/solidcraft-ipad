@@ -831,6 +831,14 @@ struct WorkspaceChecks {
         let rolledHistory = Data(#"{"tools":[],"timeline":[{"id":7,"name":"Sketch","kind":"Sketch","order":0,"suppressed":false}],"position":0,"parameters":[]}"#.utf8)
         let history = try JSONDecoder().decode(ModellingPresentation.self, from: rolledHistory)
         try require(history.activeFeatureCount == 0 && history.timeline.count == 1, "rollback position must preserve future feature icons")
+        try require(history.documentPosition(for: 1) == 1, "older timeline payload lost its document-position fallback")
+        let faceHistoryJSON = Data(#"{"tools":[],"timeline":[{"id":1,"name":"Box","kind":"BoxFeature","order":0,"document_order":0,"suppressed":false},{"id":3,"name":"Extrude1","kind":"ExtrudeFeature","order":1,"document_order":2,"suppressed":false},{"id":5,"name":"Extrude2","kind":"ExtrudeFeature","order":2,"document_order":4,"suppressed":false}],"position":2,"parameters":[]}"#.utf8)
+        let faceHistory = try JSONDecoder().decode(ModellingPresentation.self, from: faceHistoryJSON)
+        try require(faceHistory.activeFeatureCount == 2, "internal boundaries changed the visible rollback position")
+        for (visible, document) in [0, 1, 3, 5].enumerated() {
+            try require(faceHistory.documentPosition(for: visible) == document, "history scrub stopped on an internal boundary")
+        }
+        try require(faceHistory.documentPosition(for: -1) == nil && faceHistory.documentPosition(for: 4) == nil, "invalid history positions were accepted")
         let finishedModelJSON = Data(#"{"ok":true,"result":{"token":null,"valid":true,"committed":true,"workspace":{"modelling":{"tools":[],"timeline":[],"parameters":[]}},"viewport":{}}}"#.utf8)
         let finishedModel = try JSONDecoder().decode(ModelEnvelope.self, from: finishedModelJSON).result
         try require(finishedModel.token == nil && finishedModel.fields == nil && finishedModel.params == nil, "completed model response requires an active form")

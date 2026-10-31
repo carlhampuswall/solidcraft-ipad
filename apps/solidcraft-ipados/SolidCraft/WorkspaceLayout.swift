@@ -614,6 +614,7 @@ struct ModellingPresentation: Decodable {
         let warning: String?
         let stale: Bool?
         let order: Int
+        let document_order: Int?
     }
     struct Parameter: Decodable { let name: String; let expression: String; let unit: String; let value: Double? }
     let tools: [Tool]
@@ -621,6 +622,12 @@ struct ModellingPresentation: Decodable {
     let position: Int?
     let parameters: [Parameter]
     var activeFeatureCount: Int { min(timeline.count, max(0, position ?? timeline.count)) }
+    func documentPosition(for visiblePosition: Int) -> Int? {
+        guard (0...timeline.count).contains(visiblePosition) else { return nil }
+        guard visiblePosition > 0 else { return 0 }
+        let feature = timeline[visiblePosition - 1]
+        return (feature.document_order ?? feature.order) + 1
+    }
 }
 
 struct ModellingResponse<Workspace: Decodable>: Decodable {

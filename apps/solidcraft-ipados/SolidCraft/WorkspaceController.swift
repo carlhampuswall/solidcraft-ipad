@@ -1010,12 +1010,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var historyCanNavigate: Bool { historyContextAllowsNavigation && pending.isEmpty }
 
     private func moveHistory(to position: Int, completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
-        guard historyCanNavigate, let model = state?.modelling, (0...model.timeline.count).contains(position) else {
+        guard historyCanNavigate, let model = state?.modelling, let documentPosition = model.documentPosition(for: position) else {
             completion?(.failure(BridgeError(code: "disabled", message: "ui.ipados.workspace.finish_edit")))
             return
         }
         canvas.cancelInput(); failure = nil; selectedAssemblyRowID = nil
-        session.command("timeline.roll_to", params: ["position": position == model.timeline.count ? "end" as Any : position], completion: completion)
+        session.command("timeline.roll_to", params: ["position": position == model.timeline.count ? "end" as Any : documentPosition], completion: completion)
     }
 
     private func selectHistoryFeature(_ id: UInt64, completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
@@ -6517,10 +6517,26 @@ private extension FoundationController {
                         guard let self, let editor else { self?.assemblyCheckFail("Inline editor closed before Apply"); return }
                         self.assemblyCheckEvaluated = { [weak self] result, commit in
                             guard let self else { return }
-                            guard case .success = result, commit else { self.assemblyCheckFail("Inline Subtract Apply failed"); return }
-                            self.assemblyCheckWrite("PASS inline face Subtract Apply; production callbacks and Metal frames")
-                            self.assemblyCheckRunning = false; self.assemblyCheckTicket &+= 1
-                            self.assemblyCheckSignal?.cancel(); self.assemblyCheckSignal = nil
+                            guard case .success(let model) = result, commit else { self.assemblyCheckFail("Inline Subtract Apply failed"); return }
+                            guard model.workspace.rows.allSatisfy({ $0.kind != "sketch" }),
+                                  model.workspace.modelling?.timeline.count == 2 else {
+                                self.assemblyCheckFail("Face extrusion exposed a generated sketch in the browser or timeline"); return
+                            }
+                            self.receive(model.workspace); self.inspectorOpen = false; self.browserOpen = true; self.relayoutPanels()
+                            self.assemblyCheckWaitForFrame(model, preview: false, stage: "face-inline-committed") { [weak self] in
+                                guard let self else { return }
+                                do {
+                                    let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                                    let image = UIGraphicsImageRenderer(bounds: self.view.bounds).image { _ in
+                                        self.view.drawHierarchy(in: self.view.bounds, afterScreenUpdates: true)
+                                    }
+                                    guard let data = image.pngData() else { self.assemblyCheckFail("Cannot encode face extrusion capture"); return }
+                                    try data.write(to: directory.appendingPathComponent("face-extrusion-committed.png"), options: .atomic)
+                                } catch { self.assemblyCheckFail("Face extrusion capture: \(error)"); return }
+                                self.assemblyCheckWrite("PASS inline face Subtract Apply; only Box and Extrude in native workspace; capture face-extrusion-committed.png")
+                                self.assemblyCheckRunning = false; self.assemblyCheckTicket &+= 1
+                                self.assemblyCheckSignal?.cancel(); self.assemblyCheckSignal = nil
+                            }
                         }
                         editor.editor.onApply?(editor.editor.field.text ?? "")
                     }

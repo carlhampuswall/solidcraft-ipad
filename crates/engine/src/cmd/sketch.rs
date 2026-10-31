@@ -845,6 +845,7 @@ pub(super) fn create_sketch_with_plane(s: &mut Session, p: &Value, plane: PlaneR
     let comp = s.active_component;
     if let Some(f) = s.doc_mut().feature_mut(id) {
         f.component = comp;
+        f.internal_profile = internal_body.is_some();
     }
     s.active_sketch = Some(id);
     s.sketch_entry = Some(SketchEntry { sketch: id, ..before });

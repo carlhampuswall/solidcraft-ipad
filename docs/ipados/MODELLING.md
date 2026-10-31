@@ -68,6 +68,13 @@ classify material. The selected region remains associated with its source sketch
 and document/geometry revision. Region labels include the sketch and region area.
 Internal holes use the native profile representation.
 
+Face extrusion keeps its generated linked boundary internal. The engine still
+evaluates that boundary through its existing sketch/profile pipeline so it follows
+upstream face edits, but the native browser, timeline and source choices expose
+only the extrusion and explicitly authored sketches. `Feature.internal_profile`
+records this provenance in the native design container; older unmarked sketches
+retain their previous meaning because authorship cannot be inferred safely.
+
 Extrude also accepts a selected planar face, or up to 256 coplanar, equally
 oriented faces of one body. Selecting a face while Select is idle automatically
 opens the existing Extrude form with that selection as its source. **Tools →

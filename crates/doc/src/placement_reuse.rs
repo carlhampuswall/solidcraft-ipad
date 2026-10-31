@@ -181,6 +181,7 @@ fn same_feature(a: &Feature, b: &Feature) -> bool {
         id,
         name,
         suppressed,
+        internal_profile,
         body_names,
         param_names,
         component,
@@ -197,6 +198,7 @@ fn same_feature(a: &Feature, b: &Feature) -> bool {
     *id == b.id
         && *name == b.name
         && *suppressed == b.suppressed
+        && *internal_profile == b.internal_profile
         && *body_names == b.body_names
         && *param_names == b.param_names
         && *component == b.component

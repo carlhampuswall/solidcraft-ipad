@@ -126,6 +126,16 @@ an internally failed handle must be destroyed and recreated.
 
 ## Upstream delta ledger
 
+Face-based operations mark their generated linked boundary with the additive
+`Feature.internal_profile` flag (`document.rs`, `placement_reuse.rs`,
+`cmd/sketch.rs` and `format/pending/internal-face-profiles.rs`). The native browser,
+timeline and profile choices keep it internal; shared `view::sketch_shown` excludes
+it from normal display, and implicit profile commands choose the last authored
+sketch (`cmd/features.rs`). Evaluation, linked references and atomic history keep
+their existing paths. Unmarked older sketches retain their previous meaning.
+This is an Apple-independent provenance improvement suitable for upstream;
+desktop/web retain their existing tree presentation and explicit ID access.
+
 `crates/doc/src/profile_refs.rs` also preserves a complete drawn profile by its
 whole source boundary when projected face edges split it into ambiguous graph
 regions. Previously the shared capture could retain list indices; resizing the
