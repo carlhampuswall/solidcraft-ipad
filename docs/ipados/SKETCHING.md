@@ -261,6 +261,20 @@ refuses a driving conversion that would over-constrain the sketch and preserves
 the reference dimension. Creation and each conversion are independently undoable
 through the existing `sketch.dimension` and `sketch.toggle_driven` commands.
 
+Verification on 2026-10-31: the DEBUG `--reference-dimension-check` passed on a
+physical iPad on candidate `5597b7cf`. Four UIKit captures were visually inspected:
+the creation control, parenthesised reference with **Make driving**, driving
+value with **Make reference**, and the restored reference after Undo/Redo.
+The driver checks the type menu and shared creation callback, invokes the actual
+toggle buttons, and verifies the final reference has no expression editor.
+Evidence and signed-binary hashes are in `target/edge-radius-device-20261031/`.
+This is synthetic UIKit control coverage; physical menu taps, Pencil and VoiceOver
+remain unverified. The focused session regression passes for length, horizontal,
+vertical, angle, radius and diameter, including parameter/DOF changes, editability,
+history and atomic rejection of a redundant driving conversion. Unsigned/signed
+device builds, the existing native harness, formatting, adapter Clippy, wasm and
+locale checks passed. The engine test suite was not run.
+
 **Dimension** opens the shared expression transaction for the chosen supported
 type. The initial expression is retained, units and parameter references are
 parsed upstream, and Preview/Apply/Cancel have the Step 5 contract. **Place
