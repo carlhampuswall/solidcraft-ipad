@@ -3601,11 +3601,14 @@ private extension FoundationController {
                 } else if !(controller is UIDocumentPickerViewController) { report("Export no longer opens Files"); return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     capture(index == 0 ? "sheet" : index == 1 ? "repeat" : "files")
+                    let completion = (controller as? UIActivityViewController)?.completionWithItemsHandler
+                    // UIKit reports cancellation during programmatic dismissal.
+                    // Keep that real callback for the first run; isolate the
+                    // simulated successful activity from it on the second run.
+                    if index == 1 { (controller as? UIActivityViewController)?.completionWithItemsHandler = nil }
                     controller.dismiss(animated: false) {
-                        if let activity = controller as? UIActivityViewController {
-                            // Exercise cancellation and success without sending a file to anyone.
-                            activity.completionWithItemsHandler?(nil, index == 1, nil, nil)
-                        } else if let picker = controller as? UIDocumentPickerViewController { self.documentPickerWasCancelled(picker) }
+                        if index == 1 { completion?(nil, true, nil, nil) }
+                        else if let picker = controller as? UIDocumentPickerViewController { self.documentPickerWasCancelled(picker) }
                         wait({ self.pendingExport == nil }) {
                             if FileManager.default.fileExists(atPath: file.deletingLastPathComponent().path) { issues.append("Temporary export survived completion") }
                             if index == 0, self.documentStatus != statusBefore { issues.append("Cancelled share reported success") }
