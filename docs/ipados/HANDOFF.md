@@ -9,6 +9,33 @@ totals, single-save-slot descriptions and no-commit/no-push status do not descri
 the final combined branch. The engine suite is excluded from this integration's
 checks at the user's request; no full-CI success is claimed.
 
+## Direct sketch dimension deletion — 2026-10-31
+
+Candidate `a56ca844f861e414e98da2768c000dce50ab0ba2` adds **Delete dimension**
+above Cancel and Apply in an existing driving dimension's value popover. Tap the
+dimension value, then Delete dimension; the inspector is no longer needed.
+The host cancels the provisional numeric transaction, checks the original
+document/revision/constraint and calls the existing `sketch.delete` command with
+that one constraint ID. Free-size helpers and other numeric editors have no
+delete action. Reference dimensions retain their read-only behaviour.
+
+The unsigned and signed device builds, all 692 native workspace harness cases,
+native icon checks, `cargo +1.95.0 xtask lists`, `cargo +1.95.0 xtask i18n` and
+diff checks pass. The physical iPad's extended `--inline-dimension-check-run`
+driver passes helper creation, Apply, repeat editing, Preview/Cancel, deletion
+after a good preview and invalid expression, retained geometry and one-step
+Undo/Redo. It verifies the original 80 mm value is preserved rather than the
+110 mm preview. The build was installed under an exclusive reservation, which
+has been released; normal app launch was restored after testing.
+
+Evidence is in ignored `target/dimension-delete-device/`: the fresh candidate
+receipt `ipad-session.json`, console log and seven UIKit captures. The
+`inline-dimension-delete-editor.png`, `inline-dimension-delete-invalid.png` and
+`inline-dimension-delete-redone.png` captures were visually inspected. These
+are real iPad runtime checks using synthetic control actions; physical finger,
+Pencil and VoiceOver delivery remain unverified. No engine tests, full CI or
+simulator were run, and no changes were pushed.
+
 
 ## Circular cut selection after sketch resizing — 2026-10-31
 
