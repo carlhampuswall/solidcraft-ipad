@@ -970,6 +970,7 @@ impl Viewport {
                     || handle_tap
                     || (owner == Owner::Navigation
                         && (self.origin.choosing
+                            || self.constraint_tool().is_some()
                             || self.modelling.as_ref().is_some_and(|edit| edit.selection_field.is_some())
                             || self.pick_reference(point).is_some())))
                 && camera_current
@@ -985,7 +986,11 @@ impl Viewport {
                 // Accumulate real picks, while an ordinary empty-space tap
                 // clears the set without requiring a trip through Tools.
                 let add = e.shift || self.multiple && hit.is_some();
-                self.select(hit, add);
+                if self.constraint_tool().is_some() {
+                    self.constraint_pick(hit)?;
+                } else {
+                    self.select(hit, add);
+                }
             }
             self.changed();
             return Ok(!matches!(owner, Owner::Ui | Owner::Suppressed));

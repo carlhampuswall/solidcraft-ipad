@@ -286,7 +286,7 @@ final class NativeSession {
                     let viewPresentation = isView ? (try? JSONDecoder().decode(ViewControlsPresentation.Envelope.self, from: reply).result) : nil
                     // Some viewport controls (Finish spline and saved snapping)
                     // enqueue real CAD work without another Pencil sample.
-                    if isView && command.hasPrefix("tool.") { self?.drainToolWork() }
+                    if isView && (command.hasPrefix("tool.") || command.hasPrefix("select.")) { self?.drainToolWork() }
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.alive else { return }
                         if let activity { self.commandActivities.remove(activity); self.publishActivityStatus() }

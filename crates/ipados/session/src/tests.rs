@@ -3168,6 +3168,182 @@ fn sketch_input_fixture(plane: Value, tool: &str) -> (SessionAdapter, Viewport) 
 }
 
 #[test]
+fn constraint_first_taps_apply_repeatedly_without_dragging_and_are_undoable() {
+    use solidcraft_engine::geom::Vec2;
+    for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        for (id, points) in [("first", [[-30., -20.], [30., -10.]]), ("second", [[-30., 15.], [30., 25.]])] {
+            engine.execute("sketch.line", json!({"points":points,"ids":[id],"infer":false,"connect":false})).unwrap();
+        }
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        view.command("tool.constraint", &json!({"constraint":"horizontal"})).unwrap();
+        let before = engine.sketch_snapshot().unwrap().sketch;
+        let history = engine.session.undo.len();
+        for (n, (id, xy)) in [("first", [0., -15.]), ("second", [0., 20.])].into_iter().enumerate() {
+            let at = point(&view, Vec3::new(xy[0], xy[1], 0.));
+            feed(&mut view, source, InputPhase::Began, n as u64 + 1, at, n as f64 + 1.);
+            assert!(view.take_tool_work().is_none());
+            feed(&mut view, source, InputPhase::Ended, n as u64 + 1, at, n as f64 + 1.1);
+            assert!(run_tool(&mut engine, &mut view), "{source:?} must apply on release");
+            let sk = engine.sketch_snapshot().unwrap().sketch;
+            let a = sk.point(sk.resolve_point(&format!("{id}.start")).unwrap()).unwrap();
+            let b = sk.point(sk.resolve_point(&format!("{id}.end")).unwrap()).unwrap();
+            assert!((a.y - b.y).abs() < 1e-6);
+            assert!(a.dist(b) > 50., "an edge remains an edge");
+            assert_eq!(view.constraint_tool(), Some("horizontal"));
+            assert!(view.selection().is_empty());
+        }
+        assert_eq!(engine.session.undo.len(), history + 2);
+        let after = engine.sketch_snapshot().unwrap().sketch;
+        assert_eq!(after.curves.len(), before.curves.len());
+        engine.execute("edit.undo", json!({})).unwrap();
+        engine.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+        engine.execute("edit.redo", json!({})).unwrap();
+        engine.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, after);
+        assert!(after.point(after.resolve_point("first.start").unwrap()).unwrap().dist(Vec2::new(-30., -20.)) < 20.);
+        view.command("tool.cancel", &json!({})).unwrap();
+        assert_eq!(view.diagnostic()["input"]["tool"], "select");
+    }
+}
+
+#[test]
+fn constraint_first_pair_accumulates_without_multiple_selection_and_rejects_bad_picks() {
+    use solidcraft_engine::geom::Vec2;
+    for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        engine.execute("sketch.line", json!({"points":[[-30,-20],[30,-10]],"ids":["first"],"infer":false,"connect":false})).unwrap();
+        engine.execute("sketch.line", json!({"points":[[-30,15],[30,35]],"ids":["second"],"infer":false,"connect":false})).unwrap();
+        engine.execute("sketch.circle.center", json!({"center":[60,0],"radius":8,"id":"round","infer":false,"connect":false})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        view.command("select.multiple", &json!({"enabled":false})).unwrap();
+        view.command("tool.constraint", &json!({"constraint":"parallel"})).unwrap();
+        let before = engine.sketch_snapshot().unwrap().sketch;
+        let history = engine.session.undo.len();
+        let tap = |view: &mut Viewport, n: u64, xy: [f64; 2]| {
+            let at = point(view, Vec3::new(xy[0], xy[1], 0.));
+            feed(view, source, InputPhase::Began, n, at, n as f64);
+            feed(view, source, InputPhase::Ended, n, at, n as f64 + 0.1);
+        };
+        tap(&mut view, 1, [0., -15.]);
+        assert_eq!(view.selection().len(), 1);
+        assert!(view.take_tool_work().is_none());
+        view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"round"}})).unwrap();
+        assert_eq!(view.selection().len(), 1);
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+        tap(&mut view, 2, [0., -15.]);
+        assert!(view.selection().is_empty(), "tapping the first pick again deselects it");
+        tap(&mut view, 3, [0., -15.]);
+        tap(&mut view, 4, [0., 25.]);
+        assert!(run_tool(&mut engine, &mut view));
+        let sk = engine.sketch_snapshot().unwrap().sketch;
+        let direction = |id: &str| -> Vec2 {
+            (sk.point(sk.resolve_point(&format!("{id}.end")).unwrap()).unwrap()
+                - sk.point(sk.resolve_point(&format!("{id}.start")).unwrap()).unwrap())
+            .normalized()
+            .unwrap()
+        };
+        assert!(direction("first").dot(direction("second")).abs() > 1. - 1e-8);
+        assert_eq!(engine.session.undo.len(), history + 1);
+        assert!(view.selection().is_empty());
+        assert_eq!(view.constraint_tool(), Some("parallel"));
+    }
+}
+
+#[test]
+fn constraint_first_all_menu_choices_reach_the_existing_solver() {
+    use solidcraft_engine::sketch::ConstraintKind;
+    for key in ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        engine.execute("sketch.line", json!({"points":[[-30,0],[30,5]],"ids":["first"],"infer":false,"connect":false})).unwrap();
+        engine.execute("sketch.line", json!({"points":[[-20,25],[15,40]],"ids":["second"],"infer":false,"connect":false})).unwrap();
+        engine.execute("sketch.circle.center", json!({"center":[0,18],"radius":10,"id":"round","connect":false})).unwrap();
+        engine.execute("sketch.circle.center", json!({"center":[5,20],"radius":5,"id":"other_round","connect":false})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        view.command("tool.constraint", &json!({"constraint":key})).unwrap();
+        let before = engine.sketch_snapshot().unwrap().sketch.constraints.len();
+        let picks = match key {
+            "horizontal" | "vertical" | "fix" => vec![("sketch_curve", "first")],
+            "coincident" => vec![("sketch_point", "first.end"), ("sketch_point", "second.start")],
+            "concentric" => vec![("sketch_curve", "round"), ("sketch_curve", "other_round")],
+            "midpoint" => vec![("sketch_point", "second.start"), ("sketch_curve", "first")],
+            "tangent" => vec![("sketch_curve", "first"), ("sketch_curve", "round")],
+            _ => vec![("sketch_curve", "first"), ("sketch_curve", "second")],
+        };
+        for (kind, id) in picks {
+            view.command("select.entity", &json!({"entity":{"type":kind,"id":id},"additive":false})).unwrap();
+        }
+        assert!(run_tool(&mut engine, &mut view), "{key}");
+        let snapshot = engine.sketch_snapshot().unwrap();
+        assert!(snapshot.solved, "{key}");
+        if key == "fix" {
+            let index = snapshot.sketch.curve_index("first").unwrap();
+            assert!(snapshot.sketch.curves[index].fixed);
+            view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"first"}})).unwrap();
+            assert!(run_tool(&mut engine, &mut view));
+            assert!(engine.sketch_snapshot().unwrap().sketch.curves[index].fixed, "repeated Fix never unfixes geometry");
+            continue;
+        }
+        assert!(snapshot.sketch.constraints.len() > before, "{key}");
+        assert!(
+            snapshot.sketch.constraints.iter().any(|c| match key {
+                "horizontal" => matches!(c.kind, ConstraintKind::Horizontal { .. }),
+                "vertical" => matches!(c.kind, ConstraintKind::Vertical { .. }),
+                "parallel" => matches!(c.kind, ConstraintKind::Parallel { .. }),
+                "perpendicular" => matches!(c.kind, ConstraintKind::Perpendicular { .. }),
+                "coincident" => matches!(c.kind, ConstraintKind::Coincident { .. }),
+                "tangent" => matches!(c.kind, ConstraintKind::Tangent { .. }),
+                "equal" => matches!(c.kind, ConstraintKind::Equal { .. }),
+                "concentric" => matches!(c.kind, ConstraintKind::Concentric { .. }),
+                "midpoint" => matches!(c.kind, ConstraintKind::Midpoint { .. }),
+                "fix" => matches!(c.kind, ConstraintKind::Fix { .. }),
+                _ => false,
+            }),
+            "{key} must create its requested relation"
+        );
+    }
+}
+
+#[test]
+fn constraint_first_preselection_cancellation_redundancy_and_lifecycle() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[-30,-10],[30,10]],"ids":["line"],"infer":false,"connect":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    assert!(view.command("tool.constraint", &json!({"constraint":"unknown"})).is_err());
+    view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"line"}})).unwrap();
+    view.command("tool.constraint", &json!({"constraint":"vertical"})).unwrap();
+    let work = view.take_tool_work().unwrap();
+    view.command("tool.set", &json!({"tool":"select"})).unwrap();
+    assert!(!view.tool_is_current(&work), "switching tools invalidates queued work");
+    view.command("tool.constraint", &json!({"constraint":"vertical"})).unwrap();
+    assert!(run_tool(&mut engine, &mut view), "preselected geometry still applies immediately");
+    let before = engine.sketch_snapshot().unwrap().sketch;
+    let history = engine.session.undo.len();
+    view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"line"}})).unwrap();
+    let work = view.take_tool_work().unwrap();
+    assert!(engine.prepare_tool(work.clone()).is_err(), "a duplicate is refused by the engine");
+    view.fail_tool(&work);
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+    assert_eq!(engine.session.undo.len(), history);
+    view.command("tool.cancel", &json!({})).unwrap();
+    view.command("tool.constraint", &json!({"constraint":"parallel"})).unwrap();
+    view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"line"}})).unwrap();
+    assert!(view.take_tool_work().is_none());
+    view.command("input.cancel", &json!({})).unwrap();
+    assert_eq!(view.constraint_tool(), Some("parallel"), "input cancellation preserves the chosen tool");
+    engine.execute("sketch.finish", json!({})).unwrap();
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    assert!(view.constraint_tool().is_none());
+    assert!(view.command("tool.constraint", &json!({"constraint":"horizontal"})).is_err());
+}
+
+#[test]
 fn sketch_select_drags_free_points_and_edges_with_one_undo_step() {
     use solidcraft_engine::geom::Vec2;
 

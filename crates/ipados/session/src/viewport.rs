@@ -179,7 +179,12 @@ impl Viewport {
             self.numeric = None;
             self.modelling = None;
         }
-        if model.sketch.is_none() {
+        if model.sketch.is_none()
+            || self.constraint_tool().is_some()
+                && self.model.as_ref().is_some_and(|old| {
+                    old.document_id != model.document_id || old.sketch.as_ref().map(|s| s.id) != model.sketch.as_ref().map(|s| s.id)
+                })
+        {
             self.contacts.sketch.tool = "select".into();
         }
         let old_plane = self.model.as_ref().and_then(|m| m.sketch_plane);
@@ -311,6 +316,15 @@ impl Viewport {
         }
         if id == "input.cancel" || id == "tool.cancel" {
             self.cancel_interactions();
+            if id == "tool.cancel" && self.constraint_tool().is_some() {
+                self.contacts.sketch.tool = "select".into();
+                self.selection.clear();
+                self.changed();
+            }
+            return Ok(self.diagnostic());
+        }
+        if id == "tool.constraint" {
+            self.start_constraint(params)?;
             return Ok(self.diagnostic());
         }
         if self.sketch_command(id, params)? {
@@ -498,9 +512,13 @@ impl Viewport {
                     if !valid {
                         return Err(error("stale_selection", "ui.ipados.workspace.invalidated"));
                     }
-                    self.cancel_interactions();
                     let add = params.get("additive").and_then(Value::as_bool).unwrap_or(self.multiple);
-                    self.select(Some(entity), add);
+                    if self.constraint_tool().is_some() {
+                        self.constraint_pick(Some(entity))?;
+                    } else {
+                        self.cancel_interactions();
+                        self.select(Some(entity), add);
+                    }
                 }
                 "select.entities" => {
                     if self.updating {

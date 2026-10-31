@@ -3016,7 +3016,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
         })
         sketchToolsButton.showsMenuAsPrimaryAction = true
-        sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true)
+        sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true && state?.active_tool.hasPrefix("sketch.constraint.") != true)
+        constraintsButton.active(state?.active_tool.hasPrefix("sketch.constraint.") == true)
         dimensionsButton.menu = UIMenu(children: (state?.sketch?.eligible_dimensions ?? []).map { type in
             UIAction(title: SketchText.text(type), image: WorkspaceIcon.image("dimension", traits: traitCollection)) { [weak self] _ in self?.beginNumeric(dimension: type) }
         })
@@ -3024,12 +3025,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private static let constraintChoices = ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"]
-
-    private func constraintAction(_ key: String) -> WorkspaceConstraintAction? {
-        state?.sketch?.eligible_constraints?.first {
-            ($0.params["mode"]?.value as? String ?? String($0.command.split(separator: ".").last ?? "")) == key
-        }
-    }
 
     private func showConstraints() {
         guard active, !numericEditing, !modellingEditing, pending.isEmpty,
@@ -3047,14 +3042,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                       self.state?.document_id == context.document_id,
                       self.state?.geometry_revision == context.geometry_revision,
                       self.state?.sketch?.id == context.sketch?.id, self.state?.selection == context.selection,
-                      let action = self.constraintAction(key) else { return }
-                self.run(action.command, params: action.dictionary)
+                      self.state?.sketch != nil else { return }
+                self.run("tool.constraint", params: ["constraint": key])
             }
 #if DEBUG
             constraintMenuActions[key] = apply
 #endif
             let choice = UIAlertAction(title: SketchText.text(key), style: .default) { _ in apply() }
-            choice.isEnabled = constraintAction(key) != nil
             sheet.addAction(choice)
         }
         sheet.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
@@ -3123,7 +3117,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         if !pending.isEmpty { status.text = pending; return }
         if let sketch = state?.sketch {
-            let prompt = sketchInput.map { SketchText.text($0.prompt) } ?? SketchText.text("select_hint")
+            let prompt: String
+            if let tool = sketchInput?.tool, tool.hasPrefix("sketch.constraint."), let key = tool.split(separator: ".").last {
+                let hint = key == "horizontal" || key == "vertical" || key == "fix" ? "constraint_pick_one" : (state?.selection.isEmpty == false ? "constraint_pick_second" : "constraint_pick_pair")
+                prompt = SketchText.text(String(key)) + ": " + SketchText.text(hint)
+            } else { prompt = sketchInput.map { SketchText.text($0.prompt) } ?? SketchText.text("select_hint") }
             let snap = sketchInput?.snap.map { SketchText.text($0.persistent ? "persistent_snap" : "temporary_snap") + ": " + SketchText.text($0.kind) } ?? ""
             var measurement = ""
             if let input = sketchInput, let feedback = input.feedback {
@@ -3460,6 +3458,51 @@ private extension FoundationController {
             guard remaining > 0 else { issues.append("timed out: " + stage); finish(); return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(stage, remaining: remaining - 1, until: condition, then: next) }
         }
+        func verifyConstraintFirst() {
+            self.run("tool.set", params: ["tool": "select"])
+            self.session.command("select.clear") { result in
+                guard case .success = result else { issues.append("clear selection failed"); finish(); return }
+                wait("empty selection", until: { self.state?.selection.isEmpty == true && self.pending.isEmpty }) {
+                    guard let original = self.state, let sketch = original.sketch, sketch.curves.count == 2 else {
+                        issues.append("missing constraint-first fixture"); finish(); return
+                    }
+                    self.constraintsButton.sendActions(for: .primaryActionTriggered)
+                    wait("empty selection sheet", until: { self.presentedViewController is UIAlertController && self.presentedViewController?.isBeingPresented == false }) {
+                        guard let sheet = self.presentedViewController as? UIAlertController,
+                              let apply = self.constraintMenuActions["parallel"] else { issues.append("constraint-first menu missing"); finish(); return }
+                        check(sheet.actions.filter { $0.style != .cancel }.allSatisfy(\.isEnabled), "empty selection disabled constraint choices")
+                        capture("empty-selection")
+                        sheet.dismiss(animated: false) {
+                            apply()
+                            wait("armed constraint", until: { self.state?.active_tool == "sketch.constraint.parallel" && self.pending.isEmpty }) {
+                                check(self.state?.revision == original.revision && self.state?.sketch?.constraints.count == sketch.constraints.count, "arming changed the document")
+                                capture("armed")
+                                self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[0].id, "sketch": sketch.id], additive: false) { result in
+                                    guard case .success = result else { issues.append("constraint-first first pick failed"); finish(); return }
+                                    wait("first constraint pick", until: { self.state?.selection.count == 1 && self.pending.isEmpty }) {
+                                        check(self.state?.sketch?.constraints.count == sketch.constraints.count, "first pick applied a two-entity constraint")
+                                        capture("first-pick")
+                                        self.session.selectEntity(["type": "sketch_curve", "id": sketch.curves[1].id, "sketch": sketch.id], additive: false) { result in
+                                            guard case .success = result else { issues.append("constraint-first second pick failed"); finish(); return }
+                                            wait("constraint-first applied", until: { self.pending.isEmpty && self.state?.sketch?.constraints.count == sketch.constraints.count + 1 }) {
+                                                check(self.state?.selection.isEmpty == true && self.state?.active_tool == "sketch.constraint.parallel", "constraint did not remain armed for repeat use")
+                                                check(self.keyboardTop == nil && !self.textEntryActive, "constraint-first raised text input")
+                                                capture("constraint-first-applied")
+                                                self.run("edit.undo")
+                                                wait("constraint-first undo", until: { self.pending.isEmpty && self.state?.sketch?.constraints.map(\.id) == sketch.constraints.map(\.id) }) {
+                                                    self.setTool("select")
+                                                    wait("select exits constraint", until: { self.state?.active_tool == "select" }) { capture("constraint-first-undo"); finish() }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         func verify() {
             guard let original = state else { issues.append("missing workspace"); finish(); return }
             let frame = canvas.frame
@@ -3481,7 +3524,7 @@ private extension FoundationController {
                     check(self.constraintsButton.menu == nil && !self.constraintsButton.showsMenuAsPrimaryAction, "native menu preview remains installed")
                     check(sheet.actions.count == Self.constraintChoices.count + 1, "missing constraint choices or Cancel")
                     for key in Self.constraintChoices {
-                        check(sheet.actions.first(where: { $0.title == SketchText.text(key) })?.isEnabled == (self.constraintAction(key) != nil), "eligibility mismatch: " + key)
+                        check(sheet.actions.first(where: { $0.title == SketchText.text(key) })?.isEnabled == true, "constraint cannot be armed: " + key)
                     }
                     unchanged(); next(sheet)
                 }
@@ -3503,7 +3546,7 @@ private extension FoundationController {
                                 capture("applied")
                                 self.run("edit.undo")
                                 wait("undo", until: { self.pending.isEmpty && self.state?.sketch?.constraints.map(\.id) == constraintIDs }) {
-                                    capture("undo"); finish()
+                                    capture("undo"); verifyConstraintFirst()
                                 }
                             }
                         }

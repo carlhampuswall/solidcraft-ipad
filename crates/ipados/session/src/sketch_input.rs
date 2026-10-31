@@ -86,6 +86,9 @@ impl Default for SketchInput {
 }
 
 impl SketchInput {
+    pub(crate) fn pending(&self) -> bool {
+        self.work.is_some()
+    }
     pub fn active(&self) -> bool {
         self.tool.starts_with("sketch.")
     }
@@ -128,6 +131,7 @@ impl SketchInput {
     pub fn diagnostic(&self) -> Value {
         let prompt = match self.tool.as_str() {
             "select" => "select_hint",
+            tool if tool.starts_with("sketch.constraint.") => "constraint_pick",
             "sketch.move" => "move",
             "sketch.trim" => "trim",
             "sketch.extend" => "extend",
@@ -231,7 +235,7 @@ impl Viewport {
         Ok(true)
     }
 
-    fn propose_sketch(&mut self, command: &str, parameters: Value, commit: bool) -> Result<(), AdapterError> {
+    pub(crate) fn propose_sketch(&mut self, command: &str, parameters: Value, commit: bool) -> Result<(), AdapterError> {
         self.cancel_interactions();
         let model = self.model.as_ref().ok_or_else(|| error("sketch", "No document"))?;
         let sketch = model.sketch.as_ref().ok_or_else(|| error("sketch", "No active sketch"))?;
@@ -315,6 +319,9 @@ impl Viewport {
     }
 
     pub(crate) fn begin_sketch_input(&mut self, event: &InputEvent, screen: [f64; 2]) -> bool {
+        if self.constraint_tool().is_some() {
+            return false;
+        }
         let direct = self.contacts.sketch.tool == "select" && self.direct_handles;
         if (!self.contacts.sketch.active() && !direct)
             || self.contacts.sketch.contact.is_some()
@@ -673,26 +680,33 @@ impl Viewport {
         let snapshot = self.model.as_ref()?.sketch.as_ref()?;
         let point = snapshot.plane.to_local(self.plane_point(screen, snapshot.plane)?);
         let tolerance = 10.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        if let Some((id, _, _)) = self.visible_glyphs().into_iter().find(|(_, _, at)| at.dist(point) <= tolerance) {
+        if self.constraint_tool().is_none()
+            && let Some((id, _, _)) = self.visible_glyphs().into_iter().find(|(_, _, at)| at.dist(point) <= tolerance)
+        {
             return Some(Sel::SketchConstraint { id });
         }
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
-        if let Some(c) = snapshot
-            .sketch
-            .constraints
-            .iter()
-            .filter_map(|c| {
-                let frame = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, &c.kind)?;
-                let at = solidcraft_engine::sketch::dim_layout(&frame, c.text, unit, Vec2::ZERO).text;
-                (at.dist(point) <= tolerance * 1.8).then_some((at.dist(point), c))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, c)| c)
+        if self.constraint_tool().is_none()
+            && let Some(c) = snapshot
+                .sketch
+                .constraints
+                .iter()
+                .filter_map(|c| {
+                    let frame = solidcraft_engine::sketch::dim_frame(&snapshot.sketch, &c.kind)?;
+                    let at = solidcraft_engine::sketch::dim_layout(&frame, c.text, unit, Vec2::ZERO).text;
+                    (at.dist(point) <= tolerance * 1.8).then_some((at.dist(point), c))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, c)| c)
         {
             return Some(Sel::SketchConstraint { id: c.id.clone() });
         }
-        if let Some(p) =
-            snapshot.sketch.points.iter().filter(|p| p.pos.dist(point) <= tolerance).min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
+        if let Some(p) = snapshot
+            .sketch
+            .points
+            .iter()
+            .filter(|p| p.pos.dist(point) <= tolerance && self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() }))
+            .min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
         {
             return Some(Sel::SketchPoint { id: p.id.clone() });
         }
@@ -716,7 +730,7 @@ impl Viewport {
                 });
                 distance.map(|d| (d, c))
             })
-            .filter(|(d, _)| *d <= tolerance)
+            .filter(|(d, c)| *d <= tolerance && self.constraint_accepts(&Sel::SketchCurve { id: c.id.clone(), sketch: Some(snapshot.id) }))
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, c)| Sel::SketchCurve { id: c.id.clone(), sketch: Some(snapshot.id) })
     }

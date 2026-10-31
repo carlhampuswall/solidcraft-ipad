@@ -5,6 +5,7 @@
 mod assembly;
 mod assembly_references;
 mod browser;
+mod constraint_input;
 mod editing;
 mod feature_selection;
 mod input;

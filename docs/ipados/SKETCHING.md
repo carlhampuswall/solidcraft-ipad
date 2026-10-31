@@ -293,3 +293,20 @@ the unsigned iPad device-target build.
 captures the actual shared-GPU arrows above and right of a 40 × 30 rectangle,
 checks the projected helper positions, and tests hiding/restoring them. UIKit
 labels and physical iPad interaction are not covered by the Mac GPU capture.
+
+## Applying constraints before picking
+
+The Constraints sheet allows choosing a constraint with an empty selection. The
+chosen constraint remains active while tapping compatible sketch geometry with
+touch, Pencil or a pointer. Horizontal, Vertical and Fix apply after one pick;
+constraints such as Parallel collect two picks without requiring Multiple
+selection. Existing eligible selections still apply immediately. Each successful
+application is one ordinary engine transaction and undo step, and the tool stays
+active for another application. Choose Select or Cancel current tool to exit.
+
+The status names the active constraint and prompts for the next pick. Tapping
+the first entity again deselects it; empty space clears pending picks. Incompatible
+entities do not create a constraint. The shared engine validates the final pair,
+refuses redundant constraints and reports failures without changing the design.
+Constraint mode disables geometry drags and dimension editing while preserving
+normal camera navigation. Finishing or replacing the sketch exits the mode.

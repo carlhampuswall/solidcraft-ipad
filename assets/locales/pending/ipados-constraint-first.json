@@ -1,0 +1,10 @@
+{
+  "en": {
+    "ui.ipados.sketch.constraint_invalid": "Choose a supported sketch constraint.",
+    "ui.ipados.sketch.constraint_pick": "Tap compatible sketch geometry. Choose Select to finish.",
+    "ui.ipados.sketch.constraint_pick_one": "Tap an edge or point to constrain. Choose Select to finish.",
+    "ui.ipados.sketch.constraint_pick_pair": "Tap the first of two compatible entities. Choose Select to finish.",
+    "ui.ipados.sketch.constraint_pick_second": "Tap the second compatible entity. Choose Select to finish.",
+    "ui.ipados.sketch.constraint_requires_sketch": "Create or reopen a sketch before choosing a constraint."
+  }
+}

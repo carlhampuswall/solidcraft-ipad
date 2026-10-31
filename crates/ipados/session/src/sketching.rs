@@ -254,7 +254,7 @@ impl SessionAdapter {
     }
 }
 
-fn constraint_actions(sk: &Sketch, selection: &[Sel]) -> Vec<Value> {
+pub(crate) fn constraint_actions(sk: &Sketch, selection: &[Sel]) -> Vec<Value> {
     let ids: Vec<_> = selection
         .iter()
         .filter_map(|s| match s {
@@ -289,6 +289,9 @@ fn constraint_actions(sk: &Sketch, selection: &[Sel]) -> Vec<Value> {
             for name in ["parallel", "perpendicular", "equal"] {
                 add(name, json!({"a":a,"b":b}));
             }
+        }
+        if pa && line(cb) || pb && line(ca) || line(ca) && line(cb) {
+            add("midpoint", json!({"a":a,"b":b}));
         }
         if round(ca) && round(cb) {
             for name in ["concentric", "equal"] {
