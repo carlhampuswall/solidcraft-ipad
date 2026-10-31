@@ -1226,3 +1226,22 @@ Evidence is in ignored `target/project-browser-device/`: build and signing logs,
 source/binary manifest, reservation log, passing acceptance report, seven captures
 and `ipad-session.json`. Local source changes and source documentation were
 reviewed with `git diff --check`; this record changes no build inputs.
+
+### Direct top Projects button (2026-10-31)
+
+Correction `72c2d9cf` makes the top folder button open Projects directly, with
+no intervening document menu. Its accessible name is Projects; Save project
+remains in Tools → Projects. Availability follows the project's editing/export
+locks. The existing `--projects-check` now dismisses the startup panel and
+triggers the real top button's touch-up action to reopen it, also asserting that
+the button has no menu or primary-menu behaviour.
+
+The unsigned and signed builds and the 692-case workspace/native-icon harness
+passed. Reserved physical-iPad verification passed on the clean candidate with
+synthetic controls, including the direct top-button action, project appearance,
+rename/save and sharing checks. The dark Projects capture after the button action
+was visually inspected. Normal launch was restored, the updated app remains
+installed, and the device reservation was released. No engine tests, simulator,
+physical touch/Pencil input or external transfer was used. Evidence, binary hashes,
+seven captures and the passing receipt are in ignored `target/project-direct-device/`.
+Nothing was pushed.
