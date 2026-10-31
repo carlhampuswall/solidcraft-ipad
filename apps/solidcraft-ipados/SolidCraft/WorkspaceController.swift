@@ -1795,7 +1795,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                     self.modellingStartedFromSelection = automatic
                                     self.showFailure(error); return
                                 }
-                                self.inspectorOpen = false; self.browserOpen = false; self.relayoutPanels()
+                                self.inspectorOpen = form?.compact == true && (field == "edges" || field == "faces")
+                                self.browserOpen = false; self.relayoutPanels()
                             }
                         }
                     }

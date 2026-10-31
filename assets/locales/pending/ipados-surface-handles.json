@@ -1,0 +1,62 @@
+{
+  "de": {
+    "ui.ipados.handles.mode.angle": "Winkel",
+    "ui.ipados.handles.mode.both": "Beide Seiten",
+    "ui.ipados.handles.mode.chord": "Sehnenbreite",
+    "ui.ipados.handles.mode.constant": "Konstanter Radius",
+    "ui.ipados.handles.mode.curvature": "Krümmung",
+    "ui.ipados.handles.mode.equal": "Gleiche Abstände",
+    "ui.ipados.handles.mode.inside": "Innen",
+    "ui.ipados.handles.mode.outside": "Außen",
+    "ui.ipados.handles.mode.two_distances": "Zwei Abstände",
+    "ui.ipados.handles.surface_hint": "Ziehe den Griff am Modell oder gib einen genauen Wert ein. Wähle Kanten oder Flächen direkt am Modell aus."
+  },
+  "en": {
+    "ui.ipados.handles.mode.angle": "Angle",
+    "ui.ipados.handles.mode.both": "Both sides",
+    "ui.ipados.handles.mode.chord": "Chord width",
+    "ui.ipados.handles.mode.constant": "Constant radius",
+    "ui.ipados.handles.mode.curvature": "Curvature",
+    "ui.ipados.handles.mode.equal": "Equal distances",
+    "ui.ipados.handles.mode.inside": "Inside",
+    "ui.ipados.handles.mode.outside": "Outside",
+    "ui.ipados.handles.mode.two_distances": "Two distances",
+    "ui.ipados.handles.surface_hint": "Drag the handle on the model or enter an exact value. Select edges or faces directly on the model."
+  },
+  "ja": {
+    "ui.ipados.handles.mode.angle": "角度",
+    "ui.ipados.handles.mode.both": "両側",
+    "ui.ipados.handles.mode.chord": "弦幅",
+    "ui.ipados.handles.mode.constant": "一定半径",
+    "ui.ipados.handles.mode.curvature": "曲率",
+    "ui.ipados.handles.mode.equal": "等距離",
+    "ui.ipados.handles.mode.inside": "内側",
+    "ui.ipados.handles.mode.outside": "外側",
+    "ui.ipados.handles.mode.two_distances": "2つの距離",
+    "ui.ipados.handles.surface_hint": "モデル上のハンドルをドラッグするか、正確な値を入力します。エッジや面はモデル上で直接選択します。"
+  },
+  "ko": {
+    "ui.ipados.handles.mode.angle": "각도",
+    "ui.ipados.handles.mode.both": "양쪽",
+    "ui.ipados.handles.mode.chord": "현 너비",
+    "ui.ipados.handles.mode.constant": "일정 반지름",
+    "ui.ipados.handles.mode.curvature": "곡률",
+    "ui.ipados.handles.mode.equal": "같은 거리",
+    "ui.ipados.handles.mode.inside": "안쪽",
+    "ui.ipados.handles.mode.outside": "바깥쪽",
+    "ui.ipados.handles.mode.two_distances": "두 거리",
+    "ui.ipados.handles.surface_hint": "모델의 핸들을 드래그하거나 정확한 값을 입력하세요. 모서리나 면을 모델에서 직접 선택하세요."
+  },
+  "zh": {
+    "ui.ipados.handles.mode.angle": "角度",
+    "ui.ipados.handles.mode.both": "两侧",
+    "ui.ipados.handles.mode.chord": "弦宽",
+    "ui.ipados.handles.mode.constant": "恒定半径",
+    "ui.ipados.handles.mode.curvature": "曲率",
+    "ui.ipados.handles.mode.equal": "等距",
+    "ui.ipados.handles.mode.inside": "内侧",
+    "ui.ipados.handles.mode.outside": "外侧",
+    "ui.ipados.handles.mode.two_distances": "两个距离",
+    "ui.ipados.handles.surface_hint": "拖动模型上的手柄或输入精确值。直接在模型上选择边或面。"
+  }
+}

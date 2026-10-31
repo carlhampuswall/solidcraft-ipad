@@ -5,6 +5,31 @@ import Foundation
 enum ModellingFormPresentation {
     static let automaticExtrudeDepthKey = "SolidCraft.workspace.automaticExtrudeDepth"
 
+    static func usesDirectSurfaceControls<Workspace>(_ fields: [ModellingResponse<Workspace>.Field], compact: Bool) -> Bool {
+        compact && fields.contains { $0.key == "edges" || $0.key == "faces" }
+            && fields.contains { ["radius", "distance", "thickness"].contains($0.key) }
+    }
+
+    static func visibleSurfaceField(_ key: String, params: [String: PresentationJSON]) -> Bool {
+        guard let mode = params["chamfer_mode"] else { return true }
+        if key == "distance2" { return mode == .string("two_distances") }
+        if key == "angle" { return mode == .string("angle") }
+        return true
+    }
+
+    static func surfaceChoiceIcon(field: String, value: PresentationJSON) -> String? {
+        guard case .string(let id) = value else { return nil }
+        switch (field, id) {
+        case ("chamfer_mode", "equal"): return "chamfer"
+        case ("chamfer_mode", "two_distances"): return "sketch_chamfer_two_distances"
+        case ("chamfer_mode", "angle"): return "sketch_chamfer_angle"
+        case ("type", "constant"), ("type", "chord"), ("type", "curvature"): return "fillet"
+        case ("direction", "inside"), ("direction", "outside"): return "shell"
+        case ("direction", "both"): return "offset_two_sides"
+        default: return nil
+        }
+    }
+
     static func initialParameters(operation: String?, feature: UInt64?, automatic: Bool, legacyDepth: Bool,
                                   supplied: [String: PresentationJSON]?) -> [String: PresentationJSON]? {
         guard automatic, operation == "solid.extrude", feature == nil, !legacyDepth else { return supplied }

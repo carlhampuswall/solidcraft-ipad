@@ -60,6 +60,36 @@ section hole counts and coplanar loft sections. These do not require a new kerne
 and do not prevent the supported basic workflows. Arbitrary fillets, shells and
 Booleans are not promised to succeed.
 
+## Direct surface-tool controls
+
+The compact inspector uses model picks, a draggable viewport handle and exact
+numeric entry for Fillet, Chamfer, Shell and Offset Face. Edge and removal-face
+inputs show a selection count and **Select in viewport**, rather than a text
+dropdown. Fillet/chamfer modes and shell direction use illustrated buttons;
+Chamfer shows its second distance or angle only for the selected mode.
+The existing expanded-inspector preference retains the earlier reference lists.
+
+Fillet/chamfer handles follow the first selected source edge, outside the solid
+along its adjacent faces' normal bisector. Shell thickness uses the first planar
+removal face. These are display/input anchors; the shared engine evaluates every
+dimension and preview. Source anchors remain fixed when preview geometry replaces
+an edge or removes a face. Pencil, finger and pointer drags update the same scratch
+transaction as numeric entry. Lifting finishes the draft; Apply creates one undo
+step, and Cancel discards it. Unsupported anchors retain exact numeric entry.
+
+Focused adapter regressions use the `modelling_surface` name filter in the
+existing session tests. The native workspace harness checks compact/expanded
+presentation and active chamfer fields. A repeatable macOS GPU capture is:
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example surface_handles -- /tmp/solidcraft-surface
+```
+
+It captures real 1 mm and 3 mm fillet, chamfer and shell previews with their
+source handles, plus JSON for the on-model numeric readout. This is adapter/GPU
+evidence; it does not verify UIKit layout or physical Pencil input.
+
 ## Selection and targets
 
 Profile choices come from solved sketch regions and upstream

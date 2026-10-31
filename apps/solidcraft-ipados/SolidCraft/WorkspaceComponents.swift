@@ -1484,11 +1484,17 @@ final class ModellingInlineChoices: UIStackView {
             let row = UIStackView(); row.axis = .horizontal; row.spacing = 8; row.distribution = .fillEqually
             for index in start..<min(start + 2, options.count) {
                 let option = options[index]
-                let button = WorkspaceButton(ModellingText.label(option.label)) { action(option.value) }
+                var label = ModellingText.label(option.label)
+                if illustrated, ModellingFormPresentation.surfaceChoiceIcon(field: field.key, value: option.value) != nil,
+                   case .string(let id) = option.value {
+                    label = NativeText.value("ui.ipados.handles.mode." + id)
+                }
+                let button = WorkspaceButton(label) { action(option.value) }
                 button.active(option.value == selected)
                 // These are presentation cues over opaque engine values. The
                 // original canonical masters remain the only artwork authority.
-                if illustrated, let icon = InspectorPresentation.choiceIcon(field: field.key, value: option.value) {
+                if illustrated, let icon = InspectorPresentation.choiceIcon(field: field.key, value: option.value)
+                    ?? ModellingFormPresentation.surfaceChoiceIcon(field: field.key, value: option.value) {
                     button.choiceArtwork(icon, selected: option.value == selected)
                 }
                 button.accessibilityIdentifier = "workspace-model-inline-" + field.key + "-" + String(index)
@@ -1530,6 +1536,7 @@ final class ModellingInspector: UIStackView {
     private var committing = false
     private var sliderActive = false
     private var contextRefreshing = false
+    private var directSurfaceControls: Bool { ModellingFormPresentation.usesDirectSurfaceControls(fields, compact: compact) }
     private var sliders: [UISlider] = []
     let message = WorkspaceMessage()
     private let feedback = WorkspaceMessage()
@@ -1740,10 +1747,18 @@ final class ModellingInspector: UIStackView {
         var choiceGroup: ModellingFormGroup?
         var choiceStack: UIStackView?
         let compactExtrude = compact && fields.contains { $0.key == "operation" && $0.kind == "inline_choice" }
-        let orderedFields = InspectorPresentation.orderedFields(fields, compact: compact)
+        var orderedFields = InspectorPresentation.orderedFields(fields, compact: compact)
+        if directSurfaceControls {
+            orderedFields = orderedFields.filter { $0.key != "body" && ModellingFormPresentation.visibleSurfaceField($0.key, params: params) }
+            orderedFields = orderedFields.filter { $0.kind == "expression" } + orderedFields.filter { $0.kind != "expression" }
+            let hint = WorkspaceStyle.label(.footnote, secondary: true)
+            hint.text = NativeText.value("ui.ipados.handles.surface_hint")
+            fieldsStack.addArrangedSubview(hint)
+        }
         for field in orderedFields {
             let stack = compactExtrude && !InspectorPresentation.isPrimary(field) ? additionalFields : fieldsStack
-            if field.kind == "choice" {
+            let surfaceChoice = directSurfaceControls && ["type", "chamfer_mode", "direction"].contains(field.key)
+            if field.kind == "choice" && !surfaceChoice {
                 let group: ModellingFormGroup
                 if let existing = choiceGroup, choiceStack === stack { group = existing }
                 else {
@@ -1760,7 +1775,7 @@ final class ModellingInspector: UIStackView {
                 heading.font = .preferredFont(forTextStyle: compact ? .caption1 : .body)
                 stack.addArrangedSubview(heading)
             }
-            if field.kind == "inline_choice" {
+            if field.kind == "inline_choice" || surfaceChoice {
                 let choices = ModellingInlineChoices(field: field, selected: parameter(field.key), illustrated: compact) { [weak self] value in
                     self?.selectInlineChoice(field.key, value: value)
                 }
@@ -1780,7 +1795,7 @@ final class ModellingInspector: UIStackView {
                 let expression = parameter(field.key).map(display) ?? ""
                 let editor = NumericExpressionEditor(expression: expression, units: field.units ?? "", showsActions: false,
                                                      label: compact ? ModellingText.label(field.label) : nil, compact: compact,
-                                                     primary: compactExtrude && InspectorPresentation.isDistance(field.key))
+                                                     primary: directSurfaceControls || compactExtrude && InspectorPresentation.isDistance(field.key))
                 editor.field.accessibilityIdentifier = "workspace-model-field-" + field.key
                 editor.onChange = { [weak self, weak editor] in
                     guard let self, let editor else { return }
@@ -1831,7 +1846,7 @@ final class ModellingInspector: UIStackView {
             options.content.addArrangedSubview(additionalFields)
             fieldsStack.addArrangedSubview(options)
         }
-        if compact && !isAttachmentRepair && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
+        if compact && !directSurfaceControls && !isAttachmentRepair && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
             fieldsStack.addArrangedSubview(select)
         }
         updateAvailability()
@@ -2008,6 +2023,16 @@ final class ModellingInspector: UIStackView {
         let heading = InspectorReferenceHeading(title: title, count: count)
         heading.accessibilityIdentifier = "workspace-model-reference-" + field.key + "-heading"
         stack.addArrangedSubview(heading); stack.setCustomSpacing(8, after: heading)
+        if directSurfaceControls && ["edges", "faces"].contains(field.key) {
+            let pick = WorkspaceButton(ModellingText.text("select_in_viewport")) { [weak self] in
+                guard let self, self.canEditFields(generation) else { return }
+                self.endEditing(true); self.onSelect?(field.key)
+            }
+            pick.artwork("select")
+            pick.accessibilityIdentifier = "workspace-model-select-" + field.key
+            stack.addArrangedSubview(pick); fieldViews.append(pick)
+            return
+        }
         let group = ModellingFormGroup()
         stack.addArrangedSubview(group); fieldViews.append(group); discreteFieldViews.append(group)
         if values.isEmpty {

@@ -825,6 +825,20 @@ struct WorkspaceChecks {
         try require(model.params?["distance"] == .string("height / 2") && model.fields?[1].units == "mm", "expression or units were changed")
         let operationJSON = Data(#"{"key":"operation","label":"Operation","kind":"inline_choice","options":[{"label":"New Body","value":"new"},{"label":"Union","value":"join"},{"label":"Intersect","value":"intersect"},{"label":"Subtract","value":"cut"}]}"#.utf8)
         let operation = try JSONDecoder().decode(ModellingResponse<ModelWorkspace>.Field.self, from: operationJSON)
+        for (reference, dimension) in [("edges", "radius"), ("edges", "distance"), ("faces", "thickness"), ("faces", "distance")] {
+            let data = Data("[{\"key\":\"\(reference)\",\"label\":\"Source\",\"kind\":\"references\"},{\"key\":\"\(dimension)\",\"label\":\"Size\",\"kind\":\"expression\",\"units\":\"mm\"}]".utf8)
+            let fields = try JSONDecoder().decode([ModellingResponse<ModelWorkspace>.Field].self, from: data)
+            try require(ModellingFormPresentation.usesDirectSurfaceControls(fields, compact: true), "surface tool fell back to text selectors")
+            try require(!ModellingFormPresentation.usesDirectSurfaceControls(fields, compact: false), "expanded inspector lost the previous reference lists")
+        }
+        try require(!ModellingFormPresentation.usesDirectSurfaceControls(model.fields ?? [], compact: true), "unrelated tools acquired surface controls")
+        for mode in ["equal", "two_distances", "angle"] {
+            let params: [String: PresentationJSON] = ["chamfer_mode": .string(mode)]
+            try require(ModellingFormPresentation.visibleSurfaceField("distance2", params: params) == (mode == "two_distances"), "chamfer showed an inactive second distance")
+            try require(ModellingFormPresentation.visibleSurfaceField("angle", params: params) == (mode == "angle"), "chamfer showed an inactive angle")
+            try require(ModellingFormPresentation.visibleSurfaceField("distance", params: params), "chamfer hid its primary numeric input")
+            try require(ModellingFormPresentation.surfaceChoiceIcon(field: "chamfer_mode", value: .string(mode)) != nil, "chamfer mode lost its visual choice")
+        }
         let allFields = (model.fields ?? []) + [operation]
         let ordered = InspectorPresentation.orderedFields(allFields, compact: true)
         try require(ordered.map(\.key) == ["profile", "distance", "operation", "direction", "sections"], "compact Extrude hid or reordered additional references")

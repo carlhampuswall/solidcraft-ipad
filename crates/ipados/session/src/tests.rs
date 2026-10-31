@@ -6715,6 +6715,114 @@ fn modelling_edge(adapter: &mut SessionAdapter, body: &str, midpoint: Vec3) -> S
 }
 
 #[test]
+fn modelling_surface_handles_drag_preview_numeric_edit_and_cancel_keep_history_atomic() {
+    for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        for (operation, parameter) in [("solid.fillet", "radius"), ("solid.chamfer", "distance"), ("solid.shell", "thickness")] {
+            let mut adapter = SessionAdapter::new();
+            adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();
+            let selection = if operation == "solid.shell" {
+                let faces = adapter.execute("model.faces", json!({"body":"Block"})).unwrap().value;
+                let face = faces["faces"].as_array().unwrap().iter().find(|face| face["plane_normal"][2].as_f64().is_some_and(|z| z > 0.99)).unwrap();
+                Sel::Face {
+                    body: "Block".into(),
+                    index: face["index"].as_u64().unwrap() as usize,
+                    point: serde_json::from_value(face["point"].clone()).unwrap(),
+                }
+            } else {
+                modelling_edge(&mut adapter, "Block", Vec3::new(20., 0., 10.))
+            };
+            let edit = adapter.begin_model(911, Some(operation), None, &[selection]).unwrap();
+            let handle = edit.handle.clone().expect("source handle");
+            assert_eq!(handle.parameter, parameter);
+            assert_eq!(handle.units, "mm");
+            let history = adapter.session.undo.len();
+            let mut viewport = Viewport::default();
+            viewport.set_metrics(metrics(800., 600., 2.)).unwrap();
+            viewport.begin_update(1);
+            assert!(viewport.install(1, adapter.snapshot().unwrap()));
+            viewport.begin_model(edit.clone()).unwrap();
+            let camera = viewport.camera;
+            let start = modelling_handle_position(&viewport, 1.);
+            let end = modelling_handle_position(&viewport, 3.);
+            for (phase, position, time) in [(InputPhase::Began, start, 1.), (InputPhase::Moved, end, 2.), (InputPhase::Ended, end, 3.)] {
+                let event = sample(&viewport, source, phase, 91, position, time);
+                viewport.input(event).unwrap();
+            }
+            let work = viewport.take_tool_work().expect("handle drag proposal");
+            assert!(!work.commit);
+            let prepared = adapter.prepare_tool(work.clone()).unwrap();
+            assert!(viewport.publish_preview(&work, prepared.model));
+            assert_eq!(viewport.diagnostic()["model_value"]["value"], 3.);
+            assert_eq!(adapter.session.undo.len(), history);
+            assert!((modelling_volume(&adapter) - 8000.).abs() < 1e-6);
+            let edit = viewport.model_edit(911).unwrap();
+            assert_eq!(edit.handle.as_ref().unwrap().origin, handle.origin, "preview moved the source anchor");
+            let mut numeric = edit.params.clone();
+            numeric[parameter] = json!("2 mm");
+            let prepared = adapter.prepare_model(&edit, numeric.clone(), false).unwrap();
+            viewport.publish_model(911, &prepared).unwrap();
+            assert_eq!(viewport.diagnostic()["model_value"]["value"], 2.);
+            assert_eq!(viewport.camera, camera);
+            viewport.cancel_model();
+            assert_eq!(adapter.session.undo.len(), history);
+            modelling_commit(&mut adapter, &edit, numeric);
+            assert_eq!(adapter.session.undo.len(), history + 1);
+            let feature = adapter.session.doc.features.last().unwrap().id;
+            let reopened = adapter.begin_model(912, None, Some(feature), &[]).unwrap();
+            assert_eq!(reopened.handle.as_ref().unwrap().parameter, parameter);
+            assert_eq!(reopened.handle.as_ref().unwrap().distance, 2.);
+            let inspected = adapter.refresh_model(&reopened, &[], None).unwrap();
+            assert_eq!(inspected.params, reopened.params, "post-drag inspection erased a saved feature's references");
+            assert!(inspected.handle.is_some());
+            adapter.execute("edit.undo", json!({})).unwrap();
+            assert!((modelling_volume(&adapter) - 8000.).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn modelling_surface_source_picks_replace_old_references_without_resetting_size() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();
+    let first = modelling_edge(&mut adapter, "Block", Vec3::new(20., 0., 10.));
+    let next = modelling_edge(&mut adapter, "Block", Vec3::new(20., 20., 10.));
+    let edit = adapter.begin_model(913, Some("solid.fillet"), None, &[first]).unwrap();
+    let mut params = edit.params.clone();
+    params["radius"] = json!("2 mm");
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    let refreshed = adapter.refresh_model(&edit, std::slice::from_ref(&next), None).unwrap();
+    assert_eq!(refreshed.params["radius"], "2 mm");
+    assert_ne!(refreshed.params["edges"], edit.params["edges"]);
+    assert_eq!(refreshed.handle.as_ref().unwrap().origin, Vec3::new(20., 20., 10.));
+    let empty = adapter.refresh_model(&refreshed, &[], None).unwrap();
+    assert_eq!(empty.params["edges"], json!([]));
+    assert!(empty.handle.is_none());
+    assert!(adapter.prepare_model(&empty, empty.params.clone(), false).is_err());
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800., 600., 2.)).unwrap();
+    viewport.begin_update(1);
+    assert!(viewport.install(1, adapter.snapshot().unwrap()));
+    viewport.begin_model(refreshed).unwrap();
+    viewport.command("select.filter", &json!({"filter":"body"})).unwrap();
+    viewport.select_model_inputs(913, Some("edges")).unwrap();
+    let p = point(&viewport, Vec3::new(20., 0., 10.));
+    assert!(
+        matches!(viewport.pick(p, Some(adapter.geometry_revision)), Some(Sel::Edge { .. })),
+        "explicit source picking must override the saved body filter"
+    );
+    viewport.cancel_model();
+    let shell = adapter.begin_model(914, Some("solid.shell"), None, &[]).unwrap();
+    viewport.begin_model(shell).unwrap();
+    viewport.command("select.filter", &json!({"filter":"edge"})).unwrap();
+    viewport.select_model_inputs(914, Some("faces")).unwrap();
+    let p = point(&viewport, Vec3::new(10., 10., 20.));
+    assert!(
+        matches!(viewport.pick(p, Some(adapter.geometry_revision)), Some(Sel::Face { .. })),
+        "removal-face picking must override the saved edge filter"
+    );
+}
+
+#[test]
 fn modelling_fillet_and_chamfer_use_real_edges_edit_original_and_refuse_invalid_sizes() {
     for (operation, field) in [("solid.fillet", "radius"), ("solid.chamfer", "distance")] {
         let mut adapter = SessionAdapter::new();

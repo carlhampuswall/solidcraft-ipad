@@ -652,6 +652,9 @@ impl SessionAdapter {
     }
 
     fn extrusion_handle(&self, edit: &ModelEdit) -> Option<ModelHandle> {
+        if let Some(handle) = self.edge_treatment_handle(edit) {
+            return Some(handle);
+        }
         let offset = edit.operation == "solid.offset_face"
             || edit.feature.and_then(|id| self.session.doc.feature(id)).is_some_and(|f| matches!(f.kind, FeatureKind::OffsetFace { .. }));
         if offset {
@@ -716,6 +719,89 @@ impl SessionAdapter {
             units: "mm".into(),
             angular: false,
             arm,
+            size: 20.,
+        })
+    }
+
+    /// Display geometry only: dimensions and evaluation remain engine commands.
+    /// Anchor to the source, since a blend replaces the selected edge in preview.
+    fn edge_treatment_handle(&self, edit: &ModelEdit) -> Option<ModelHandle> {
+        use solidcraft_engine::geom::Vec3;
+        let native = edit.feature.and_then(|id| self.session.doc.feature(id));
+        let shell = edit.operation == "solid.shell" || native.is_some_and(|f| matches!(f.kind, FeatureKind::Shell { .. }));
+        let fillet = edit.operation == "solid.fillet" || native.is_some_and(|f| matches!(f.kind, FeatureKind::Fillet { .. }));
+        let chamfer = edit.operation == "solid.chamfer" || native.is_some_and(|f| matches!(f.kind, FeatureKind::Chamfer { .. }));
+        if !shell && !fillet && !chamfer {
+            return None;
+        }
+        let source = edit.feature.map_or_else(|| self.session.world_state(), |id| self.session.model.state_before(id));
+        let reference = edit.params[if shell { "faces" } else { "edges" }].as_array()?.first()?;
+        let name = edit.params["body"].as_str().or_else(|| reference["body"].as_str())?;
+        let body = source.body(name)?;
+        let mesh = body.mesh();
+        let (origin, normal) = if shell {
+            let point = serde_json::from_value::<Vec3>(reference.clone()).ok()?;
+            let index = solidcraft_engine::doc::appearance::face_index_at(body, point)?;
+            let spot = solidcraft_engine::doc::naming::face_spot(body, index)?;
+            let solidcraft_engine::kernel::FaceSurface::Plane { normal, .. } = spot.surface? else { return None };
+            (spot.point, normal.vec())
+        } else {
+            let index = if let Some(index) = reference["index"].as_u64() {
+                usize::try_from(index).ok()?
+            } else {
+                let point = serde_json::from_value::<Vec3>(reference.clone()).ok()?;
+                mesh.edges
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, edge)| {
+                        let distance = edge.windows(2).map(|segment| point.dist_to_segment(segment[0], segment[1])).fold(f64::MAX, f64::min);
+                        (distance < 0.01).then_some((index, distance))
+                    })
+                    .min_by(|a, b| a.1.total_cmp(&b.1))?
+                    .0
+            };
+            if !mesh.edge_pickable(index) {
+                return None;
+            }
+            let edge = mesh.edges.get(index)?;
+            let origin = if edge.len() == 2 { (*edge.first()? + *edge.last()?) * 0.5 } else { *edge.get(edge.len() / 2)? };
+            // The exterior face-normal bisector keeps the knob off the solid.
+            // Curved faces use their existing tessellation normal at the edge.
+            let mut normal = Vec3::ZERO;
+            for face in mesh.edge_faces.get(index)? {
+                let nearest = mesh
+                    .tri_face
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, id)| *id == face)
+                    .filter_map(|(i, _)| mesh.triangles.get(i))
+                    .flat_map(|tri| tri.iter())
+                    .filter_map(|vertex| Some((mesh.positions.get(*vertex as usize)?, mesh.normals.get(*vertex as usize)?)))
+                    .min_by(|(a, _), (b, _)| a.dist(origin).total_cmp(&b.dist(origin)))?;
+                normal += *nearest.1;
+            }
+            (origin, normal.normalized()?)
+        };
+        let parameter = if shell {
+            "thickness"
+        } else if fillet {
+            "radius"
+        } else {
+            "distance"
+        };
+        let distance = self.session.doc.eval(edit.params[parameter].as_str()?, solidcraft_engine::doc::expr::Kind::Length).ok()?;
+        if !distance.is_finite() || distance <= 0. {
+            return None;
+        }
+        Some(ModelHandle {
+            origin,
+            normal,
+            distance,
+            factor: 1.,
+            parameter: parameter.into(),
+            units: "mm".into(),
+            angular: false,
+            arm: Vec3::X,
             size: 20.,
         })
     }
@@ -803,6 +889,43 @@ impl SessionAdapter {
         if let Some((faces, body)) = canvas_faces {
             refreshed.params["faces"] = faces;
             refreshed.params["body"] = body;
+        }
+        // Creation used to rebuild the options but retain the old edge list.
+        // Explicit source picking replaces only the picked reference field.
+        let treatment = matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer" | "solid.shell")
+            || edit
+                .feature
+                .and_then(|id| self.session.doc.feature(id))
+                .is_some_and(|feature| matches!(feature.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. } | FeatureKind::Shell { .. }));
+        if canvas_selection && treatment && (edit.feature.is_none() || matches!(edit.selection_field.as_deref(), Some("edges" | "faces"))) {
+            let key = if refreshed.params.get("thickness").is_some() { "faces" } else { "edges" };
+            let bodies = selection
+                .iter()
+                .filter_map(|s| match s {
+                    Sel::Edge { body, .. } | Sel::Face { body, .. } => Some(body),
+                    _ => None,
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            if bodies.len() > 1 {
+                return Err(error("selection", "Select edges or removal faces from one body at a time."));
+            }
+            refreshed.params[key] = json!(
+                selection
+                    .iter()
+                    .filter_map(|s| match s {
+                        Sel::Edge { body, index, point } if key == "edges" =>
+                            Some(if edit.feature.is_some() { json!(point) } else { json!({"body":body,"index":index}) }),
+                        Sel::Face { point, .. } if key == "faces" => Some(json!(point)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            );
+            if let Some(body) = selection.iter().find_map(|s| match s {
+                Sel::Edge { body, .. } | Sel::Face { body, .. } => Some(body),
+                _ => None,
+            }) {
+                refreshed.params["body"] = json!(body);
+            }
         }
         if let Some(profile) = canvas_profile {
             refreshed.params["profile"] = profile;
@@ -1069,7 +1192,7 @@ impl SessionAdapter {
                 }
                 let key = if edit.operation == "solid.fillet" { "radius" } else { "distance" };
                 p[key] = json!("1 mm");
-                expression(f, key, key);
+                length_expression(f, key, key);
                 if edit.operation == "solid.fillet" {
                     p["fit"] = json!("exact");
                     p["type"] = json!("constant");
@@ -1087,7 +1210,7 @@ impl SessionAdapter {
                 f.push(field("faces", "Removal faces · select with Pencil before starting", "references", faces.clone()));
                 p["faces"] = json!(faces.iter().map(|o| o["value"].clone()).collect::<Vec<_>>());
                 p["thickness"] = json!("1 mm");
-                expression(f, "thickness", "Wall thickness");
+                length_expression(f, "thickness", "Wall thickness");
                 p["direction"] = json!("inside");
                 f.push(field("direction", "Direction", "choice", choices(&["inside", "outside", "both"])));
                 if let Some(body) = selected_body.clone() {
@@ -1438,7 +1561,10 @@ impl SessionAdapter {
         // handles against the unchanged source, just like Offset Face.
         let source = params.get("profile").unwrap_or(&params);
         let face_extrude = edit.operation == "solid.extrude" && (source.get("faces").is_some() || source.get("face").is_some());
-        let handle = if offset || face_extrude { self.extrusion_handle(&updated) } else { scratch.extrusion_handle(&updated) };
+        let treatment = matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer" | "solid.shell")
+            || target_feature
+                .is_some_and(|feature| matches!(feature.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. } | FeatureKind::Shell { .. }));
+        let handle = if offset || face_extrude || treatment { self.extrusion_handle(&updated) } else { scratch.extrusion_handle(&updated) };
         Ok(PreparedModel { model, params, version: edit.version, handle, transaction, reply: Value::Null, feedback })
     }
 
@@ -1659,7 +1785,9 @@ impl Viewport {
                 (edit.operation == "solid.extrude" && edit.params["operation"] != "new" && edit.params["profile"].is_object()).then_some("targets")
             }
         });
-        if field.is_some_and(|field| !matches!(field, "profile" | "targets" | "plane") || !edit.fields.iter().any(|input| input["key"] == field)) {
+        if field.is_some_and(|field| {
+            !matches!(field, "profile" | "targets" | "plane" | "edges" | "faces") || !edit.fields.iter().any(|input| input["key"] == field)
+        }) {
             return Err(error("bad_params", "Choose a modelling source or target field."));
         }
         self.fail_model(token)?;

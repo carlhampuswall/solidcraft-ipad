@@ -717,10 +717,12 @@ impl Viewport {
             PickFilter::Face
         } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("targets")) {
             PickFilter::Body
+        } else if self.modelling.as_ref().is_some_and(|edit| edit.selection_field.as_deref() == Some("edges")) {
+            PickFilter::Edge
         } else if self
             .modelling
             .as_ref()
-            .is_some_and(|edit| edit.selection_field.as_deref() == Some("profile") || edit.operation == "sketch.redefine")
+            .is_some_and(|edit| matches!(edit.selection_field.as_deref(), Some("profile" | "faces")) || edit.operation == "sketch.redefine")
         {
             PickFilter::Face
         } else {
