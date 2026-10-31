@@ -1182,3 +1182,47 @@ visual inspection and receipt of an AirDrop/Mail attachment remain unverified.
 The initial failed diagnostic is preserved under `attempt-1/`; its success
 simulation incorrectly followed UIKit's cancellation callback and was corrected
 before the passing run. Nothing was pushed.
+
+## Project browser and renaming (2026-10-31)
+
+Candidate `3290e42a` (following `f8f1ea96`) adds project renaming from row swipe
+and context-menu actions, opens Projects on launch, moves Import/Export/Share STEP
+into that panel, and applies the saved workspace System/Light/Dark appearance to
+its navigation controller. The footer identifies the current export/share target.
+Renaming retains the UUID, native extension and directory for relative links;
+current projects use the existing save command and scene-publication path without
+replacing their session or history. Failed persistence rolls the file move back.
+
+Changes a default: yes — Projects opens on launch; disabling **Tools → Show
+Projects on launch** (`SolidCraft.projects.showBrowserOnLaunch`) restores direct
+workspace launch. Last-project restoration remains an independent setting.
+
+- Unsigned and signed device-target builds passed with the existing signing
+  profile. The candidate stamp was signed using the exact certificate embedded
+  by Xcode, resolving duplicate installed certificate display names.
+- `check-workspace.sh` passed its 692 adaptive cases, native icon checks and
+  project-file regressions: identity/bytes, Unicode and case-only names,
+  unchanged names, failed-save rollback, invalid paths, equally named projects,
+  native extensions and the startup preference's previous behaviour.
+- Lists and i18n checks passed. New strings have English, German, Japanese,
+  Korean and Chinese entries in the pending catalogue.
+- Reserved physical-iPad `--projects-check` passed on the clean candidate,
+  bound to the signed binary hashes in `target/project-browser-device/build.json`.
+  It exercised the production startup presenter with a temporary library,
+  Light/Dark/System appearance, busy transfer controls, the actual rename form's
+  validation, rename callbacks, project/document identity and undo availability,
+  a matching presented geometry revision, saving without recreating the old file,
+  Projects → Share STEP, repeated sharing and the existing Files export path.
+- Seven UIKit/Metal captures were retrieved. Projects in Dark and Light and the
+  rename alert were visually inspected. The app's own captures omit remote
+  share-service content; external file transfer remains unverified. Controls and
+  activity completions were driven synthetically; physical touch/Pencil input,
+  simulators and engine tests were not used.
+- The diagnostic preserved the saved project selection and library designs,
+  restored launch/appearance preferences, restored normal app launch and released
+  the iPad reservation. The tested update is installed. Nothing was pushed.
+
+Evidence is in ignored `target/project-browser-device/`: build and signing logs,
+source/binary manifest, reservation log, passing acceptance report, seven captures
+and `ipad-session.json`. Local source changes and source documentation were
+reviewed with `git diff --check`; this record changes no build inputs.
