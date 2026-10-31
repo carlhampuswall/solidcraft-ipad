@@ -1151,3 +1151,34 @@ Normal launch was restored and the reservation released.
 Evidence is in ignored `target/numeric-confirm-device/`: build hash manifest,
 signed build log, console, acceptance report, thirteen captures and the fresh
 `ipad-session.json` receipt. The update is installed on the iPad. Nothing was pushed.
+
+## STEP sharing (2026-10-31)
+
+Candidate `a7d37e11` adds **Share STEP…** to the document folder menu and
+Tools > Projects. It uses the existing export worker and presents the named
+`.step` file in the native activity controller. Files export remains available.
+Temporary files survive until the activity completes or is cancelled; overlapping
+exports are blocked, and late callbacks after workspace shutdown are discarded.
+
+- Unsigned and signed native builds passed using the existing signing profile.
+- The workspace harness passed all 692 cases and native icon checks. Lists and
+  i18n checks passed, including the five new locale translations.
+- Reserved physical iPad `--step-share-check` passed on the clean candidate,
+  bound to signed binary hashes in `target/step-share-device/build.json`.
+  It verified real named STEP output, visible popover anchoring, UIKit's actual
+  dismissal callback, a simulated successful activity, repeated sharing,
+  unchanged geometry, temporary-file cleanup and the existing Files picker.
+  The disposable project lives in temporary storage; library projects and the
+  saved project selection are untouched.
+- Normal app launch was restored and the iPad reservation released. No external
+  transfer, physical touch/Pencil input, simulator or engine tests were performed.
+
+Evidence is in ignored `target/step-share-device/`, including the passing
+`ipad-session.json`, acceptance report, console and three UIKit/Metal captures.
+The captures show the workspace and popover chrome but omit the system services'
+remote content. A direct system screenshot attempt could not find this iPad
+through the installed libimobiledevice tool over USB or network. Full share-sheet
+visual inspection and receipt of an AirDrop/Mail attachment remain unverified.
+The initial failed diagnostic is preserved under `attempt-1/`; its success
+simulation incorrectly followed UIKit's cancellation callback and was corrected
+before the passing run. Nothing was pushed.
