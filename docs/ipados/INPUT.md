@@ -7,6 +7,17 @@ The handle edits that fixture feature's `radius` with `timeline.edit` (0.5–50 
 Select remains the initial tool. Undo/Redo and Command-Z/Shift-Command-Z use engine
 history; Escape or Cancel interaction discards a provisional interaction.
 
+## Home and model framing
+
+The left navigation toolbar's **Home** button restores a fixed orthographic
+isometric view: target at the world origin, 200 mm eye distance, Z up and no roll.
+Its location and zoom do not depend on model bounds. **View → Fit model** keeps
+its existing model-centred framing and preserves the current orientation.
+Home is unavailable in a planar view; finish the sketch and leave planar mode
+before returning Home. Fit model remains available while editing a sketch.
+Disable **Tools → Home button in toolbar** to restore the previous Fit model
+button (`SolidCraft.workspace.homeToolbar`). This does not change a design.
+
 ## Gesture mapping
 
 | Input in the viewport | Action |

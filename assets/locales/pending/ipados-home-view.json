@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.workspace.home": "Home",
+    "ui.ipados.workspace.home_toolbar": "Home button in toolbar"
+  },
+  "de": {
+    "ui.ipados.workspace.home": "Startansicht",
+    "ui.ipados.workspace.home_toolbar": "Startansicht in der Werkzeugleiste"
+  },
+  "ja": {
+    "ui.ipados.workspace.home": "ホーム",
+    "ui.ipados.workspace.home_toolbar": "ツールバーにホームボタンを表示"
+  },
+  "ko": {
+    "ui.ipados.workspace.home": "홈",
+    "ui.ipados.workspace.home_toolbar": "도구 모음에 홈 버튼 표시"
+  },
+  "zh": {
+    "ui.ipados.workspace.home": "主页",
+    "ui.ipados.workspace.home_toolbar": "在工具栏中显示主页按钮"
+  }
+}

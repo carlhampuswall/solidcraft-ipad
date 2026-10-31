@@ -60,7 +60,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.run("sketch.finish") }
     private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.run("tool.finish_chain") }
     private lazy var documentActionsButton = WorkspaceButton(WorkspaceStyle.text("document_actions"), action: {})
-    private lazy var fitButton = WorkspaceButton(WorkspaceStyle.text("fit")) { [weak self] in self?.run("view.fit") }
+    private lazy var homeButton = WorkspaceButton(WorkspaceStyle.text("home")) { [weak self] in
+        guard let self else { return }
+        self.runViewCommand(self.homeToolbar ? "view.home" : "view.fit")
+    }
     private lazy var projectionButton = WorkspaceButton(NativeText.value("ui.ipados.perspective")) { [weak self] in
         self?.togglePerspective()
     }
@@ -187,6 +190,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var railRight = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.railRight")
     private var appearance = (UserDefaults.standard.object(forKey: "SolidCraft.workspace.appearance") as? Int) ?? 2
     private var compactChrome = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactChrome") as? Bool ?? true
+    private var homeToolbar = UserDefaults.standard.object(forKey: "SolidCraft.workspace.homeToolbar") as? Bool ?? true
     private var compactInspector = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactInspector") as? Bool ?? true
     private var useTopSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useTopSafeArea") as? Bool ?? true
     private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
@@ -569,6 +573,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         documentActionsButton.removeFromSuperview()
         viewButton.removeFromSuperview()
+        homeButton.updateTitle(WorkspaceStyle.text(homeToolbar ? "home" : "fit"))
         let chromeIcons: [(WorkspaceButton, String)] = [
             (undoButton, "undo"), (redoButton, "redo"), (browserButton, "list"),
             (inspectorButton, "inspect"), (selectButton, "select"),
@@ -576,7 +581,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             (modifyButton, "fillet"), (patternButton, "pattern_rect"), (assemblyButton, "component"),
             (cancelToolButton, "sketch_cancel"), (createSketchButton, "sketch"),
             (sketchToolsButton, "sketch"), (finishSketchButton, "finish"), (finishChainButton, "finish"),
-            (documentActionsButton, "folder"), (fitButton, "fit"), (projectionButton, "perspective"),
+            (documentActionsButton, "folder"), (homeButton, homeToolbar ? "home" : "fit"), (projectionButton, "perspective"),
             (constraintsButton, "c_parallel"), (dimensionsButton, "dimension"), (constructionButton, "construction")
         ]
         chromeIcons.forEach { $0.0.artwork($0.1, compact: compactChrome) }
@@ -605,7 +610,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             [sketchToolsButton, finishChainButton, modellingButton, modifyButton,
              patternButton, assemblyButton, radiusButton, moreButton, cancelToolButton].forEach(rail.addArrangedSubview)
             navigationActions.axis = .vertical; navigationActions.spacing = 2
-            [fitButton, projectionButton, inspectorButton, constraintsButton, dimensionsButton, constructionButton].forEach(navigationActions.addArrangedSubview)
+            [homeButton, projectionButton, inspectorButton, constraintsButton, dimensionsButton, constructionButton].forEach(navigationActions.addArrangedSubview)
             viewButton.translatesAutoresizingMaskIntoConstraints = true
             workspace.addSubview(viewButton)
             WorkspaceStyle.floatingSurface(viewButton)
@@ -644,7 +649,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         // there is no full-screen hit-testing overlay in the floating layout.
         workspace.bringSubviewToFront(scrim)
         workspace.bringSubviewToFront(browserPanel); workspace.bringSubviewToFront(inspectorPanel)
-        fitButton.accessibilityIdentifier = "workspace-fit"
+        homeButton.accessibilityIdentifier = homeToolbar ? "workspace-home" : "workspace-fit"
         projectionButton.accessibilityIdentifier = "workspace-projection"
         documentActionsButton.accessibilityIdentifier = "workspace-document-actions"
         constraintsButton.accessibilityIdentifier = "workspace-constraints"
@@ -1315,6 +1320,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func rebuildViewMenu() {
         // Only View uses this panel. The native tool/browser menus are untouched.
         viewButton.menu = nil; viewButton.showsMenuAsPrimaryAction = false
+        homeButton.availability(enabled: !viewCameraLocked && (!homeToolbar || (state?.sketch == nil && viewPresentation?.planar != true)))
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
             automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes,
@@ -2734,7 +2740,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             sketchToolsButton.isHidden = !inSketch || editing
             finishSketchButton.isHidden = !inSketch || editing
             finishChainButton.isHidden = finishChainButton.isHidden || editing
-            [fitButton, projectionButton, documentActionsButton].forEach {
+            [projectionButton, documentActionsButton].forEach {
                 $0.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
             }
             projectionButton.active(perspective)
@@ -2813,6 +2819,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 UserDefaults.standard.set(index, forKey: "SolidCraft.workspace.appearance")
                 self.applyAppearance(); self.rebuildMenus()
             }
+        }
+        let homeToolbar = UIAction(title: WorkspaceStyle.text("home_toolbar"), state: homeToolbar ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.homeToolbar.toggle()
+            UserDefaults.standard.set(self.homeToolbar, forKey: "SolidCraft.workspace.homeToolbar")
+            self.configureChrome(); self.rebuildMenus()
         }
         let historyGestures = UIAction(title: WorkspaceStyle.text("history_gestures"), state: canvas.historyGesturesEnabled ? .on : .off) { [weak self] _ in
             guard let self else { return }
@@ -2899,7 +2911,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
@@ -5178,7 +5190,7 @@ private extension FoundationController {
                     }
                     for (name, button, host) in [("document", self.documentActionsButton, self.top),
                                                   ("view", self.viewButton, self.navigationScroll),
-                                                  ("fit", self.fitButton, self.navigationScroll),
+                                                  (self.homeToolbar ? "home" : "fit", self.homeButton, self.navigationScroll),
                                                   ("projection", self.projectionButton, self.navigationScroll),
                                                   ("properties", self.inspectorButton, self.navigationScroll)] {
                         let frame = button.convert(button.bounds, to: host)

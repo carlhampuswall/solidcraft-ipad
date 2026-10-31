@@ -825,6 +825,62 @@ fn default_pencil_selection_picks_edges_vertices_and_faces_without_changing_filt
 }
 
 #[test]
+fn home_is_fixed_across_model_bounds_and_navigation_while_fit_still_frames_the_model() {
+    use solidcraft_render::{Camera, StandardView, UpAxis};
+
+    let mut expected = Camera::default();
+    expected.set_view(StandardView::Iso);
+    assert_eq!(expected.target, Vec3::ZERO);
+    assert_eq!(expected.distance, 200.0);
+    assert_eq!(expected.fov, 0.0);
+    assert_eq!(expected.roll, 0.0);
+    assert_eq!(expected.up, UpAxis::Z);
+
+    for (width, height) in [(800.0, 600.0), (300.0, 900.0)] {
+        for model in [None, Some((0.01, [1000.0, -2000.0, 500.0])), Some((10000.0, [-50000.0, 20000.0, -1000.0]))] {
+            let mut adapter = SessionAdapter::new();
+            if let Some((size, corner)) = model {
+                adapter.execute("solid.box", json!({"length":size,"width":size,"height":size,"corner":corner})).unwrap();
+            }
+            let mut view = Viewport::default();
+            view.set_metrics(metrics(width, height, 2.0)).unwrap();
+            view.begin_update(1);
+            assert!(view.install(1, adapter.snapshot().unwrap()));
+            let scene = view.model.clone().unwrap();
+            let document = adapter.session.doc.clone();
+            let history = adapter.session.undo.len();
+
+            for _ in 0..2 {
+                view.command("view.perspective", &json!({"enabled":true})).unwrap();
+                view.command("view.navigate", &json!({"motion":"pan","delta":[100,50],"viewport":[width,height]})).unwrap();
+                view.command("view.navigate", &json!({"motion":"orbit","delta":[50,30]})).unwrap();
+                view.command("view.navigate", &json!({"motion":"roll","angle":0.5})).unwrap();
+                view.command("view.navigate", &json!({"motion":"zoom","factor":2.0})).unwrap();
+                let epoch = view.camera_epoch;
+                view.command("view.home", &json!({})).unwrap();
+                assert_eq!(view.camera, expected, "Home must not depend on model bounds, navigation or aspect");
+                assert!(view.camera_epoch > epoch, "Home invalidates input stamped with the previous camera");
+                assert!(Arc::ptr_eq(&scene, &view.snapshot().unwrap().model));
+            }
+
+            view.command("view.fit", &json!({})).unwrap();
+            if model.is_some() {
+                assert_eq!(view.camera.target, scene.bounds.center());
+                assert_ne!(view.camera.distance, expected.distance);
+                assert_eq!(view.camera.yaw, expected.yaw);
+                assert_eq!(view.camera.pitch, expected.pitch);
+            }
+            assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+            assert_eq!(adapter.session.undo.len(), history);
+            view.planar = true;
+            let planar_camera = view.camera;
+            assert!(view.command("view.home", &json!({})).is_err());
+            assert_eq!(view.camera, planar_camera, "Home must not turn an active planar view");
+        }
+    }
+}
+
+#[test]
 fn fit_handles_empty_tiny_large_off_origin_and_portrait_scenes() {
     let mut view = Viewport::default();
     view.set_metrics(metrics(250.0, 900.0, 2.0)).unwrap();

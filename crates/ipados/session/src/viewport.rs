@@ -463,8 +463,9 @@ impl Viewport {
                     if self.planar {
                         return Err(error("planar_view", "exit the sketch view explicitly before changing orientation"));
                     }
-                    self.camera.set_view(solidcraft_render::StandardView::Iso);
-                    self.fit();
+                    // Fixed origin-centred, orthographic isometric home (200 mm
+                    // eye distance). Never derive its framing from model bounds.
+                    self.camera = Camera { target: Vec3::ZERO, distance: 200.0, fov: 0.0, ..Camera::default() };
                 }
                 "view.perspective" => {
                     if self.model.as_ref().is_some_and(|m| m.sketch.is_some()) {

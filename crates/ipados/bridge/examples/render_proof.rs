@@ -74,6 +74,9 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--home") {
+        return home_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--appearance") {
         return appearance_proof(&destination);
     }
@@ -273,6 +276,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = destination.replace(".png", "-sphere.png");
     std::fs::write(&path, png)?;
     println!("selected smooth sphere uses model GPU vertices: {path}");
+    Ok(())
+}
+
+/// Fixed home versus model framing, through the real adapter and GPU renderer.
+fn home_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.fixture()?);
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    for (label, command) in [("fit", "view.fit"), ("home", "view.home")] {
+        view.command(command, &json!({}))?;
+        let snapshot = view.snapshot().ok_or("missing home frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("home PNG")?)?;
+        println!("{label}: camera={:?}; {path}", snapshot.camera);
+    }
     Ok(())
 }
 
