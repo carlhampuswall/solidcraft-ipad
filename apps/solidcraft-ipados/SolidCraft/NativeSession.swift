@@ -81,6 +81,7 @@ struct SketchInputPresentation: Decodable, Equatable {
     let construction: Bool?
     let tool: String?
     let feedback: Feedback?
+    let projection: ProjectionPickPresentation?
     let finish_chain_at: [Double]?
 }
 struct SketchAnnotationPresentation: Decodable {

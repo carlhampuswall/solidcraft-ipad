@@ -1,0 +1,13 @@
+{
+  "en": {
+    "ui.ipados.projection.auto": "Auto",
+    "ui.ipados.projection.canvas_help": "Tap a reference curve, endpoint or centre with Pencil. Tap again to deselect. Use two fingers to navigate.",
+    "ui.ipados.projection.choose_visual": "Choose sketch",
+    "ui.ipados.projection.clear": "Clear",
+    "ui.ipados.projection.curves": "Curves",
+    "ui.ipados.projection.next_sketch": "Next sketch",
+    "ui.ipados.projection.points": "Points",
+    "ui.ipados.projection.selected_count": "Selected references",
+    "ui.ipados.projection.tap_source": "Tap a sketch in the canvas"
+  }
+}

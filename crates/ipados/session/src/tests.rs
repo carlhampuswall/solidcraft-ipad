@@ -8860,7 +8860,7 @@ fn sketch_projection_all_includes_lone_points_and_can_create_detached_profiles()
     let choices = a.projection_sources();
     assert_eq!(choices.len(), 1);
     assert_eq!(choices[0]["id"], source);
-    assert_eq!(choices[0]["entities"].as_array().unwrap().len(), 3);
+    assert_eq!(choices[0]["entities"].as_array().unwrap().iter().filter(|e| e["all_geometry"] == true).count(), 3);
     let mut request = projection_request(&a, source, true);
     request.construction = false;
     request.linked = false;
@@ -8929,4 +8929,103 @@ fn sketch_projection_links_and_construction_round_trip_and_detach_independently(
     assert_eq!(loaded.session.model.state().sketch(target).unwrap().sketch.links.len(), 2);
     loaded.execute("edit.undo", json!({})).unwrap();
     assert_eq!(loaded.session.model.state().sketch(target).unwrap().sketch.links.len(), 3);
+}
+
+#[test]
+fn sketch_projection_pencil_picks_curves_endpoints_centres_and_origin_without_editing() {
+    let (mut a, source, _) = projection_fixture();
+    let history = a.session.undo.len();
+    let doc = a.session.doc.clone();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(900., 700., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, a.snapshot().unwrap());
+    view.command("view.sketch_projection", &json!({"action":"begin"})).unwrap();
+    for (world, kind) in
+        [(Vec3::new(12., 0., 0.), "curve"), (Vec3::new(20., 0., 0.), "point"), (Vec3::new(5., 8., 0.), "point"), (Vec3::ZERO, "point")]
+    {
+        let p = point(&view, world);
+        let hit = view
+            .model
+            .as_ref()
+            .unwrap()
+            .projection_sources
+            .iter()
+            .find(|s| s.id == source)
+            .unwrap()
+            .entities
+            .iter()
+            .find(|e| e.point == (kind == "point") && if e.point { e.points[0].dist(world) < 1e-6 } else { e.id == "l1" })
+            .unwrap()
+            .id
+            .clone();
+        feed(&mut view, InputSource::Pencil, InputPhase::Began, 199, p, 1.);
+        feed(&mut view, InputSource::Pencil, InputPhase::Ended, 199, p, 1.1);
+        assert_eq!(view.projection_presentation()["source"], source);
+        assert_eq!(view.projection_presentation()["selected"], json!([hit]));
+        assert!(view.take_tool_work().is_none(), "a reference tap must not drag or author active geometry");
+        feed(&mut view, InputSource::Pencil, InputPhase::Began, 199, p, 2.);
+        feed(&mut view, InputSource::Pencil, InputPhase::Ended, 199, p, 2.1);
+        assert!(view.projection_presentation()["selected"].as_array().unwrap().is_empty());
+    }
+    assert!(Arc::ptr_eq(&a.session.doc, &doc));
+    assert_eq!(a.session.undo.len(), history);
+    view.command("view.sketch_projection", &json!({"action":"all"})).unwrap();
+    assert_eq!(
+        view.projection_presentation()["selected"].as_array().unwrap().len(),
+        3,
+        "All geometry must not double-project curve endpoints or the implicit origin"
+    );
+    view.command("view.sketch_projection", &json!({"action":"cancel"})).unwrap();
+    assert!(view.projection_presentation().is_null());
+}
+
+#[test]
+fn sketch_projection_visual_filters_stale_samples_navigation_and_context_changes() {
+    let (mut a, _, _) = projection_fixture();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(900., 700., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, a.snapshot().unwrap());
+    view.command("view.sketch_projection", &json!({"action":"begin"})).unwrap();
+    view.command("view.sketch_projection", &json!({"action":"filter","filter":"curves"})).unwrap();
+    let p = point(&view, Vec3::ZERO);
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 200, p, 1.);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 200, p, 1.1);
+    assert_eq!(view.projection_presentation()["selected"], json!(["l1"]));
+    view.command("view.sketch_projection", &json!({"action":"clear"})).unwrap();
+    view.command("view.sketch_projection", &json!({"action":"filter","filter":"points"})).unwrap();
+    let p = point(&view, Vec3::new(12., 0., 0.));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 201, p, 2.);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 201, p, 2.1);
+    assert!(view.projection_presentation()["selected"].as_array().unwrap().is_empty());
+    let p = point(&view, Vec3::new(5., 8., 0.));
+    let mut stale = sample(&view, InputSource::Pencil, InputPhase::Began, 202, p, 3.);
+    stale.geometry_revision = Some(0);
+    view.input(stale).unwrap();
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 202, p, 3.1);
+    assert!(view.projection_presentation()["selected"].as_array().unwrap().is_empty());
+    let before = view.camera;
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 203, [450., 350.], 4.);
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 203, [510., 380.], 4.1);
+    feed(&mut view, InputSource::Finger, InputPhase::Ended, 203, [510., 380.], 4.2);
+    assert_ne!(view.camera, before);
+    assert!(view.projection.is_some());
+    assert!(view.projection_presentation()["selected"].as_array().unwrap().is_empty());
+    a.execute("sketch.line", json!({"points":[[40,40],[50,50]]})).unwrap();
+    view.begin_update(2);
+    view.install(2, a.snapshot().unwrap());
+    assert!(view.projection.is_none(), "a changed document must discard visual reference picks");
+}
+
+#[test]
+fn sketch_projection_visually_selected_source_point_remains_linked() {
+    let (mut a, source, target) = projection_fixture();
+    let endpoint = a.session.model.state().sketch(source).unwrap().sketch.points.iter().find(|p| (p.pos.x - 20.).abs() < 1e-6).unwrap().id.clone();
+    let mut request = projection_request(&a, source, false);
+    request.entities = vec![endpoint];
+    a.project_sketch(request).unwrap();
+    assert!(a.session.model.state().sketch(target).unwrap().sketch.curves.is_empty());
+    a.execute("parameters.change", json!({"name":"width","expression":"42 mm"})).unwrap();
+    assert!(a.session.model.state().sketch(target).unwrap().sketch.points.iter().any(|p| p.link.is_some() && (p.pos.x - 42.).abs() < 1e-6));
 }

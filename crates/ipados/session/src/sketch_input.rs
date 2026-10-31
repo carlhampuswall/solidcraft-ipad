@@ -355,7 +355,7 @@ impl Viewport {
     }
 
     pub(crate) fn begin_sketch_input(&mut self, event: &InputEvent, screen: [f64; 2]) -> bool {
-        if self.constraint_tool().is_some() {
+        if self.constraint_tool().is_some() || self.projection.is_some() {
             return false;
         }
         let direct = self.contacts.sketch.tool == "select" && self.direct_handles;

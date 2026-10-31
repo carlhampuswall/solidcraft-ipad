@@ -97,6 +97,7 @@ pub struct SceneSnapshot {
     pub feature_ids: Vec<u64>,
     pub(crate) feature_feedback: std::collections::BTreeMap<u64, feature_selection::FeatureFeedback>,
     pub sketch: Option<SketchSnapshot>,
+    pub(crate) projection_sources: Vec<sketch_projection::ProjectionSource>,
     pub sketch_plane: Option<solidcraft_engine::geom::Plane>,
     pub construction_planes: Vec<(String, solidcraft_engine::geom::Plane)>,
     pub occurrence_paths: std::collections::BTreeMap<String, Vec<u64>>,
@@ -309,6 +310,7 @@ impl SessionAdapter {
             feature_ids: self.session.doc.features.iter().map(|f| f.id).collect(),
             feature_feedback: self.feature_feedback(&world),
             sketch: self.sketch_snapshot(),
+            projection_sources: self.projection_geometry(),
             sketch_plane: view::open_sketch_plane(&self.session),
             construction_planes: world
                 .construct

@@ -80,6 +80,7 @@ pub struct Viewport {
     pub(crate) selection: Vec<Sel>,
     pub(crate) hover: Option<Sel>,
     pub(crate) filter: PickFilter,
+    pub(crate) projection: Option<crate::sketch_projection::ProjectionPicking>,
     pub(crate) multiple: bool,
     pub(crate) contacts: Contacts,
     pub(crate) numeric: Option<crate::NumericEdit>,
@@ -124,6 +125,7 @@ impl Default for Viewport {
             selection: Vec::new(),
             hover: None,
             filter: PickFilter::default(),
+            projection: None,
             multiple: true,
             contacts: Contacts::default(),
             numeric: None,
@@ -196,6 +198,7 @@ impl Viewport {
         }
         let changed = self.model.as_ref().is_none_or(|old| old.document_id != model.document_id || old.geometry_revision != model.geometry_revision);
         if changed {
+            self.projection = None;
             // Shared topology indices and picked points have no persistent identity contract.
             self.selection.clear();
             self.hover = None;
@@ -280,6 +283,9 @@ impl Viewport {
     }
 
     pub fn command(&mut self, id: &str, params: &Value) -> Result<Value, AdapterError> {
+        if id == "view.sketch_projection" {
+            return self.projection_command(params);
+        }
         if id == "view.tool_dismissal" {
             let enabled = params["cancel_on_dismiss"].as_bool().ok_or_else(|| error("bad_params", "Expected a boolean cancel_on_dismiss."))?;
             self.cancel_interactions();
@@ -356,6 +362,9 @@ impl Viewport {
             return Err(error("disabled", "ui.ipados.workspace.finish_edit"));
         }
         if id == "input.cancel" || id == "tool.cancel" {
+            if id == "tool.cancel" {
+                self.projection = None;
+            }
             self.cancel_interactions();
             if id == "tool.cancel" && self.constraint_tool().is_some() {
                 self.contacts.sketch.tool = "select".into();
@@ -407,6 +416,7 @@ impl Viewport {
             return Ok(self.diagnostic());
         }
         if id == "tool.set" || id == "tool.previous" {
+            self.projection = None;
             if id == "tool.previous" && self.model.as_ref().is_some_and(|m| m.sketch.is_some()) {
                 let tool = if self.contacts.sketch.active() {
                     self.contacts.previous_sketch_tool = self.contacts.sketch.tool.clone();
@@ -796,6 +806,7 @@ impl Viewport {
 
     pub fn diagnostic(&self) -> Value {
         let mut input = self.contacts.diagnostic();
+        input["sketch"]["projection"] = self.projection_presentation();
         input["sketch"]["finish_chain_at"] = json!(self.sketch_chain_end());
         input["sketch"]["snapping"] =
             json!(self.contacts.sketch.snapping && self.model.as_ref().and_then(|m| m.sketch.as_ref()).is_none_or(|s| !s.sketch.view.no_snap));
@@ -953,6 +964,7 @@ impl Viewport {
             }
         }
         self.sketch_feedback(&mut scene);
+        self.projection_feedback(&mut scene);
         // Selection still belongs to the authoritative source revision while a
         // provisional shape changes its topology. Draw its real source edges/faces.
         let source = if self.modelling.is_some() { self.model.as_ref() } else { self.display_model() };

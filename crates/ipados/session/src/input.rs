@@ -775,7 +775,13 @@ impl Viewport {
                 return Ok(false);
             }
             if self.contacts.drag.is_none() && !self.contacts.navigating && matches!(e.source, InputSource::Pencil | InputSource::Indirect) {
-                self.hover = e.geometry_revision.and_then(|r| self.pick(point, Some(r)));
+                if self.projection.is_some() {
+                    if e.geometry_revision == self.model.as_ref().map(|m| m.geometry_revision) {
+                        self.projection_hover(point);
+                    }
+                } else {
+                    self.hover = e.geometry_revision.and_then(|r| self.pick(point, Some(r)));
+                }
                 self.changed();
                 return Ok(true);
             }
@@ -852,6 +858,7 @@ impl Viewport {
                 && e.button == 0
                 && self.contacts.items.is_empty()
                 && matches!(owner, Owner::PencilCandidate | Owner::Navigation | Owner::Pointer)
+                && self.projection.is_none()
                 && self.begin_dimension_drag(&e, point)
             {
                 owner = Owner::SketchTool;
@@ -1004,6 +1011,7 @@ impl Viewport {
                     || (owner == Owner::Navigation
                         && (self.origin.choosing
                             || self.constraint_tool().is_some()
+                            || self.projection.is_some()
                             || self.modelling.as_ref().is_some_and(|edit| edit.selection_field.is_some())
                             || self.pick_reference(point).is_some())))
                 && camera_current
@@ -1015,6 +1023,11 @@ impl Viewport {
                 && self.model.as_ref().is_some_and(|m| Some(m.geometry_revision) == revision)
                 && !self.contacts.navigating
             {
+                if self.projection.is_some() {
+                    self.projection_tap(tap_point);
+                    self.changed();
+                    return Ok(true);
+                }
                 let hit = self.pick(tap_point, revision);
                 // Accumulate real picks, while an ordinary empty-space tap
                 // clears the set without requiring a trip through Tools.

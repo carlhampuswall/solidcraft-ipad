@@ -439,36 +439,43 @@ normal camera navigation. Finishing or replacing the sketch exits the mode.
 ## Referencing an earlier sketch
 
 While editing a sketch, open **Sketch Tools > Project / Reference Geometry**.
-Choose an earlier sketch, then tap individual curves in the source overview or
-list, or choose **All geometry**. All geometry includes the source's planar
-curves and standalone points, excluding the implicit origin and curve control
-points. The overview shows the source in its own plane; the engine projects the
-selected geometry onto the destination sketch plane. A confirmation accepts at
-most 1,000 source entities, matching the upstream projection batch limit.
+The main viewport displays the earlier sketches as selectable reference geometry.
+Tap a curve, endpoint, centre or standalone point with Pencil to choose its source
+sketch and select that reference. Tap again to deselect. Point picks take priority
+near endpoints and centres; the **Curves** and **Points** filters resolve ambiguity.
+Two-finger navigation continues through the ordinary viewport camera path.
 
-**Construction** starts on for this reference workflow: projected curves are
-linked guides that do not form profiles. Turn it off to use projected boundaries
-as profiles. **Link to source** starts on so source edits regenerate references;
-turn it off to create detached geometry immediately. Later, select linked curves
-and use **Break Link** in the inspector, or choose a specific reference from
-**Sketch Tools > Break Link**, including standalone projected points. Detaching
-keeps the current geometry and its construction state. Construction can also be
-changed with the existing selected-curve control.
+The options inspector displays the selected source name and reference count,
+with no entity-ID selection lists. **Choose sketch** returns to visual source
+picking. **Next sketch** isolates the next earlier sketch when sources overlap.
+**All geometry** selects the chosen source's planar curves and standalone points;
+it excludes curve-owned points and the implicit origin, which remain individually
+pickable. **Clear** clears the picks. A confirmation accepts at most 1,000 entities.
 
-The sheet pins the document, geometry revision and destination sketch. A changed
-context refuses Apply and leaves the document intact; reopen the sheet to
-refresh it. Cancel has no document effect. Project and Construction are prepared
-on an engine scratch session and accepted together in one undo step; Break Link
-uses the existing engine command and is independently undoable. No shared
-engine, document format, solver or dependency change is introduced.
+**Construction** creates guides that do not form profiles; turn it off to use
+projected boundaries as profiles. **Link to source** keeps references updated;
+turn it off to create detached geometry. Later, select linked curves and use
+**Break Link** in the inspector, or choose a reference from **Sketch Tools >
+Break Link**, including standalone projected points. Detaching preserves the
+current geometry and construction state.
+
+Picks live only in the viewport until **Project**. Cancel leaves the document
+unchanged. Geometry revisions and document/sketch identity invalidate stale
+picks, and the engine still validates the pinned confirmation. Project plus
+Construction remains one undo step. The engine supplies world-space source
+geometry to the existing Rust renderer and input path; UIKit neither resolves
+geometry nor implements another camera.
 
 Focused adapter/ABI regressions use the `sketch_projection` test filter. The
-native deterministic harness checks selection and request composition. The
-opt-in `--sketch-projection-check` device driver creates a disposable fixture,
-exercises the real UIKit chooser and inspector, writes
-`sketch-projection-check.json`, and captures `projection-chooser.png` and
-`projection-projected.png`. Run it only inside a physical-device reservation;
-its synthetic actions do not verify physical Pencil input.
+native harness checks the viewport-pick request contract. The opt-in
+`--sketch-projection-check` device driver exercises visual source/curve/centre
+selection through synthetic Pencil events and production controls. It writes
+`sketch-projection-visual-check.json` and `projection-visual-{picks,all,projected}.png`.
+Run it only inside a device reservation; synthetic events do not verify physical
+Pencil contact.
+
+Historical verification of the initial sheet implementation follows; it does
+not qualify the later main-viewport interaction change.
 
 Device verification on 2026-10-31: candidate `c8602c21` passed the production
 UIKit driver on the connected physical iPad. Source switching, individual/all

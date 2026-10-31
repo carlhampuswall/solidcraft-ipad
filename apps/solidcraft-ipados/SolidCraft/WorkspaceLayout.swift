@@ -14,24 +14,20 @@ struct SketchProjectionEntity: Decodable {
 }
 struct SketchProjectionLink: Decodable { let id: String; let label: String }
 
-/// A form selection only; Rust validates IDs and executes the actual projection.
-struct SketchProjectionSelection {
-    private(set) var source: SketchProjectionSource
-    private(set) var selected: Set<String> = []
-    var construction = true
-    var linked = true
-    init(source: SketchProjectionSource) { self.source = source }
-    var all: Bool { !source.entities.isEmpty && selected.count == source.entities.count }
-    mutating func choose(_ source: SketchProjectionSource) { self.source = source; selected = [] }
-    mutating func toggle(_ id: String) {
-        guard source.entities.contains(where: { $0.id == id }) else { return }
-        if !selected.insert(id).inserted { selected.remove(id) }
-    }
-    mutating func toggleAll() { selected = all ? [] : Set(source.entities.map(\.id)) }
-    func parameters(document: String, revision: UInt64, sketch: UInt64) -> [String: Any] {
-        ["document_id": document, "geometry_revision": revision, "sketch": sketch, "source": source.id,
-         "entities": source.entities.filter { selected.contains($0.id) }.map(\.id), "all": all,
-         "construction": construction, "linked": linked]
+/// Immutable visual picks from the Rust viewport; UIKit does not resolve geometry.
+struct ProjectionPickPresentation: Decodable, Equatable {
+    let document_id: String
+    let geometry_revision: UInt64
+    let sketch: UInt64
+    let source: UInt64?
+    let name: String?
+    let selected: [String]
+    let filter: String
+    let source_count: Int
+    func parameters(construction: Bool, linked: Bool) -> [String: Any]? {
+        guard let source, !selected.isEmpty else { return nil }
+        return ["document_id": document_id, "geometry_revision": geometry_revision, "sketch": sketch,
+                "source": source, "entities": selected, "all": false, "construction": construction, "linked": linked]
     }
 }
 

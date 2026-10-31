@@ -146,6 +146,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let modellingAutomaticPreview = DraftPreviewDebouncer()
     private var transformCommitPending = false
     private var sketchInput: SketchInputPresentation?
+    private var projectionConstruction = true
+    private var projectionLinked = true
+    private var projectionBusy = false
     private var planeDraft: (value: Any, label: String)?
     private var planeGeneration: UInt64 = 0
     private var planeConfirming = false
@@ -432,14 +435,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         session.onWorkspace = { [weak self] value in self?.receive(value) }
         session.onSketchInput = { [weak self] value in
             guard let self, self.sketchInput != value else { return }
+            let projectionChanged = self.sketchInput?.projection != value?.projection
             let constructionChanged = self.sketchInput?.construction != value?.construction
             self.sketchInput = value; self.updateStatus(); self.rebuildMenus()
-            if constructionChanged { self.updateAvailability() }
+            if constructionChanged || projectionChanged { self.updateAvailability() }
+            if projectionChanged { self.rebuildInspector(); self.view.setNeedsLayout() }
             self.layoutEndpointFinish()
         }
         session.onSketchAnnotations = { [weak self] annotations in self?.showSketchAnnotations(annotations) }
         canvas.dimensionAt = { [weak self] point in
-            guard let self else { return nil }
+            guard let self, self.sketchInput?.projection == nil else { return nil }
             return self.annotationLabels.filter { id, label in
                 guard let annotation = self.sketchAnnotations[id] else { return false }
                 return DimensionTapTracker.hitFrame(label.frame, helper: annotation.dimension_type != nil).contains(point)
@@ -1467,6 +1472,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         guard let state else {
             let loading = WorkspaceMessage(); loading.show(WorkspaceStyle.text("loading"), busy: true); properties.addArrangedSubview(loading); return
         }
+        if let projection = sketchInput?.projection { rebuildProjectionInspector(projection); return }
         if !lastOperationFeedback.isEmpty {
             let message = WorkspaceMessage(); message.show(lastOperationFeedback.map(ModellingText.label).joined(separator: "\n")); properties.addArrangedSubview(message)
         }
@@ -2871,6 +2877,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func run(_ command: String, params: [String: Any] = [:]) {
         guard WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: textEntryActive, numericEditActive: numericEditing) else { return }
         guard !modellingEditing || command.hasPrefix("view.") || command.hasPrefix("select.") else { return }
+        guard sketchInput?.projection == nil || command == "tool.cancel" || command.hasPrefix("view.") || command.hasPrefix("select.") else { return }
         historyActivation = nil
         canvas.cancelInput(); failure = nil; lastOperationFeedback = []
         session.command(command, params: params)
@@ -2878,20 +2885,72 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func showSketchProjection() {
         guard active, !numericEditing, !modellingEditing, pending.isEmpty, presentedViewController == nil,
-              let state, let sketch = state.sketch,
-              let sources = sketch.projection_sources, let source = sources.first else { return }
-        canvas.cancelInput()
-        let chooser = SketchProjectionController(sources: sources, source: source, document: state.document_id,
-                                                 revision: state.geometry_revision, sketch: sketch.id)
-        chooser.onApply = { [weak self] params, done in
-            guard let self, self.active else { done(.failure(BridgeError(code: "inactive", message: "ui.ipados.projection.stale"))); return }
-            self.session.projectSketch(params, completion: done)
+              state?.sketch?.projection_sources?.isEmpty == false else { return }
+        canvas.cancelInput(); projectionConstruction = true; projectionLinked = true
+        session.command("view.sketch_projection", params: ["action":"begin"]) { [weak self] result in
+            guard let self, case .success = result else { return }
+            self.browserOpen = false; self.inspectorOpen = true
+            self.rebuildInspector(); self.relayoutPanels()
         }
-        let navigation = UINavigationController(rootViewController: chooser)
-        navigation.modalPresentationStyle = .pageSheet
-        navigation.sheetPresentationController?.detents = [.medium(), .large()]
-        navigation.sheetPresentationController?.prefersGrabberVisible = true
-        present(navigation, animated: true)
+    }
+    private func projectionAction(_ action: String, filter: String? = nil) {
+        guard !projectionBusy else { return }
+        var params: [String: Any] = ["action":action]
+        if let filter { params["filter"] = filter }
+        session.command("view.sketch_projection", params: params)
+    }
+    private func rebuildProjectionInspector(_ picks: ProjectionPickPresentation) {
+        inspectorPanel.setTitle(ProjectionText.text("title"))
+        let hint = WorkspaceStyle.label(.body, secondary: true)
+        hint.text = ProjectionText.text("canvas_help"); hint.numberOfLines = 0
+        properties.addArrangedSubview(hint)
+        properties.addArrangedSubview(WorkspacePropertyRow(label: ProjectionText.text("source"), value: picks.name ?? ProjectionText.text("tap_source")))
+        properties.addArrangedSubview(WorkspacePropertyRow(label: ProjectionText.text("selected_count"), value: String(picks.selected.count)))
+        let filters = UISegmentedControl(items: [ProjectionText.text("auto"), ProjectionText.text("curves"), ProjectionText.text("points")])
+        filters.selectedSegmentIndex = ["auto", "curves", "points"].firstIndex(of: picks.filter) ?? 0
+        filters.accessibilityIdentifier = "projection-pick-filter"; filters.isEnabled = !projectionBusy
+        filters.addAction(UIAction { [weak self, weak filters] _ in
+            guard let filters, [0,1,2].contains(filters.selectedSegmentIndex) else { return }
+            self?.projectionAction("filter", filter: ["auto", "curves", "points"][filters.selectedSegmentIndex])
+        }, for: .valueChanged)
+        properties.addArrangedSubview(filters)
+        let actionRows = [[("all", "all"), ("clear", "clear")], [("choose_visual", "choose"), ("next_sketch", "next")]]
+        for actions in actionRows {
+            let row = UIStackView(); row.axis = .horizontal; row.spacing = 6; row.distribution = .fillEqually
+            for (title, action) in actions {
+            let button = WorkspaceButton(ProjectionText.text(title)) { [weak self] in self?.projectionAction(action) }
+            button.accessibilityIdentifier = "projection-" + action
+            button.availability(enabled: !projectionBusy && (action == "choose" || action == "next" || picks.source != nil))
+            row.addArrangedSubview(button)
+            }
+            properties.addArrangedSubview(row)
+        }
+        for construction in [true, false] {
+            let row = UIStackView(); row.axis = .horizontal; row.spacing = 8; row.alignment = .center
+            let label = WorkspaceStyle.label(.body); label.text = ProjectionText.text(construction ? "construction" : "linked"); label.numberOfLines = 0
+            let toggle = UISwitch(); toggle.isOn = construction ? projectionConstruction : projectionLinked
+            toggle.isEnabled = !projectionBusy; toggle.accessibilityLabel = label.text
+            toggle.accessibilityIdentifier = construction ? "projection-construction" : "projection-linked"
+            toggle.addAction(UIAction { [weak self, weak toggle] _ in
+                guard let self, let toggle else { return }
+                if construction { self.projectionConstruction = toggle.isOn } else { self.projectionLinked = toggle.isOn }
+            }, for: .valueChanged)
+            row.addArrangedSubview(label); row.addArrangedSubview(toggle); row.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
+            properties.addArrangedSubview(row)
+        }
+        let apply = WorkspaceButton(ProjectionText.text("project"), prominent: true) { [weak self] in self?.confirmProjection() }
+        apply.accessibilityIdentifier = "projection-apply"
+        apply.availability(enabled: !projectionBusy && !picks.selected.isEmpty)
+        properties.addArrangedSubview(apply)
+        let cancel = WorkspaceButton(WorkspaceStyle.text("cancel")) { [weak self] in self?.projectionAction("cancel") }
+        cancel.availability(enabled: !projectionBusy); properties.addArrangedSubview(cancel)
+    }
+    private func confirmProjection() {
+        guard !projectionBusy, let params = sketchInput?.projection?.parameters(construction: projectionConstruction, linked: projectionLinked) else { return }
+        canvas.cancelInput(); projectionBusy = true; rebuildInspector()
+        session.projectSketch(params) { [weak self] _ in
+            guard let self else { return }; self.projectionBusy = false; self.rebuildInspector(); self.updateAvailability()
+        }
     }
     private func setTool(_ tool: String) {
         guard !numericEditing, state?.tools.first(where: { $0.id == tool })?.enabled == true else { return }
@@ -2934,6 +2993,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func closePanels() {
         // Closing or tapping outside a form discards its provisional operation.
         // An Apply already being accepted must finish before dismissal.
+        if sketchInput?.projection != nil { projectionAction("cancel") }
         guard !numericEditing else { editor?.message.show(WorkspaceStyle.text("editing_lock")); return }
         guard !modellingCommitting else { return }
         if cancelToolsOnDismiss { cancelModelling() }
@@ -2975,6 +3035,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         rebuildViewMenu()
         updateModelValueChoices()
         for (id, label) in annotationLabels {
+            label.isHidden = sketchInput?.projection != nil
             label.editable = sketchAnnotations[id].map(annotationEditable) ?? false
         }
         browserFindButton.availability(enabled: !numericEditing && !modellingEditing && !planeConfirming && pending.isEmpty)
@@ -2983,7 +3044,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             browserControlsEnabled = browserCanChange
             table.reloadData()
         } else { table.reloadSections(IndexSet(integer: 0), with: .none) }
-        let locked = numericEditing || modellingEditing || !pending.isEmpty
+        let locked = numericEditing || modellingEditing || sketchInput?.projection != nil || !pending.isEmpty
         let features = state?.modelling?.timeline ?? []
         let featureIcons = Dictionary(features.map { feature in
             (feature.id, rowByID["feature:" + String(feature.id)]?.browser?.icon ?? "component")
@@ -3021,17 +3082,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let cancelTitle = planeChoosing || planeDraft != nil ? WorkspaceStyle.text("cancel") : SketchText.text("cancel_segment")
         cancelToolButton.updateTitle(cancelTitle)
         table.allowsSelection = !numericEditing && !modellingCommitting && pending.isEmpty
-        let modal = layout?.compact == true && (browserOpen || inspectorOpen)
+        let modal = sketchInput?.projection == nil && layout?.compact == true && (browserOpen || inspectorOpen)
         let textBlocksViewport = textEntryActive && !(cancelToolsOnDismiss && modellingEditing)
         canvas.isUserInteractionEnabled = !numericEditing && WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: modal, textEntryActive: textBlocksViewport)
         canvas.accessibilityElementsHidden = modal || numericEditing
         layoutEndpointFinish()
         for button in referenceLabels.values {
             button.accessibilityElementsHidden = modal || numericEditing || modellingEditing
-            button.isUserInteractionEnabled = !modal && !numericEditing && !modellingEditing
+            button.isUserInteractionEnabled = !modal && !numericEditing && !modellingEditing && sketchInput?.projection == nil
         }
         if compactChrome {
-            let editing = numericEditing || modellingEditing
+            let editing = numericEditing || modellingEditing || sketchInput?.projection != nil
             for (id, button) in sketchQuickTools {
                 let tool = state?.tools.first { $0.id == id }
                 button.isHidden = !inSketch || editing
@@ -3669,7 +3730,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let frame = resolved.browser { browserPanel.frame = frame }
         if let frame = resolved.inspector { inspectorPanel.frame = frame }
         scrim.frame = CGRect(x: 0, y: resolved.rail.minY, width: workspace.bounds.width, height: resolved.canvas.height)
-        scrim.isHidden = !compact || resolved.browser == nil && resolved.inspector == nil
+        scrim.isHidden = sketchInput?.projection != nil || !compact || resolved.browser == nil && resolved.inspector == nil
         browserPanel.layoutIfNeeded(); inspectorPanel.layoutIfNeeded()
         let browserBounds = browserPanel.content.bounds
         let searchHeight = browserSearchOpen ? min(browserBounds.height, browserSearchBar.systemLayoutSizeFitting(
@@ -3679,7 +3740,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         table.frame = CGRect(x: 0, y: searchHeight, width: browserBounds.width, height: max(0, browserBounds.height - searchHeight))
         inspectorScroll.frame = inspectorPanel.content.bounds
         browserPanel.accessibilityViewIsModal = compact && browserOpen
-        inspectorPanel.accessibilityViewIsModal = compact && inspectorOpen
+        inspectorPanel.accessibilityViewIsModal = sketchInput?.projection == nil && compact && inspectorOpen
         workspace.accessibilityElements = resolved.floating ? [top, browserButton, railScroll, browserPanel, navigationScroll, inspectorPanel, modelValueButton, endpointFinishButton, canvas, historyActions, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointFinishButton, canvas, inspectorPanel, featureHistory, status]
         if resetChromeOffsets {
             // Reparenting the same controls changes scroll content dimensions.
@@ -3711,6 +3772,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         numericToken = nil; numericContext = nil; numericStarting = false
         clearNumericEditor()
         rebuildInspector(); updateAvailability()
+        if sketchInput?.projection != nil { projectionAction("cancel") }
         canvas.cancelInput(); session.suspend()
     }
     func shutdown() {
@@ -4029,8 +4091,9 @@ private extension FoundationController {
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let data = try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
-                    "scope": "Production UIKit source and curve selection, construction projection, undo/redo and Break Link. Synthetic actions; no physical Pencil input."], options: [.prettyPrinted, .sortedKeys])
-                try data.write(to: directory.appendingPathComponent("sketch-projection-check.json"), options: .atomic)
+                    "scope": "Main viewport source/curve/centre selection with synthetic Pencil events, deselection, All Geometry, Construction and undo/redo. No physical Pencil input.",
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"], options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: directory.appendingPathComponent("sketch-projection-visual-check.json"), options: .atomic)
             } catch { print("Projection report failed: \(error)") }
         }
         func wait(_ ready: @escaping () -> Bool, _ remaining: Int = 100, then action: @escaping () -> Void) {
@@ -4047,48 +4110,38 @@ private extension FoundationController {
                 if let png = image.pngData() { try png.write(to: directory.appendingPathComponent("projection-" + name + ".png"), options: .atomic) }
             } catch { issues.append("Capture failed: \(error)") }
         }
-        func exercise() {
-            guard let sketch = state?.sketch, let sources = sketch.projection_sources, sources.count == 2 else {
-                issues.append("Earlier source choices missing"); report(); return
-            }
-            showSketchProjection()
-            wait({ self.presentedViewController?.viewIfLoaded?.window != nil }) {
-                guard let navigation = self.presentedViewController as? UINavigationController,
-                      let chooser = navigation.topViewController as? SketchProjectionController else {
-                    issues.append("Projection sheet missing"); report(); return
+        func tap(_ world: [Double], count: Int, then action: @escaping () -> Void) {
+            session.developmentSketchTap(world) { result in
+                guard case .success = result else { issues.append("Pencil reference tap failed"); report(); return }
+                self.session.command("view.grid", params: ["visible": self.gridVisible]) { _ in
+                    wait({ self.sketchInput?.projection?.selected.count == count }, then: action)
                 }
-                navigation.sheetPresentationController?.selectedDetentIdentifier = .large
-                chooser.loadViewIfNeeded()
-                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 1, section: 0))
-                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 0, section: 1))
-                if !chooser.selection.all || chooser.selection.source.id != sources[1].id { issues.append("Source/all selection failed") }
-                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 1, section: 1))
-                if chooser.selection.all || chooser.selection.selected.count != 1 { issues.append("Individual curve deselection failed") }
-                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 0, section: 1))
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                    chooser.view.layoutIfNeeded(); capture("chooser")
-                    guard let button = chooser.navigationItem.rightBarButtonItem, let action = button.action else {
-                        issues.append("Project action missing"); report(); return
-                    }
-                    UIApplication.shared.sendAction(action, to: button.target, from: button, for: nil)
-                    wait({ self.presentedViewController == nil && self.state?.sketch?.projection_links?.count == 2 }) {
-                        if self.state?.sketch?.profiles.isEmpty != true { issues.append("Construction geometry formed a profile") }
-                        self.session.command("edit.undo") { result in
-                            guard case .success = result else { issues.append("Undo failed"); report(); return }
-                            wait({ self.state?.sketch?.curves.isEmpty == true }) {
-                                self.session.command("edit.redo") { result in
-                                    guard case .success = result else { issues.append("Redo failed"); report(); return }
-                                    wait({ self.state?.sketch?.projection_links?.count == 2 }) {
-                                        guard let curve = self.state?.sketch?.curves.first else { issues.append("Missing projected curve"); report(); return }
-                                        self.session.selectEntity(["type":"sketch_curve", "id":curve.id], additive: false)
-                                        wait({ self.state?.selection.contains(where: { $0.id?.readout == curve.id }) == true }) {
-                                            self.inspectorOpen = true; self.relayoutPanels(); self.rebuildInspector(); self.view.layoutIfNeeded()
-                                            capture("projected")
-                                            guard let button = self.properties.arrangedSubviews.first(where: { $0.accessibilityIdentifier == "workspace-break-selected-links" }) as? WorkspaceButton else {
-                                                issues.append("Selected geometry Break Link missing"); report(); return
+            }
+        }
+        func exercise() {
+            showSketchProjection()
+            wait({ self.sketchInput?.projection != nil && self.canvas.isUserInteractionEnabled }) {
+                if !self.scrim.isHidden { issues.append("Projection canvas is blocked by a modal scrim") }
+                // Select the source and its circle directly in the production viewport.
+                tap([-12,4,0], count: 1) {
+                    if self.sketchInput?.projection?.name != "Mounting guides" { issues.append("Visual source selection failed") }
+                    tap([-12,0,0], count: 2) {
+                        self.view.layoutIfNeeded(); capture("visual-picks")
+                        // Tapping the centre again removes just that point reference.
+                        tap([-12,0,0], count: 1) {
+                            self.projectionAction("all")
+                            wait({ self.sketchInput?.projection?.selected.count == 2 }) {
+                                self.view.layoutIfNeeded(); capture("visual-all")
+                                self.confirmProjection()
+                                wait({ self.sketchInput?.projection == nil && self.state?.sketch?.projection_links?.count == 2 }) {
+                                    if self.state?.sketch?.profiles.isEmpty != true { issues.append("Construction geometry formed a profile") }
+                                    self.session.command("edit.undo") { _ in
+                                        wait({ self.state?.sketch?.curves.isEmpty == true }) {
+                                            self.session.command("edit.redo") { _ in
+                                                wait({ self.state?.sketch?.projection_links?.count == 2 }) {
+                                                    capture("visual-projected"); report()
+                                                }
                                             }
-                                            button.sendActions(for: .touchUpInside)
-                                            wait({ self.state?.sketch?.projection_links?.count == 1 }) { report() }
                                         }
                                     }
                                 }

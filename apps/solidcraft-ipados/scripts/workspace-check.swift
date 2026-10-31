@@ -8,22 +8,12 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
-        let projectionSource = try JSONDecoder().decode(SketchProjectionSource.self, from: Data(#"{"id":7,"name":"Source","entities":[{"id":"l1","kind":"curve","type":"line","polyline":[[0,0],[20,0]]},{"id":"c1","kind":"curve","type":"circle","polyline":[]}]}"#.utf8))
-        var projection = SketchProjectionSelection(source: projectionSource)
-        try require(projection.selected.isEmpty && projection.construction && projection.linked, "projection form has incorrect initial state")
-        projection.toggle("l1")
-        try require(projection.selected == ["l1"] && !projection.all, "individual projection selection was broadened")
-        projection.toggleAll()
-        try require(projection.all && projection.selected.count == 2, "all geometry did not select every entity")
-        projection.toggle("l1")
-        try require(!projection.all && projection.selected == ["c1"], "deselecting one curve left all enabled")
-        projection.linked = false; projection.construction = false
-        let projectionParams = projection.parameters(document: "document", revision: 12, sketch: 8)
-        try require(projectionParams["source"] as? UInt64 == 7 && projectionParams["sketch"] as? UInt64 == 8 &&
-                    projectionParams["entities"] as? [String] == ["c1"] && projectionParams["linked"] as? Bool == false &&
-                    projectionParams["construction"] as? Bool == false, "projection form lost its source, selection or options")
-        projection.choose(projectionSource)
-        try require(projection.selected.isEmpty, "switching source retained foreign curve IDs")
+        let projection = try JSONDecoder().decode(ProjectionPickPresentation.self, from: Data(#"{"document_id":"document","geometry_revision":12,"sketch":8,"source":7,"name":"Source","selected":["c1","p2"],"filter":"auto","source_count":2}"#.utf8))
+        let projectionParams = projection.parameters(construction: true, linked: false)
+        try require(projectionParams?["source"] as? UInt64 == 7 && projectionParams?["sketch"] as? UInt64 == 8 &&
+                    projectionParams?["entities"] as? [String] == ["c1", "p2"] && projectionParams?["linked"] as? Bool == false &&
+                    projectionParams?["construction"] as? Bool == true && projectionParams?["all"] as? Bool == false,
+                    "visual reference picks lost their source, points, options or context")
         let edgeTemplate = "Edge length: {length} mm"
         let edgeLocale = Locale(identifier: "en_US")
         try require(EdgeLengthReadout.restored(nil) && EdgeLengthReadout.restored(true) && !EdgeLengthReadout.restored(false),
