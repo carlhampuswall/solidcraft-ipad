@@ -4180,7 +4180,10 @@ private extension FoundationController {
                     finish("Current top face choice unavailable"); return
                 }
                 button.sendActions(for: .touchUpInside)
-                wait({ (self.presentedViewController as? UINavigationController)?.topViewController is BrowserActionController }) {
+                wait({
+                    guard let navigation = self.presentedViewController as? UINavigationController else { return false }
+                    return navigation.topViewController is BrowserActionController && !navigation.isBeingPresented && navigation.transitionCoordinator == nil
+                }) {
                     guard let picker = (self.presentedViewController as? UINavigationController)?.topViewController as? BrowserActionController,
                           let index = picker.menu.children.firstIndex(where: { $0.title == ModellingText.label(option.label) }),
                           self.keyboardTop == nil, !self.textEntryActive else {
@@ -4201,34 +4204,38 @@ private extension FoundationController {
             session.selectEntity(["type":"feature", "id":sketch], additive: false) { result in
                 guard case .success = result else { finish("Cannot select repair sketch"); return }
                 self.inspectorOpen = true; self.browserOpen = false; self.rebuildInspector(); self.relayoutPanels()
-                guard let repair = control("workspace-repair-sketch-attachment") else { finish("Sketch properties repair action missing"); return }
-                repair.sendActions(for: .touchUpInside)
-                wait({ self.modellingToken != nil && self.modellingInspector != nil }) {
-                    if control("workspace-model-apply")?.isEnabled != false { finish("Repair silently accepted an unselected face"); return }
-                    capture("choose-face") {
-                        chooseFace {
-                            capture("preview") {
-                                control("workspace-model-cancel")?.sendActions(for: .touchUpInside)
-                                wait({ self.modellingToken == nil && !self.modellingStarting }) {
-                                    guard let row = self.state?.rows.first(where: { $0.id == "feature:" + String(sketch) }),
-                                          self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning != nil,
-                                          let repair = self.browserMenu(row).children.first(where: { $0.title == NativeText.value("ui.ipados.attachment.repair") }) else {
-                                        finish("Cancel changed the original attachment"); return
-                                    }
-                                    repair.action?()
-                                    wait({ self.modellingToken != nil && self.modellingInspector != nil }) {
-                                        chooseFace {
-                                            control("workspace-model-apply")?.sendActions(for: .touchUpInside)
-                                            wait({ self.modellingToken == nil && self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning == nil }) {
-                                                capture("repaired") {
-                                                    self.session.command("edit.undo") { _ in
-                                                        wait({ self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning != nil }) {
-                                                            self.session.command("edit.redo") { _ in
-                                                                wait({ self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning == nil }) {
-                                                                    self.session.command("solid.extrude", params: ["sketch":sketch,"distance":"18.8 mm","operation":"new"]) { result in
-                                                                        guard case .success = result else { finish("Extrusion after repair failed"); return }
-                                                                        wait({ self.state?.modelling?.timeline.count == 4 }) {
-                                                                            capture("extruded") { finish() }
+                // selectEntity completes before publishing its workspace. Wait
+                // for Properties to receive that actual selection before using it.
+                wait({ self.state?.selection.contains(where: { $0.type == "feature" && $0.id?.readout == String(sketch) }) == true && control("workspace-repair-sketch-attachment") != nil }) {
+                    guard let repair = control("workspace-repair-sketch-attachment") else { finish("Sketch properties repair action missing"); return }
+                    repair.sendActions(for: .touchUpInside)
+                    wait({ self.modellingToken != nil && self.modellingInspector != nil }) {
+                        if control("workspace-model-apply")?.isEnabled != false { finish("Repair silently accepted an unselected face"); return }
+                        capture("choose-face") {
+                            chooseFace {
+                                capture("preview") {
+                                    control("workspace-model-cancel")?.sendActions(for: .touchUpInside)
+                                    wait({ self.modellingToken == nil && !self.modellingStarting }) {
+                                        guard let row = self.state?.rows.first(where: { $0.id == "feature:" + String(sketch) }),
+                                              self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning != nil,
+                                              let repair = self.browserMenu(row).children.first(where: { $0.title == NativeText.value("ui.ipados.attachment.repair") }) else {
+                                            finish("Cancel changed the original attachment"); return
+                                        }
+                                        repair.action?()
+                                        wait({ self.modellingToken != nil && self.modellingInspector != nil }) {
+                                            chooseFace {
+                                                control("workspace-model-apply")?.sendActions(for: .touchUpInside)
+                                                wait({ self.modellingToken == nil && self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning == nil }) {
+                                                    capture("repaired") {
+                                                        self.session.command("edit.undo") { _ in
+                                                            wait({ self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning != nil }) {
+                                                                self.session.command("edit.redo") { _ in
+                                                                    wait({ self.state?.modelling?.timeline.first(where: { $0.id == sketch })?.warning == nil }) {
+                                                                        self.session.command("solid.extrude", params: ["sketch":sketch,"distance":"18.8 mm","operation":"new"]) { result in
+                                                                            guard case .success = result else { finish("Extrusion after repair failed"); return }
+                                                                            wait({ self.state?.modelling?.timeline.count == 4 }) {
+                                                                                capture("extruded") { finish() }
+                                                                            }
                                                                         }
                                                                     }
                                                                 }

@@ -1673,7 +1673,7 @@ final class ModellingInspector: UIStackView {
     }
     private func showFeedback(_ state: ModellingState) {
         let status = validated == nil ? entryHint : WorkspaceStyle.text("preview_ready")
-        let details = (state.feedback ?? []).map(ModellingText.label)
+        let details = (state.feedback ?? []).filter { $0 != "ui.ipados.attachment.hint" }.map(ModellingText.label)
         message.show(compact ? status : ([status] + details).joined(separator: "\n"))
         feedback.show(compact ? details.joined(separator: "\n") : nil)
     }
