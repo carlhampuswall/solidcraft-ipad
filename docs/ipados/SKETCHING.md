@@ -53,6 +53,29 @@ retrieving evidence. Software-driven UIKit actions do not verify physical Pencil
 delivery. Focused regressions live in the existing session and bridge test files;
 the engine test suite requires an explicit user request.
 
+Verified on 2026-10-31 with signed candidate
+`a2971510ad7b0585123129310568c5246697ade3`, including the separately committed
+constrained-colour work. The physical-iPad diagnostic passed Properties/browser
+entry, initially disabled Apply, the keyboard-free face chooser, preview,
+Cancel without changing the attachment, Apply, undo/redo and a subsequent
+18.8 mm extrusion. All six UIKit/Metal captures were retrieved and inspected.
+The accepted report, screenshots, binary hashes and reservation evidence are in
+ignored `target/sketch-attachment-device/`; `device-refresh-acceptance.json`
+records the candidate and untouched library-project scope. Normal app launch
+was restored and the iPad reservation released.
+
+The completed adapter batch passed 33 bridge and 243 session tests; the final
+native-JSON coordinate fix additionally reran all three attachment repair
+regressions. The native 692-case/icon harness, affected Clippy, formatting,
+wasm checks, lists/i18n and unsigned/signed native builds passed. The wasm check
+retains the existing engine dead-code warning. Device coverage uses programmatic
+UIKit actions; physical Pencil/finger input, simulators, the engine suite and
+full CI were not run for this repair. The native face payload is recanonicalised
+after typed-coordinate comparison so Swift's `10.0` → `10` JSON round trip does
+not reject an unchanged face. Open face choices survive presentation refreshes
+only while the option remains current; the native edit token still rejects a
+changed document.
+
 ## Construction geometry
 
 Tap **Construction** before drawing to create construction lines, rectangles,
