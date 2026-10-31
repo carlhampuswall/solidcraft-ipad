@@ -9,6 +9,30 @@ totals, single-save-slot descriptions and no-commit/no-push status do not descri
 the final combined branch. The engine suite is excluded from this integration's
 checks at the user's request; no full-CI success is claimed.
 
+## Fillet and chamfer device verification — 2026-10-31
+
+Signed candidate `c7dbc33f95a991163286644b47bba8249558e91e`, including surface-tool
+implementation `b729af55`, is installed on the physical iPad Pro 11-inch
+(3rd generation). All four Fillet/Chamfer × Pencil/finger acceptance cases pass
+through the production input mailbox and UIKit controls. Each case selects a
+real source edge, changes the live handle from 1 to 3 mm without committing,
+opens the on-model keypad, rejects `2 +` while retaining the draft, applies
+exactly 2 mm, checks one-step Undo/Redo and original-feature reopening, and
+cancels a further numeric draft without changing geometry or history.
+
+The device report confirms that no library project was opened or autosaved.
+All 28 UIKit/Metal captures were retrieved; representative fillet/chamfer drag,
+numeric-entry, invalid-input and reopened-feature screens were visually inspected.
+The app was relaunched normally and the exclusive iPad reservation released.
+These are real-device runtime checks with injected Pencil/finger samples;
+physical contact delivery remains unverified. No simulator or engine suite ran.
+
+The unsigned and existing-profile signed native builds, strict signature check,
+692-case native workspace harness and icon checks passed. Evidence is in ignored
+`target/surface-handles-device/`: `build.json` binds the candidate to signed binary
+hashes; `attempt1/ipad-session.json` records the fresh run, device, results and
+normal relaunch alongside installation records and all 28 screenshots.
+
 ## Applied dimension and free-size helper appearance — 2026-10-31
 
 Commits `0b786382` and `a034d84b` distinguish saved driving dimensions (bold
