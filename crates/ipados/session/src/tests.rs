@@ -376,6 +376,7 @@ fn event(source: InputSource, phase: InputPhase, id: u64, p: [f64; 2], time: f64
         consumed: false,
         sketch_annotation: None,
         shift: false,
+        tap_count: 0,
         button: 0,
         scroll: 0.0,
     }
@@ -9317,4 +9318,105 @@ fn sketch_projection_visually_selected_source_point_remains_linked() {
     assert!(a.session.model.state().sketch(target).unwrap().sketch.curves.is_empty());
     a.execute("parameters.change", json!({"name":"width","expression":"42 mm"})).unwrap();
     assert!(a.session.model.state().sketch(target).unwrap().sketch.points.iter().any(|p| p.link.is_some() && (p.pos.x - 42.).abs() < 1e-6));
+}
+
+#[test]
+fn connected_edge_walk_uses_only_endpoints_and_refuses_partial_oversized_groups() {
+    use crate::picking::endpoint_chain;
+    let p = |x, y| Vec3::new(x, y, 0.);
+    let edges = vec![
+        (0, [p(0., 0.), p(10., 0.)]),
+        (1, [p(10., 10.), p(10., 0.)]),        // reversed endpoint
+        (2, [p(10., 0.), p(20., -10.)]),       // endpoint branch
+        (3, [p(5., 0.), p(5., 10.)]),          // T-junction
+        (4, [p(3., -5.), p(3., 5.)]),          // crossing
+        (5, [p(20., -10.0001), p(30., -10.)]), // close, but separate
+        (6, [p(10. + 1e-9, 10.), p(0., 0.)]),  // numerical coincidence and cycle
+    ];
+    assert_eq!(endpoint_chain(&edges, 0), Some(vec![0, 1, 2, 6]));
+    assert_eq!(endpoint_chain(&edges, 3), Some(vec![3]));
+    assert_eq!(endpoint_chain(&edges, 4), Some(vec![4]));
+    assert_eq!(endpoint_chain(&edges, 5), Some(vec![5]));
+    let long: Vec<_> = (0..1025).map(|i| (i, [p(i as f64, 0.), p(i as f64 + 1., 0.)])).collect();
+    assert_eq!(endpoint_chain(&long[..1024], 0).unwrap().len(), 1024);
+    assert!(endpoint_chain(&long, 0).is_none());
+}
+
+#[test]
+fn connected_edge_double_taps_expand_sketch_endpoints_without_editing_or_toggling_the_group_off() {
+    for (source, handles, scale) in [
+        (InputSource::Pencil, true, 1.),
+        (InputSource::Indirect, true, 2.),
+        (InputSource::Finger, true, 2.),
+        (InputSource::Pencil, false, 3.),
+        (InputSource::Indirect, false, 2.),
+    ] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        for (id, points) in [
+            ("bottom", [[10., 20.], [70., 20.]]),
+            ("right", [[70., 60.], [70., 20.]]),
+            ("top", [[70., 60.], [10., 60.]]),
+            ("left", [[10., 60.], [10., 20.]]),
+            ("branch", [[70., 60.], [90., 80.]]),
+            ("tee", [[40., 20.], [40., 0.]]),
+            ("crossing", [[30., 10.], [30., 30.]]),
+            ("near", [[70.0001, 20.], [90., 0.]]),
+        ] {
+            engine.execute("sketch.line", json!({"points":points,"ids":[id],"infer":false,"connect":false})).unwrap();
+        }
+        view.set_metrics(metrics(800., 600., scale)).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        view.command("view.tool_handles", &json!({"enabled":handles})).unwrap();
+        view.command("view.fit", &json!({})).unwrap();
+        let original = engine.session.doc.clone();
+        let history = engine.session.undo.len();
+        let model = view.snapshot().unwrap().model;
+        let at = point(&view, Vec3::new(55., 20., 0.));
+        assert!(matches!(view.pick(at, None), Some(Sel::SketchCurve { ref id, .. }) if id == "bottom"));
+        for (contact, count, expected) in [(1, 1, 1), (2, 2, 5), (3, 2, 5), (4, 0, 4), (5, 2, 5)] {
+            for phase in [InputPhase::Began, InputPhase::Ended] {
+                let mut e = sample(&view, source, phase, contact, at, contact as f64);
+                e.tap_count = count;
+                view.input(e).unwrap();
+            }
+            assert_eq!(view.selection().len(), expected, "{source:?}, handles={handles}, scale={scale}, count={count}");
+            assert!(view.take_tool_work().is_none());
+        }
+        let ids: std::collections::BTreeSet<_> = view
+            .selection()
+            .iter()
+            .filter_map(|s| match s {
+                Sel::SketchCurve { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["bottom", "branch", "left", "right", "top"].into_iter().collect());
+        // Single-selection replaces with the entire chain; it must not truncate it.
+        view.command("select.multiple", &json!({"enabled":false})).unwrap();
+        view.select_tap(view.pick(at, None), false, 2);
+        assert_eq!(view.selection().len(), 5);
+        assert!(Arc::ptr_eq(&model, &view.snapshot().unwrap().model));
+        assert!(Arc::ptr_eq(&original, &engine.session.doc));
+        assert_eq!(engine.session.undo.len(), history);
+    }
+}
+
+#[test]
+fn connected_edge_solid_groups_stay_in_the_picked_body_and_exclude_polyline_middles() {
+    use solidcraft_engine::geom::{Aabb3, Mesh};
+    use solidcraft_render::{Rgb, Scene, SceneMesh};
+    let p = |x, y| Vec3::new(x, y, 0.);
+    let mesh = Arc::new(Mesh {
+        edges: vec![vec![p(0., 0.), p(5., 0.), p(10., 0.)], vec![p(10., 0.), p(10., 10.)], vec![p(5., 0.), p(5., 10.)]],
+        ..Mesh::default()
+    });
+    let scene_mesh = || SceneMesh { mesh: mesh.clone(), color: Rgb(100, 100, 100), face_colors: Vec::new(), opacity: 1. };
+    let scene = Scene { meshes: vec![scene_mesh(), scene_mesh()], ..Scene::default() };
+    let picks = crate::picking::PickScene::new(&scene, vec!["One".into(), "Two".into()], Aabb3::default()).unwrap();
+    let picked = Sel::Edge { body: "One".into(), index: 0, point: p(2., 0.) };
+    let group = picks.connected_edges(&picked).unwrap();
+    assert_eq!(group.first(), Some(&picked));
+    assert_eq!(group.len(), 2);
+    assert!(group.iter().all(|s| matches!(s, Sel::Edge { body, index: 0 | 1, .. } if body == "One")));
 }

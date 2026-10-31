@@ -3,6 +3,7 @@ import QuartzCore
 import UIKit
 
 final class MetalCanvas: UIView, UIGestureRecognizerDelegate, UIPencilInteractionDelegate {
+    var connectedEdgeSelectionEnabled = true
     var displayingPreview = false
     var geometryRevision: UInt64?
     var viewportEpoch: UInt64?
@@ -176,6 +177,7 @@ final class MetalCanvas: UIView, UIGestureRecognizerDelegate, UIPencilInteractio
                     pressure: pressure, altitude: source == .pencil ? Double(value.altitudeAngle) : nil,
                     geometry_revision: geometryRevision, consumed: false,
                     shift: event?.modifierFlags.contains(.shift) == true, button: buttons[key] ?? 0, scroll: 0)
+                sample.tap_count = connectedEdgeSelectionEnabled ? UInt32(clamping: value.tapCount) : 0
                 sample.azimuth = source == .pencil ? Double(value.azimuthAngle(in: self)) : nil
                 samples.append(sample)
             }

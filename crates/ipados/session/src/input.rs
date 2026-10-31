@@ -67,6 +67,9 @@ pub struct InputEvent {
     pub sketch_annotation: Option<String>,
     #[serde(default)]
     pub shift: bool,
+    /// UIKit click/tap count; zero preserves legacy single-pick replay.
+    #[serde(default)]
+    pub tap_count: u32,
     /// 0 primary, 1 secondary orbit, 2 middle pan.
     #[serde(default)]
     pub button: u8,
@@ -1038,7 +1041,7 @@ impl Viewport {
                     // miss dismisses the constraint tool.
                     self.constraint_pick(hit.or_else(|| self.pick_sketch_unfiltered(tap_point)))?;
                 } else {
-                    self.select(hit, add);
+                    self.select_tap(hit, add, e.tap_count);
                 }
             }
             self.changed();

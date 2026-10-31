@@ -751,6 +751,60 @@ impl Viewport {
         picked
     }
 
+    /// A double tap expands selection; it never toggles off the first tap's edge.
+    pub(crate) fn select_tap(&mut self, hit: Option<Sel>, add: bool, tap_count: u32) {
+        if tap_count != 2 || self.origin.choosing || self.modelling.is_some() || self.contacts.sketch.tool != "select" {
+            self.select(hit, add);
+            return;
+        }
+        let Some(hit) = hit else {
+            self.select(None, add);
+            return;
+        };
+        let connected = self.model.as_ref().and_then(|model| {
+            if let Sel::SketchCurve { id, sketch } = &hit {
+                let snapshot = model.sketch.as_ref()?;
+                if sketch.is_some_and(|sketch| sketch != snapshot.id) {
+                    return None;
+                }
+                let seed = snapshot.sketch.curve_index(id)?;
+                let ends = snapshot
+                    .sketch
+                    .curves
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, curve)| {
+                        if !solidcraft_engine::view::sketch_curve_visible(&snapshot.sketch, index) {
+                            return None;
+                        }
+                        let (a, b) = curve.kind.ends()?;
+                        Some((index, [snapshot.plane.to_world(snapshot.sketch.point(a)?), snapshot.plane.to_world(snapshot.sketch.point(b)?)]))
+                    })
+                    .collect::<Vec<_>>();
+                return crate::picking::endpoint_chain(&ends, seed)?
+                    .into_iter()
+                    .map(|index| Some(Sel::SketchCurve { id: snapshot.sketch.curves.get(index)?.id.clone(), sketch: Some(snapshot.id) }))
+                    .collect();
+            }
+            model.picks.connected_edges(&hit)
+        });
+        if !matches!(hit, Sel::SketchCurve { .. } | Sel::Edge { .. }) {
+            self.select(Some(hit), add);
+            return;
+        }
+        let Some(connected) = connected else { return };
+        let missing: Vec<_> = connected.into_iter().filter(|piece| !add || !self.is_selected(piece)).collect();
+        if (if add { self.selection.len() } else { 0 }) + missing.len() > 1024 {
+            return;
+        }
+        if !add {
+            self.selection.clear();
+        }
+        self.selection.extend(missing);
+        self.hover = None;
+        self.changed();
+    }
+
     pub(crate) fn select(&mut self, hit: Option<Sel>, add: bool) {
         if !add {
             self.selection.clear();

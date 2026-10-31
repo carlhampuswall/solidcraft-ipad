@@ -781,6 +781,7 @@ struct InputSample: Encodable {
     let shift: Bool
     let button: UInt8
     let scroll: Double
+    var tap_count: UInt32 = 0
     var predicted = false
     var display_preview = false
     var sequence: UInt64 = 0

@@ -517,7 +517,7 @@ impl Viewport {
                 }
             } else {
                 if let Some(selection) = self.contacts.sketch.tap_selection.take() {
-                    self.select(Some(selection), self.multiple || event.shift);
+                    self.select_tap(Some(selection), self.multiple || event.shift, event.tap_count);
                 }
                 self.cancel_sketch_input();
             }

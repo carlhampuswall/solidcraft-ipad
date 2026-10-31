@@ -74,6 +74,9 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--connected-edges") {
+        return connected_edges_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--sketch-offset") {
         return sketch_offset_proof(&destination);
     }
@@ -244,6 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 consumed: false,
                 sketch_annotation: None,
                 shift: false,
+                tap_count: 0,
                 button: 0,
                 scroll: 0.0,
             })?;
@@ -293,6 +297,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             consumed: false,
             sketch_annotation: None,
             shift: false,
+            tap_count: 0,
             button: 0,
             scroll: 0.0,
         })?;
@@ -487,6 +492,7 @@ fn edge_selection_proof(destination: &str) -> Result<(), Box<dyn std::error::Err
                 consumed: false,
                 sketch_annotation: None,
                 shift: false,
+                tap_count: 0,
                 button: 0,
                 scroll: 0.,
             })?;
@@ -622,6 +628,7 @@ fn profile_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
             consumed: false,
             sketch_annotation: None,
             shift: false,
+            tap_count: 0,
             button: 0,
             scroll: 0.,
         })?;
@@ -1434,6 +1441,7 @@ fn input_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
             consumed: false,
             sketch_annotation: None,
             shift: false,
+            tap_count: 0,
             button: 0,
             scroll: 0.0,
         })?;
@@ -2162,6 +2170,55 @@ fn sketch_offset_proof(destination: &str) -> Result<(), Box<dyn std::error::Erro
     capture(&view, "redo")?;
     println!(
         "PASS: 7 mm outward connected rectangle offset, actual scratch preview and one-step undo/redo; synthetic Pencil/macOS GPU, physical iPad unverified."
+    );
+    Ok(())
+}
+
+/// Actual native selection input and GPU highlights, including excluded mid-edge contacts.
+fn connected_edges_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    for (id, points) in [
+        ("bottom", [[10., 20.], [70., 20.]]),
+        ("right", [[70., 60.], [70., 20.]]),
+        ("top", [[70., 60.], [10., 60.]]),
+        ("left", [[10., 60.], [10., 20.]]),
+        ("branch", [[70., 60.], [90., 80.]]),
+        ("tee", [[40., 20.], [40., 0.]]),
+        ("crossing", [[30., 10.], [30., 30.]]),
+    ] {
+        engine.execute("sketch.line", json!({"points":points,"ids":[id],"infer":false,"connect":false}))?;
+    }
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    for (count, label, expected) in [(1, "single", 1), (2, "connected", 5)] {
+        let p = view.command("view.project", &json!({"point":[55,20,0]}))?;
+        for phase in ["began", "ended"] {
+            view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":count,
+                "x_points":p["points"][0],"y_points":p["points"][1],"x_pixels":p["pixels"][0],"y_pixels":p["pixels"][1],
+                "scale":1,"timestamp":count as f64,"geometry_revision":p["geometry_revision"],"tap_count":count}))?)?;
+        }
+        if view.selection().len() != expected || view.take_tool_work().is_some() {
+            return Err(format!("{label}: incorrect connected selection or unexpected geometry edit").into());
+        }
+        let snapshot = view.snapshot().ok_or("missing selection frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("selection PNG")?)?;
+        println!("{label}: {expected} selected curves; {path}");
+    }
+    let selection = serde_json::to_value(view.selection())?;
+    let mut ids: Vec<_> = selection.as_array().ok_or("selection array")?.iter().filter_map(|s| s["id"].as_str()).collect();
+    ids.sort_unstable();
+    if ids != ["bottom", "branch", "left", "right", "top"] {
+        return Err("mid-edge contact entered the connected selection".into());
+    }
+    println!(
+        "PASS: endpoint loop and branch selected; T-junction and crossing excluded. Synthetic Pencil input and macOS GPU; physical iPad delivery unverified."
     );
     Ok(())
 }

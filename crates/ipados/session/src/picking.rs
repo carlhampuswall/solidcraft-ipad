@@ -1,6 +1,7 @@
 //! Platform-sized coordinates and topology-aware picking on shared engine tessellation.
 //! The egui picker cannot be linked by the native host. Reuse its underlying MeshIndex,
 //! Camera and B-rep face/edge mappings, with only screen tolerance/occlusion policy here.
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -90,6 +91,30 @@ pub struct PickScene {
 }
 
 impl PickScene {
+    /// Endpoint connectivity stays within the picked body/occurrence. Never use
+    /// intermediate tessellation samples: an edge touching a middle is separate.
+    pub(crate) fn connected_edges(&self, selection: &Sel) -> Option<Vec<Sel>> {
+        let Sel::Edge { body, index, .. } = selection else { return None };
+        let mesh = &self.bodies.iter().find(|candidate| &candidate.name == body)?.mesh;
+        let ends = mesh
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mesh.edge_pickable(*i))
+            .filter_map(|(i, points)| Some((i, [*points.first()?, *points.last()?])))
+            .collect::<Vec<_>>();
+        endpoint_chain(&ends, *index)?
+            .into_iter()
+            .map(|edge| {
+                if edge == *index {
+                    return Some(selection.clone());
+                }
+                let points = mesh.edges.get(edge)?;
+                Some(Sel::Edge { body: body.clone(), index: edge, point: *points.get(points.len() / 2)? })
+            })
+            .collect()
+    }
+
     /// In the same order as Scene::meshes, including occurrence-qualified engine names.
     pub fn body_names(&self) -> Vec<String> {
         self.bodies.iter().map(|b| b.name.clone()).collect()
@@ -313,6 +338,33 @@ impl PickScene {
         let epsilon = camera.distance.abs().max(point.len()).max(1.0) * 1e-7;
         self.nearest(o, d).is_none_or(|(t, _, _)| depth <= t + epsilon)
     }
+}
+
+/// Numerical coincidence in model units, independent of screen zoom. Sort only
+/// endpoints, then visit their neighbours; crossings and control points are absent.
+/// Refuse an oversized component atomically rather than selecting a partial chain.
+pub(crate) fn endpoint_chain(edges: &[(usize, [Vec3; 2])], seed: usize) -> Option<Vec<usize>> {
+    const TOLERANCE: f64 = 1e-7;
+    let ends: BTreeMap<_, _> = edges.iter().copied().filter(|(_, points)| points.iter().all(|p| p.is_finite())).collect();
+    let mut sorted: Vec<_> = ends.iter().flat_map(|(edge, points)| points.iter().map(move |point| (*point, *edge))).collect();
+    sorted.sort_by(|a, b| a.0.x.total_cmp(&b.0.x).then(a.1.cmp(&b.1)));
+    let mut found = BTreeSet::from([seed]);
+    let mut todo = vec![seed];
+    while let Some(edge) = todo.pop() {
+        let Some(points) = ends.get(&edge) else { continue };
+        for point in points {
+            let start = sorted.partition_point(|(other, _)| other.x < point.x - TOLERANCE);
+            for (other, next) in sorted.iter().skip(start).take_while(|(other, _)| other.x <= point.x + TOLERANCE) {
+                if point.dist(*other) <= TOLERANCE && found.insert(*next) {
+                    if found.len() > 1024 {
+                        return None;
+                    }
+                    todo.push(*next);
+                }
+            }
+        }
+    }
+    Some(std::iter::once(seed).chain(found.into_iter().filter(|edge| *edge != seed)).collect())
 }
 
 pub(crate) fn project(vp: Mat4, p: Vec3, [w, h]: [f64; 2]) -> Option<[f64; 2]> {

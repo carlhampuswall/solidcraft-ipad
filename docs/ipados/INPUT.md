@@ -54,6 +54,28 @@ native adapter and captures the shared GPU output: 88° → 90°, 43° → 45° 
 −2° → 0°, alongside the free 88° setting. This is macOS render evidence;
 physical finger delivery on iPad remains a separate check.
 
+Double-click a solid edge or double-tap a sketch curve with Pencil or a primary
+pointer to select all edges connected through their endpoints. Sketch curves also
+support direct finger double-taps when direct handles are enabled. Corners and
+branches at shared endpoints are included; T-junctions touching only a curve's
+middle, crossings, centres and spline control points are excluded. Connectivity
+stays within the current sketch or picked body/occurrence. The second tap expands
+the selection instead of toggling off the first edge; Multiple retains unrelated
+picks, while single selection replaces them with the connected group. Groups over
+the existing 1,024-item selection limit are refused without a partial selection.
+
+Disable **Tools → Double-click connected edges** to restore ordinary per-tap
+selection (`SolidCraft.workspace.connectedEdgeSelection`). UIKit forwards its
+`tapCount` as optional `input` field `tap_count`; only a value of 2 expands a
+selection. Omitted/zero counts preserve existing replay behaviour. Normal drag,
+consumed/stale input, modelling forms, dimensions and active sketch tools retain
+their existing input ownership. Selection does not edit the design or add history.
+
+`render_proof --connected-edges` captures a single selected sketch edge and the
+expanded endpoint loop/branch while leaving its T-junction and crossing unselected.
+These are synthetic Pencil events and actual macOS GPU captures; physical iPad
+delivery remains a separate check.
+
 Selection starts in **Auto**: a Pencil tap near a visible body edge selects the
 edge, a tap near its endpoint selects the vertex, and a tap inside a face selects
 the face. Edge and vertex tolerance is eight display points at every screen scale.

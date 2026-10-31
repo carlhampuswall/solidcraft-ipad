@@ -417,6 +417,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
         }
         canvas.onResize = { [weak self] in self?.updateSurface() }
+        canvas.connectedEdgeSelectionEnabled = UserDefaults.standard.object(forKey: "SolidCraft.workspace.connectedEdgeSelection") as? Bool ?? true
         canvas.historyGesturesEnabled = UserDefaults.standard.object(forKey: "SolidCraft.workspace.historyGestures") as? Bool ?? true
         canvas.onUndo = { [weak self] in
             guard let self, self.active, self.undoButton.isEnabled else { return }
@@ -3311,6 +3312,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.homeToolbar, forKey: "SolidCraft.workspace.homeToolbar")
             self.configureChrome(); self.rebuildMenus()
         }
+        let connectedEdges = UIAction(title: WorkspaceStyle.text("connected_edge_selection"), state: canvas.connectedEdgeSelectionEnabled ? .on : .off) { [weak self] _ in
+            guard let self, WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: self.textEntryActive, numericEditActive: self.numericEditing) else { return }
+            self.canvas.cancelInput()
+            self.canvas.connectedEdgeSelectionEnabled.toggle()
+            UserDefaults.standard.set(self.canvas.connectedEdgeSelectionEnabled, forKey: "SolidCraft.workspace.connectedEdgeSelection")
+            self.rebuildMenus()
+        }
         let historyGestures = UIAction(title: WorkspaceStyle.text("history_gestures"), state: canvas.historyGesturesEnabled ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.canvas.cancelInput()
@@ -3427,7 +3435,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, historyGestures, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
