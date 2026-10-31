@@ -1,6 +1,19 @@
 import CoreGraphics
 import Foundation
 
+enum EdgeLengthReadout {
+    static let key = "SolidCraft.workspace.edgeLengthReadout"
+    static func restored(_ value: Bool?) -> Bool { value ?? true }
+    static func text(lengthMM: Double?, enabled: Bool, template: String, locale: Locale = .current) -> String? {
+        guard enabled, let lengthMM, lengthMM.isFinite, lengthMM >= 0 else { return nil }
+        let formatter = NumberFormatter()
+        formatter.locale = locale; formatter.numberStyle = .decimal
+        formatter.maximumFractionDigits = 3
+        guard let number = formatter.string(from: NSNumber(value: lengthMM)) else { return nil }
+        return template.replacingOccurrences(of: "{length}", with: number)
+    }
+}
+
 /// Main-thread draft work is replaceable until it reaches the serial CAD lane.
 /// The generation also rejects a cancelled item already handed to the run loop.
 final class DraftPreviewDebouncer {

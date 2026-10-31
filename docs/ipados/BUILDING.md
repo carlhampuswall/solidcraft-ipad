@@ -119,6 +119,16 @@ project. Each capture follows a matching presented frame. The receipt includes
 fresh timestamps and an optional `SolidCraftCandidate` Info.plist stamp.
 Both checks use synthetic Pencil samples; actual Pencil contact remains separate.
 
+Debug `--edge-length-check` uses the same disposable fixture and native input
+mailbox to select a 40 mm edge, add a 30 mm edge, and clear the selection. It
+checks the bottom status readout and its disabled preference, then writes
+`edge-length-check.json` and `edge-length-<stage>.png` UIKit captures to Documents.
+Reserve the physical iPad through the task protocol before running it. Circular
+rim circumference and read-only history preservation are covered by the focused
+session tests named `workspace_edge_length`. The readout uses `inspect.measure`
+on a scratch session; Tools → Show selected edge length restores the previous
+status display when disabled (`SolidCraft.workspace.edgeLengthReadout`).
+
 For split-cylinder selection evidence, use `--cylinder-selection` for walls or
 `--cylinder-edge-selection` for circular rims. Both capture independent outer
 and inner selections as `-outer.png` and `-inner.png`, verifying that each tap

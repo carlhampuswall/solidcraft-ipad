@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.workspace.edge_length": "Kantenlänge: {length} mm",
+    "ui.ipados.workspace.edge_length_readout": "Kantenlänge bei Auswahl anzeigen"
+  },
+  "en": {
+    "ui.ipados.workspace.edge_length": "Edge length: {length} mm",
+    "ui.ipados.workspace.edge_length_readout": "Show selected edge length"
+  },
+  "ja": {
+    "ui.ipados.workspace.edge_length": "エッジの長さ: {length} mm",
+    "ui.ipados.workspace.edge_length_readout": "選択したエッジの長さを表示"
+  },
+  "ko": {
+    "ui.ipados.workspace.edge_length": "모서리 길이: {length} mm",
+    "ui.ipados.workspace.edge_length_readout": "선택한 모서리 길이 표시"
+  },
+  "zh": {
+    "ui.ipados.workspace.edge_length": "边长：{length} mm",
+    "ui.ipados.workspace.edge_length_readout": "显示所选边的长度"
+  }
+}

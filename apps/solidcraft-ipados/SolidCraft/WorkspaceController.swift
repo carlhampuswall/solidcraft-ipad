@@ -224,6 +224,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnSketchSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnSketchSelection") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
+    private var edgeLengthReadout = EdgeLengthReadout.restored(UserDefaults.standard.object(forKey: EdgeLengthReadout.key) as? Bool)
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
     private var legacyOriginPlanes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.legacyOriginPlanes")
     private var axisLabelsVisible = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.axisLabels")
@@ -523,6 +524,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.startAssemblyCheck()
                 } else if ProcessInfo.processInfo.arguments.contains("--tool-dismissal-check") {
                     self.developmentCheckStarted = true; self.checkToolDismissalOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--edge-length-check") {
+                    self.developmentCheckStarted = true; self.checkEdgeLengthOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--selection-taps-check") {
                     self.developmentCheckStarted = true; self.checkSelectionTapsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
@@ -2995,6 +2998,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.extrudeOnFaceSelection, forKey: "SolidCraft.workspace.extrudeOnFaceSelection")
             self.rebuildMenus()
         }
+        let edgeLength = UIAction(title: WorkspaceStyle.text("edge_length_readout"), state: edgeLengthReadout ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.edgeLengthReadout.toggle()
+            UserDefaults.standard.set(self.edgeLengthReadout, forKey: EdgeLengthReadout.key)
+            self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
+        }
         let sketchExtrude = UIAction(title: WorkspaceStyle.text("extrude_on_sketch_selection"), subtitle: WorkspaceStyle.text("extrude_on_sketch_selection_help"), state: extrudeOnSketchSelection ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.extrudeOnSketchSelection.toggle()
@@ -3016,7 +3025,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, sketchExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
@@ -3217,6 +3226,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             return
         }
         if !pending.isEmpty { status.text = pending; return }
+        if state?.sketch == nil,
+           let length = EdgeLengthReadout.text(lengthMM: state?.selection_edge_length_mm, enabled: edgeLengthReadout,
+                                              template: WorkspaceStyle.text("edge_length")) {
+            status.text = length
+            return
+        }
         if let sketch = state?.sketch {
             let prompt: String
             if let tool = sketchInput?.tool, tool.hasPrefix("sketch.constraint."), let key = tool.split(separator: ".").last {
@@ -3923,6 +3938,85 @@ private extension FoundationController {
             report.append("PASS complete; library projects and saved preferences unchanged")
         } catch { report.append("FAIL " + error.localizedDescription) }
         saveReport()
+    }
+
+    private func checkEdgeLengthOnDevice() {
+        guard let directory = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true),
+              session.currentProject == nil else { return }
+        let savedReadout = edgeLengthReadout
+        let expectedGeneration = generation
+        let started = Date().timeIntervalSince1970
+        let run = UUID().uuidString
+        let cases: [(String, [Double]?, Double?)] = [("length-40", [0, -15, 10], 40), ("length-30", [-20, 0, 10], 30), ("cleared", nil, nil)]
+        var stages: [[String: Any]] = []
+        var finished = false
+        func finish(_ error: String? = nil) {
+            guard !finished else { return }; finished = true
+            assemblyCheckWorkspace = nil; session.endDevelopmentSelectionTapsCheck()
+            edgeLengthReadout = savedReadout; updateStatus()
+            let report: [String: Any] = ["passed": error == nil && stages.count == cases.count, "error": error ?? "",
+                "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                "run_id": run, "started_at": started, "completed_at": Date().timeIntervalSince1970,
+                "coverage": "Physical iPad runtime; synthetic Pencil input; physical Pencil unverified", "stages": stages]
+            do {
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("edge-length-check.json"), options: .atomic)
+            } catch { NSLog("Edge length evidence write failed: %@", error.localizedDescription) }
+        }
+        func step(_ index: Int) {
+            guard !finished else { return }
+            guard active, generation == expectedGeneration else { finish("Workspace lifecycle changed"); return }
+            if index == cases.count { finish(); return }
+            let (name, point, expectedLength) = cases[index]
+            session.developmentSelectionTap(point) { [weak self] result in
+                guard let self, !finished else { return }
+                switch result {
+                case .failure(let error): finish(error.description)
+                case .success(let selected):
+                    self.assemblyCheckWorkspace = { [weak self] workspace in
+                        guard let self, !finished, workspace.selection == selected else { return }
+                        self.assemblyCheckWorkspace = nil
+                        guard workspace.selection_edge_length_mm == expectedLength,
+                              expectedLength == nil ? selected.isEmpty : selected.last?.type == "edge" else {
+                            finish("Incorrect selection or length at " + name); return
+                        }
+                        let readout = EdgeLengthReadout.text(lengthMM: expectedLength, enabled: true, template: WorkspaceStyle.text("edge_length"))
+                        if let readout {
+                            guard self.status.text == readout else { finish("Status did not display " + readout); return }
+                            self.edgeLengthReadout = false; self.updateStatus()
+                            guard self.status.text != readout else { finish("Preference did not hide length"); return }
+                            self.edgeLengthReadout = true; self.updateStatus()
+                        }
+                        self.view.layoutIfNeeded()
+                        let surface: UIView = self.view.window ?? self.view
+                        let capture = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in
+                            surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true)
+                        }
+                        do {
+                            guard let png = capture.pngData() else { finish("Screenshot encoding failed"); return }
+                            let filename = "edge-length-" + name + ".png"
+                            try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
+                            stages.append(["name": name, "status": self.status.text ?? "", "screenshot": filename])
+                            step(index + 1)
+                        } catch { finish(error.localizedDescription) }
+                    }
+                    self.session.refreshWorkspace()
+                }
+            }
+        }
+        let setup: [(String, [String: Any])] = [("tool.set", ["tool": "select"]), ("select.filter", ["filter": "edge"]),
+            ("select.multiple", ["enabled": true]), ("view.perspective", ["enabled": false]), ("view.top", [:]), ("view.fit", [:]), ("select.clear", [:])]
+        func prepare(_ index: Int) {
+            guard !finished else { return }
+            if index == setup.count { step(0); return }
+            session.command(setup[index].0, params: setup[index].1) { result in
+                switch result { case .success: prepare(index + 1); case .failure(let error): finish(error.description) }
+            }
+        }
+        edgeLengthReadout = true; extrudeOnFaceSelection = false
+        browserOpen = false; inspectorOpen = false; relayoutPanels()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if !finished { finish("Edge length diagnostic timed out") } }
+        prepare(0)
     }
 
     /// Disposable fixture and synthetic Pencil samples through the native mailbox.

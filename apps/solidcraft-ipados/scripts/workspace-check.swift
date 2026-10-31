@@ -8,6 +8,20 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        let edgeTemplate = "Edge length: {length} mm"
+        let edgeLocale = Locale(identifier: "en_US")
+        try require(EdgeLengthReadout.restored(nil) && EdgeLengthReadout.restored(true) && !EdgeLengthReadout.restored(false),
+                    "edge length preference lost its default or saved value")
+        try require(EdgeLengthReadout.text(lengthMM: 40, enabled: true, template: edgeTemplate, locale: edgeLocale) == "Edge length: 40 mm",
+                    "edge length omitted its label or units")
+        try require(EdgeLengthReadout.text(lengthMM: 12.34567, enabled: true, template: edgeTemplate, locale: Locale(identifier: "de_DE")) == "Edge length: 12,346 mm",
+                    "edge length did not use locale-aware rounding")
+        try require(EdgeLengthReadout.text(lengthMM: 40, enabled: false, template: edgeTemplate) == nil,
+                    "disabled edge length preference did not restore the previous status")
+        for value: Double? in [nil, .nan, .infinity, -1] {
+            try require(EdgeLengthReadout.text(lengthMM: value, enabled: true, template: edgeTemplate) == nil,
+                        "an unavailable or invalid edge produced a length readout")
+        }
         // Boolean presentation follows typed options, never labels or truthy strings.
         let booleanOptions: [PresentationJSON] = [.bool(false), .bool(true)]
         for options in [booleanOptions, Array(booleanOptions.reversed())] {

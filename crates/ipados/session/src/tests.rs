@@ -2370,6 +2370,58 @@ fn cancelled_preview_still_on_screen_cannot_start_a_new_pick_or_edit() {
 }
 
 #[test]
+fn workspace_edge_length_tracks_latest_pick_and_preserves_document_history() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Block"})).unwrap();
+    let mut view = Viewport::default();
+    view.begin_update(1);
+    assert!(view.install(1, adapter.snapshot().unwrap()));
+    let mesh = adapter.session.world_state().body("Block").unwrap().mesh();
+    let pick = |axis: usize, length: f64| {
+        let (index, points) = mesh
+            .edges
+            .iter()
+            .enumerate()
+            .find(|(_, p)| {
+                let delta = *p.last().unwrap() - *p.first().unwrap();
+                (delta.len() - length).abs() < 1e-8 && [delta.x, delta.y, delta.z][axis].abs() > length - 1e-8
+            })
+            .unwrap();
+        Sel::Edge { body: "Block".into(), index, point: (*points.first().unwrap() + *points.last().unwrap()) * 0.5 }
+    };
+    let before =
+        (adapter.session.revision, adapter.geometry_revision, adapter.session.undo.len(), adapter.session.redo.len(), adapter.session.is_dirty());
+    let doc = adapter.session.doc.clone();
+    view.select(Some(pick(0, 40.0)), false);
+    assert_eq!(adapter.workspace(view.selection(), false, false)["selection_edge_length_mm"], 40.0);
+    view.select(Some(pick(1, 30.0)), true);
+    assert_eq!(view.selection().len(), 2);
+    assert_eq!(adapter.workspace(view.selection(), false, false)["selection_edge_length_mm"], 30.0);
+    view.command("select.entity", &json!({"entity":{"type":"body","name":"Block"},"additive":true})).unwrap();
+    assert!(adapter.workspace(view.selection(), false, false)["selection_edge_length_mm"].is_null());
+    view.command("select.clear", &json!({})).unwrap();
+    assert!(adapter.workspace(view.selection(), false, false)["selection_edge_length_mm"].is_null());
+    let stale = Sel::Edge { body: "Missing".into(), index: 0, point: Vec3::ZERO };
+    assert!(adapter.workspace(&[stale], false, false)["selection_edge_length_mm"].is_null());
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    assert_eq!(
+        before,
+        (adapter.session.revision, adapter.geometry_revision, adapter.session.undo.len(), adapter.session.redo.len(), adapter.session.is_dirty())
+    );
+}
+
+#[test]
+fn workspace_edge_length_uses_circular_rim_circumference() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.cylinder", json!({"radius":7,"height":20,"body_name":"Post"})).unwrap();
+    let mesh = adapter.session.world_state().body("Post").unwrap().mesh();
+    let (index, points) = mesh.edges.iter().enumerate().find(|(_, p)| p.len() > 2).unwrap();
+    let edge = Sel::Edge { body: "Post".into(), index, point: points[points.len() / 2] };
+    let length = adapter.workspace(&[edge], false, false)["selection_edge_length_mm"].as_f64().unwrap();
+    assert!((length - std::f64::consts::TAU * 7.0).abs() < 1e-6, "circular edge must measure its full rim rather than a chord: {length}");
+}
+
+#[test]
 fn workspace_reads_real_hierarchy_stable_ids_and_contextual_tool_reasons() {
     let (mut adapter, mut view) = input_fixture();
     let first = adapter.workspace(view.selection(), view.radius_tool_active(), false);
