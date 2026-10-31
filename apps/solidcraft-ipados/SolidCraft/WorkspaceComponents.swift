@@ -1968,7 +1968,18 @@ final class ModellingInspector: UIStackView {
 }
 
 /// Icon choices use ordinary controls, never a button menu preview or text input.
-final class WorkspaceConstraintPicker: UIViewController {
+final class WorkspaceSketchPicker: UIViewController {
+    enum Kind {
+        case constraints, dimensions
+        var identifier: String { self == .constraints ? "constraint" : "dimension" }
+        var title: String { self == .constraints ? WorkspaceStyle.text("constraints") : SketchText.text("dimension") }
+        func command(for key: String) -> String {
+            guard self == .constraints else { return "sketch.dimension" }
+            // Horizontal and Vertical are modes of the same upstream command.
+            return "sketch.constraint." + (["horizontal", "vertical"].contains(key) ? "horizontal_vertical" : key)
+        }
+    }
+    private let kind: Kind
     var onChoose: ((String) -> Void)?
     private(set) var buttons: [String: WorkspaceButton] = [:]
     private let choices: [String]
@@ -1978,7 +1989,8 @@ final class WorkspaceConstraintPicker: UIViewController {
         self?.dismiss(animated: true)
     }
 
-    init(choices: [String]) {
+    init(kind: Kind, choices: [String]) {
+        self.kind = kind
         self.choices = choices
         super.init(nibName: nil, bundle: nil)
         modalPresentationStyle = .popover
@@ -1989,10 +2001,10 @@ final class WorkspaceConstraintPicker: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .clear
-        view.accessibilityIdentifier = "workspace-constraint-picker"
+        view.accessibilityIdentifier = "workspace-" + kind.identifier + "-picker"
         rows.axis = .vertical; rows.spacing = 6
         let heading = WorkspaceStyle.label(.headline)
-        heading.text = WorkspaceStyle.text("constraints"); heading.accessibilityTraits.insert(.header)
+        heading.text = kind.title; heading.accessibilityTraits.insert(.header)
         rows.addArrangedSubview(heading)
         for key in choices {
             let button = WorkspaceButton(SketchText.text(key), activationEvent: .primaryActionTriggered) { [weak self] in
@@ -2001,17 +2013,15 @@ final class WorkspaceConstraintPicker: UIViewController {
                 self.onChoose = nil
                 self.dismiss(animated: true) { choose?(key) }
             }
-            // Horizontal and Vertical are modes of the same upstream command.
-            let command = ["horizontal", "vertical"].contains(key) ? "horizontal_vertical" : key
-            button.commandArtwork("sketch.constraint." + command)
+            button.commandArtwork(kind.command(for: key))
             button.contentHorizontalAlignment = .leading
             button.configuration?.titleAlignment = .leading
             button.configuration?.titleLineBreakMode = .byWordWrapping
             button.titleLabel?.numberOfLines = 0
-            button.accessibilityIdentifier = "workspace-constraint-choice-" + key
+            button.accessibilityIdentifier = "workspace-" + kind.identifier + "-choice-" + key
             buttons[key] = button; rows.addArrangedSubview(button)
         }
-        cancelButton.accessibilityIdentifier = "workspace-constraint-cancel"
+        cancelButton.accessibilityIdentifier = "workspace-" + kind.identifier + "-cancel"
         scroll.contentInsetAdjustmentBehavior = .never
         for child in [scroll, cancelButton] { child.translatesAutoresizingMaskIntoConstraints = false; view.addSubview(child) }
         rows.translatesAutoresizingMaskIntoConstraints = false; scroll.addSubview(rows)
@@ -2030,7 +2040,7 @@ final class WorkspaceConstraintPicker: UIViewController {
             cancelButton.trailingAnchor.constraint(equalTo: safe.trailingAnchor, constant: -12),
             cancelButton.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12)
         ])
-        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (picker: WorkspaceConstraintPicker, _: UITraitCollection) in
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (picker: WorkspaceSketchPicker, _: UITraitCollection) in
             picker.view.setNeedsLayout()
         }
     }

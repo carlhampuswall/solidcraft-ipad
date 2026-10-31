@@ -75,7 +75,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var modifyButton = WorkspaceButton(WorkspaceStyle.text("modify"), action: {})
     private lazy var patternButton = WorkspaceButton(WorkspaceStyle.text("pattern"), action: {})
     private lazy var constraintsButton = WorkspaceButton(WorkspaceStyle.text("constraints"), activationEvent: .primaryActionTriggered) { [weak self] in self?.showConstraints() }
-    private lazy var dimensionsButton = WorkspaceButton(SketchText.text("dimension"), action: {})
+    private lazy var dimensionsButton = WorkspaceButton(SketchText.text("dimension"), activationEvent: .primaryActionTriggered) { [weak self] in self?.showDimensions() }
     private lazy var constructionButton = WorkspaceButton(SketchText.text("construction")) { [weak self] in
         guard let self, self.state?.sketch != nil else { return }
         self.run("tool.construction", params: ["enabled": self.sketchInput?.construction != true])
@@ -3316,10 +3316,28 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         sketchToolsButton.showsMenuAsPrimaryAction = true
         sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true && state?.active_tool.hasPrefix("sketch.constraint.") != true)
         constraintsButton.active(state?.active_tool.hasPrefix("sketch.constraint.") == true)
-        dimensionsButton.menu = UIMenu(children: (state?.sketch?.eligible_dimensions ?? []).map { type in
-            UIAction(title: SketchText.text(type), image: WorkspaceIcon.image("dimension", traits: traitCollection)) { [weak self] _ in self?.beginNumeric(dimension: type) }
-        })
-        dimensionsButton.showsMenuAsPrimaryAction = true
+    }
+
+    private func showDimensions() {
+        guard active, !numericEditing, !modellingEditing, pending.isEmpty,
+              presentedViewController == nil, let context = state, let sketch = context.sketch,
+              let choices = sketch.eligible_dimensions, !choices.isEmpty else { return }
+        canvas.cancelInput(); view.endEditing(true)
+        let picker = WorkspaceSketchPicker(kind: .dimensions, choices: choices)
+        picker.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        picker.onChoose = { [weak self] type in
+            guard let self, self.active, !self.numericEditing, !self.modellingEditing, self.pending.isEmpty,
+                  self.state?.document_id == context.document_id,
+                  self.state?.geometry_revision == context.geometry_revision,
+                  self.state?.sketch?.id == sketch.id, self.state?.selection == context.selection,
+                  self.state?.sketch?.eligible_dimensions?.contains(type) == true else { return }
+            self.beginNumeric(dimension: type, source: self.dimensionsButton)
+        }
+        if let popover = picker.popoverPresentationController {
+            popover.sourceView = dimensionsButton; popover.sourceRect = dimensionsButton.bounds
+            popover.permittedArrowDirections = [.up, .down]; popover.delegate = self
+        }
+        present(picker, animated: true)
     }
 
     private static let constraintChoices = ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"]
@@ -3330,7 +3348,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         canvas.cancelInput(); view.endEditing(true)
         // Native UIButton menu previews can raise the software keyboard on iPad.
         // Ordinary icon buttons in a popover preserve the text-free path.
-        let picker = WorkspaceConstraintPicker(choices: Self.constraintChoices)
+        let picker = WorkspaceSketchPicker(kind: .constraints, choices: Self.constraintChoices)
         picker.overrideUserInterfaceStyle = workspaceInterfaceStyle
         var actions: [String: () -> Void] = [:]
         for key in Self.constraintChoices {
@@ -4044,6 +4062,65 @@ private extension FoundationController {
             guard remaining > 0 else { issues.append("timed out: " + stage); finish(); return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(stage, remaining: remaining - 1, until: condition, then: next) }
         }
+        func verifyDimensions() {
+            guard let sketch = self.state?.sketch, let curve = sketch.curves.first else {
+                issues.append("missing dimension fixture"); finish(); return
+            }
+            self.session.selectEntity(["type": "sketch_curve", "id": curve.id, "sketch": sketch.id], additive: false) { result in
+                guard case .success = result else { issues.append("dimension selection failed"); finish(); return }
+                wait("dimension selection", until: { self.state?.selection.count == 1 && self.pending.isEmpty }) {
+                    guard let original = self.state, let choices = original.sketch?.eligible_dimensions, !choices.isEmpty else {
+                        issues.append("missing eligible dimensions"); finish(); return
+                    }
+                    let frame = self.canvas.frame
+                    func unchanged() {
+                        check(self.state?.selection == original.selection && self.state?.revision == original.revision &&
+                              self.state?.can_undo == original.can_undo && self.state?.can_redo == original.can_redo,
+                              "dimension picker changed selection, document or history")
+                        check(self.canvas.frame == frame && self.keyboardTop == nil && !self.textEntryActive && !self.numericEditing,
+                              "dimension picker changed viewport or raised text input")
+                    }
+                    func open(_ style: UIUserInterfaceStyle, _ next: @escaping (WorkspaceSketchPicker) -> Void) {
+                        self.dimensionsButton.sendActions(for: .primaryActionTriggered)
+                        wait("dimension picker", until: { self.presentedViewController is WorkspaceSketchPicker && self.presentedViewController?.isBeingPresented == false }) {
+                            guard let picker = self.presentedViewController as? WorkspaceSketchPicker else { return }
+                            picker.overrideUserInterfaceStyle = style; picker.view.layoutIfNeeded()
+                            check(picker.view.accessibilityIdentifier == "workspace-dimension-picker", "wrong dimension picker")
+                            check(picker.modalPresentationStyle == .popover && picker.popoverPresentationController?.sourceView === self.dimensionsButton,
+                                  "dimension picker lost its toolbar anchor")
+                            check(self.dimensionsButton.menu == nil && !self.dimensionsButton.showsMenuAsPrimaryAction, "dimension system menu remains installed")
+                            check(Set(picker.buttons.keys) == Set(choices), "dimension choices changed")
+                            check(picker.view.bounds.contains(picker.cancelButton.frame), "dimension Cancel escaped the picker")
+                            for button in picker.buttons.values {
+                                check(button.configuration?.image != nil && button.bounds.height >= WorkspaceStyle.touch, "dimension icon or touch target missing")
+                            }
+                            unchanged(); next(picker)
+                        }
+                    }
+                    open(.light) { picker in
+                        capture("dimensions-light")
+                        picker.cancelButton.sendActions(for: .primaryActionTriggered)
+                        wait("dimension Cancel", until: { self.presentedViewController == nil }) {
+                            unchanged()
+                            open(.dark) { reopened in
+                                capture("dimensions-dark")
+                                guard let type = choices.first, let button = reopened.buttons[type] else { issues.append("dimension choice missing"); finish(); return }
+                                button.sendActions(for: .primaryActionTriggered)
+                                wait("dimension editor", until: { self.inlineNumericEditor?.isBeingPresented == false && self.numericToken != nil }) {
+                                    check(self.state?.revision == original.revision, "opening dimension editor changed the document")
+                                    capture("dimensions-editor")
+                                    self.cancelNumeric {
+                                        wait("dimension editor cancelled", until: { self.presentedViewController == nil && self.pending.isEmpty }) {
+                                            unchanged(); finish()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         func verifyConstraintFirst() {
             self.run("tool.set", params: ["tool": "select"])
             self.session.command("select.clear") { result in
@@ -4053,8 +4130,8 @@ private extension FoundationController {
                         issues.append("missing constraint-first fixture"); finish(); return
                     }
                     self.constraintsButton.sendActions(for: .primaryActionTriggered)
-                    wait("empty selection sheet", until: { self.presentedViewController is WorkspaceConstraintPicker && self.presentedViewController?.isBeingPresented == false }) {
-                        guard let sheet = self.presentedViewController as? WorkspaceConstraintPicker,
+                    wait("empty selection sheet", until: { self.presentedViewController is WorkspaceSketchPicker && self.presentedViewController?.isBeingPresented == false }) {
+                        guard let sheet = self.presentedViewController as? WorkspaceSketchPicker,
                               let button = sheet.buttons["parallel"] else { issues.append("constraint-first menu missing"); finish(); return }
                         check(sheet.buttons.values.allSatisfy(\.isEnabled), "empty selection disabled constraint choices")
                         capture("empty-selection")
@@ -4076,7 +4153,7 @@ private extension FoundationController {
                                             self.run("edit.undo")
                                             wait("constraint-first undo", until: { self.pending.isEmpty && self.state?.sketch?.constraints.map(\.id) == sketch.constraints.map(\.id) }) {
                                                 self.setTool("select")
-                                                wait("select exits constraint", until: { self.state?.active_tool == "select" }) { capture("constraint-first-undo"); finish() }
+                                                wait("select exits constraint", until: { self.state?.active_tool == "select" }) { capture("constraint-first-undo"); verifyDimensions() }
                                             }
                                         }
                                     }
@@ -4099,10 +4176,10 @@ private extension FoundationController {
                 check(self.canvas.frame == frame && self.keyboardTop == nil && !self.textEntryActive && !self.numericEditing,
                       "opening/dismissing changed viewport or raised text input")
             }
-            func open(_ next: @escaping (WorkspaceConstraintPicker) -> Void) {
+            func open(_ next: @escaping (WorkspaceSketchPicker) -> Void) {
                 self.constraintsButton.sendActions(for: .primaryActionTriggered)
-                wait("constraint sheet", until: { self.presentedViewController is WorkspaceConstraintPicker && self.presentedViewController?.isBeingPresented == false }) {
-                    guard let sheet = self.presentedViewController as? WorkspaceConstraintPicker else { return }
+                wait("constraint sheet", until: { self.presentedViewController is WorkspaceSketchPicker && self.presentedViewController?.isBeingPresented == false }) {
+                    guard let sheet = self.presentedViewController as? WorkspaceSketchPicker else { return }
                     check(sheet.modalPresentationStyle == .popover, "constraint choices lost their anchored presentation")
                     check(self.constraintsButton.menu == nil && !self.constraintsButton.showsMenuAsPrimaryAction, "native menu preview remains installed")
                     check(sheet.buttons.count == Self.constraintChoices.count, "missing constraint choices")
