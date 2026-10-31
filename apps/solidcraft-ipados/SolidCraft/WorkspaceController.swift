@@ -2604,13 +2604,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.numericToken = token
                 self.numericContext = (value.workspace.document_id, value.workspace.geometry_revision)
-                self.installEditor(expression: expression, units: value.units, source: source)
+                let selection = value.workspace.selection
+                let dimensionID = selection.count == 1 && selection[0].type == "sketch_constraint" ? selection[0].id?.readout : nil
+                let deletableDimension = value.workspace.sketch?.constraints.first { $0.id == dimensionID && $0.dimension && !$0.driven }
+                self.installEditor(expression: expression, units: value.units, source: source, deletableDimension: deletableDimension?.id)
                 if let number = value.value { self.editor?.setEvaluation(value: number, units: value.units) }
             }
         }
     }
 
-    private func installEditor(expression: String, units: String, source: UIView? = nil) {
+    private func installEditor(expression: String, units: String, source: UIView? = nil, deletableDimension: String? = nil) {
         let name = state?.sketch == nil ? WorkspaceStyle.text("radius") : SketchText.text("dimension")
         let controller = NumericValueEditorController(expression: expression, units: units, name: name)
         controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
@@ -2620,6 +2623,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         editor.onChange = { [weak self] in self?.scheduleNumericPreview() }
         editor.onApply = { [weak self] expression in self?.evaluateNumeric(expression, commit: true) }
         editor.onCancel = { [weak self] in self?.cancelNumeric() }
+        if let id = deletableDimension {
+            editor.actionFooter.delete.updateTitle(SketchText.text("delete_dimension"))
+            editor.actionFooter.delete.isHidden = false
+            editor.onDelete = { [weak self] in self?.deleteNumericDimension(id) }
+        }
         editor.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.updateAvailability() }
         let anchor = source ?? inspectorButton
         if let popover = controller.popoverPresentationController {
@@ -2668,7 +2676,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func cancelNumeric() {
+    private func deleteNumericDimension(_ id: String) {
+        guard let context = numericContext, numericToken != nil, editor?.busy == false else { return }
+        // Restore the committed sketch before deletion. A pending or invalid
+        // expression must never become an extra history action or change its size.
+        cancelNumeric { [weak self] in
+            guard let self, self.state?.document_id == context.document,
+                  self.state?.geometry_revision == context.revision,
+                  self.state?.sketch?.constraints.contains(where: { $0.id == id && $0.dimension && !$0.driven }) == true else { return }
+            self.run("sketch.delete", params: ["entities": [id]])
+        }
+    }
+
+    private func cancelNumeric(then completion: (() -> Void)? = nil) {
         guard let token = numericToken else { return }
         numericGeneration &+= 1
         let expected = numericGeneration
@@ -2685,6 +2705,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .success(let value):
                 self.numericToken = nil; self.numericContext = nil; self.clearNumericEditor()
                 self.failure = nil; self.receive(value.workspace)
+                completion?()
             }
             self.updateAvailability()
         }
@@ -4740,6 +4761,7 @@ private extension FoundationController {
     /// is checked separately by the deterministic tracker/viewport tests.
     private func verifyInlineDimensionsOnDevice() {
         let expected = generation
+        let started = Date().timeIntervalSince1970
         func wait(_ stage: String, remaining: Int = 100, until condition: @escaping () -> Bool, then action: @escaping () -> Void) {
             guard active, generation == expected else { return }
             if condition() { action(); return }
@@ -4783,6 +4805,51 @@ private extension FoundationController {
             state?.sketch?.constraints.filter(\.dimension).count == 1 &&
                 state?.sketch?.constraints.contains { $0.dimension && $0.expression == expression } == true
         }
+        func checkDeletion() {
+            guard let editor = self.editor, !editor.actionFooter.delete.isHidden else {
+                print("Inline dimension check FAIL: existing dimension has no Delete action"); return
+            }
+            capture("delete-editor")
+            editor.field.insertText("110 mm"); editor.onPreview?(editor.field.text ?? "")
+            wait("preview before deletion", until: { !editor.busy && self.sketchAnnotations.values.contains { abs($0.value - 110) < 0.001 } }) {
+                // An invalid replacement expression must not prevent deletion or
+                // commit the preceding good preview into the document.
+                editor.field.text = "1 / 0"
+                editor.field.sendActions(for: .editingChanged)
+                let invalidRevision = editor.draft.revision
+                wait("invalid expression before deletion", until: { !editor.busy && editor.completedPreviewRevision == invalidRevision && !editor.draft.isValidated }) {
+                    guard editor.actionFooter.delete.isEnabled else {
+                        print("Inline dimension check FAIL: invalid expression disabled deletion"); return
+                    }
+                    capture("delete-invalid")
+                    editor.actionFooter.delete.sendActions(for: .touchUpInside)
+                    wait("dimension deleted with geometry retained", until: {
+                        !self.numericEditing && self.pending.isEmpty && self.state?.sketch?.curves.count == 4 &&
+                        self.state?.sketch?.constraints.contains(where: \.dimension) == false &&
+                        self.sketchAnnotations.values.contains { $0.dimension_type != nil && abs($0.value - 80) < 0.001 }
+                    }) {
+                        capture("deleted")
+                        self.run("edit.undo")
+                        wait("single undo restores original dimension", until: { hasDimension("80 mm") && self.state?.sketch?.curves.count == 4 }) {
+                            capture("delete-undone")
+                            self.run("edit.redo")
+                            wait("redo deletes dimension again", until: { self.pending.isEmpty && self.state?.sketch?.constraints.contains(where: \.dimension) == false && self.state?.sketch?.curves.count == 4 }) {
+                                capture("delete-redone")
+                                do {
+                                    let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                                    let report: [String: Any] = ["passed": true, "started_at": started,
+                                        "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                                        "coverage": "Real UIKit controls, native dimension deletion after preview and invalid expression, geometry retained, single Undo/Redo; physical contacts unverified"]
+                                    try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                                        .write(to: directory.appendingPathComponent("dimension-delete-check.json"), options: .atomic)
+                                } catch { print("Inline dimension check FAIL: \(error)"); return }
+                                print("Inline dimension check PASS: helpers, Apply, repeat edit, Preview/Cancel, Undo/Redo, Delete dimension after invalid expression, geometry retained, single deletion Undo/Redo; physical contacts unverified")
+                            }
+                        }
+                    }
+                }
+            }
+        }
         func checkUndoRedo() {
             run("edit.undo")
             wait("undo", until: { self.state?.sketch?.constraints.contains(where: \.dimension) == false }) {
@@ -4791,7 +4858,7 @@ private extension FoundationController {
                     selectEdge {
                         openEditor {
                             capture("editor")
-                            print("Inline dimension check PASS: rectangle returns to Select; 2 exterior top/right helpers without automatic editor; direct helper editing; opposite size helper suppressed after dimension; focused UIKit popover, native Apply, repeat edit, Preview/Cancel, Undo/Redo; physical contacts unverified")
+                            checkDeletion()
                         }
                     }
                 }
@@ -4809,6 +4876,9 @@ private extension FoundationController {
                 guard let editor = self.editor, let range = editor.field.selectedTextRange,
                       editor.field.offset(from: range.start, to: range.end) == (editor.field.text ?? "").utf16.count else {
                     print("Inline dimension check FAIL: expression was not selected"); return
+                }
+                guard editor.actionFooter.delete.isHidden else {
+                    print("Inline dimension check FAIL: free helper has a Delete action"); return
                 }
                 capture("initial-editor")
                 editor.field.insertText("80 mm"); editor.onApply?(editor.field.text ?? "")

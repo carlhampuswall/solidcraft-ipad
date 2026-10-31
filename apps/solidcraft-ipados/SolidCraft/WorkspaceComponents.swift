@@ -751,6 +751,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     var onPreview: ((String) -> Void)?
     var onApply: ((String) -> Void)?
     var onCancel: (() -> Void)?
+    var onDelete: (() -> Void)?
     var onFocus: (() -> Void)?
     var onChange: (() -> Void)?
     var onLayoutChange: (() -> Void)?
@@ -853,6 +854,9 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
             self.field.resignFirstResponder(); self.onApply?(self.field.text ?? "")
         }, for: .touchUpInside)
         actionFooter.cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
+        actionFooter.delete.addAction(UIAction { [weak self] _ in
+            guard let self, !self.busy else { return }; self.onDelete?()
+        }, for: .touchUpInside)
         updateAvailability()
         updateInputAppearance()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (editor: NumericExpressionEditor, _: UITraitCollection) in editor.updateInputAppearance() }
@@ -964,6 +968,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         actionFooter.apply.availability(enabled: !busy)
         actionFooter.cancel.availability(enabled: !committing)
         closeButton?.availability(enabled: !committing)
+        actionFooter.delete.availability(enabled: !busy)
     }
     private func updateInputAppearance() {
         let style = traitCollection.userInterfaceStyle
@@ -990,6 +995,7 @@ enum NumericText {
 final class NumericEditorActions: UIStackView {
     let apply = WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true, action: {})
     let cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
+    let delete = WorkspaceButton("", action: {})
     private let row = UIStackView()
     init() {
         super.init(frame: .zero)
@@ -997,6 +1003,10 @@ final class NumericEditorActions: UIStackView {
         let divider = UIView(); divider.backgroundColor = WorkspaceStyle.separator
         divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
         addArrangedSubview(divider)
+        delete.isHidden = true
+        delete.configuration?.baseForegroundColor = WorkspaceStyle.error
+        delete.accessibilityIdentifier = "workspace-numeric-delete"
+        addArrangedSubview(delete)
         row.spacing = 8; row.distribution = .fillEqually
         for button in [cancel, apply] { button.textOnly(); row.addArrangedSubview(button) }
         cancel.configuration?.background.backgroundColor = WorkspaceStyle.fieldBackground

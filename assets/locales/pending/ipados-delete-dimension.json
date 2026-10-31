@@ -1,0 +1,17 @@
+{
+  "en": {
+    "ui.ipados.sketch.delete_dimension": "Delete dimension"
+  },
+  "ja": {
+    "ui.ipados.sketch.delete_dimension": "寸法を削除"
+  },
+  "zh": {
+    "ui.ipados.sketch.delete_dimension": "删除尺寸"
+  },
+  "de": {
+    "ui.ipados.sketch.delete_dimension": "Maß löschen"
+  },
+  "ko": {
+    "ui.ipados.sketch.delete_dimension": "치수 삭제"
+  }
+}

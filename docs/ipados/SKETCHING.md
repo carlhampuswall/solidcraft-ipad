@@ -199,8 +199,13 @@ The numeric keypad opens with
 the current expression selected; the keyboard switch supports units, arithmetic
 and parameter names. Preview and Cancel preserve the committed sketch. Apply
 creates one native dimension or edits the existing driving parameter, with one
-undo step. Existing endpoint, radius and diameter dimensions are reused;
-parenthesised reference values remain read-only. A drag continues moving the
+undo step. Existing endpoint, radius and diameter dimensions are reused.
+An existing driving dimension also offers **Delete dimension** in the popover,
+above Cancel and Apply. Tap its value, then Delete dimension to remove only that
+constraint and keep the geometry. Any uncommitted expression or preview is
+discarded first; deletion is one undo step. Free-size helpers have no delete
+action because they do not yet represent a saved dimension.
+Parenthesised reference values remain read-only. A drag continues moving the
 annotation rather than opening the editor. Multi-touch navigation, cancellation,
 display changes and suspension cannot turn an interrupted contact into an edit.
 The DEBUG `--inline-dimension-check` launch flag prepares a disposable rectangle
