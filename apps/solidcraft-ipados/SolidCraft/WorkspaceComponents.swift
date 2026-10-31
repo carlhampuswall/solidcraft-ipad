@@ -743,7 +743,6 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     let message = WorkspaceMessage()
     let actionFooter: NumericEditorActions
     let supplementalOptions = UIStackView()
-    private let evaluation = WorkspaceStyle.label(.footnote, secondary: true)
     private(set) var busy = false
     private(set) var draft = NumericDraftValidation()
     private(set) var completedPreviewRevision: UInt64?
@@ -838,9 +837,6 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         }, for: .editingChanged)
         if !numericKeyboard { field.inputAccessoryView = makeAccessory() }
         addArrangedSubview(field)
-        evaluation.isHidden = true
-        evaluation.accessibilityIdentifier = "workspace-numeric-evaluation"
-        addArrangedSubview(message); addArrangedSubview(evaluation)
         if numericKeyboard && !readOnly { buildPanelKeypad(units: units) }
         if !compact && !readOnly {
             let help = InspectorDisclosure(title: NumericText.text("help"), framed: numericKeyboard, onToggle: { [weak self] _ in self?.onLayoutChange?() })
@@ -852,6 +848,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
             help.content.addArrangedSubview(supplementalOptions)
             addArrangedSubview(help)
         }
+        addArrangedSubview(message)
         addArrangedSubview(actionFooter); actionFooter.isHidden = !showsActions
         actionFooter.apply.addAction(UIAction { [weak self] _ in
             self?.confirmInput()
@@ -868,13 +865,11 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         updateAvailability()
         updateInputAppearance()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (editor: NumericExpressionEditor, _: UITraitCollection) in editor.updateInputAppearance() }
-        if showsActions && !readOnly { message.show(entryHint) }
     }
     required init(coder: NSCoder) {
         readOnly = false; actionFooter = NumericEditorActions(); showsActions = false; panelInput = false
         super.init(coder: coder)
     }
-    private var entryHint: String { NumericText.text("apply_hint") }
     private func makeAccessory() -> ExpressionAccessory {
         ExpressionAccessory(field: field, numeric: usesNumericKeyboard,
             confirmationTitle: WorkspaceStyle.text(showsActions ? "apply" : "keyboard_done"),
@@ -940,36 +935,18 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         field.layer.borderColor = (field.isFirstResponder ? WorkspaceStyle.accent : WorkspaceStyle.separator).resolvedColor(with: traitCollection).cgColor
     }
     func invalidatePreview() {
-        draft.changed(); evaluation.isHidden = true
-        message.show(showsActions ? entryHint : nil)
-        updateAvailability(); onLayoutChange?()
+        draft.changed()
+        message.show(nil)
+        updateAvailability()
     }
     /// A late result may describe a retained scene, but cannot validate newer text.
-    func completePreview(revision: UInt64, valid: Bool = true, value: Double? = nil, units: String = "", feedback: String? = nil, error: String? = nil) {
+    func completePreview(revision: UInt64, valid: Bool = true, error: String? = nil) {
         setBusy(false)
-        guard draft.complete(revision: revision, valid: valid && error == nil) else {
-            message.show(entryHint); return
-        }
+        guard draft.complete(revision: revision, valid: valid && error == nil) else { return }
         completedPreviewRevision = revision
-        if valid && error == nil, let value { setEvaluation(value: value, units: units) }
-        else { evaluation.isHidden = true }
-        message.show(error ?? (valid ? feedback ?? WorkspaceStyle.text("preview_ready") : entryHint), error: error != nil)
-        updateAvailability(); onLayoutChange?()
-    }
-    func setEvaluation(value: Double, units: String) {
-        guard value.isFinite else { evaluation.isHidden = true; return }
-        let formatter = NumberFormatter()
-        formatter.locale = .current
-        formatter.numberStyle = .decimal
-        formatter.usesSignificantDigits = true
-        formatter.minimumSignificantDigits = 1
-        formatter.maximumSignificantDigits = 12
-        guard let formatted = formatter.string(from: NSNumber(value: value)) else { evaluation.isHidden = true; return }
-        let resolved = formatted + (units.isEmpty ? "" : " " + units)
-        evaluation.text = WorkspaceStyle.text("numeric_resolved") + (panelInput ? " · " : "\n") + resolved
-        evaluation.accessibilityLabel = WorkspaceStyle.text("numeric_resolved")
-        evaluation.accessibilityValue = resolved
-        evaluation.isHidden = false
+        message.show(error, error: error != nil)
+        updateAvailability()
+        if error != nil { onLayoutChange?() }
     }
     func setBusy(_ value: Bool, committing: Bool = false) {
         busy = value; self.committing = value && committing
@@ -978,8 +955,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         field.isEnabled = !readOnly && !self.committing
         padArea.isUserInteractionEnabled = !self.committing
         updateAvailability()
-        if value { message.show(NativeText.value("ui.ipados.updating"), busy: true) }
-        else { message.show(showsActions && !readOnly ? entryHint : nil) }
+        message.show(nil)
     }
     private func updateAvailability() {
         actionFooter.apply.availability(enabled: !busy)
@@ -1311,8 +1287,8 @@ final class NumericValueEditorController: UIViewController {
         popoverPresentationController?.backgroundColor = WorkspaceStyle.surface
         inlineChoices.axis = .vertical; inlineChoices.spacing = 8
         content.axis = .vertical; content.spacing = WorkspaceStyle.spacing
-        // Put the field and its feedback first; long optional choices scroll
-        // below it while the transaction actions stay above the keyboard.
+        // Keep entry and its keypad together; optional choices scroll while
+        // the transaction actions stay above the keyboard.
         editor.removeArrangedSubview(editor.actionFooter); editor.actionFooter.removeFromSuperview()
         content.addArrangedSubview(editor); editor.supplementalOptions.addArrangedSubview(inlineChoices)
         inlineChoices.isHidden = inlineChoices.arrangedSubviews.isEmpty

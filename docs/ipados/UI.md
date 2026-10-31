@@ -213,10 +213,12 @@ rail appearance alone. New Extrude and Offset Face distance descriptors publish
 the engine Length kind's default unit, so Swift does not infer units from labels
 or parse expressions. Other fields retain their native unit metadata.
 
-Automatic preview leaves text editable and validates only its captured draft
-revision. Number edits, modelling parameters/references and sketch transforms
-preview after a 300 ms typing pause; existing sliders and direct handles retain
-their live preview path. One pending request replaces older queued edits.
+Typed numeric expressions stay local until Apply, including dimensions, modelling
+values and sketch transforms. Editing cancels pending automatic modelling previews;
+opening a numeric popup does not submit another preview. Existing sliders, direct
+handles and explicit operation/reference choices retain their preview paths.
+The numeric editor has no hint, progress or resolved-value text between its input
+and keypad. Only validation errors appear below the keypad after submission.
 Dimension and modelling Apply validate current values before accepting one
 transaction. There is no manual Preview button or preview-required setting;
 the former preference key is ignored, as explicitly requested by the user.
@@ -233,8 +235,8 @@ device builds pass. All 169 session and 28 bridge tests pass, as do affected
 Clippy with warnings denied and workspace formatting. The existing face-extrusion
 regression also checks the native distance-unit metadata. DEBUG
 `--numeric-entry-check` uses a disposable fixture and covers actual in-panel
-keys, sign edits, units, native Preview/Cancel, invalid expressions, rapid edits
-and stale completion, retained focus/selection, ABC/123, viewport invariance and
+keys, sign edits, units, Apply/Cancel, invalid expressions, rapid edits
+without evaluation or changing the input layout, retained focus/selection, ABC/123, viewport invariance and
 opening the original Extrude Distance field from its inspector. It also checks offscreen UIKit layouts at 320x300,
 380x500 and 744x1000 with normal and accessibility XXXL text. Those sizes are
 synthetic, not physical rotation or multitasking observations. The 2026-10-31
@@ -500,8 +502,8 @@ Preview/Apply sends it unchanged to `Document::eval(Kind::Length)` and
 parameter contracts. Upstream owns
 units, parameters, functions and validation. Decimal commas work outside
 parentheses; within functions commas separate arguments and decimal points
-disambiguate values. Help states this. Evaluated values use the user's output
-locale without normalising input. Invalid text never becomes a fallback number.
+disambiguate values. Help states this. Raw input stays unchanged until Apply;
+invalid text never becomes a fallback number.
 The fixture's existing supported range remains 0.5–50 mm.
 
 Begin captures token, document/geometry context, selection and original handle.

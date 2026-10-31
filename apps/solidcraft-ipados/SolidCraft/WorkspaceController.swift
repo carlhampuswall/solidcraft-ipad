@@ -145,10 +145,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private weak var inlineNumericEditor: NumericValueEditorController?
     private var numericStarting = false
     private var numericGeneration: UInt64 = 0
-    private let numericAutomaticPreview = DraftPreviewDebouncer()
     private let modellingAutomaticPreview = DraftPreviewDebouncer()
-    private let transformAutomaticPreview = DraftPreviewDebouncer()
-    private var transformPreviewPending = false
     private var transformCommitPending = false
     private var sketchInput: SketchInputPresentation?
     private var planeDraft: (value: Any, label: String)?
@@ -1706,7 +1703,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 } : nil
                 form.onChange = { [weak self] in
                     self?.failure = nil; self?.updateStatus(); self?.layoutModelValue()
-                    self?.scheduleModellingPreview()
+                    self?.modellingAutomaticPreview.cancel()
+                    self?.modellingPreviewQueue.discardPending()
                 }
                 form.onSelect = { [weak self, weak form] field in
                     guard let self, let form else { return }
@@ -1802,9 +1800,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     form?.evaluated(model)
                     if let valueRevision, valueEditor === self.modelValueEditor?.editor {
                         valueEditor?.completePreview(revision: valueRevision,
-                            valid: model.valid == true && model.params == form?.params && queuedPreview == nil,
-                            value: model.handle?.distance, units: model.handle?.units ?? "",
-                            feedback: ([WorkspaceStyle.text("preview_ready")] + (model.feedback ?? []).map(ModellingText.label)).joined(separator: "\n"))
+                            valid: model.valid == true && model.params == form?.params && queuedPreview == nil)
                     }
                     self.updateModelValueChoices()
                 }
@@ -1964,6 +1960,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         guard let token = modellingToken, let form = modellingInspector, form.handleEntryEnabled,
               presentedViewController == nil else { return }
         canvas.cancelInput(); form.endEditing(true)
+        modellingAutomaticPreview.cancel(); modellingPreviewQueue.discardPending()
         let controller = NumericValueEditorController(expression: expression, units: units, name: name,
             context: form.numericContext, parameter: parameter)
         controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
@@ -1991,7 +1988,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modelValueEditor = controller
         updateModelValueChoices()
         present(controller, animated: true) { [weak self] in
-            self?.updateAvailability(); self?.scheduleModellingPreview()
+            self?.updateAvailability()
         }
     }
 
@@ -2622,7 +2619,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let heading = WorkspaceStyle.label(.body); heading.text = SketchText.text(name); properties.addArrangedSubview(heading)
             let field = NumericExpressionEditor(expression: expression, units: units, showsActions: false)
             field.onFocus = { [weak self] in self?.updateAvailability(); DispatchQueue.main.async { [weak self] in self?.revealField() } }
-            field.onChange = { [weak self] in self?.scheduleTransformPreview() }
             properties.addArrangedSubview(field)
             return (name, kind, field)
         }
@@ -2630,26 +2626,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true) { [weak self] in self?.evaluateTransform(commit: true) })
         properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("cancel")) { [weak self] in self?.cancelTransform() })
         inspectorOpen = true; browserOpen = false; updateAvailability(); view.setNeedsLayout()
-        scheduleTransformPreview()
-    }
-
-    private func scheduleTransformPreview() {
-        transformPreviewPending = true
-        let expected = transformGeneration
-        transformAutomaticPreview.schedule { [weak self] in
-            guard let self, self.transformGeneration == expected, !self.transformBusy else { return }
-            self.evaluateTransform(commit: false)
-        }
     }
 
     private func evaluateTransform(commit: Bool) {
-        transformAutomaticPreview.cancel()
         guard let draft = transformDraft else { return }
         if transformBusy {
             if commit { transformCommitPending = true; transformEditors.forEach { $0.editor.field.isEnabled = false } }
             return
         }
-        transformPreviewPending = false; transformCommitPending = false
+        transformCommitPending = false
         transformBusy = true
         if commit { transformEditors.forEach { $0.editor.field.resignFirstResponder(); $0.editor.field.isEnabled = false } }
         transformMessage?.show(NativeText.value("ui.ipados.updating"), busy: true)
@@ -2685,10 +2670,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         transformBusy = false; transformEditors.forEach { $0.editor.field.isEnabled = true }
         transformMessage?.show(error?.message ?? WorkspaceStyle.text("preview_ready"), error: error != nil)
         if transformCommitPending { evaluateTransform(commit: true) }
-        else if transformPreviewPending { scheduleTransformPreview() }
     }
     private func clearTransform() {
-        transformAutomaticPreview.cancel(); transformPreviewPending = false; transformCommitPending = false
+        transformCommitPending = false
         transformGeneration &+= 1; transformDraft = nil; numericContext = nil; transformBusy = false
         transformEditors.forEach { $0.editor.field.resignFirstResponder() }; transformEditors.removeAll(); transformMessage = nil
     }
@@ -2718,7 +2702,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 let dimensionID = selection.count == 1 && selection[0].type == "sketch_constraint" ? selection[0].id?.readout : nil
                 let dimension = value.workspace.sketch?.constraints.first { $0.id == dimensionID && $0.dimension && !$0.driven }
                 self.installEditor(expression: expression, units: value.units, source: source, dimension: dimension)
-                if let number = value.value { self.editor?.setEvaluation(value: number, units: value.units) }
             }
         }
     }
@@ -2731,7 +2714,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let editor = controller.editor
         self.editor = editor
         editor.onPreview = { [weak self] expression in self?.evaluateNumeric(expression, commit: false) }
-        editor.onChange = { [weak self] in self?.scheduleNumericPreview() }
         editor.onApply = { [weak self] expression in self?.evaluateNumeric(expression, commit: true) }
         editor.onCancel = { [weak self] in self?.cancelNumeric() }
         if let dimension {
@@ -2755,19 +2737,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         present(controller, animated: true)
         failure = nil
         updateAvailability(); updateStatus(); view.setNeedsLayout()
-        if !readOnly { scheduleNumericPreview() }
-    }
-
-    private func scheduleNumericPreview() {
-        let expected = numericGeneration
-        numericAutomaticPreview.schedule { [weak self] in
-            guard let self, self.numericGeneration == expected, let editor = self.editor else { return }
-            self.evaluateNumeric(editor.field.text ?? "", commit: false)
-        }
     }
 
     private func evaluateNumeric(_ expression: String, commit: Bool) {
-        numericAutomaticPreview.cancel()
         guard let token = numericToken, let editor, !editor.busy else { return }
         let expected = numericGeneration
         let revision = editor.draft.revision
@@ -2785,11 +2757,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.receive(value.workspace)
                     self.failure = nil; self.updateStatus()
                 } else {
-                    editor?.completePreview(revision: revision, value: value.value, units: value.units)
+                    editor?.completePreview(revision: revision)
                 }
             }
             self.updateAvailability()
-            if !commit, let editor, editor.draft.revision != revision { self.scheduleNumericPreview() }
         }
     }
 
@@ -2846,7 +2817,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func clearNumericEditor() {
-        numericAutomaticPreview.cancel()
         referenceDimensionID = nil
         editor?.field.resignFirstResponder(); editor = nil
         let controller = inlineNumericEditor
@@ -3632,7 +3602,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         canvas.cancelInput(); session.suspend()
     }
     func shutdown() {
-        numericAutomaticPreview.cancel(); modellingAutomaticPreview.cancel(); transformAutomaticPreview.cancel()
+        modellingAutomaticPreview.cancel()
         historyActivation = nil
         featureHistory.cancelScrub()
         generation &+= 1; numericGeneration &+= 1; active = false
@@ -6028,7 +5998,7 @@ private extension FoundationController {
                             capture(inPopup ? "extrude-popup-applied" : "extrude-inspector-applied")
                             self.run("edit.undo")
                             wait("direct extrude single undo", { self.pending.isEmpty && self.state?.modelling?.timeline.map(\.id) == features }) {
-                                if inPopup { automaticTransform(rotate: false) }
+                                if inPopup { applyTransform(rotate: false) }
                                 else { directModellingApply(inPopup: true) }
                             }
                         }
@@ -6049,7 +6019,7 @@ private extension FoundationController {
                 }
             }
         }
-        func automaticTransform(rotate: Bool) {
+        func applyTransform(rotate: Bool) {
             let commands: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]),
                 ("sketch.line", ["points": [[0, 0], [20, 0]], "infer": false, "connect": false]), ("tool.set", ["tool": "select"])]
             func prepare(_ index: Int) {
@@ -6062,18 +6032,14 @@ private extension FoundationController {
                             issues.append("missing transform expression"); finish(); return
                         }
                         input.text = rotate ? "30 deg" : "5 mm"; input.sendActions(for: .editingChanged)
-                        wait("automatic sketch transform", { !self.transformBusy && !self.transformPreviewPending && self.canvas.displayingPreview }) {
-                            check(self.state?.geometry_revision == revision, "automatic transform committed geometry")
-                            capture(rotate ? "automatic-rotate" : "automatic-move")
-                            input.text = rotate ? "45 deg" : "6 mm"; input.sendActions(for: .editingChanged)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                            check(!self.transformBusy && !self.canvas.displayingPreview && self.state?.geometry_revision == revision,
+                                  "typing a transform evaluated geometry before Apply")
                             input.text = rotate ? "60 deg" : "7 mm"; input.sendActions(for: .editingChanged)
-                            wait("latest automatic transform", { !self.transformBusy && !self.transformPreviewPending && self.canvas.displayingPreview }) {
-                                check(self.state?.geometry_revision == revision, "rapid transform edits committed geometry")
-                                self.cancelTransform()
-                                wait("cancel automatic transform", { self.transformDraft == nil && !self.canvas.displayingPreview }) {
-                                    check(self.state?.geometry_revision == revision, "cancelling automatic transform changed geometry")
-                                    if rotate { layoutVariants(); finish() } else { automaticTransform(rotate: true) }
-                                }
+                            self.evaluateTransform(commit: true)
+                            wait("transform Apply", { self.transformDraft == nil && self.state?.geometry_revision != revision }) {
+                                capture(rotate ? "applied-rotate" : "applied-move")
+                                if rotate { layoutVariants(); finish() } else { applyTransform(rotate: true) }
                             }
                         }
                     }
@@ -6113,15 +6079,15 @@ private extension FoundationController {
                     }
                     capture("inspector-entry")
                     check(find("workspace-numeric-preview", in: popup.view) == nil && find("workspace-model-preview", in: self.inspectorPanel) == nil, "manual Preview button remains visible")
-                    wait("automatic inspector preview", { !popup.editor.busy && popup.editor.draft.isValidated }) {
-                        check(popup.editor.draft.isValidated && popup.editor.actionFooter.apply.isEnabled, "inspector raw expression failed native Preview")
-                        capture("inspector-preview")
+                    wait("inspector ready", { !popup.editor.busy }) {
+                        check(popup.editor.actionFooter.apply.isEnabled, "inspector Apply unavailable")
                         popup.editor.field.text = "12 mm"; popup.editor.field.sendActions(for: .editingChanged)
                         popup.editor.field.text = "15 mm"; popup.editor.field.sendActions(for: .editingChanged)
-                        wait("automatic edited extrusion", { !popup.editor.busy && popup.editor.draft.isValidated }) {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                            check(!popup.editor.busy && !popup.editor.draft.isValidated, "typed extrusion evaluated before Apply")
                             check(form.params["distance"] == .string("15 mm") && self.state?.geometry_revision == revision,
-                                  "automatic extrusion preview lost current text or committed geometry")
-                            capture("automatic-extrude")
+                                  "extrusion draft lost current text or committed geometry")
+                            capture("provisional-extrude")
                             popup.editor.actionFooter.cancel.sendActions(for: .touchUpInside)
                             wait("inspector cancel", { !self.modellingEditing && self.presentedViewController == nil }) {
                                 check(self.state?.geometry_revision == revision, "cancelling inspector entry changed geometry")
@@ -6171,16 +6137,19 @@ private extension FoundationController {
                 if let start = field.position(from: field.beginningOfDocument, offset: 1),
                    let end = field.position(from: field.beginningOfDocument, offset: 3) { field.selectedTextRange = field.textRange(from: start, to: end) }
                 let selection = selectedOffsets()
-                wait("automatic invalid preview", { !editor.busy && editor.completedPreviewRevision == editor.draft.revision }) {
+                let fieldFrame = field.frame
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                    check(!editor.busy && editor.completedPreviewRevision == nil && editor.message.isHidden, "typing evaluated or displayed numeric feedback before Apply")
+                    check(field.frame == fieldFrame && find("workspace-numeric-evaluation", in: controller.view) == nil, "typing changed numeric layout or retained resolved text")
                     check(field.text == "2 +" && field.isFirstResponder && selectedOffsets() == selection, "preview lost draft/caret/focus")
                     check(!editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "stale preview changed Apply eligibility")
                     capture("stale-\(style)")
                     wait("invalid expression", { !editor.busy }) {
-                        check(field.text == "2 +" && !editor.draft.isValidated && !editor.message.isHidden, "invalid expression lost text or feedback")
+                        check(field.text == "2 +" && !editor.draft.isValidated && editor.message.isHidden, "unsubmitted expression displayed validation text")
                         capture("invalid-\(style)")
                         enter("-2 mm + 10 mm")
-                        wait("automatic units and negative terms", { !editor.busy && editor.draft.isValidated }) {
-                            check(editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "valid units/negative terms did not validate")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+                            check(!editor.busy && !editor.draft.isValidated && editor.actionFooter.apply.isEnabled && editor.message.isHidden, "valid text evaluated before Apply")
                             check(field.text == "-2 mm + 10 mm" && field.isFirstResponder, "valid preview changed expression/focus")
                             let frame = editor.actionFooter.convert(editor.actionFooter.bounds, to: controller.view)
                             check(controller.view.bounds.contains(frame), "keyboard covered numeric actions")
