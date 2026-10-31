@@ -686,11 +686,13 @@ struct WorkspaceChecks {
         // Preview validation follows the exact draft revision. UIKit owns raw
         // text and selection; the policy never parses or normalises expressions.
         var numericDraft = NumericDraftValidation()
-        try require(!numericDraft.isValidated, "an unpreviewed numeric draft enabled Apply")
+        try require(!numericDraft.isValidated && numericDraft.canApply(requiresPreview: false), "dimension Apply required a separate Preview")
+        try require(!numericDraft.canApply(requiresPreview: true), "preview-required preference allowed an unvalidated draft")
         let originalNumericRevision = numericDraft.revision
         numericDraft.changed() // a fast edit while the first preview is pending
         try require(!numericDraft.complete(revision: originalNumericRevision, valid: true), "an older preview validated newer numeric input")
-        try require(!numericDraft.isValidated, "a stale numeric preview enabled Apply")
+        try require(!numericDraft.isValidated && !numericDraft.canApply(requiresPreview: true), "a stale numeric preview enabled preview-required Apply")
+        try require(numericDraft.canApply(requiresPreview: false), "editing during Preview blocked direct Apply after completion")
         let currentNumericRevision = numericDraft.revision
         try require(numericDraft.complete(revision: currentNumericRevision, valid: true) && numericDraft.isValidated, "the current numeric preview did not enable Apply")
         numericDraft.changed() // edit away, then back to exactly the original text
@@ -699,6 +701,7 @@ struct WorkspaceChecks {
         try require(numericDraft.complete(revision: numericDraft.revision, valid: false) && !numericDraft.isValidated, "invalid expression enabled Apply")
         try require(numericDraft.complete(revision: numericDraft.revision, valid: true) && numericDraft.isValidated, "correcting an invalid expression did not recover validation")
         try require(!numericDraft.complete(revision: originalNumericRevision, valid: false) && numericDraft.isValidated, "a stale error removed newer validation")
+        try require(numericDraft.canApply(requiresPreview: true), "preview-required preference rejected a validated draft")
         // This is the native model bridge envelope shape: real profile-selection
         // payloads, expression text, nullable feature IDs and ordered input arrays.
         // The production response decoder is generic only over the workspace body.

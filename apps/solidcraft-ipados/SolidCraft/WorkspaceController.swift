@@ -2547,6 +2547,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
         let editor = controller.editor
         self.editor = editor
+        editor.requiresPreview = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.dimensionPreviewRequired")
         editor.onPreview = { [weak self] expression in self?.evaluateNumeric(expression, commit: false) }
         editor.onApply = { [weak self] expression in self?.evaluateNumeric(expression, commit: true) }
         editor.onCancel = { [weak self] in self?.cancelNumeric() }
@@ -2866,6 +2867,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.canvas.historyGesturesEnabled, forKey: "SolidCraft.workspace.historyGestures")
             self.rebuildMenus()
         }
+        let dimensionPreviewRequired = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.dimensionPreviewRequired")
+        let dimensionPreview = UIAction(title: NumericText.text("require_preview"), state: dimensionPreviewRequired ? .on : .off) { [weak self] _ in
+            UserDefaults.standard.set(!dimensionPreviewRequired, forKey: "SolidCraft.workspace.dimensionPreviewRequired")
+            self?.editor?.requiresPreview = !dimensionPreviewRequired
+            self?.rebuildMenus()
+        }
         let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
             guard let self else { return }
             let enabled = !self.twoFingerTwist
@@ -2944,7 +2951,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, historyGestures, dimensionPreview, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
@@ -5193,7 +5200,7 @@ private extension FoundationController {
                     guard let button = find("workspace-keypad-" + key, in: controller.view) else { issues.append("missing embedded key " + key); continue }
                     check(button.bounds.width >= 44 && button.bounds.height >= 44, "compressed embedded key " + key)
                 }
-                check(!editor.actionFooter.apply.isEnabled, "Apply enabled before Preview")
+                check(editor.actionFooter.apply.isEnabled == !editor.requiresPreview, "dimension Apply preview preference was ignored")
                 check(self.canvas.frame == originalCanvas, "embedded pad resized the Metal viewport")
                 func enter(_ text: String) { field.text = text; field.sendActions(for: .editingChanged) }
                 func selectedOffsets() -> [Int] {
@@ -5214,7 +5221,7 @@ private extension FoundationController {
                 let selection = selectedOffsets()
                 wait("stale preview", { !editor.busy }) {
                     check(field.text == "2 +" && field.isFirstResponder && selectedOffsets() == selection, "preview lost draft/caret/focus")
-                    check(!editor.draft.isValidated && !editor.actionFooter.apply.isEnabled, "stale preview enabled Apply")
+                    check(!editor.draft.isValidated && editor.actionFooter.apply.isEnabled == !editor.requiresPreview, "stale preview changed Apply eligibility")
                     capture("stale-\(style)")
                     editor.actionFooter.preview.sendActions(for: .touchUpInside)
                     wait("invalid expression", { !editor.busy }) {
@@ -5256,9 +5263,43 @@ private extension FoundationController {
                 }
             }
         }
+        func directApply() {
+            let before = self.state?.radius?.value
+            let revision = self.state?.geometry_revision
+            self.beginNumeric(source: self.browserButton)
+            wait("direct Apply editor", { self.inlineNumericEditor?.editor.field.isFirstResponder == true }) {
+                guard let editor = self.editor else { issues.append("missing direct Apply editor"); finish(); return }
+                editor.requiresPreview = true
+                check(!editor.actionFooter.apply.isEnabled, "legacy preference did not require Preview")
+                editor.requiresPreview = false
+                let token = self.numericToken
+                editor.field.text = "2 +"; editor.field.sendActions(for: .editingChanged)
+                check(editor.actionFooter.apply.isEnabled && !editor.draft.isValidated, "direct Apply required a preview")
+                editor.actionFooter.apply.sendActions(for: .touchUpInside)
+                wait("direct Apply rejects invalid expression", { !editor.busy }) {
+                    check(self.numericToken == token && self.state?.geometry_revision == revision && self.state?.radius?.value == before,
+                          "invalid direct Apply changed the document or closed the editor")
+                    check(editor.field.text == "2 +" && !editor.message.isHidden && !editor.draft.isValidated,
+                          "invalid direct Apply lost its expression or error")
+                    capture("direct-apply-invalid")
+                    editor.field.text = "9 mm"; editor.field.sendActions(for: .editingChanged)
+                    check(!editor.draft.isValidated && editor.actionFooter.apply.isEnabled, "corrected direct Apply required Preview")
+                    capture("direct-apply-ready")
+                    editor.actionFooter.apply.sendActions(for: .touchUpInside)
+                    wait("direct Apply committed", { self.inlineNumericEditor == nil && self.presentedViewController == nil && self.state?.radius?.value == 9 }) {
+                        check(self.state?.geometry_revision != revision && self.numericToken == nil, "direct Apply did not finish its transaction")
+                        capture("direct-apply-committed")
+                        self.run("edit.undo")
+                        wait("direct Apply single undo", { self.pending.isEmpty && self.state?.radius?.value == before }) {
+                            runStyle(0)
+                        }
+                    }
+                }
+            }
+        }
         session.command("select.entity", params: ["entity": ["type": "body", "name": "Post"]]) { result in
             guard case .success = result else { issues.append("fixture selection failed"); finish(); return }
-            wait("radius selection", { self.state?.radius != nil }) { runStyle(0) }
+            wait("radius selection", { self.state?.radius != nil }) { directApply() }
         }
     }
 

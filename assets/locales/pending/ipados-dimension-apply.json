@@ -1,0 +1,6 @@
+{
+  "en": {
+    "ui.ipados.numeric_entry.apply_hint": "Apply validates and saves. Preview is optional.",
+    "ui.ipados.numeric_entry.require_preview": "Require Preview before applying dimensions"
+  }
+}

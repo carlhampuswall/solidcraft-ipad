@@ -208,10 +208,15 @@ the engine Length kind's default unit, so Swift does not infer units from labels
 or parse expressions. Other fields retain their native unit metadata.
 
 Preview leaves text editable and validates only its captured draft revision.
-Typing during evaluation, including editing away and back to identical text,
-keeps Apply disabled until a matching Preview completes. Errors appear beside the
-retained draft. Done and Return leave the transaction provisional; accepting a
-validated operation disables Close/Cancel and keypad edits until completion.
+Dimension edits can Apply directly: the existing engine validates the current
+expression and geometry before accepting one transaction. Preview is optional.
+Tools → Require Preview before applying dimensions restores the earlier two-step
+flow (preference `SolidCraft.workspace.dimensionPreviewRequired`, off by default).
+In that mode, typing during evaluation, including editing away and back to
+identical text, keeps Apply disabled until a matching Preview completes. Other
+modelling forms retain their preview requirement. Errors appear beside the
+retained draft. Done and Return leave the transaction provisional; applying an
+operation disables Close/Cancel and keypad edits until completion.
 The existing Rust tokens, context checks, scratch evaluation and atomic
 acceptance still own geometry and history.
 

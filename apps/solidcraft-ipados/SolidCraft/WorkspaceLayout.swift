@@ -57,6 +57,7 @@ struct NumericDraftValidation {
     private(set) var revision: UInt64 = 0
     private var validatedRevision: UInt64?
     var isValidated: Bool { validatedRevision == revision }
+    func canApply(requiresPreview: Bool) -> Bool { !requiresPreview || isValidated }
     mutating func changed() { revision &+= 1; validatedRevision = nil }
     @discardableResult mutating func complete(revision: UInt64, valid: Bool) -> Bool {
         guard revision == self.revision else { return false }

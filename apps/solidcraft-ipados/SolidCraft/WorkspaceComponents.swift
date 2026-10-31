@@ -745,6 +745,11 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     private(set) var draft = NumericDraftValidation()
     private var committing = false
     private let showsActions: Bool
+    // Dimension commits validate through the engine themselves. Other forms
+    // retain their existing preview requirement.
+    var requiresPreview = true {
+        didSet { message.show(showsActions ? entryHint : nil); updateAvailability() }
+    }
     var onPreview: ((String) -> Void)?
     var onApply: ((String) -> Void)?
     var onCancel: (() -> Void)?
@@ -850,19 +855,20 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
             self.onPreview?(self.field.text ?? "")
         }, for: .touchUpInside)
         actionFooter.apply.addAction(UIAction { [weak self] _ in
-            guard let self, !self.busy, self.draft.isValidated else { return }
+            guard let self, !self.busy, self.draft.canApply(requiresPreview: self.requiresPreview) else { return }
             self.field.resignFirstResponder(); self.onApply?(self.field.text ?? "")
         }, for: .touchUpInside)
         actionFooter.cancel.addAction(UIAction { [weak self] _ in self?.onCancel?() }, for: .touchUpInside)
         updateAvailability()
         updateInputAppearance()
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (editor: NumericExpressionEditor, _: UITraitCollection) in editor.updateInputAppearance() }
-        if showsActions { message.show(previewRequired) }
+        if showsActions { message.show(entryHint) }
     }
     required init(coder: NSCoder) {
         actionFooter = NumericEditorActions(); showsActions = false; panelInput = false
         super.init(coder: coder)
     }
+    private var entryHint: String { requiresPreview ? previewRequired : NumericText.text("apply_hint") }
     private var previewRequired: String { panelInput ? NumericText.text("preview_required") : ModellingText.text("preview_required") }
     private func makeAccessory() -> ExpressionAccessory {
         ExpressionAccessory(field: field, numeric: usesNumericKeyboard) { [weak self] in
@@ -921,18 +927,18 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     }
     func invalidatePreview() {
         draft.changed(); evaluation.isHidden = true
-        message.show(showsActions ? previewRequired : nil)
+        message.show(showsActions ? entryHint : nil)
         updateAvailability(); onLayoutChange?()
     }
     /// A late result may describe a retained scene, but cannot validate newer text.
     func completePreview(revision: UInt64, valid: Bool = true, value: Double? = nil, units: String = "", feedback: String? = nil, error: String? = nil) {
         setBusy(false)
         guard draft.complete(revision: revision, valid: valid && error == nil) else {
-            message.show(previewRequired); return
+            message.show(entryHint); return
         }
         if valid && error == nil, let value { setEvaluation(value: value, units: units) }
         else { evaluation.isHidden = true }
-        message.show(error ?? (valid ? feedback ?? WorkspaceStyle.text("preview_ready") : previewRequired), error: error != nil)
+        message.show(error ?? (valid ? feedback ?? WorkspaceStyle.text("preview_ready") : entryHint), error: error != nil)
         updateAvailability(); onLayoutChange?()
     }
     func setEvaluation(value: Double, units: String) {
@@ -958,12 +964,13 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
         padArea.isUserInteractionEnabled = !self.committing
         updateAvailability()
         if value { message.show(NativeText.value("ui.ipados.updating"), busy: true) }
-        else { message.show(showsActions ? previewRequired : nil) }
+        else { message.show(showsActions ? entryHint : nil) }
     }
     private func updateAvailability() {
         actionFooter.preview.availability(enabled: !busy)
-        actionFooter.apply.availability(enabled: !busy && draft.isValidated,
-            reason: draft.isValidated ? nil : previewRequired)
+        let canApply = draft.canApply(requiresPreview: requiresPreview)
+        actionFooter.apply.availability(enabled: !busy && canApply,
+            reason: canApply ? nil : previewRequired)
         actionFooter.cancel.availability(enabled: !committing)
         closeButton?.availability(enabled: !committing)
     }
