@@ -78,8 +78,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var dimensionsButton = WorkspaceButton(SketchText.text("dimension"), action: {})
     private lazy var constructionButton = WorkspaceButton(SketchText.text("construction")) { [weak self] in
         guard let self, self.state?.sketch != nil else { return }
-        let curves = self.state?.selection.filter { $0.type == "sketch_curve" }.compactMap { $0.id?.readout } ?? []
-        guard !curves.isEmpty else { return }; self.run("sketch.construction", params: ["curves": curves])
+        self.run("tool.construction", params: ["enabled": self.sketchInput?.construction != true])
     }
     private lazy var sketchQuickTools: [(String, WorkspaceButton)] = [
         ("sketch.point", "draw_point"),
@@ -224,6 +223,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var freeDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.freeDimensions") as? Bool ?? true
     private var distinguishDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.distinguishDimensions") as? Bool ?? true
     private var repeatRectangles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.repeatRectangles") as? Bool ?? false
+    private var constructionDashes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.constructionDashes") as? Bool ?? true
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnSketchSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnSketchSelection") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
@@ -424,7 +424,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         session.onWorkspace = { [weak self] value in self?.receive(value) }
         session.onSketchInput = { [weak self] value in
             guard let self, self.sketchInput != value else { return }
+            let constructionChanged = self.sketchInput?.construction != value?.construction
             self.sketchInput = value; self.updateStatus(); self.rebuildMenus()
+            if constructionChanged { self.updateAvailability() }
             self.layoutEndpointFinish()
         }
         session.onSketchAnnotations = { [weak self] annotations in self?.showSketchAnnotations(annotations) }
@@ -586,6 +588,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.session.command("view.tool_dismissal", params: ["cancel_on_dismiss": self.cancelToolsOnDismiss])
                 self.session.command("tool.free_dimensions", params: ["enabled": self.freeDimensions])
                 self.session.command("tool.repeat_rectangles", params: ["enabled": self.repeatRectangles])
+                self.session.command("view.construction_dashes", params: ["enabled": self.constructionDashes])
                 self.session.command("select.filter", params: ["filter": self.filter.rawValue])
                 self.session.command("select.multiple", params: ["enabled": self.multiple])
                 self.session.command("view.origin_style", params: ["legacy": self.legacyOriginPlanes])
@@ -2990,13 +2993,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             constraintsButton.availability(enabled: !locked, reason: WorkspaceStyle.text("constraint_selection_hint"))
             dimensionsButton.availability(enabled: !locked && state?.sketch?.eligible_dimensions?.isEmpty == false,
                                            reason: WorkspaceStyle.text("dimension_selection_hint"))
-            constructionButton.availability(enabled: !locked && state?.selection.contains(where: { $0.type == "sketch_curve" }) == true,
-                                             reason: WorkspaceStyle.text("curve_selection_hint"))
+            constructionButton.active(sketchInput?.construction == true)
+            constructionButton.availability(enabled: !locked)
+            constructionButton.accessibilityHint = SketchText.text("construction_mode_help")
         }
         layoutModelValue()
     }
 
     private func rebuildMenus() {
+        let constructionCurves = state?.selection.filter { $0.type == "sketch_curve" }.compactMap { $0.id?.readout } ?? []
+        constructionButton.menu = UIMenu(children: [UIAction(title: SketchText.text("construction_selected"),
+            attributes: constructionCurves.isEmpty ? .disabled : []) { [weak self] _ in
+            self?.run("sketch.construction", params: ["curves": constructionCurves])
+        }])
         assemblyButton.menu = UIMenu(children: (state?.assembly?.tools ?? []).map { tool in
             UIAction(title: ModellingText.label(tool.label), image: WorkspaceIcon.command(tool.id, traits: traitCollection)) { [weak self] _ in self?.beginModelling(operation: tool.id) }
         })
@@ -3280,6 +3289,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.rebuildMenus()
                 }
             }, at: 3)
+            moreActions.append(UIAction(title: SketchText.text("construction_dashes"), state: constructionDashes ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                let enabled = !self.constructionDashes
+                self.session.command("view.construction_dashes", params: ["enabled": enabled]) { [weak self] result in
+                    guard let self, case .success = result else { return }
+                    self.constructionDashes = enabled
+                    UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.constructionDashes")
+                    self.rebuildMenus()
+                }
+            })
         }
         moreButton.menu = UIMenu(children: moreActions)
         moreButton.showsMenuAsPrimaryAction = true

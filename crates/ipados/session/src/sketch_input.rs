@@ -58,6 +58,7 @@ pub(crate) struct SketchInput {
     pub automatic: bool,
     pub free_dimensions: bool,
     pub repeat_rectangles: bool,
+    pub construction: bool,
 }
 
 impl Default for SketchInput {
@@ -83,6 +84,7 @@ impl Default for SketchInput {
             automatic: true,
             free_dimensions: true,
             repeat_rectangles: false,
+            construction: false,
         }
     }
 }
@@ -154,7 +156,7 @@ impl SketchInput {
             .map(|(a, b)| json!({"width":(b.at.x-a.at.x).abs(),"height":(b.at.y-a.at.y).abs(),"radius":b.at.dist(a.at)}));
         json!({"points":self.points.iter().map(|p|p.at).collect::<Vec<_>>(),"snap":self.snap,
             "snapping":self.snapping,"auto_constraints":self.automatic,"prompt":prompt,"feedback":feedback,
-            "pending":self.work.is_some(),"tool":self.tool,"free_dimensions":self.free_dimensions,"repeat_rectangles":self.repeat_rectangles})
+            "pending":self.work.is_some(),"tool":self.tool,"free_dimensions":self.free_dimensions,"repeat_rectangles":self.repeat_rectangles,"construction":self.construction})
     }
     pub fn complete(&mut self, work: &ToolWork, model: &SceneSnapshot) {
         if !self.current(work) {
@@ -214,6 +216,14 @@ impl Viewport {
 
     pub(crate) fn sketch_command(&mut self, id: &str, params: &Value) -> Result<bool, AdapterError> {
         match id {
+            "tool.construction" => {
+                let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("bad_params", "enabled must be boolean"))?;
+                if self.model.as_ref().is_none_or(|model| model.sketch.is_none()) {
+                    return Err(error("disabled", "Create or reopen a sketch first"));
+                }
+                self.cancel_interactions();
+                self.contacts.sketch.construction = enabled;
+            }
             "tool.propose" => {
                 let command = params.get("command").and_then(Value::as_str).ok_or_else(|| error("bad_params", "A sketch command is required"))?;
                 let parameters = params
@@ -537,7 +547,7 @@ impl Viewport {
         };
         let nonzero = first.at.dist(last.at) > 0.0;
         let mut after = None;
-        let command = if let Some((dimension, text)) = &state.moving_dimension {
+        let mut command = if let Some((dimension, text)) = &state.moving_dimension {
             let at = *text + (last.at - first.at);
             ("sketch.dimension_text".into(), json!({"dimension":dimension,"at":[at.x,at.y]}))
         } else {
@@ -609,6 +619,12 @@ impl Viewport {
                 _ => return Err(error("sketch", "Place the next distinct point")),
             }
         };
+        if matches!(
+            command.0.as_str(),
+            "sketch.line" | "sketch.rectangle.two_point" | "sketch.circle.center" | "sketch.arc.three_point" | "sketch.spline.fit_point"
+        ) {
+            command.1["construction"] = json!(state.construction);
+        }
         let version = state.work.as_ref().map_or(1, |w| w.version.saturating_add(1));
         let work = ToolWork {
             interaction: self.contacts.next_interaction,
@@ -912,13 +928,19 @@ impl Viewport {
                 }
                 Sel::SketchCurve { id, .. } => {
                     if let Some(i) = snapshot.sketch.curve_index(id) {
-                        scene.lines.push(solidcraft_render::SceneLine {
+                        let construction = self.construction_dashes && snapshot.sketch.curves.get(i).is_some_and(|curve| curve.construction);
+                        let line = solidcraft_render::SceneLine {
                             points: snapshot.sketch.polyline(i).iter().map(|p| snapshot.plane.to_world(*p)).collect(),
-                            color,
+                            color: if construction { solidcraft_engine::view::Palette::DEFAULT.sketch_construction } else { color },
                             alpha: 1.0,
                             width,
                             on_top: true,
-                        });
+                        };
+                        if construction {
+                            crate::construction::dash_line(scene, &line, unit);
+                        } else {
+                            scene.lines.push(line);
+                        }
                         if let Some(curve) = snapshot.sketch.curves.get(i) {
                             for p in curve.kind.point_ids() {
                                 if let Some(p) = snapshot.sketch.point(p) {

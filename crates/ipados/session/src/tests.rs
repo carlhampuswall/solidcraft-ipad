@@ -4167,6 +4167,128 @@ fn sketch_pencil_rectangle_commits_once_and_cancel_never_removes_previous_geomet
     assert!(view.take_tool_work().is_none(), "tap on anchor must not create a zero-length line");
 }
 #[test]
+fn sketch_construction_mode_creates_primitives_and_switches_back_without_converting_existing_curves() {
+    for tool in ["sketch.line", "sketch.rectangle.two_point", "sketch.circle.center", "sketch.arc.three_point", "sketch.spline.fit_point"] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        let history = engine.session.undo.len();
+        view.command("tool.construction", &json!({"enabled":true})).unwrap();
+        view.command("tool.set", &json!({"tool":tool})).unwrap();
+        assert_eq!(view.diagnostic()["input"]["sketch"]["construction"], true);
+        sketch_tap(&mut view, 1, [10., 10.]);
+        sketch_tap(&mut view, 2, [40., 30.]);
+        if tool == "sketch.arc.three_point" || tool == "sketch.spline.fit_point" {
+            sketch_tap(&mut view, 3, [10., 30.]);
+        }
+        if tool == "sketch.spline.fit_point" {
+            view.command("tool.finish_chain", &json!({})).unwrap();
+        }
+        assert!(run_tool(&mut engine, &mut view), "{tool}");
+        let construction = engine.sketch_snapshot().unwrap();
+        assert!(!construction.sketch.curves.is_empty());
+        assert!(construction.sketch.curves.iter().all(|curve| curve.construction), "{tool}");
+        assert_eq!(construction.profiles, 0, "construction loops never become profiles");
+        assert_eq!(engine.session.undo.len(), history + 1);
+        view.command("tool.construction", &json!({"enabled":false})).unwrap();
+        view.command("tool.set", &json!({"tool":"sketch.circle.center"})).unwrap();
+        sketch_tap(&mut view, 4, [-30., -30.]);
+        sketch_tap(&mut view, 5, [-15., -30.]);
+        assert!(run_tool(&mut engine, &mut view));
+        let mixed = engine.sketch_snapshot().unwrap();
+        assert_eq!(mixed.sketch.curves.iter().filter(|curve| curve.construction).count(), construction.sketch.curves.len());
+        assert!(!mixed.sketch.curves.last().unwrap().construction);
+        assert_eq!(mixed.profiles, 1);
+        engine.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, construction.sketch);
+        engine.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, mixed.sketch);
+    }
+}
+
+#[test]
+fn sketch_construction_mode_invalidates_previews_and_resets_when_leaving_the_sketch() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
+    assert!(view.command("tool.construction", &json!({"enabled":"yes"})).is_err());
+    sketch_tap(&mut view, 1, [10., 10.]);
+    let start = point(&view, Vec3::new(40., 30., 0.));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 2, start, 2.);
+    feed(&mut view, InputSource::Pencil, InputPhase::Moved, 2, [start[0] + 20., start[1]], 2.1);
+    let work = view.take_tool_work().unwrap();
+    let preview = engine.prepare_tool(work.clone()).unwrap();
+    view.command("tool.construction", &json!({"enabled":true})).unwrap();
+    assert!(!view.publish_preview(&work, preview.model));
+    assert!(engine.sketch_snapshot().unwrap().sketch.curves.is_empty());
+    assert_eq!(view.diagnostic()["input"]["sketch"]["construction"], true);
+    engine.execute("sketch.finish", json!({})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    assert_eq!(view.diagnostic()["input"]["sketch"]["construction"], false);
+    assert!(view.command("tool.construction", &json!({"enabled":true})).is_err());
+}
+
+#[test]
+fn construction_dashes_preserve_colour_picking_and_screen_spacing_with_legacy_preference() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[-40,20],[40,20]],"construction":true,"ids":["guide"],"infer":false})).unwrap();
+    engine.execute("sketch.circle.center", json!({"center":[0,-20],"radius":10,"construction":true})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let original = view.snapshot().unwrap();
+    let orange = solidcraft_engine::view::Palette::DEFAULT.sketch_construction;
+    let count = |frame: &crate::RenderSnapshot| frame.highlight.lines.iter().filter(|line| line.color == orange).count();
+    assert!(count(&original) > 10);
+    assert!(original.model.scene.lines.iter().all(|line| !original.model_line_visible(line)));
+    let unit = 2. * view.camera.half_height() / view.metrics.height_points;
+    let first = original.highlight.lines.iter().find(|line| line.color == orange).unwrap();
+    assert!(((first.points[1] - first.points[0]).len() / unit - 7.).abs() < 1e-6);
+    // Picking still sees an unbroken curve, including the centre of a dash gap.
+    let start = -40. + ((40. / (11. * unit)).floor() * 11. + 9.) * unit;
+    assert!(matches!(view.pick_sketch(point(&view, Vec3::new(start, 20., 0.))), Some(Sel::SketchCurve { .. })));
+    view.command("view.navigate", &json!({"motion":"zoom","factor":0.5})).unwrap();
+    let zoomed = view.snapshot().unwrap();
+    assert!(Arc::ptr_eq(&original.model, &zoomed.model), "zoom never republishes the CAD model");
+    assert!(count(&zoomed) > count(&original));
+    view.command("view.construction_dashes", &json!({"enabled":false})).unwrap();
+    let legacy = view.snapshot().unwrap();
+    assert!(legacy.model.scene.lines.iter().all(|line| legacy.model_line_visible(line)));
+    assert_eq!(count(&legacy), 0);
+    assert!(Arc::ptr_eq(&original.model, &legacy.model));
+    view.command("view.construction_dashes", &json!({"enabled":true})).unwrap();
+    engine.execute("sketch.finish", json!({})).unwrap();
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    assert!(count(&view.snapshot().unwrap()) > 0, "finished construction sketches stay dashed");
+}
+
+#[test]
+fn construction_dash_phase_crosses_tessellation_vertices_and_hostile_paths_are_bounded() {
+    use solidcraft_render::{Scene, SceneLine};
+    let mut line = SceneLine {
+        points: (0..=30).map(|x| Vec3::new(f64::from(x), 0., 0.)).collect(),
+        color: solidcraft_engine::view::Palette::DEFAULT.sketch_construction,
+        alpha: 1.,
+        width: 1.,
+        on_top: true,
+    };
+    let mut scene = Scene::default();
+    crate::construction::dash_line(&mut scene, &line, 1.);
+    let length: f64 = scene.lines.iter().map(|line| (line.points[1] - line.points[0]).len()).sum();
+    assert_eq!(length, 21., "three seven-unit dashes; tessellation never restarts the phase");
+    assert!(scene.lines.iter().all(|line| {
+        let midpoint = (line.points[0].x + line.points[1].x) / 2.;
+        !(7. ..11.).contains(&midpoint) && !(18. ..22.).contains(&midpoint)
+    }));
+    line.points = vec![Vec3::ZERO, Vec3::new(1e100, 0., 0.)];
+    scene.lines.clear();
+    crate::construction::dash_line(&mut scene, &line, 1e-10);
+    assert!(scene.lines.len() <= 4096);
+    assert!(scene.lines.iter().flat_map(|line| &line.points).all(|p| p.is_finite()));
+    line.points[1].x = f64::NAN;
+    scene.lines.clear();
+    crate::construction::dash_line(&mut scene, &line, 1.);
+    assert!(scene.lines.is_empty());
+}
+
+#[test]
 fn sketch_rectangle_repeat_preference_keeps_the_previous_creation_behavior() {
     for repeat in [false, true] {
         let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.rectangle.two_point");

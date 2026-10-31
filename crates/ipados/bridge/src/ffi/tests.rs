@@ -550,9 +550,10 @@ fn dark_sketch_strokes_reach_gpu_for_active_finished_and_preview_scenes() {
     engine_command(id, "sketch.line", json!({"points":[[10,30],[30,40]],"ids":["guide"],"infer":false,"construction":true}));
     engine_command(id, "sketch.finish", json!({}));
     let finished = entry.viewport.lock().unwrap().snapshot().unwrap();
-    let (gpu, _) = crate::renderer::model_geometry(&finished, 3).unwrap();
+    let (gpu, bodies) = crate::renderer::model_geometry(&finished, 3).unwrap();
     assert!(gpu.palette.entries().contains(&[100, 210, 255, 255]), "finished black strokes must also become blue");
-    assert!(gpu.palette.entries().contains(&[230, 130, 40, 255]), "construction strokes keep their own colour");
+    let highlights = crate::renderer::highlight_geometry(&finished, &bodies);
+    assert!(highlights.palette.entries().contains(&[230, 130, 40, 255]), "dashed construction strokes keep their own colour");
     view_request(id, json!({"kind":"command","command":"view.background","params":{"color":null}}));
     let restored = entry.viewport.lock().unwrap().snapshot().unwrap();
     assert_eq!(restored.sketch_color, None);

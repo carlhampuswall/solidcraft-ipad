@@ -26,6 +26,7 @@ pub struct NativeRenderer {
     error: Arc<Mutex<Option<String>>>,
     uploaded: Option<Arc<solidcraft_ipados_session::SceneSnapshot>>,
     uploaded_sketch_color: Option<solidcraft_render::Rgb>,
+    uploaded_construction_dashes: bool,
     scene_key: u64,
     scene: SceneSlot,
     guides: SceneSlot,
@@ -90,6 +91,7 @@ impl NativeRenderer {
             error,
             uploaded: None,
             uploaded_sketch_color: None,
+            uploaded_construction_dashes: false,
             scene_key: 0,
             scene: Arc::new(Mutex::new(None)),
             guides: Arc::new(Mutex::new(None)),
@@ -169,13 +171,17 @@ impl NativeRenderer {
             wgpu::CurrentSurfaceTexture::Lost => return Err("Metal surface lost; recreate the renderer while retaining the CAD session".into()),
             wgpu::CurrentSurfaceTexture::Validation => return Err("Metal drawable acquisition failed validation".into()),
         };
-        if self.uploaded.as_ref().is_none_or(|model| !Arc::ptr_eq(model, &snapshot.model)) || self.uploaded_sketch_color != snapshot.sketch_color {
+        if self.uploaded.as_ref().is_none_or(|model| !Arc::ptr_eq(model, &snapshot.model))
+            || self.uploaded_sketch_color != snapshot.sketch_color
+            || self.uploaded_construction_dashes != snapshot.construction_dashes
+        {
             self.scene_key = self.scene_key.checked_add(1).ok_or("render scene revision exhausted")?;
             let (model, bodies) = model_geometry_cached(snapshot, self.scene_key, &mut self.meshes)?;
             *self.scene.lock().map_err(|_| "render scene lock is poisoned")? = Some(model);
             self.bodies = bodies;
             self.uploaded = Some(snapshot.model.clone());
             self.uploaded_sketch_color = snapshot.sketch_color;
+            self.uploaded_construction_dashes = snapshot.construction_dashes;
             self.highlight_revision = 0;
         }
         if self.overlay_revision != snapshot.guide_revision {
@@ -417,7 +423,7 @@ pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: 
         width: line.width,
         on_top: line.on_top,
     };
-    fallback.lines = source.lines.iter().map(line).collect();
+    fallback.lines = source.lines.iter().filter(|line| snapshot.model_line_visible(line)).map(line).collect();
     fallback.grid = source.grid.iter().map(line).collect();
     let mut scene = solidcraft_gpu::capture::scene_geometry(&fallback);
     let mut bodies = fallback_blocks(&mut scene, &fallback, &fallback_names, key)?;

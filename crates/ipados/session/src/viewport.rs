@@ -17,6 +17,7 @@ pub struct RenderSnapshot {
     pub model: Arc<SceneSnapshot>,
     pub background: Option<(Rgb, Rgb)>,
     pub sketch_color: Option<Rgb>,
+    pub construction_dashes: bool,
     pub camera: Camera,
     pub view_proj: Mat4,
     pub guides: Arc<Scene>,
@@ -32,6 +33,11 @@ pub struct RenderSnapshot {
 }
 
 impl RenderSnapshot {
+    /// Dashed construction strokes live in the camera-dependent feedback layer.
+    pub fn model_line_visible(&self, line: &SceneLine) -> bool {
+        !self.construction_dashes || !crate::construction::construction_stroke(line)
+    }
+
     /// Native appearance changes only ordinary sketch strokes. These shared
     /// palette entries identify free, determined and finished sketch curves;
     /// body edges, construction/reference geometry and feedback keep their colours.
@@ -81,6 +87,7 @@ pub struct Viewport {
     pub(crate) origin: crate::origin::OriginReferences,
     background: Option<Rgb>,
     sketch_color: Option<Rgb>,
+    pub(crate) construction_dashes: bool,
     grid: GridStyle,
     generation: u64,
     pub(crate) metrics_epoch: u64,
@@ -124,6 +131,7 @@ impl Default for Viewport {
             origin: crate::origin::OriginReferences::default(),
             background: None,
             sketch_color: None,
+            construction_dashes: true,
             grid: GridStyle::default(),
             generation: 0,
             metrics_epoch: 0,
@@ -183,6 +191,9 @@ impl Viewport {
             return false;
         }
         let first = self.model.is_none();
+        if model.sketch.is_none() || self.model.as_ref().is_some_and(|old| old.document_id != model.document_id) {
+            self.contacts.sketch.construction = false;
+        }
         let changed = self.model.as_ref().is_none_or(|old| old.document_id != model.document_id || old.geometry_revision != model.geometry_revision);
         if changed {
             // Shared topology indices and picked points have no persistent identity contract.
@@ -309,6 +320,13 @@ impl Viewport {
             self.automatic_subtract = enabled;
             self.changed();
             return Ok(self.diagnostic());
+        }
+        if id == "view.construction_dashes" {
+            let enabled = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("bad_params", "enabled must be boolean"))?;
+            self.construction_dashes = enabled;
+            self.highlight_key = None;
+            self.changed();
+            return Ok(json!({"enabled":enabled}));
         }
         if id == "view.sketch_rotation_snap" {
             let enabled = params["enabled"].as_bool().ok_or_else(|| error("bad_params", "enabled must be a boolean"))?;
@@ -737,6 +755,7 @@ impl Viewport {
             geometry_revision: authoritative.geometry_revision,
             background: self.background.map(|color| (color, color)).or(model.scene.background),
             sketch_color: self.sketch_color,
+            construction_dashes: self.construction_dashes,
             model,
             camera: self.camera,
             view_proj: self.vp(),
@@ -875,6 +894,7 @@ impl Viewport {
             self.guide_plane = plane;
         }
         let vertex = self.handle().is_some()
+            || self.construction_dashes && self.display_model().is_some_and(|m| m.scene.lines.iter().any(crate::construction::construction_stroke))
             || self.modelling.as_ref().is_some_and(|e| e.handle.is_some())
             || self.display_model().is_some_and(|m| m.sketch.is_some())
             || self.selection.iter().chain(self.hover.iter()).any(|s| match s {
@@ -923,6 +943,15 @@ impl Viewport {
 
     fn highlights(&self) -> Scene {
         let mut scene = Scene::default();
+        if self.construction_dashes
+            && let Some(model) = self.display_model()
+        {
+            let source = model.preview_scene.as_ref().map_or(model.scene.as_ref(), |preview| preview.scene.as_ref());
+            let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
+            for line in source.lines.iter().filter(|line| crate::construction::construction_stroke(line)) {
+                crate::construction::dash_line(&mut scene, line, unit);
+            }
+        }
         self.sketch_feedback(&mut scene);
         // Selection still belongs to the authoritative source revision while a
         // provisional shape changes its topology. Draw its real source edges/faces.

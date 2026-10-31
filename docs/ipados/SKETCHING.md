@@ -1,5 +1,29 @@
 # Sketching (Step 6)
 
+Tap **Construction** before drawing to create construction lines, rectangles,
+circles, arcs and splines. The highlighted toolbar button stays on while
+switching tools; tap it again for ordinary profile geometry. This changes only
+new geometry and resets when leaving the sketch. To convert existing curves,
+use Construction in Properties or hold the toolbar button and choose
+**Toggle construction for selected curves**.
+
+Construction strokes remain orange and are dashed in previews and committed
+sketches. Dash spacing follows zoom, while selection and snapping use the whole
+curve. **Tools > Dashed construction geometry** restores solid strokes when
+disabled; the native preference is `SolidCraft.workspace.constructionDashes`
+(default enabled). CAD commands and saved sketches retain the existing engine
+construction flag and format.
+
+Construction verification on 2026-10-31: all 231 session and 30 bridge tests,
+692 native workspace cases, icon checks, affected Clippy, Rust formatting,
+the adapter wasm check and the unsigned device-target build pass. Four focused
+regressions cover primitive creation, mode changes, stale previews, Undo/Redo,
+dash phase/spacing, unbroken picking and the solid-stroke preference.
+`render_proof -- /tmp/solidcraft-construction.png --construction` captures the
+real GPU output after synthetic Pencil placement; the dashed and solid
+preference captures were inspected. UIKit runtime and physical Pencil input
+were not tested; the engine test suite was not run.
+
 Choose **Point** in the sketch tools menu or compact tool rail, then tap to
 place standalone points. Each tap is one undo step; the tool stays active for
 additional points. Dragging previews the point and lifting commits its final

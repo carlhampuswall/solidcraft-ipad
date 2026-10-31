@@ -76,6 +76,7 @@ struct SketchInputPresentation: Decodable, Equatable {
     let snap: Snap?
     let snapping: Bool
     let auto_constraints: Bool
+    let construction: Bool?
     let tool: String?
     let feedback: Feedback?
     let finish_chain_at: [Double]?

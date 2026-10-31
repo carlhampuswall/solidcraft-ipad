@@ -1,0 +1,7 @@
+{
+  "en": {
+    "ui.ipados.sketch.construction_dashes": "Dashed construction geometry",
+    "ui.ipados.sketch.construction_mode_help": "Draw new lines and shapes as construction geometry. Hold to convert selected curves.",
+    "ui.ipados.sketch.construction_selected": "Toggle construction for selected curves"
+  }
+}

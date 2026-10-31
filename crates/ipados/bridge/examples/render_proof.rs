@@ -131,6 +131,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--sketch-points") {
         return sketch_points_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--construction") {
+        return construction_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--rectangle-dimensions") {
         return rectangle_dimensions_proof(&destination);
     }
@@ -1803,6 +1806,68 @@ fn dark_sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>
         std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
         println!("{stage}: {path}");
     }
+    Ok(())
+}
+
+fn construction_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-40,-25],"p1":[40,25],"connect":false}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("tool.free_dimensions", &json!({"enabled":false}))?;
+    view.command("tool.auto_constraints", &json!({"enabled":false}))?;
+    view.command("tool.snapping", &json!({"enabled":false}))?;
+    if let Some(work) = view.take_tool_work() {
+        let prepared = engine.prepare_tool(work.clone())?;
+        view.complete_tool(&work, engine.accept_tool(prepared)?);
+    }
+    view.command("tool.construction", &json!({"enabled":true}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("no construction frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{stage}: {path}");
+        Ok(())
+    };
+    for (tool, points) in [
+        ("sketch.line", vec![[-35., 0.], [35., 0.]]),
+        ("sketch.rectangle.two_point", vec![[-30., -18.], [30., 18.]]),
+        ("sketch.circle.center", vec![[0., 0.], [12., 0.]]),
+    ] {
+        view.command("tool.set", &json!({"tool":tool}))?;
+        for (index, at) in points.iter().enumerate() {
+            let p = view.command("view.project", &json!({"point":[at[0],at[1],0.]}))?;
+            for phase in ["began", "ended"] {
+                view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":index + 1,
+                    "x_points":p["points"][0],"y_points":p["points"][1],"x_pixels":p["pixels"][0],"y_pixels":p["pixels"][1],
+                    "scale":1,"timestamp":index as f64 + 1.,"geometry_revision":p["geometry_revision"]}))?)?;
+            }
+            if let Some(work) = view.take_tool_work() {
+                let prepared = engine.prepare_tool(work.clone())?;
+                if !view.complete_tool(&work, engine.accept_tool(prepared)?) {
+                    return Err("construction commit rejected".into());
+                }
+            }
+        }
+    }
+    let model = engine.snapshot()?;
+    let sketch = model.sketch.as_ref().ok_or("missing sketch")?;
+    if sketch.profiles != 1 || sketch.sketch.curves.iter().filter(|curve| curve.construction).count() != 6 {
+        return Err("construction mode did not preserve the ordinary rectangle profile".into());
+    }
+    view.command("tool.set", &json!({"tool":"select"}))?;
+    capture(&view, "dashed")?;
+    view.command("view.construction_dashes", &json!({"enabled":false}))?;
+    capture(&view, "solid-preference")?;
+    println!(
+        "PASS: construction mode before Pencil placement creates orange dashed line, rectangle and circle; original rectangle remains a profile. Synthetic input and macOS GPU evidence."
+    );
     Ok(())
 }
 
