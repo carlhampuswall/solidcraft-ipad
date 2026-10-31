@@ -220,6 +220,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var automaticSubtract = UserDefaults.standard.object(forKey: "SolidCraft.workspace.automaticSubtract") as? Bool ?? true
     private var inlineDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.inlineDimensions") as? Bool ?? true
     private var freeDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.freeDimensions") as? Bool ?? true
+    private var distinguishDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.distinguishDimensions") as? Bool ?? true
     private var repeatRectangles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.repeatRectangles") as? Bool ?? false
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnSketchSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnSketchSelection") as? Bool ?? true
@@ -2327,7 +2328,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
             let number = formatter.string(from: NSNumber(value: annotation.value)) ?? String(annotation.value)
             let text = (annotation.driven ? "(" + number + ")" : number) + " " + annotation.units
-            label.update(text: text, selected: annotation.selected, driven: annotation.driven, editable: annotationEditable(annotation))
+            label.update(text: text, selected: annotation.selected, driven: annotation.driven, helper: annotation.dimension_type != nil,
+                         differentiate: distinguishDimensions, editable: annotationEditable(annotation))
             label.bounds.size = label.intrinsicContentSize
             label.center = CGPoint(x: annotation.points[0], y: annotation.points[1])
             label.accessibilityIdentifier = "sketch-dimension-" + annotation.id
@@ -3119,6 +3121,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.updateAvailability(); self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
         })
         if state?.sketch != nil {
+            moreActions.insert(UIAction(title: SketchText.text("distinguish_dimensions"), subtitle: SketchText.text("distinguish_dimensions_help"),
+                                        state: distinguishDimensions ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                self.canvas.cancelInput(); self.distinguishDimensions.toggle()
+                UserDefaults.standard.set(self.distinguishDimensions, forKey: "SolidCraft.workspace.distinguishDimensions")
+                self.showSketchAnnotations(Array(self.sketchAnnotations.values)); self.rebuildMenus()
+            }, at: 0)
             moreActions.insert(UIAction(title: SketchText.text("inline_dimensions"), subtitle: SketchText.text("inline_dimensions_help"),
                                         attributes: numericEditing ? .disabled : [], state: inlineDimensions ? .on : .off) { [weak self] _ in
                 guard let self, !self.numericEditing else { return }
@@ -4762,6 +4771,7 @@ private extension FoundationController {
     private func verifyInlineDimensionsOnDevice() {
         let expected = generation
         let started = Date().timeIntervalSince1970
+        var appearanceFailures: [String] = []
         func wait(_ stage: String, remaining: Int = 100, until condition: @escaping () -> Bool, then action: @escaping () -> Void) {
             guard active, generation == expected else { return }
             if condition() { action(); return }
@@ -4772,6 +4782,24 @@ private extension FoundationController {
         }
         func capture(_ stage: String) {
             view.layoutIfNeeded()
+            for annotation in sketchAnnotations.values {
+                guard let control = annotationLabels[annotation.id],
+                      let caption = control.subviews.compactMap({ $0 as? UILabel }).first,
+                      let outline = caption.layer.sublayers?.compactMap({ $0 as? CAShapeLayer }).first else {
+                    appearanceFailures.append(stage + ": missing dimension caption"); continue
+                }
+                let helper = annotation.dimension_type != nil
+                let bold = caption.font.fontDescriptor.symbolicTraits.contains(.traitBold)
+                if bold != (distinguishDimensions && !helper && !annotation.driven) ||
+                    outline.lineWidth != (distinguishDimensions && !annotation.driven ? 1 : 0) ||
+                    (outline.lineDashPattern != nil) != (distinguishDimensions && helper) ||
+                    control.bounds.width < 44 || control.bounds.height < 44 {
+                    appearanceFailures.append(stage + ": incorrect dimension appearance for " + annotation.id)
+                }
+                if helper && control.accessibilityLabel != SketchText.text("unapplied_dimension") {
+                    appearanceFailures.append(stage + ": helper announced as an applied dimension")
+                }
+            }
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let surface: UIView = view.window ?? view
@@ -4837,12 +4865,14 @@ private extension FoundationController {
                                 capture("delete-redone")
                                 do {
                                     let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                                    let report: [String: Any] = ["passed": true, "started_at": started,
+                                    let report: [String: Any] = ["passed": appearanceFailures.isEmpty, "started_at": started,
                                         "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
-                                        "coverage": "Real UIKit controls, native dimension deletion after preview and invalid expression, geometry retained, single Undo/Redo; physical contacts unverified"]
+                                        "appearance_failures": appearanceFailures,
+                                        "coverage": "Real UIKit dimension styles, legacy appearance preference, Apply, preview/cancel, deletion, single Undo/Redo; physical contacts unverified"]
                                     try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                                         .write(to: directory.appendingPathComponent("dimension-delete-check.json"), options: .atomic)
                                 } catch { print("Inline dimension check FAIL: \(error)"); return }
+                                guard appearanceFailures.isEmpty else { print("Inline dimension check FAIL: \(appearanceFailures)"); return }
                                 print("Inline dimension check PASS: helpers, Apply, repeat edit, Preview/Cancel, Undo/Redo, Delete dimension after invalid expression, geometry retained, single deletion Undo/Redo; physical contacts unverified")
                             }
                         }
@@ -4872,6 +4902,15 @@ private extension FoundationController {
             }
             helperEntity = self.sketchAnnotations.values.filter { $0.dimension_type != nil }.min { $0.points[1] < $1.points[1] }
             capture("helpers")
+            if let action = self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == SketchText.text("distinguish_dimensions") }) {
+                action.performWithSender(self.moreButton, target: nil)
+                if UserDefaults.standard.bool(forKey: "SolidCraft.workspace.distinguishDimensions") == self.distinguishDimensions {
+                    capture("appearance-toggled")
+                } else { appearanceFailures.append("dimension appearance preference did not persist") }
+                self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == SketchText.text("distinguish_dimensions") })?
+                    .performWithSender(self.moreButton, target: nil)
+                capture("appearance-restored")
+            } else { appearanceFailures.append("dimension appearance preference missing") }
             openEditor(selectedOnly: false) {
                 guard let editor = self.editor, let range = editor.field.selectedTextRange,
                       editor.field.offset(from: range.start, to: range.end) == (editor.field.text ?? "").utf16.count else {

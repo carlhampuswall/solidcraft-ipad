@@ -1158,11 +1158,15 @@ private final class ExpressionKeypad: UIView {
 /// interaction lets the canvas retain annotation dragging in the Move tool.
 final class SketchDimensionControl: UIControl {
     private let label = WorkspaceStyle.label(.caption1)
+    private let outline = CAShapeLayer()
     var onEdit: (() -> Void)?
     private var driven = false
+    private var helper = false
+    private var differentiated = true
+    private var dimensionSelected = false
     var editable = false {
         didSet {
-            let key = driven ? "reference_dimension" : (editable ? "edit_dimension" : "driving_dimension")
+            let key = helper ? "unapplied_dimension" : (driven ? "reference_dimension" : (editable ? "edit_dimension" : "driving_dimension"))
             accessibilityLabel = NativeText.value("ui.ipados.sketch." + key)
             accessibilityTraits = editable ? .button : .staticText
         }
@@ -1171,29 +1175,50 @@ final class SketchDimensionControl: UIControl {
         super.init(frame: .zero)
         label.numberOfLines = 1
         label.layer.cornerRadius = 4; label.clipsToBounds = true
+        outline.fillColor = UIColor.clear.cgColor
+        label.layer.addSublayer(outline)
         addSubview(label)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (control: SketchDimensionControl, _: UITraitCollection) in
+            control.setNeedsLayout()
+        }
         isAccessibilityElement = true
         isUserInteractionEnabled = false // MetalCanvas retains taps and drags.
         accessibilityTraits = .button
         addAction(UIAction { [weak self] _ in self?.onEdit?() }, for: .touchUpInside)
     }
     required init?(coder: NSCoder) { nil }
-    func update(text: String, selected: Bool, driven: Bool, editable: Bool) {
+    func update(text: String, selected: Bool, driven: Bool, helper: Bool, differentiate: Bool, editable: Bool) {
         label.text = " " + text + " "
-        label.textColor = selected ? WorkspaceStyle.selectedForeground : WorkspaceStyle.foreground
+        let font = UIFont.preferredFont(forTextStyle: .caption1)
+        let emphasized = differentiate && !helper && !driven
+        label.font = emphasized ? UIFont(descriptor: font.fontDescriptor.withSymbolicTraits(.traitBold) ?? font.fontDescriptor, size: 0) : font
+        label.textColor = selected ? WorkspaceStyle.selectedForeground : (differentiate && (helper || driven) ? WorkspaceStyle.secondary : WorkspaceStyle.foreground)
         label.backgroundColor = selected ? WorkspaceStyle.accent : WorkspaceStyle.surface.withAlphaComponent(0.92)
         self.driven = driven
+        self.helper = helper
+        self.differentiated = differentiate
+        self.dimensionSelected = selected
+        outline.lineWidth = differentiate && !driven ? 1 : 0
+        outline.lineDashPattern = differentiate && helper ? [3, 3] : nil
         accessibilityValue = text
         self.editable = editable
         invalidateIntrinsicContentSize(); setNeedsLayout()
     }
     override var intrinsicContentSize: CGSize {
-        let size = label.intrinsicContentSize
+        let size = captionSize
         return CGSize(width: max(44, size.width), height: max(44, size.height))
+    }
+    private var captionSize: CGSize {
+        let size = label.intrinsicContentSize
+        return differentiated ? CGSize(width: size.width + 8, height: size.height + 6) : size
     }
     override func layoutSubviews() {
         super.layoutSubviews()
-        label.sizeToFit(); label.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        label.bounds.size = captionSize; label.center = CGPoint(x: bounds.midX, y: bounds.midY)
+        outline.frame = label.bounds
+        outline.path = UIBezierPath(roundedRect: label.bounds.insetBy(dx: 0.5, dy: 0.5), cornerRadius: 4).cgPath
+        let colour = dimensionSelected ? WorkspaceStyle.selectedForeground : (helper ? WorkspaceStyle.secondary : WorkspaceStyle.accent)
+        outline.strokeColor = colour.resolvedColor(with: traitCollection).cgColor
     }
     override func accessibilityActivate() -> Bool {
         guard editable else { return false }

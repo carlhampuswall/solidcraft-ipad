@@ -192,6 +192,13 @@ Free lengths and radii appear beside eligible sketch geometry without selecting
 an edge first. Sizes determined by constraints or existing dimensions do not
 get another free-size helper. In Select, tap a helper or an existing driving
 dimension to enter an exact size in a popover anchored at the value.
+Applied driving dimensions use bold values with solid outlines. Free-size
+helpers use secondary text with dashed outlines, including when selected;
+parenthesised reference dimensions remain read-only. Applying a helper changes
+it to the driving style, and deleting or undoing the dimension restores the
+helper style. VoiceOver identifies helpers as current measurements without an
+applied dimension. **Tools > Distinguish applied dimensions** restores the
+original caption appearance when disabled; this preference persists across launches.
 **Tools > Show free dimension helpers** restores the previous selected-edge-only
 helpers when disabled. Both this preference and repeated rectangle creation are
 saved across launches. Helpers never open the editor automatically.

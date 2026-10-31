@@ -1,0 +1,7 @@
+{
+  "en": {
+    "ui.ipados.sketch.distinguish_dimensions": "Distinguish applied dimensions",
+    "ui.ipados.sketch.distinguish_dimensions_help": "Applied dimensions have bold values and solid outlines; unapplied measurements have dashed outlines. Turn off to restore the original appearance.",
+    "ui.ipados.sketch.unapplied_dimension": "Current measurement, no dimension applied"
+  }
+}
