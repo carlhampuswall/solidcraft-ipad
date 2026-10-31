@@ -1209,6 +1209,7 @@ final class SketchDimensionControl: UIControl {
         self.helper = helper
         self.differentiated = differentiate
         self.dimensionSelected = selected
+        outline.isHidden = !differentiate || driven
         outline.lineWidth = differentiate && !driven ? 1 : 0
         outline.lineDashPattern = differentiate && helper ? [3, 3] : nil
         accessibilityValue = text

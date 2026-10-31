@@ -4791,6 +4791,7 @@ private extension FoundationController {
                 let helper = annotation.dimension_type != nil
                 let bold = caption.font.fontDescriptor.symbolicTraits.contains(.traitBold)
                 if bold != (distinguishDimensions && !helper && !annotation.driven) ||
+                    outline.isHidden != (!distinguishDimensions || annotation.driven) ||
                     outline.lineWidth != (distinguishDimensions && !annotation.driven ? 1 : 0) ||
                     (outline.lineDashPattern != nil) != (distinguishDimensions && helper) ||
                     control.bounds.width < 44 || control.bounds.height < 44 {
@@ -4863,17 +4864,23 @@ private extension FoundationController {
                             self.run("edit.redo")
                             wait("redo deletes dimension again", until: { self.pending.isEmpty && self.state?.sketch?.constraints.contains(where: \.dimension) == false && self.state?.sketch?.curves.count == 4 }) {
                                 capture("delete-redone")
-                                do {
-                                    let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                                    let report: [String: Any] = ["passed": appearanceFailures.isEmpty, "started_at": started,
-                                        "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
-                                        "appearance_failures": appearanceFailures,
-                                        "coverage": "Real UIKit dimension styles, legacy appearance preference, Apply, preview/cancel, deletion, single Undo/Redo; physical contacts unverified"]
-                                    try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
-                                        .write(to: directory.appendingPathComponent("dimension-delete-check.json"), options: .atomic)
-                                } catch { print("Inline dimension check FAIL: \(error)"); return }
-                                guard appearanceFailures.isEmpty else { print("Inline dimension check FAIL: \(appearanceFailures)"); return }
-                                print("Inline dimension check PASS: helpers, Apply, repeat edit, Preview/Cancel, Undo/Redo, Delete dimension after invalid expression, geometry retained, single deletion Undo/Redo; physical contacts unverified")
+                                self.run("edit.undo")
+                                wait("settled applied dimension", until: { hasDimension("80 mm") && self.pending.isEmpty && self.presentedViewController == nil }) {
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                        capture("styles")
+                                        do {
+                                            let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                                            let report: [String: Any] = ["passed": appearanceFailures.isEmpty, "started_at": started,
+                                                "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                                                "appearance_failures": appearanceFailures,
+                                                "coverage": "Real UIKit dimension styles, legacy appearance preference, Apply, preview/cancel, deletion, single Undo/Redo; physical contacts unverified"]
+                                            try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                                                .write(to: directory.appendingPathComponent("dimension-delete-check.json"), options: .atomic)
+                                        } catch { print("Inline dimension check FAIL: \(error)"); return }
+                                        guard appearanceFailures.isEmpty else { print("Inline dimension check FAIL: \(appearanceFailures)"); return }
+                                        print("Inline dimension check PASS: helpers, Apply, repeat edit, Preview/Cancel, Undo/Redo, Delete dimension after invalid expression, geometry retained, single deletion Undo/Redo; physical contacts unverified")
+                                    }
+                                }
                             }
                         }
                     }
