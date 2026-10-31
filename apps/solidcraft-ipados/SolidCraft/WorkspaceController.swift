@@ -3414,7 +3414,7 @@ private extension FoundationController {
                 if !self.endpointFinishButton.isHidden { issues.append("Button appeared before the first line") }
                 tap([0, 10, 0]) {
                     tap([25, 10, 0]) {
-                        wait({ !self.endpointFinishButton.isHidden && self.pending.isEmpty }) {
+                        wait({ !self.endpointFinishButton.isHidden && self.pending.isEmpty && self.state?.sketch?.curves.count == 2 }) {
                             let button = self.endpointFinishButton
                             if self.state?.sketch?.curves.count != 2 { issues.append("Expected two committed lines") }
                             if button.bounds.width < 44 || button.bounds.height < 44 || button.configuration?.image == nil { issues.append("Missing artwork or touch target") }
