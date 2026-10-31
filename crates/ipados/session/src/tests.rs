@@ -3622,6 +3622,90 @@ fn constraint_first_pair_accumulates_without_multiple_selection_and_rejects_bad_
 }
 
 #[test]
+fn constraint_first_empty_taps_return_to_select_and_respect_dismissal_preference() {
+    for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        engine.execute("sketch.line", json!({"points":[[-30,-20],[30,-10]],"ids":["first"],"infer":false,"connect":false})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        let before = engine.sketch_snapshot().unwrap().sketch;
+        let history = engine.session.undo.len();
+        let empty = [760., 560.];
+        for cancel in [true, false] {
+            view.command("view.tool_dismissal", &json!({"cancel_on_dismiss":cancel})).unwrap();
+            for key in ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"] {
+                view.command("tool.constraint", &json!({"constraint":key})).unwrap();
+                assert!(view.pick_sketch_unfiltered(empty).is_none());
+                feed(&mut view, source, InputPhase::Began, 1, empty, 1.);
+                assert_eq!(view.constraint_tool(), Some(key), "touch-down does not dismiss");
+                feed(&mut view, source, InputPhase::Ended, 1, empty, 1.1);
+                assert_eq!(view.constraint_tool(), if cancel { None } else { Some(key) }, "{source:?}: {key}");
+                assert!(view.selection().is_empty());
+                assert!(view.take_tool_work().is_none());
+                if cancel {
+                    assert_eq!(view.diagnostic()["input"]["tool"], "select");
+                    view.command("tool.previous", &json!({})).unwrap();
+                    assert_eq!(view.constraint_tool(), Some(key), "the previous tool can be restored");
+                }
+            }
+            view.command("tool.constraint", &json!({"constraint":"parallel"})).unwrap();
+            let at = point(&view, Vec3::new(0., -15., 0.));
+            feed(&mut view, source, InputPhase::Began, 2, at, 2.);
+            feed(&mut view, source, InputPhase::Ended, 2, at, 2.1);
+            assert_eq!(view.selection().len(), 1);
+            feed(&mut view, source, InputPhase::Began, 3, empty, 3.);
+            feed(&mut view, source, InputPhase::Ended, 3, empty, 3.1);
+            assert!(view.selection().is_empty(), "empty tap clears the partial pair");
+            assert_eq!(view.constraint_tool(), if cancel { None } else { Some("parallel") });
+            assert!(view.take_tool_work().is_none());
+        }
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+        assert_eq!(engine.session.undo.len(), history);
+    }
+}
+
+#[test]
+fn constraint_first_occupied_stale_cancelled_and_dragged_taps_do_not_dismiss() {
+    for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        engine.execute("sketch.line", json!({"points":[[-30,-20],[30,-10]],"ids":["first"],"infer":false,"connect":false})).unwrap();
+        engine.execute("sketch.circle.center", json!({"center":[35,0],"radius":8,"id":"round","infer":false,"connect":false})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        view.command("tool.constraint", &json!({"constraint":"parallel"})).unwrap();
+        view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"first"}})).unwrap();
+        let selection = view.selection().to_vec();
+        let circle = point(&view, Vec3::new(43., 0., 0.));
+        assert!(view.pick_sketch(circle).is_none(), "circle is ineligible for Parallel");
+        assert!(view.pick_sketch_unfiltered(circle).is_some());
+        feed(&mut view, source, InputPhase::Began, 1, circle, 1.);
+        feed(&mut view, source, InputPhase::Ended, 1, circle, 1.1);
+        assert_eq!(view.constraint_tool(), Some("parallel"));
+        assert_eq!(view.selection(), selection);
+
+        let empty = [760., 560.];
+        for mode in ["cancelled", "consumed", "stale", "dragged", "secondary"] {
+            let mut begin = sample(&view, source, InputPhase::Began, 2, empty, 2.);
+            begin.consumed = mode == "consumed";
+            begin.button = u8::from(mode == "secondary");
+            view.input(begin).unwrap();
+            if mode == "dragged" {
+                feed(&mut view, source, InputPhase::Moved, 2, [720., 520.], 2.1);
+            }
+            let phase = if mode == "cancelled" { InputPhase::Cancelled } else { InputPhase::Ended };
+            let mut end = sample(&view, source, phase, 2, empty, 2.2);
+            if mode == "stale" {
+                end.geometry_revision = Some(engine.geometry_revision + 1);
+            }
+            view.input(end).unwrap();
+            assert_eq!(view.constraint_tool(), Some("parallel"), "{source:?}: {mode}");
+            assert_eq!(view.selection(), selection, "{source:?}: {mode}");
+            assert!(view.take_tool_work().is_none());
+        }
+    }
+}
+
+#[test]
 fn constraint_first_all_menu_choices_reach_the_existing_solver() {
     use solidcraft_engine::sketch::ConstraintKind;
     for key in ["horizontal", "vertical", "parallel", "perpendicular", "coincident", "tangent", "equal", "concentric", "midpoint", "fix"] {

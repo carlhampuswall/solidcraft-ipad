@@ -731,19 +731,27 @@ impl Viewport {
     }
 
     pub(crate) fn pick_sketch(&self, screen: [f64; 2]) -> Option<Sel> {
+        self.pick_sketch_filtered(screen, true)
+    }
+
+    pub(crate) fn pick_sketch_unfiltered(&self, screen: [f64; 2]) -> Option<Sel> {
+        self.pick_sketch_filtered(screen, false)
+    }
+
+    fn pick_sketch_filtered(&self, screen: [f64; 2], constraint_filter: bool) -> Option<Sel> {
         let snapshot = self.model.as_ref()?.sketch.as_ref()?;
         let point = snapshot.plane.to_local(self.plane_point(screen, snapshot.plane)?);
         let tolerance = 10.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
         let curves_only = self.contacts.sketch.tool == "sketch.delete";
         if !curves_only
-            && self.constraint_tool().is_none()
+            && (!constraint_filter || self.constraint_tool().is_none())
             && let Some((id, _, _)) = self.visible_glyphs().into_iter().find(|(_, _, at)| at.dist(point) <= tolerance)
         {
             return Some(Sel::SketchConstraint { id });
         }
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
         if !curves_only
-            && self.constraint_tool().is_none()
+            && (!constraint_filter || self.constraint_tool().is_none())
             && let Some(c) = snapshot
                 .sketch
                 .constraints
@@ -767,8 +775,10 @@ impl Viewport {
                     || p.id != "origin"
                         && snapshot.sketch.resolve_point(&p.id).is_some_and(|i| !snapshot.sketch.curves.iter().any(|c| c.kind.uses(i)))
             })
-            .filter(|p| self.constraint_tool() != Some("coincident") || !self.is_selected(&Sel::SketchPoint { id: p.id.clone() }))
-            .filter(|p| p.pos.dist(point) <= tolerance && self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() }))
+            .filter(|p| {
+                !constraint_filter || self.constraint_tool() != Some("coincident") || !self.is_selected(&Sel::SketchPoint { id: p.id.clone() })
+            })
+            .filter(|p| p.pos.dist(point) <= tolerance && (!constraint_filter || self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() })))
             .min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
         {
             return Some(Sel::SketchPoint { id: p.id.clone() });
@@ -793,7 +803,9 @@ impl Viewport {
                 });
                 distance.map(|d| (d, c))
             })
-            .filter(|(d, c)| *d <= tolerance && self.constraint_accepts(&Sel::SketchCurve { id: c.id.clone(), sketch: Some(snapshot.id) }))
+            .filter(|(d, c)| {
+                *d <= tolerance && (!constraint_filter || self.constraint_accepts(&Sel::SketchCurve { id: c.id.clone(), sketch: Some(snapshot.id) }))
+            })
             .min_by(|a, b| a.0.total_cmp(&b.0))
             .map(|(_, c)| Sel::SketchCurve { id: c.id.clone(), sketch: Some(snapshot.id) })
     }

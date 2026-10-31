@@ -125,6 +125,10 @@ last dismissed token so UIKit can close only its matching form, including when
 selection was already empty. Turning the preference off preserves the previous
 hide-and-resume behaviour. The form's explicit Select action can still hide
 Properties temporarily to collect references without cancelling the draft.
+In sketch constraint mode, a stationary empty-space tap also returns to Select
+and clears partial picks. Geometry that is ineligible for the chosen constraint
+does not dismiss it. Turning the same preference off keeps the constraint tool
+armed after an empty tap, while still clearing its picks.
 
 Input events may include `sketch_annotation: string` on contact begin. UIKit
 supplies the annotation ID hit within the native label's full bounds; Rust

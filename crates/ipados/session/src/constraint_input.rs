@@ -56,6 +56,10 @@ impl Viewport {
             return Ok(());
         }
         let Some(hit) = hit else {
+            if self.cancel_tools_on_dismiss {
+                self.cancel_interactions();
+                self.contacts.sketch.tool = "select".into();
+            }
             self.select(None, false);
             return Ok(());
         };

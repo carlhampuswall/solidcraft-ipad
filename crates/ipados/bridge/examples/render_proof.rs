@@ -98,6 +98,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--selection-taps") {
         return selection_taps_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--constraint-dismissal") {
+        return constraint_dismissal_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--cylinder-selection") {
         return cylinder_selection_proof(&destination, false);
     }
@@ -1657,6 +1660,41 @@ fn sketch_rotation_snap_proof(destination: &str) -> Result<(), Box<dyn std::erro
         let path = destination.replace(".png", &format!("-{label}.png"));
         std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("rotation PNG")?)?;
         println!("PASS {label}: finger angle {raw}°, sketch angle {actual:.6}°; {path}");
+    }
+    Ok(())
+}
+
+fn constraint_dismissal_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    engine.execute("sketch.line", json!({"points":[[-30,-20],[30,-10]],"ids":["first"],"infer":false,"connect":false}))?;
+    engine.execute("sketch.line", json!({"points":[[-30,15],[30,30]],"ids":["second"],"infer":false,"connect":false}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("tool.constraint", &json!({"constraint":"parallel"}))?;
+    view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"first"}}))?;
+    let revision = view.snapshot().ok_or("missing constraint scene")?.model.geometry_revision;
+    let capturer = solidcraft_gpu::capture::Capturer::headless_single_sample()?;
+    for stage in ["armed", "select"] {
+        if stage == "select" {
+            for (phase, timestamp) in [("began", 1.), ("ended", 1.1)] {
+                view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":1,
+                    "x_points":920.,"y_points":600.,"x_pixels":920.,"y_pixels":600.,
+                    "scale":1.,"timestamp":timestamp,"geometry_revision":revision}))?)?;
+            }
+            let state = view.diagnostic();
+            if state["input"]["tool"] != "select" || !view.selection().is_empty() || view.take_tool_work().is_some() {
+                return Err("empty tap did not dismiss the constraint tool and clear its picks".into());
+            }
+        }
+        let frame = view.snapshot().ok_or("missing constraint scene")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("constraint PNG")?)?;
+        std::fs::write(path.replace(".png", ".json"), serde_json::to_vec_pretty(&view.diagnostic())?)?;
+        println!("PASS {stage}: {}; {path}", view.diagnostic()["input"]["tool"]);
     }
     Ok(())
 }

@@ -1020,7 +1020,9 @@ impl Viewport {
                 // clears the set without requiring a trip through Tools.
                 let add = e.shift || self.multiple && hit.is_some();
                 if self.constraint_tool().is_some() {
-                    self.constraint_pick(hit)?;
+                    // Ineligible geometry is still occupied space. Only a true
+                    // miss dismisses the constraint tool.
+                    self.constraint_pick(hit.or_else(|| self.pick_sketch_unfiltered(tap_point)))?;
                 } else {
                     self.select(hit, add);
                 }
