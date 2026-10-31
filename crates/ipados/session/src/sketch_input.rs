@@ -140,6 +140,7 @@ impl SketchInput {
             "sketch.trim" => "trim",
             "sketch.extend" => "extend",
             "sketch.dimension" => "dimension_place",
+            "sketch.point" => "point_place",
             "sketch.arc.three_point" if self.points.len() == 2 => "arc_through",
             "sketch.arc.three_point" if self.points.len() == 1 => "arc_end",
             "sketch.spline.fit_point" => "spline_point",
@@ -476,7 +477,7 @@ impl Viewport {
         self.contacts.sketch.contact = None;
         let anchored = self.contacts.sketch.started_with_anchor;
         let tool = self.contacts.sketch.tool.as_str();
-        if matches!(tool, "sketch.dimension" | "sketch.delete" | "sketch.trim" | "sketch.extend") {
+        if matches!(tool, "sketch.point" | "sketch.dimension" | "sketch.delete" | "sketch.trim" | "sketch.extend") {
             let _ = self.queue_sketch(true);
             return;
         }
@@ -541,6 +542,16 @@ impl Viewport {
             ("sketch.dimension_text".into(), json!({"dimension":dimension,"at":[at.x,at.y]}))
         } else {
             match state.tool.as_str() {
+                "sketch.point" => {
+                    // Endpoint references are not point-command arguments.
+                    // Coordinates plus connect create a new coincident point.
+                    let point = if automatic && last.argument.as_str().is_some_and(|s| s.starts_with("mid:") || s.starts_with("on:")) {
+                        last.argument.clone()
+                    } else {
+                        json!([last.at.x, last.at.y])
+                    };
+                    ("sketch.point".into(), json!({"point":point,"connect":automatic}))
+                }
                 "select" | "sketch.move" => {
                     let (entity, from, with) = state.moving.as_ref().ok_or_else(|| error("sketch", "Select geometry to move"))?;
                     if *from == last.at {
@@ -654,6 +665,7 @@ impl Viewport {
             offer(point.pos, json!(point.id), if centers.contains(&index) { "center" } else { "point" });
         }
         if best.is_none()
+            && self.contacts.sketch.tool != "sketch.point"
             && let Some((point, a, b)) = solidcraft_engine::sketch::nearest_curve_intersection(sk, local, tolerance)
             && let (Some(a), Some(b)) = (sk.curves.get(a), sk.curves.get(b))
         {
@@ -673,6 +685,19 @@ impl Viewport {
                 {
                     best = Some((point.dist(local), point, arg, kind));
                     break;
+                }
+            }
+        }
+        if best.is_none() && self.contacts.sketch.tool == "sketch.point" {
+            for (index, curve) in sk.curves.iter().enumerate() {
+                if !solidcraft_engine::view::sketch_curve_visible(sk, index) {
+                    continue;
+                }
+                let Some(shape) = sk.shape(index) else { continue };
+                let point = shape.project(local);
+                let distance = point.dist(local);
+                if distance <= tolerance && shape.param_on(point, 1e-8).is_some() && best.as_ref().is_none_or(|b| distance < b.0) {
+                    best = Some((distance, point, json!(format!("on:{}:{},{}", curve.id, point.x, point.y)), "on_curve"));
                 }
             }
         }
@@ -733,13 +758,18 @@ impl Viewport {
         {
             return Some(Sel::SketchConstraint { id: c.id.clone() });
         }
-        if !curves_only
-            && let Some(p) = snapshot
-                .sketch
-                .points
-                .iter()
-                .filter(|p| p.pos.dist(point) <= tolerance && self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() }))
-                .min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
+        if let Some(p) = snapshot
+            .sketch
+            .points
+            .iter()
+            .filter(|p| {
+                !curves_only
+                    || p.id != "origin"
+                        && snapshot.sketch.resolve_point(&p.id).is_some_and(|i| !snapshot.sketch.curves.iter().any(|c| c.kind.uses(i)))
+            })
+            .filter(|p| self.constraint_tool() != Some("coincident") || !self.is_selected(&Sel::SketchPoint { id: p.id.clone() }))
+            .filter(|p| p.pos.dist(point) <= tolerance && self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() }))
+            .min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
         {
             return Some(Sel::SketchPoint { id: p.id.clone() });
         }
@@ -787,6 +817,32 @@ impl Viewport {
             }
         };
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
+        // Standalone points have no curve stroke in the shared model scene.
+        // Keep their markers a constant screen size, including scratch previews.
+        let used: std::collections::BTreeSet<_> = snapshot.sketch.curves.iter().flat_map(|c| c.kind.point_ids()).collect();
+        for (_, point) in snapshot.sketch.points.iter().enumerate().filter(|(i, p)| p.id != "origin" && !used.contains(i)) {
+            if point.link.is_some() && snapshot.sketch.view.hide_projected {
+                continue;
+            }
+            let palette = solidcraft_engine::view::Palette::DEFAULT;
+            let point_color = if point.link.is_some() {
+                palette.sketch_projected
+            } else if point.fixed {
+                palette.sketch_fixed
+            } else {
+                palette.sketch
+            };
+            for axis in [snapshot.plane.x, snapshot.plane.y] {
+                let at = snapshot.plane.to_world(point.pos);
+                scene.lines.push(solidcraft_render::SceneLine {
+                    points: vec![at - axis * unit * 3.5, at + axis * unit * 3.5],
+                    color: point_color,
+                    alpha: 1.0,
+                    width: self.metrics.scale * 2.0,
+                    on_top: true,
+                });
+            }
+        }
         let measurements: Vec<_> = self
             .measurements(snapshot)
             .filter_map(|(index, kind, _)| {

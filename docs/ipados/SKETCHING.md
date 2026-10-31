@@ -1,5 +1,29 @@
 # Sketching (Step 6)
 
+Choose **Point** in the sketch tools menu or compact tool rail, then tap to
+place standalone points. Each tap is one undo step; the tool stays active for
+additional points. Dragging previews the point and lifting commits its final
+position. Cancel discards only the provisional point. Points are drawn as small
+crosses and support selection, movement, deletion and dimensions through the
+existing engine commands.
+
+To put a point on a circle, select the point and the circle edge, then choose
+**Coincident**, or choose Coincident first and tap those two entities in either
+order. The existing solver creates a point-on-curve constraint. With snapping
+and automatic constraints enabled, placing a point near a circle edge also
+creates that relationship directly. Disabling automatic constraints keeps the
+snapped position without adding the relationship.
+
+Point verification on 2026-10-31: all 217 session and 30 bridge tests pass,
+including six point regressions covering placement on XY/XZ/YZ, visibility,
+selection, deletion, preview/cancel, Undo/Redo, native round trips, point snaps
+and circle coincidence in both pick orders. The native workspace harness passes
+692 cases and canonical icon checks; affected Clippy and the unsigned device
+build pass. `render_proof -- /tmp/solidcraft-sketch-points.png --sketch-points`
+captures creation, coincidence and Undo through synthetic Pencil input and the
+actual macOS GPU renderer. Captures were inspected; this does not verify UIKit
+runtime or physical Pencil input. The engine test suite was not run.
+
 While drawing a line chain, a small checkmark button appears beside the last
 committed endpoint. It runs `tool.finish_chain`, leaving the committed lines and
 the sketch open; the next line starts a new chain. The button uses the shared

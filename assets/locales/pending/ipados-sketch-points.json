@@ -1,0 +1,6 @@
+{
+  "en": {
+    "ui.ipados.sketch.draw_point": "Point",
+    "ui.ipados.sketch.point_place": "Tap to place a point. Select a point and a circle edge, then choose Coincident to place the point on the circle."
+  }
+}

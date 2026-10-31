@@ -3725,6 +3725,183 @@ fn sketch_tap(view: &mut Viewport, id: u64, xy: [f64; 2]) {
     feed(view, InputSource::Pencil, InputPhase::Ended, id, screen, id as f64 + 0.1);
 }
 #[test]
+fn sketch_point_taps_repeat_render_pick_and_roundtrip_with_one_undo_each() {
+    use solidcraft_engine::geom::Vec2;
+    for plane in ["XY", "XZ", "YZ"] {
+        let (mut engine, mut view) = sketch_input_fixture(json!(plane), "sketch.point");
+        assert!(engine.workspace(&[], false, false)["tools"].as_array().unwrap().iter().any(|t| t["id"] == "sketch.point" && t["enabled"] == true));
+        assert_eq!(view.diagnostic()["input"]["sketch"]["prompt"], "point_place");
+        let history = engine.session.undo.len();
+        for (id, xy) in [(1, [20., 15.]), (2, [-25., 30.])] {
+            sketch_tap(&mut view, id, xy);
+            assert!(run_tool(&mut engine, &mut view), "one tap places one point");
+            assert_eq!(engine.session.undo.len(), history + id as usize);
+            assert_eq!(view.diagnostic()["input"]["tool"], "sketch.point");
+            let snapshot = engine.sketch_snapshot().unwrap();
+            let p = snapshot.sketch.points.iter().find(|p| p.pos.dist(Vec2::new(xy[0], xy[1])) < 1e-7).unwrap();
+            assert!(snapshot.sketch.curves.is_empty());
+            assert_eq!(snapshot.profiles, 0);
+            assert!(matches!(view.pick_sketch(point(&view, snapshot.plane.to_world(p.pos))), Some(Sel::SketchPoint { id }) if id == p.id));
+            let frame = view.snapshot().unwrap();
+            let world = snapshot.plane.to_world(p.pos);
+            assert!(frame.model.bounds.min.x <= world.x + 1e-7 && frame.model.bounds.max.x >= world.x - 1e-7);
+            assert!(frame.model.bounds.min.y <= world.y + 1e-7 && frame.model.bounds.max.y >= world.y - 1e-7);
+            assert!(frame.model.bounds.min.z <= world.z + 1e-7 && frame.model.bounds.max.z >= world.z - 1e-7);
+            assert!(
+                frame.highlight.lines.iter().any(|l| {
+                    l.color == solidcraft_engine::view::Palette::DEFAULT.sketch
+                        && (l.points[0] + l.points[1]).dist(snapshot.plane.to_world(p.pos) * 2.) < 1e-7
+                }),
+                "unselected standalone point remains visible"
+            );
+        }
+        let original = engine.sketch_snapshot().unwrap().sketch;
+        let mut loaded = modelling_roundtrip(&engine);
+        loaded.execute("sketch.edit", json!({"sketch":engine.session.active_sketch.unwrap()})).unwrap();
+        assert_eq!(loaded.sketch_snapshot().unwrap().sketch, original);
+        engine.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch.points.len(), 2);
+        engine.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        view.command("tool.set", &json!({"tool":"sketch.delete"})).unwrap();
+        sketch_tap(&mut view, 3, [20., 15.]);
+        assert!(run_tool(&mut engine, &mut view));
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch.points.len(), 2);
+    }
+}
+
+#[test]
+fn sketch_point_drag_preview_cancel_and_final_lift_are_atomic() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("YZ"), "sketch.point");
+    let original = engine.sketch_snapshot().unwrap().sketch;
+    let history = engine.session.undo.len();
+    let plane = engine.sketch_snapshot().unwrap().plane;
+    for (phase, xy) in [(InputPhase::Began, [20., 15.]), (InputPhase::Moved, [35., 25.])] {
+        let at = point(&view, plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1])));
+        feed(&mut view, InputSource::Pencil, phase, 1, at, 1.);
+    }
+    let work = view.take_tool_work().unwrap();
+    let prepared = engine.prepare_tool(work.clone()).unwrap();
+    assert!(!work.commit);
+    assert!(view.publish_preview(&work, prepared.model));
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+    assert!(!view.snapshot().unwrap().highlight.lines.is_empty());
+    view.command("tool.cancel", &json!({})).unwrap();
+    assert!(!view.tool_is_current(&work));
+    assert_eq!(engine.session.undo.len(), history);
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+    for (phase, xy) in [(InputPhase::Began, [20., 15.]), (InputPhase::Moved, [35., 25.]), (InputPhase::Ended, [35., 25.])] {
+        let at = point(&view, plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1])));
+        feed(&mut view, InputSource::Pencil, phase, 2, at, 2.);
+    }
+    assert!(run_tool(&mut engine, &mut view));
+    let sketch = engine.sketch_snapshot().unwrap().sketch;
+    assert_eq!(sketch.points.len(), 2);
+    assert!(sketch.points.iter().any(|p| p.pos.dist(solidcraft_engine::geom::Vec2::new(35., 25.)) < 1e-7));
+    assert_eq!(engine.session.undo.len(), history + 1);
+}
+
+#[test]
+fn sketch_point_circle_coincident_works_in_both_pick_orders() {
+    use solidcraft_engine::sketch::ConstraintKind;
+    for reverse in [false, true] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.point");
+        engine.execute("sketch.circle.center", json!({"center":[0,0],"radius":20,"id":"circle"})).unwrap();
+        engine.execute("sketch.constraint.fix", json!({"entities":["circle"],"fixed":true})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        sketch_tap(&mut view, 1, [30., 15.]);
+        assert!(run_tool(&mut engine, &mut view));
+        let snapshot = engine.sketch_snapshot().unwrap();
+        let id = snapshot.sketch.points.last().unwrap().id.clone();
+        let before = snapshot.sketch.clone();
+        let history = engine.session.undo.len();
+        view.command("tool.constraint", &json!({"constraint":"coincident"})).unwrap();
+        let picks = if reverse { [[0., 20.], [30., 15.]] } else { [[30., 15.], [0., 20.]] };
+        for (i, xy) in picks.into_iter().enumerate() {
+            sketch_tap(&mut view, i as u64 + 2, xy);
+        }
+        assert!(run_tool(&mut engine, &mut view));
+        let snapshot = engine.sketch_snapshot().unwrap();
+        let p = snapshot.sketch.resolve_point(&id).unwrap();
+        let c = snapshot.sketch.curve_index("circle").unwrap();
+        assert!(snapshot.solved);
+        assert!((snapshot.sketch.point(p).unwrap().len() - 20.).abs() < 1e-6);
+        assert!(
+            snapshot
+                .sketch
+                .constraints
+                .iter()
+                .any(|constraint| matches!(constraint.kind, ConstraintKind::PointOnCurve { p: pi, c: ci } if pi == p && ci == c))
+        );
+        assert_eq!(engine.session.undo.len(), history + 1);
+        engine.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+    }
+}
+
+#[test]
+fn sketch_point_snaps_to_origin_endpoints_and_midpoints_without_reusing_them() {
+    use solidcraft_engine::sketch::ConstraintKind;
+    for (xy, midpoint) in [([0., 0.], false), ([20., 20.], false), ([40., 20.], true)] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.point");
+        engine.execute("sketch.line", json!({"points":[[20,20],[60,20]],"ids":["line"],"infer":false,"connect":false})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        let before = engine.sketch_snapshot().unwrap().sketch.points.len();
+        sketch_tap(&mut view, 1, xy);
+        assert!(run_tool(&mut engine, &mut view));
+        let sketch = engine.sketch_snapshot().unwrap().sketch;
+        assert_eq!(sketch.points.len(), before + 1);
+        assert!(sketch.constraints.iter().any(|c| if midpoint {
+            matches!(c.kind, ConstraintKind::Midpoint { .. })
+        } else {
+            matches!(c.kind, ConstraintKind::Coincident { .. })
+        }));
+    }
+}
+
+#[test]
+fn sketch_point_on_circle_can_pick_the_overlapping_edge_for_coincident() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.point");
+    engine.execute("sketch.circle.center", json!({"center":[0,0],"radius":20,"id":"circle"})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    view.command("tool.auto_constraints", &json!({"enabled":false})).unwrap();
+    sketch_tap(&mut view, 1, [0., 20.]);
+    assert!(run_tool(&mut engine, &mut view));
+    view.command("tool.constraint", &json!({"constraint":"coincident"})).unwrap();
+    sketch_tap(&mut view, 2, [0., 20.]);
+    assert!(matches!(view.selection(), [Sel::SketchPoint { .. }]));
+    sketch_tap(&mut view, 3, [0., 20.]);
+    assert!(run_tool(&mut engine, &mut view));
+    assert!(engine.sketch_snapshot().unwrap().solved);
+}
+
+#[test]
+fn sketch_point_circle_snap_creates_a_persistent_relation_only_when_enabled() {
+    use solidcraft_engine::sketch::ConstraintKind;
+    for automatic in [false, true] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.point");
+        engine.execute("sketch.circle.center", json!({"center":[0,0],"radius":20,"id":"circle"})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        view.command("tool.auto_constraints", &json!({"enabled":automatic})).unwrap();
+        sketch_tap(&mut view, 1, [0., 20.2]);
+        assert_eq!(view.diagnostic()["input"]["sketch"]["snap"]["kind"], "on_curve");
+        assert_eq!(view.diagnostic()["input"]["sketch"]["snap"]["persistent"], automatic);
+        assert!(run_tool(&mut engine, &mut view));
+        let snapshot = engine.sketch_snapshot().unwrap();
+        assert!(snapshot.solved);
+        assert_eq!(snapshot.sketch.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::PointOnCurve { .. })), automatic);
+        assert_eq!(snapshot.sketch.points.len(), 3);
+        assert!((snapshot.sketch.points.last().unwrap().pos.len() - 20.).abs() < 1e-7);
+    }
+}
+
+#[test]
 fn sketch_pencil_rectangle_commits_once_and_cancel_never_removes_previous_geometry() {
     let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.rectangle.two_point");
     let undo = engine.session.undo.len();

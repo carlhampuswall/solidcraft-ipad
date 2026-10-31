@@ -177,6 +177,7 @@ impl SessionAdapter {
         if self.session.active_sketch.is_some() {
             tools.extend(
                 [
+                    "sketch.point",
                     "sketch.line",
                     "sketch.rectangle.two_point",
                     "sketch.circle.center",

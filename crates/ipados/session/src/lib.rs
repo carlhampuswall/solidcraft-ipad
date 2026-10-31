@@ -250,7 +250,14 @@ impl SessionAdapter {
         self.session.selection = selection;
         let world = self.session.world_state();
         let names: Vec<String> = world.bodies.iter().filter(|b| self.session.body_visible(&b.name)).map(|b| b.name.clone()).collect();
-        let bounds = view::bounds(&self.session);
+        let mut bounds = view::bounds(&self.session);
+        // Shared curve bounds omit standalone points. Include the active
+        // sketch's visible points so Fit also works for a point-only sketch.
+        for sketch in world.sketches.iter().filter(|sketch| self.session.active_sketch == Some(sketch.feature)) {
+            for point in sketch.sketch.points.iter().filter(|p| p.id != "origin" && (p.link.is_none() || !sketch.sketch.view.hide_projected)) {
+                bounds.add(sketch.plane.to_world(point.pos));
+            }
+        }
         let mut picks = PickScene::new(&scene, names, bounds)?;
         for sketch in world.sketches.iter().filter(|sketch| {
             view::sketch_shown(&self.session, sketch.feature)

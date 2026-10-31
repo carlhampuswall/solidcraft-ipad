@@ -82,6 +82,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         guard !curves.isEmpty else { return }; self.run("sketch.construction", params: ["curves": curves])
     }
     private lazy var sketchQuickTools: [(String, WorkspaceButton)] = [
+        ("sketch.point", "draw_point"),
         ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"),
         ("sketch.circle.center", "circle"), ("sketch.arc.three_point", "arc"),
         ("sketch.spline.fit_point", "spline"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
@@ -3208,7 +3209,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         moreButton.menu = UIMenu(children: moreActions)
         moreButton.showsMenuAsPrimaryAction = true
-        let sketchTools = [("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
+        let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
                      ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
                      ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
         sketchToolsButton.menu = UIMenu(children: sketchTools.compactMap { id, label in

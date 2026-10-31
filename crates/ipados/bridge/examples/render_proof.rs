@@ -122,6 +122,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--sketch") {
         return sketch_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--sketch-points") {
+        return sketch_points_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--rectangle-dimensions") {
         return rectangle_dimensions_proof(&destination);
     }
@@ -1704,6 +1707,74 @@ fn dark_sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>
         std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
         println!("{stage}: {path}");
     }
+    Ok(())
+}
+
+fn sketch_points_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    engine.execute("sketch.circle.center", json!({"center":[0,0],"radius":20,"id":"circle"}))?;
+    engine.execute("sketch.constraint.fix", json!({"entities":["circle"],"fixed":true}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("tool.set", &json!({"tool":"sketch.point"}))?;
+    let tap = |view: &mut Viewport, id: u64, at: [f64; 3]| -> Result<(), Box<dyn std::error::Error>> {
+        let p = view.command("view.project", &json!({"point":at}))?;
+        for phase in ["began", "ended"] {
+            view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":id,
+                "x_points":p["points"][0],"y_points":p["points"][1],"x_pixels":p["pixels"][0],"y_pixels":p["pixels"][1],
+                "scale":1,"timestamp":id as f64,"geometry_revision":p["geometry_revision"]}))?)?;
+        }
+        Ok(())
+    };
+    let accept = |engine: &mut SessionAdapter, view: &mut Viewport| -> Result<(), Box<dyn std::error::Error>> {
+        let work = view.take_tool_work().ok_or("point interaction produced no command")?;
+        if !work.commit {
+            return Err("point tap did not commit".into());
+        }
+        let prepared = engine.prepare_tool(work.clone())?;
+        if !view.complete_tool(&work, engine.accept_tool(prepared)?) {
+            return Err("point publication rejected".into());
+        }
+        Ok(())
+    };
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("no point frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{stage}: {path}");
+        Ok(())
+    };
+    capture(&view, "before")?;
+    tap(&mut view, 1, [30., 15., 0.])?;
+    accept(&mut engine, &mut view)?;
+    capture(&view, "free-point")?;
+    let original = engine.snapshot()?;
+    let point_id = original.sketch.as_ref().and_then(|s| s.sketch.points.last()).ok_or("missing point")?.id.clone();
+    view.command("tool.constraint", &json!({"constraint":"coincident"}))?;
+    tap(&mut view, 2, [0., 20., 0.])?;
+    tap(&mut view, 3, [30., 15., 0.])?;
+    accept(&mut engine, &mut view)?;
+    let model = engine.snapshot()?;
+    let sketch = &model.sketch.as_ref().ok_or("missing sketch")?.sketch;
+    let index = sketch.resolve_point(&point_id).ok_or("lost point")?;
+    let at = sketch.point(index).ok_or("missing point position")?;
+    if (at.len() - 20.).abs() > 1e-6 {
+        return Err("coincident point is not on circle".into());
+    }
+    capture(&view, "coincident")?;
+    engine.execute("edit.undo", json!({}))?;
+    view.begin_update(2);
+    view.install(2, engine.snapshot()?);
+    capture(&view, "undo")?;
+    println!(
+        "PASS: Pencil tap creates a visible point; Coincident moves it onto the fixed circle; one Undo restores it. Synthetic input and macOS GPU evidence."
+    );
     Ok(())
 }
 

@@ -92,7 +92,7 @@ def check(repository):
         for area in ('modelling', 'assembly'):
             source = (repository / f'crates/ipados/session/src/{area}.rs').read_text()
             native += re.findall(r'"([^"]+)"', source.split('const TOOLS:', 1)[1].split('];', 1)[0])
-        native += ['sketch.line', 'sketch.rectangle.two_point', 'sketch.circle.center',
+        native += ['sketch.point', 'sketch.line', 'sketch.rectangle.two_point', 'sketch.circle.center',
                    'sketch.arc.three_point', 'sketch.spline.fit_point', 'sketch.delete', 'sketch.trim',
                    'sketch.constraint.parallel', 'sketch.constraint.fix']
         for command in native:

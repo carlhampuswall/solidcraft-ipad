@@ -399,7 +399,8 @@ impl Viewport {
             if let Some(tool) = params.get("tool").and_then(Value::as_str).filter(|s| s.starts_with("sketch.")) {
                 if !matches!(
                     tool,
-                    "sketch.line"
+                    "sketch.point"
+                        | "sketch.line"
                         | "sketch.rectangle.two_point"
                         | "sketch.circle.center"
                         | "sketch.arc.three_point"
