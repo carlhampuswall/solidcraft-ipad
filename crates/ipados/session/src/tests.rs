@@ -8798,3 +8798,135 @@ fn assembly_dragging_floating_rigid_chain_moves_both_placements_and_preserves_re
     assert!(assembly_marker(&loaded, &[first], Vec3::new(1.0, 1.0, 1.0)).dist(first_marker + delta) < 1e-8);
     assert!(assembly_marker(&loaded, &[second], Vec3::new(2.0, 2.0, 2.0)).dist(second_marker + delta) < 1e-8);
 }
+
+fn projection_fixture() -> (SessionAdapter, u64, u64) {
+    let mut a = SessionAdapter::new();
+    a.execute("parameters.add", json!({"name":"width","expression":"20 mm"})).unwrap();
+    a.execute("sketch.create", json!({"plane":"XY","name":"Source"})).unwrap();
+    let source = a.session.active_sketch.unwrap();
+    a.execute("sketch.line", json!({"points":[[0,0],["width",0]],"infer":false})).unwrap();
+    a.execute("sketch.circle.center", json!({"center":[5,8],"radius":2})).unwrap();
+    a.execute("sketch.point", json!({"point":[25,15]})).unwrap();
+    a.execute("sketch.finish", json!({})).unwrap();
+    a.execute("sketch.create", json!({"plane":"XY","offset":10,"name":"Destination"})).unwrap();
+    let target = a.session.active_sketch.unwrap();
+    (a, source, target)
+}
+fn projection_request(a: &SessionAdapter, source: u64, all: bool) -> SketchProjection {
+    SketchProjection {
+        document_id: a.session.document_id.clone(),
+        geometry_revision: a.geometry_revision,
+        sketch: a.session.active_sketch.unwrap(),
+        source,
+        entities: vec!["l1".into()],
+        all,
+        construction: true,
+        linked: true,
+    }
+}
+
+#[test]
+fn sketch_projection_individual_construction_is_linked_and_one_undo() {
+    let (mut a, source, target) = projection_fixture();
+    let history = a.session.undo.len();
+    let (_, scene) = a.project_sketch(projection_request(&a, source, false)).unwrap();
+    assert_eq!(a.session.undo.len(), history + 1);
+    assert_eq!(scene.geometry_revision, a.geometry_revision);
+    let state = a.session.model.state();
+    let sk = &state.sketch(target).unwrap().sketch;
+    assert_eq!(sk.curves.len(), 1);
+    assert!(sk.curves[0].construction && sk.curves[0].link.is_some());
+    assert!(a.session.model.state().sketch(target).unwrap().profiles.is_empty());
+    a.execute("edit.undo", json!({})).unwrap();
+    assert!(a.session.model.state().sketch(target).unwrap().sketch.curves.is_empty());
+    a.execute("edit.redo", json!({})).unwrap();
+    a.execute("parameters.change", json!({"name":"width","expression":"35 mm"})).unwrap();
+    let state = a.session.model.state();
+    let sk = &state.sketch(target).unwrap().sketch;
+    assert!(sk.polyline(0).iter().any(|p| (p.x - 35.0).abs() < 1e-6));
+    let id = sk.curves[0].id.clone();
+    a.execute("sketch.break_link", json!({"entities":[id]})).unwrap();
+    a.execute("parameters.change", json!({"name":"width","expression":"45 mm"})).unwrap();
+    let state = a.session.model.state();
+    let sk = &state.sketch(target).unwrap().sketch;
+    assert!(sk.links.is_empty());
+    assert!(sk.curves[0].construction);
+    assert!(sk.polyline(0).iter().any(|p| (p.x - 35.0).abs() < 1e-6));
+}
+
+#[test]
+fn sketch_projection_all_includes_lone_points_and_can_create_detached_profiles() {
+    let (mut a, source, target) = projection_fixture();
+    let choices = a.projection_sources();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0]["id"], source);
+    assert_eq!(choices[0]["entities"].as_array().unwrap().len(), 3);
+    let mut request = projection_request(&a, source, true);
+    request.construction = false;
+    request.linked = false;
+    a.project_sketch(request).unwrap();
+    let state = a.session.model.state();
+    let ss = state.sketch(target).unwrap();
+    assert_eq!(ss.sketch.curves.len(), 2);
+    assert!(ss.sketch.links.is_empty());
+    assert!(ss.sketch.curves.iter().all(|c| c.link.is_none() && !c.construction));
+    assert!(ss.sketch.points.iter().any(|p| (p.pos.x - 25.0).abs() < 1e-6 && (p.pos.y - 15.0).abs() < 1e-6));
+    assert_eq!(ss.profiles.len(), 1);
+    assert!((ss.profiles[0].area - std::f64::consts::PI * 4.0).abs() < 0.01);
+}
+
+#[test]
+fn sketch_projection_rejects_stale_future_invalid_and_duplicate_inputs_atomically() {
+    let (mut a, source, target) = projection_fixture();
+    let mut stale = projection_request(&a, source, true);
+    stale.geometry_revision -= 1;
+    let mut wrong_document = projection_request(&a, source, true);
+    wrong_document.document_id = "replaced".into();
+    let mut wrong_sketch = projection_request(&a, source, true);
+    wrong_sketch.sketch = source;
+    let mut invalid = projection_request(&a, source, false);
+    invalid.entities.push("missing".into());
+    let mut empty = projection_request(&a, source, false);
+    empty.entities.clear();
+    let mut own = projection_request(&a, target, true);
+    own.source = target;
+    let mut too_many = projection_request(&a, source, false);
+    too_many.entities = vec!["l1".into(); 1001];
+    for request in [stale, wrong_document, wrong_sketch, invalid, empty, own, too_many] {
+        let before = a.session.doc.clone();
+        let history = a.session.undo.len();
+        let revision = a.geometry_revision;
+        assert!(a.project_sketch(request).is_err());
+        assert!(Arc::ptr_eq(&before, &a.session.doc));
+        assert_eq!(a.session.undo.len(), history);
+        assert_eq!(a.geometry_revision, revision);
+    }
+    a.project_sketch(projection_request(&a, source, false)).unwrap();
+    let before = a.session.doc.clone();
+    assert!(a.project_sketch(projection_request(&a, source, false)).is_err());
+    assert!(Arc::ptr_eq(&before, &a.session.doc));
+    a.execute("sketch.finish", json!({})).unwrap();
+    a.execute("sketch.edit", json!({"sketch":source})).unwrap();
+    assert!(a.projection_sources().is_empty(), "later sketches must not create a dependency cycle");
+}
+
+#[test]
+fn sketch_projection_links_and_construction_round_trip_and_detach_independently() {
+    let (mut a, source, target) = projection_fixture();
+    a.project_sketch(projection_request(&a, source, true)).unwrap();
+    let path = std::env::temp_dir().join(format!("solidcraft-projection-{}-{}.sc", std::process::id(), target));
+    a.execute("file.save_as", json!({"path":path.to_str().unwrap()})).unwrap();
+    let mut loaded = SessionAdapter::new();
+    loaded.execute("doc.open", json!({"path":path.to_str().unwrap()})).unwrap();
+    std::fs::remove_file(path).unwrap();
+    loaded.execute("sketch.edit", json!({"sketch":target})).unwrap();
+    let state = loaded.session.model.state();
+    let ss = state.sketch(target).unwrap();
+    assert_eq!(ss.sketch.links.len(), 3);
+    assert!(ss.sketch.curves.iter().all(|c| c.construction));
+    let link = ss.sketch.links[0].id.clone();
+    loaded.execute("sketch.break_link", json!({"link":link})).unwrap();
+    assert_eq!(loaded.session.model.state().sketch(target).unwrap().sketch.links.len(), 2);
+    loaded.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(loaded.session.model.state().sketch(target).unwrap().sketch.links.len(), 3);
+}

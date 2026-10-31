@@ -1069,3 +1069,32 @@ fn assembly_instancing_preserves_glass_and_face_appearance_fallbacks() {
     assert!(gpu.palette.entries().contains(&[200, 150, 120, 102]), "glass colour and opacity remain intact");
     assert_eq!(sc_session_destroy(id), 0);
 }
+
+#[test]
+fn sketch_projection_bridge_publishes_and_rejects_stale_forms_without_losing_picking() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    engine_command(id, "sketch.create", json!({"plane":"XY","name":"Source"}));
+    engine_command(id, "sketch.circle.center", json!({"center":[5,8],"radius":2}));
+    engine_command(id, "sketch.finish", json!({}));
+    engine_command(id, "sketch.create", json!({"plane":"XY","offset":10,"name":"Target"}));
+    assert_eq!(request(id, r#"{"kind":"workspace"}"#), 0);
+    let w = response(id)["result"].clone();
+    let params = json!({"document_id":w["document_id"],"geometry_revision":w["geometry_revision"],
+        "sketch":w["sketch"]["id"],"source":w["sketch"]["projection_sources"][0]["id"],
+        "entities":[],"all":true,"construction":true,"linked":true});
+    let command = json!({"kind":"sketch_project","params":params});
+    assert_eq!(request(id, &command.to_string()), 0, "{}", response(id));
+    assert_eq!(request(id, r#"{"kind":"workspace"}"#), 0);
+    let after = response(id)["result"].clone();
+    assert_eq!(after["sketch"]["projection_links"].as_array().unwrap().len(), 1);
+    assert_eq!(after["sketch"]["curves"][0]["construction"], true);
+    assert_eq!(request(id, &command.to_string()), -1);
+    assert_eq!(response(id)["error"]["code"], "stale_result");
+    let entry = lookup(id).unwrap();
+    assert!(!entry.viewport.lock().unwrap().is_updating());
+    engine_command(id, "edit.undo", json!({}));
+    assert_eq!(request(id, r#"{"kind":"workspace"}"#), 0);
+    assert!(response(id)["result"]["sketch"]["curves"].as_array().unwrap().is_empty());
+    assert_eq!(sc_session_destroy(id), 0);
+}

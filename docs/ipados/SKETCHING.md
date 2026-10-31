@@ -435,3 +435,37 @@ entities do not create a constraint. The shared engine validates the final pair,
 refuses redundant constraints and reports failures without changing the design.
 Constraint mode disables geometry drags and dimension editing while preserving
 normal camera navigation. Finishing or replacing the sketch exits the mode.
+
+## Referencing an earlier sketch
+
+While editing a sketch, open **Sketch Tools > Project / Reference Geometry**.
+Choose an earlier sketch, then tap individual curves in the source overview or
+list, or choose **All geometry**. All geometry includes the source's planar
+curves and standalone points, excluding the implicit origin and curve control
+points. The overview shows the source in its own plane; the engine projects the
+selected geometry onto the destination sketch plane. A confirmation accepts at
+most 1,000 source entities, matching the upstream projection batch limit.
+
+**Construction** starts on for this reference workflow: projected curves are
+linked guides that do not form profiles. Turn it off to use projected boundaries
+as profiles. **Link to source** starts on so source edits regenerate references;
+turn it off to create detached geometry immediately. Later, select linked curves
+and use **Break Link** in the inspector, or choose a specific reference from
+**Sketch Tools > Break Link**, including standalone projected points. Detaching
+keeps the current geometry and its construction state. Construction can also be
+changed with the existing selected-curve control.
+
+The sheet pins the document, geometry revision and destination sketch. A changed
+context refuses Apply and leaves the document intact; reopen the sheet to
+refresh it. Cancel has no document effect. Project and Construction are prepared
+on an engine scratch session and accepted together in one undo step; Break Link
+uses the existing engine command and is independently undoable. No shared
+engine, document format, solver or dependency change is introduced.
+
+Focused adapter/ABI regressions use the `sketch_projection` test filter. The
+native deterministic harness checks selection and request composition. The
+opt-in `--sketch-projection-check` device driver creates a disposable fixture,
+exercises the real UIKit chooser and inspector, writes
+`sketch-projection-check.json`, and captures `projection-chooser.png` and
+`projection-projected.png`. Run it only inside a physical-device reservation;
+its synthetic actions do not verify physical Pencil input.

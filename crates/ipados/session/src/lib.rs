@@ -16,6 +16,7 @@ mod picking;
 mod recovery;
 mod references;
 mod sketch_input;
+mod sketch_projection;
 mod sketching;
 mod viewport;
 mod workspace;
@@ -24,6 +25,7 @@ pub use editing::{PreparedTool, RadiusHandle, ToolEvent, ToolOperation, ToolPhas
 pub use input::{InputEvent, InputPhase, InputSource};
 pub use modelling::{ModelEdit, PreparedModel};
 pub use picking::{PickFilter, PickScene, ViewportMetrics};
+pub use sketch_projection::SketchProjection;
 pub use sketching::SketchSnapshot;
 pub use solidcraft_engine::geom::Vec3 as WorldPoint;
 pub use viewport::{RenderSnapshot, Viewport};

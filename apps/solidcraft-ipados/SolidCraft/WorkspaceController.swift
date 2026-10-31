@@ -525,6 +525,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkReferenceDimensionsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-toolbar-check") {
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--sketch-projection-check") {
+                    self.developmentCheckStarted = true; self.checkSketchProjectionOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--line-finish-check") {
                     self.developmentCheckStarted = true; self.checkLineFinishOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--constraints-menu-check") {
@@ -2537,6 +2539,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let curves = selection.filter { $0.type == "sketch_curve" }.compactMap { $0.id?.readout }
             if !curves.isEmpty {
                 properties.addArrangedSubview(WorkspaceButton(SketchText.text("construction")) { [weak self] in self?.run("sketch.construction", params: ["curves": curves]) })
+                let linked = curves.filter { id in sketch.curves.contains { $0.id == id && $0.link != nil } }
+                if !linked.isEmpty {
+                    let button = WorkspaceButton(ProjectionText.text("break_link")) { [weak self] in
+                        self?.run("sketch.break_link", params: ["entities": linked])
+                    }
+                    button.accessibilityIdentifier = "workspace-break-selected-links"
+                    properties.addArrangedSubview(button)
+                }
             }
             let entities = selection.filter { ["sketch_curve", "sketch_point"].contains($0.type) }.compactMap { $0.id?.readout }
             if !entities.isEmpty {
@@ -2832,6 +2842,24 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         historyActivation = nil
         canvas.cancelInput(); failure = nil; lastOperationFeedback = []
         session.command(command, params: params)
+    }
+
+    private func showSketchProjection() {
+        guard active, !numericEditing, !modellingEditing, pending.isEmpty, presentedViewController == nil,
+              let state, let sketch = state.sketch,
+              let sources = sketch.projection_sources, let source = sources.first else { return }
+        canvas.cancelInput()
+        let chooser = SketchProjectionController(sources: sources, source: source, document: state.document_id,
+                                                 revision: state.geometry_revision, sketch: sketch.id)
+        chooser.onApply = { [weak self] params, done in
+            guard let self, self.active else { done(.failure(BridgeError(code: "inactive", message: "ui.ipados.projection.stale"))); return }
+            self.session.projectSketch(params, completion: done)
+        }
+        let navigation = UINavigationController(rootViewController: chooser)
+        navigation.modalPresentationStyle = .pageSheet
+        navigation.sheetPresentationController?.detents = [.medium(), .large()]
+        navigation.sheetPresentationController?.prefersGrabberVisible = true
+        present(navigation, animated: true)
     }
     private func setTool(_ tool: String) {
         guard !numericEditing, state?.tools.first(where: { $0.id == tool })?.enabled == true else { return }
@@ -3309,10 +3337,25 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
                      ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
                      ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
-        sketchToolsButton.menu = UIMenu(children: sketchTools.compactMap { id, label in
+        var sketchActions: [UIMenuElement] = sketchTools.compactMap { id, label in
             guard state?.tools.contains(where: { $0.id == id && $0.enabled }) == true else { return nil }
             return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
-        })
+        }
+        if let sketch = state?.sketch {
+            sketchActions.append(UIAction(title: ProjectionText.text("title"), image: WorkspaceIcon.command("sketch.project", traits: traitCollection),
+                                          attributes: numericEditing || modellingEditing || sketch.projection_sources?.isEmpty != false ? .disabled : []) { [weak self] _ in
+                self?.showSketchProjection()
+            })
+            let links = sketch.projection_links ?? []
+            if !links.isEmpty {
+                sketchActions.append(UIMenu(title: ProjectionText.text("break_link"), children: links.map { link in
+                    UIAction(title: link.label + " · " + link.id) { [weak self] _ in
+                        self?.run("sketch.break_link", params: ["link": link.id])
+                    }
+                }))
+            }
+        }
+        sketchToolsButton.menu = UIMenu(children: sketchActions)
         sketchToolsButton.showsMenuAsPrimaryAction = true
         sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true && state?.active_tool.hasPrefix("sketch.constraint.") != true)
         constraintsButton.active(state?.active_tool.hasPrefix("sketch.constraint.") == true)
@@ -3945,6 +3988,99 @@ private extension FoundationController {
     }
 
     /// Real UIKit sizing, scrolling and completion on a disposable native sketch.
+    private func checkSketchProjectionOnDevice() {
+        let expected = generation
+        var issues: [String] = []
+        var finished = false
+        func report() {
+            guard !finished else { return }; finished = true
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let data = try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                    "scope": "Production UIKit source and curve selection, construction projection, undo/redo and Break Link. Synthetic actions; no physical Pencil input."], options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: directory.appendingPathComponent("sketch-projection-check.json"), options: .atomic)
+            } catch { print("Projection report failed: \(error)") }
+        }
+        func wait(_ ready: @escaping () -> Bool, _ remaining: Int = 100, then action: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if ready() { action(); return }
+            guard remaining > 0 else { issues.append("Timed out waiting for projection publication"); report(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(ready, remaining - 1, then: action) }
+        }
+        func capture(_ name: String) {
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = self.view.window ?? self.view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                if let png = image.pngData() { try png.write(to: directory.appendingPathComponent("projection-" + name + ".png"), options: .atomic) }
+            } catch { issues.append("Capture failed: \(error)") }
+        }
+        func exercise() {
+            guard let sketch = state?.sketch, let sources = sketch.projection_sources, sources.count == 2 else {
+                issues.append("Earlier source choices missing"); report(); return
+            }
+            showSketchProjection()
+            wait({ self.presentedViewController?.viewIfLoaded?.window != nil }) {
+                guard let navigation = self.presentedViewController as? UINavigationController,
+                      let chooser = navigation.topViewController as? SketchProjectionController else {
+                    issues.append("Projection sheet missing"); report(); return
+                }
+                navigation.sheetPresentationController?.selectedDetentIdentifier = .large
+                chooser.loadViewIfNeeded()
+                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 1, section: 0))
+                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 0, section: 1))
+                if !chooser.selection.all || chooser.selection.source.id != sources[1].id { issues.append("Source/all selection failed") }
+                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 1, section: 1))
+                if chooser.selection.all || chooser.selection.selected.count != 1 { issues.append("Individual curve deselection failed") }
+                chooser.tableView(chooser.tableView, didSelectRowAt: IndexPath(row: 0, section: 1))
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    chooser.view.layoutIfNeeded(); capture("chooser")
+                    guard let button = chooser.navigationItem.rightBarButtonItem, let action = button.action else {
+                        issues.append("Project action missing"); report(); return
+                    }
+                    UIApplication.shared.sendAction(action, to: button.target, from: button, for: nil)
+                    wait({ self.presentedViewController == nil && self.state?.sketch?.projection_links?.count == 2 }) {
+                        if self.state?.sketch?.profiles.isEmpty != true { issues.append("Construction geometry formed a profile") }
+                        self.session.command("edit.undo") { result in
+                            guard case .success = result else { issues.append("Undo failed"); report(); return }
+                            wait({ self.state?.sketch?.curves.isEmpty == true }) {
+                                self.session.command("edit.redo") { result in
+                                    guard case .success = result else { issues.append("Redo failed"); report(); return }
+                                    wait({ self.state?.sketch?.projection_links?.count == 2 }) {
+                                        guard let curve = self.state?.sketch?.curves.first else { issues.append("Missing projected curve"); report(); return }
+                                        self.session.selectEntity(["type":"sketch_curve", "id":curve.id], additive: false)
+                                        wait({ self.state?.selection.contains(where: { $0.id?.readout == curve.id }) == true }) {
+                                            self.inspectorOpen = true; self.relayoutPanels(); self.rebuildInspector(); self.view.layoutIfNeeded()
+                                            capture("projected")
+                                            guard let button = self.properties.arrangedSubviews.first(where: { $0.accessibilityIdentifier == "workspace-break-selected-links" }) as? WorkspaceButton else {
+                                                issues.append("Selected geometry Break Link missing"); report(); return
+                                            }
+                                            button.sendActions(for: .touchUpInside)
+                                            wait({ self.state?.sketch?.projection_links?.count == 1 }) { report() }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane":"XY", "name":"Earlier rectangle"]),
+            ("sketch.rectangle.two_point", ["p0":[-25,-15], "p1":[25,15]]), ("sketch.finish", [:]),
+            ("sketch.create", ["plane":"XY", "name":"Mounting guides"]),
+            ("sketch.circle.center", ["center":[-12,0], "radius":4]), ("sketch.circle.center", ["center":[12,0], "radius":4]),
+            ("sketch.finish", [:]), ("sketch.create", ["plane":"XY", "offset":10, "name":"New sketch"]), ("view.fit", [:])]
+        func prepare(_ index: Int) {
+            guard index < fixture.count else { wait({ self.state?.sketch?.name == "New sketch" && self.pending.isEmpty }, then: exercise); return }
+            session.command(fixture[index].0, params: fixture[index].1) { result in
+                guard case .success = result else { issues.append("Fixture failed"); report(); return }
+                prepare(index + 1)
+            }
+        }
+        prepare(0)
+    }
+
     func checkSketchToolbarOnDevice() {
         let expected = generation
         let savedAppearance = appearance

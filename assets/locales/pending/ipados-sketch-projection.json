@@ -1,0 +1,27 @@
+{
+  "en": {
+    "ui.ipados.projection.all": "All geometry",
+    "ui.ipados.projection.arc": "Arc",
+    "ui.ipados.projection.break_link": "Break Link",
+    "ui.ipados.projection.circle": "Circle",
+    "ui.ipados.projection.conic": "Conic",
+    "ui.ipados.projection.construction": "Construction",
+    "ui.ipados.projection.ellipse": "Ellipse",
+    "ui.ipados.projection.geometry": "Geometry",
+    "ui.ipados.projection.geometry_help": "Tap curves in the overview or select them in this list. All geometry includes curves and standalone points.",
+    "ui.ipados.projection.limit": "Select between 1 and 1,000 source entities.",
+    "ui.ipados.projection.line": "Line",
+    "ui.ipados.projection.linked": "Link to source",
+    "ui.ipados.projection.options": "Options",
+    "ui.ipados.projection.options_help": "Construction creates guides that do not form profiles. Link to source keeps references updated when the source changes; turn it off to create independent geometry. Use Break Link later to detach a reference.",
+    "ui.ipados.projection.overview": "Source sketch overview",
+    "ui.ipados.projection.point": "Point",
+    "ui.ipados.projection.project": "Project",
+    "ui.ipados.projection.source": "Earlier sketch",
+    "ui.ipados.projection.source_help": "Choose a sketch earlier in the feature timeline. Geometry is projected onto the active sketch plane.",
+    "ui.ipados.projection.source_missing": "The source sketch or selected geometry is no longer available. Reopen Project / Reference Geometry.",
+    "ui.ipados.projection.spline": "Spline",
+    "ui.ipados.projection.stale": "The design changed. Reopen Project / Reference Geometry to use the current sketch.",
+    "ui.ipados.projection.title": "Project / Reference Geometry"
+  }
+}

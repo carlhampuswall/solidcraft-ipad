@@ -49,9 +49,11 @@ struct WorkspaceSketch: Decodable {
     let profiles: [WorkspaceProfile]
     let curves: [WorkspaceSketchCurve]
     let report: Report?
+    let projection_sources: [SketchProjectionSource]?
+    let projection_links: [SketchProjectionLink]?
     struct Report: Decodable { let folded: [String]; let oversized: Int? }
 }
-struct WorkspaceSketchCurve: Decodable { let id: String; let type: String }
+struct WorkspaceSketchCurve: Decodable { let id: String; let type: String; let link: String? }
 struct WorkspaceProfile: Decodable { let index: Int; let area_mm2: Double }
 struct WorkspaceConstraint: Decodable {
     let id: String
@@ -279,13 +281,24 @@ final class NativeSession {
 
     func command(_ command: String, params: [String: Any] = [:],
                  completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
+        performCommand(command, params: params, completion: completion)
+    }
+
+    func projectSketch(_ params: [String: Any], completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        performCommand("sketch.project", params: params, requestKind: "sketch_project", completion: completion)
+    }
+
+    private func performCommand(_ command: String, params: [String: Any], requestKind: String = "command",
+                                completion: ((Result<Void, BridgeError>) -> Void)?) {
         guard alive else { return }
         let isView = command.hasPrefix("view.") || command.hasPrefix("select.") || command.hasPrefix("tool.") || command == "input.cancel"
         let lane: BridgeState.Lane = isView ? .viewport : .engine
         let queue = isView ? display : engine
         let activity = isView ? nil : UUID()
         do {
-            let data = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": command, "params": params])
+            var request: [String: Any] = ["kind": requestKind, "params": params]
+            if requestKind == "command" { request["command"] = command }
+            let data = try JSONSerialization.data(withJSONObject: request)
             if let activity { commandActivities.insert(activity); publishActivityStatus() }
             queue.async { [weak self, state] in
                 do {

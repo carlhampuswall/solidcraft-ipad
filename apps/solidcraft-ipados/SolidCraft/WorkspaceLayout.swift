@@ -1,6 +1,40 @@
 import CoreGraphics
 import Foundation
 
+struct SketchProjectionSource: Decodable {
+    let id: UInt64
+    let name: String
+    let entities: [SketchProjectionEntity]
+}
+struct SketchProjectionEntity: Decodable {
+    let id: String
+    let kind: String
+    let type: String
+    let polyline: [[Double]]
+}
+struct SketchProjectionLink: Decodable { let id: String; let label: String }
+
+/// A form selection only; Rust validates IDs and executes the actual projection.
+struct SketchProjectionSelection {
+    private(set) var source: SketchProjectionSource
+    private(set) var selected: Set<String> = []
+    var construction = true
+    var linked = true
+    init(source: SketchProjectionSource) { self.source = source }
+    var all: Bool { !source.entities.isEmpty && selected.count == source.entities.count }
+    mutating func choose(_ source: SketchProjectionSource) { self.source = source; selected = [] }
+    mutating func toggle(_ id: String) {
+        guard source.entities.contains(where: { $0.id == id }) else { return }
+        if !selected.insert(id).inserted { selected.remove(id) }
+    }
+    mutating func toggleAll() { selected = all ? [] : Set(source.entities.map(\.id)) }
+    func parameters(document: String, revision: UInt64, sketch: UInt64) -> [String: Any] {
+        ["document_id": document, "geometry_revision": revision, "sketch": sketch, "source": source.id,
+         "entities": source.entities.filter { selected.contains($0.id) }.map(\.id), "all": all,
+         "construction": construction, "linked": linked]
+    }
+}
+
 enum EdgeLengthReadout {
     static let key = "SolidCraft.workspace.edgeLengthReadout"
     static func restored(_ value: Bool?) -> Bool { value ?? true }

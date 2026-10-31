@@ -184,6 +184,25 @@ impl SessionAdapter {
         value["solved"] = json!(ss.report.keeps_orientation());
         value["report"] = json!(ss.report);
         let sk = &ss.sketch;
+        value["projection_sources"] = json!(self.projection_sources());
+        value["projection_links"] = json!(
+            sk.links
+                .iter()
+                .map(|l| {
+                    let label = match &l.source {
+                        solidcraft_engine::sketch::LinkSource::SketchCurve { sketch, curve } => {
+                            self.session.doc.feature(*sketch).map(|f| format!("{} · {curve}", f.name))
+                        }
+                        solidcraft_engine::sketch::LinkSource::SketchPoint { sketch, point } => {
+                            self.session.doc.feature(*sketch).map(|f| format!("{} · {point}", f.name))
+                        }
+                        _ => None,
+                    }
+                    .unwrap_or_else(|| l.source.describe());
+                    json!({"id":l.id,"label":label})
+                })
+                .collect::<Vec<_>>()
+        );
         if let Some(constraints) = value.get_mut("constraints").and_then(Value::as_array_mut) {
             for row in constraints {
                 let Some(c) = row["id"].as_str().and_then(|id| sk.constraints.iter().find(|c| c.id == id)) else { continue };

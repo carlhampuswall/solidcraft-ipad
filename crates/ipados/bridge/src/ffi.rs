@@ -94,6 +94,7 @@ enum Request {
     Model { action: String, token: Option<u64>, operation: Option<String>, feature: Option<u64>, params: Option<Value> },
     SketchPlane { plane: Value },
     SketchPlaneCancel,
+    SketchProject { params: solidcraft_ipados_session::SketchProjection },
     Viewport { metrics: ViewportMetrics },
 }
 
@@ -447,6 +448,7 @@ impl Entry {
                 Request::Proof => adapter.proof().map(|s| (metadata(&s), s)),
                 Request::Fixture => adapter.fixture().map(|s| (metadata(&s), s)),
                 Request::Document { source, name, destination } => adapter.replace_document(source.as_deref(), &name, &destination),
+                Request::SketchProject { params } => adapter.project_sketch(params),
                 Request::Command { command, params } => {
                     adapter.selection(&selection)?;
                     let reply = adapter.execute(&command, params)?;
