@@ -5251,7 +5251,11 @@ private extension FoundationController {
                         capture(inPopup ? "extrude-popup-ready" : "extrude-inspector-ready")
                         submit.sendActions(for: .touchUpInside)
                         wait("direct extrude committed", { !self.modellingEditing && self.presentedViewController == nil && self.state?.geometry_revision != revision }) {
-                            check(self.state?.modelling?.timeline.count == features.count + 1, "direct extrude did not add one feature")
+                            // Native face extrusion creates its supporting face
+                            // sketch and Extrude together in one undo transaction.
+                            let timeline = self.state?.modelling?.timeline ?? []
+                            check(timeline.count == features.count + 2 && timeline.suffix(2).map(\.kind) == ["Sketch", "ExtrudeFeature"],
+                                  "direct face extrusion did not add its supporting sketch and Extrude")
                             capture(inPopup ? "extrude-popup-applied" : "extrude-inspector-applied")
                             self.run("edit.undo")
                             wait("direct extrude single undo", { self.pending.isEmpty && self.state?.modelling?.timeline.map(\.id) == features }) {
