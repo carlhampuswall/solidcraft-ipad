@@ -1685,6 +1685,137 @@ fn two_finger_twist_direction_wrap_planar_and_saved_legacy_preference() {
 }
 
 #[test]
+fn sketch_rotation_snap_uses_sketch_axes_in_both_directions_and_preserves_free_rotation() {
+    for plane_name in ["XY", "XZ", "YZ", "rotated"] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap();
+        adapter.execute("sketch.finish", json!({})).unwrap();
+        let model = adapter.snapshot().unwrap();
+        let document = adapter.session.doc.clone();
+        let history = (adapter.session.undo.len(), adapter.session.redo.len());
+        for enabled in [true, false] {
+            for target in (-8..=8).map(|step| f64::from(step) * 45.0) {
+                for error in [-2.0_f64, 2.0] {
+                    // Preview an arbitrary face basis as well as the principal planes.
+                    let plane = match plane_name {
+                        "XZ" => solidcraft_engine::geom::Plane::XZ,
+                        "YZ" => solidcraft_engine::geom::Plane::YZ,
+                        "rotated" => {
+                            solidcraft_engine::geom::Plane::new(Vec3::new(12., 7., -3.), Vec3::new(1., 2., 3.), Vec3::new(2., -1., 0.)).unwrap()
+                        }
+                        _ => solidcraft_engine::geom::Plane::XY,
+                    };
+                    let mut view = Viewport::default();
+                    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+                    view.begin_update(1);
+                    view.install(1, model.clone());
+                    view.command("view.sketch_plane", &json!({"plane":plane})).unwrap();
+                    assert_eq!(view.diagnostic()["sketch_rotation_snap"]["enabled"], true);
+                    view.command("view.sketch_rotation_snap", &json!({"enabled":enabled})).unwrap();
+                    let camera = view.camera;
+                    let p = |degrees: f64| {
+                        let angle = degrees.to_radians();
+                        [400. + 200. * angle.cos(), 300. + 200. * angle.sin()]
+                    };
+                    feed(&mut view, InputSource::Finger, InputPhase::Began, 20, [400., 300.], 1.);
+                    feed(&mut view, InputSource::Finger, InputPhase::Began, 10, p(0.), 1.1);
+                    feed(&mut view, InputSource::Finger, InputPhase::Moved, 10, p(target + error), 2.);
+                    let expected = if enabled { target } else { target + error }.to_radians();
+                    let (right, up, _) = view.camera.basis();
+                    assert!((plane.x.dot(right) - expected.cos()).abs() < 1e-10, "{plane_name}, {target}, {error}, {enabled}");
+                    assert!((plane.x.dot(up) + expected.sin()).abs() < 1e-10);
+                    assert_eq!((view.camera.yaw, view.camera.pitch), (camera.yaw, camera.pitch));
+                    let camera = view.camera;
+                    for (id, p) in [(10, p(target + error)), (20, [400., 300.])] {
+                        feed(&mut view, InputSource::Finger, InputPhase::Ended, id, p, 3.);
+                        assert_eq!(view.camera, camera, "lifting must not apply the unsnapped remainder");
+                    }
+                    assert!(view.selection.is_empty());
+                }
+            }
+        }
+        assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+        assert_eq!(history, (adapter.session.undo.len(), adapter.session.redo.len()));
+    }
+}
+
+#[test]
+fn sketch_rotation_snap_accumulates_small_moves_releases_and_rebases_without_drift() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("sketch.create", json!({"plane":"XZ"})).unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, adapter.snapshot().unwrap());
+    let plane = view.model.as_ref().unwrap().sketch_plane.unwrap();
+    let document = adapter.session.doc.clone();
+    let history = adapter.session.undo.len();
+    let p = |degrees: f64| {
+        let angle = degrees.to_radians();
+        [400. + 200. * angle.cos(), 300. + 200. * angle.sin()]
+    };
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 1, [400., 300.], 1.);
+    feed(&mut view, InputSource::Finger, InputPhase::Began, 2, p(0.), 1.1);
+    for (index, (raw, expected)) in [
+        (10., 10.),
+        (42.5, 45.),
+        (43., 45.),
+        (46., 45.),
+        (49., 45.),
+        (51., 51.),
+        (47., 45.),
+        (43., 45.),
+        (39., 39.),
+        (89., 90.),
+        (91., 90.),
+        (94., 90.),
+        (96., 96.),
+        (137., 135.),
+        (179., 180.),
+        (181., 180.),
+        (226., 225.),
+        (271., 270.),
+        (359., 360.),
+        (361., 360.),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, p(raw), index as f64 + 2.);
+        let expected = f64::to_radians(expected);
+        let (right, up, _) = view.camera.basis();
+        assert!((plane.x.dot(right) - expected.cos()).abs() < 1e-10, "raw {raw}");
+        assert!((plane.x.dot(up) + expected.sin()).abs() < 1e-10, "raw {raw}");
+    }
+    let camera = view.camera;
+    for (phase, id, position, time) in [
+        (InputPhase::Began, 3, [200., 200.], 30.),
+        (InputPhase::Moved, 2, p(370.), 31.),
+        (InputPhase::Cancelled, 3, [200., 200.], 32.),
+        (InputPhase::Moved, 2, p(370.), 33.),
+    ] {
+        feed(&mut view, InputSource::Finger, phase, id, position, time);
+        assert!(view.camera.target.dist(camera.target) < 1e-10);
+        assert_eq!(
+            (view.camera.yaw, view.camera.pitch, view.camera.roll, view.camera.distance),
+            (camera.yaw, camera.pitch, camera.roll, camera.distance)
+        );
+    }
+    // The old held remainder must not leak through a finger-count transition.
+    feed(&mut view, InputSource::Finger, InputPhase::Moved, 2, p(377.), 34.);
+    assert!((view.camera.roll - camera.roll - 7.0_f64.to_radians()).abs() < 1e-10);
+    let before = view.diagnostic();
+    for params in [json!({}), json!({"enabled":null}), json!({"enabled":1}), json!({"enabled":"true"})] {
+        assert!(view.command("view.sketch_rotation_snap", &params).is_err());
+        assert_eq!(view.diagnostic(), before);
+    }
+    view.command("view.sketch_rotation_snap", &json!({"enabled":false})).unwrap();
+    assert_eq!(view.diagnostic()["input"]["contacts"], 0);
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    assert_eq!(history, adapter.session.undo.len());
+}
+
+#[test]
 fn two_finger_twist_preserves_anchor_and_rejects_hostile_navigation() {
     let (_, mut view) = proof();
     let screen = [300.0, 220.0];

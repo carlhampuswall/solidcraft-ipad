@@ -35,6 +35,25 @@ button (`SolidCraft.workspace.homeToolbar`). This does not change a design.
 | Wheel or trackpad scroll | Shared zoom path |
 | Input beginning on a native control | That control owns it until UIKit completes/cancels it |
 
+In sketch view, two-finger twist snaps the sketch axes to every **45°**, including
+0°, 90°, 180° and 270°. A detent engages within 3° and releases beyond 5°;
+small movements continue to accumulate while held. Snapping is relative to the
+sketch plane, including face-attached planes, and retains the gesture centroid.
+Lifting/cancelling or changing finger count rebases without a camera jump.
+Disable **Tools → Snap sketch view rotation** for the previous free rotation;
+the choice persists as `SolidCraft.workspace.sketchRotationSnap`.
+
+`view.sketch_rotation_snap {"enabled":true}` sets this native presentation
+preference. The input requires a boolean; invalid input leaves contacts and the
+preference unchanged. The output is the viewport diagnostic object, including
+`sketch_rotation_snap.enabled`. Changing it cancels current input. Explicit
+`view.navigate` roll commands retain their exact angles.
+
+`render_proof --sketch-rotation-snap` sends synthetic finger events through the
+native adapter and captures the shared GPU output: 88° → 90°, 43° → 45° and
+−2° → 0°, alongside the free 88° setting. This is macOS render evidence;
+physical finger delivery on iPad remains a separate check.
+
 Selection starts in **Auto**: a Pencil tap near a visible body edge selects the
 edge, a tap near its endpoint selects the vertex, and a tap inside a face selects
 the face. Edge and vertex tolerance is eight display points at every screen scale.

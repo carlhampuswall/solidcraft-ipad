@@ -88,6 +88,7 @@ pub struct Viewport {
     pub(crate) planar: bool,
     pub(crate) touch_orbit_follows_viewpoint: bool,
     pub(crate) two_finger_twist: bool,
+    pub(crate) sketch_rotation_snap: bool,
     pub(crate) direct_handles: bool,
     pub(crate) drag_step_mm: f64,
     pub(crate) automatic_subtract: bool,
@@ -130,6 +131,7 @@ impl Default for Viewport {
             planar: false,
             touch_orbit_follows_viewpoint: true,
             two_finger_twist: true,
+            sketch_rotation_snap: true,
             direct_handles: true,
             drag_step_mm: 0.1,
             automatic_subtract: true,
@@ -306,6 +308,12 @@ impl Viewport {
             self.cancel_interactions();
             self.automatic_subtract = enabled;
             self.changed();
+            return Ok(self.diagnostic());
+        }
+        if id == "view.sketch_rotation_snap" {
+            let enabled = params["enabled"].as_bool().ok_or_else(|| error("bad_params", "enabled must be a boolean"))?;
+            self.cancel_interactions();
+            self.sketch_rotation_snap = enabled;
             return Ok(self.diagnostic());
         }
         if id == "view.drag_precision" {
@@ -785,6 +793,7 @@ impl Viewport {
             "grid":{"visible":self.grid.visible,"integrated_axes":self.grid.integrated_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
             "touch_orbit":{"follows_viewpoint":self.touch_orbit_follows_viewpoint},
             "touch_twist":{"enabled":self.two_finger_twist},
+            "sketch_rotation_snap":{"enabled":self.sketch_rotation_snap},
             "tool_dismissal":{"cancel_on_dismiss":self.cancel_tools_on_dismiss},
             "handle":self.handle(),"handle_point":self.handle_point(),"model_value":self.model_value(),"annotations":self.sketch_annotations(),"constraint_indicators":self.sketch_constraint_indicators()})
     }

@@ -74,6 +74,9 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--sketch-rotation-snap") {
+        return sketch_rotation_snap_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--sketch-axis-order") {
         return sketch_axis_order_proof(&destination);
     }
@@ -1603,6 +1606,52 @@ fn sketch_drag_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>
 }
 
 /// Coincident sketch strokes and axes through the native viewport's actual slots.
+/// Synthetic native finger events and real shared-GPU captures; no UIKit/device.
+fn sketch_rotation_snap_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    engine.execute("sketch.line", json!({"points":[[-25,-15],[25,-15],[25,5],[10,15],[-25,15]],"closed":true,"infer":false}))?;
+    let model = engine.snapshot()?;
+    let plane = model.sketch_plane.ok_or("missing sketch plane")?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    for (enabled, raw, expected, label) in
+        [(false, 88.0_f64, 88.0_f64, "free-88"), (true, 88., 90., "snapped-90"), (true, 43., 45., "snapped-45"), (true, -2., 0., "snapped-0")]
+    {
+        let mut view = Viewport::default();
+        view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+        view.begin_update(1);
+        view.install(1, model.clone());
+        view.command("view.fit", &json!({}))?;
+        view.command("view.sketch_rotation_snap", &json!({"enabled":enabled}))?;
+        let angle = raw.to_radians();
+        for (phase, id, x, y, timestamp) in [
+            (InputPhase::Began, 1, 380., 320., 1.),
+            (InputPhase::Began, 2, 580., 320., 1.1),
+            (InputPhase::Moved, 2, 380. + 200. * angle.cos(), 320. + 200. * angle.sin(), 2.),
+        ] {
+            let report = view.diagnostic();
+            let sample: InputEvent = serde_json::from_value(json!({
+                "source":"finger","phase":phase,"id":id,"x_points":x,"y_points":y,
+                "x_pixels":x,"y_pixels":y,"scale":1.0,"timestamp":timestamp,
+                "document_id":report["document_id"],"geometry_revision":report["geometry_revision"],
+                "viewport_epoch":report["viewport_epoch"],"camera_epoch":report["camera_epoch"]
+            }))?;
+            view.input(sample)?;
+        }
+        let frame = view.snapshot().ok_or("missing rotated sketch frame")?;
+        let (right, up, _) = frame.camera.basis();
+        let actual = -plane.x.dot(up).atan2(plane.x.dot(right)).to_degrees();
+        if (actual - expected).abs() > 1e-8 {
+            return Err(format!("{label}: expected {expected} degrees, got {actual}").into());
+        }
+        let rgba = solidcraft_ipados_bridge::renderer::capture_appearance(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("rotation PNG")?)?;
+        println!("PASS {label}: finger angle {raw}°, sketch angle {actual:.6}°; {path}");
+    }
+    Ok(())
+}
+
 fn sketch_axis_order_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     let capturer = solidcraft_gpu::capture::Capturer::headless_single_sample()?;
     for plane in ["XY", "XZ", "YZ"] {

@@ -121,6 +121,8 @@ pub(crate) struct Contacts {
     items: BTreeMap<u64, Contact>,
     pub(crate) navigating: bool,
     orbit_pivot: Option<Vec3>,
+    twist_snap_offset: f64,
+    twist_snapped: bool,
     sequence: u64,
     pub(crate) next_interaction: u64,
     drag: Option<Drag>,
@@ -156,10 +158,14 @@ impl Contacts {
         self.items.clear();
         self.navigating = false;
         self.orbit_pivot = None;
+        self.twist_snap_offset = 0.0;
+        self.twist_snapped = false;
     }
     fn rebase_fingers(&mut self) {
         // Count transitions have no camera delta; subsequent movement starts here.
         self.orbit_pivot = None;
+        self.twist_snap_offset = 0.0;
+        self.twist_snapped = false;
         for c in self.items.values_mut().filter(|c| c.owner == Owner::Navigation) {
             c.start = c.current;
         }
@@ -204,6 +210,34 @@ impl Contacts {
             "radius":self.drag.as_ref().and_then(|d|match &d.work.operation {ToolOperation::Radius{radius,..}=>Some(*radius),_=>None}),"tool_pending":self.pending.is_some(),
             "tool":if self.sketch.active() {self.sketch.tool.as_str()} else if self.radius_tool {"post_radius"} else {"select"},"tool_event":self.tool_event,
             "sketch":self.sketch.diagnostic(),"dismissed_model_token":self.dismissed_model_token})
+    }
+}
+
+impl Viewport {
+    fn snapped_twist(&mut self, angle: f64) -> f64 {
+        let plane = self.plane_preview.or_else(|| self.model.as_ref().and_then(|model| model.sketch_plane));
+        let Some(plane) = plane.filter(|_| self.planar && self.sketch_rotation_snap) else {
+            self.contacts.twist_snap_offset = 0.0;
+            self.contacts.twist_snapped = false;
+            return angle;
+        };
+        if angle.abs() < 1e-12 {
+            return angle;
+        }
+        let (right, up, _) = self.camera.basis();
+        // Measure clockwise screen rotation from the sketch's own X axis, not
+        // world yaw/roll: face-attached and rotated planes need the same detents.
+        let current = -plane.x.dot(up).atan2(plane.x.dot(right));
+        let raw = current + self.contacts.twist_snap_offset + angle;
+        let nearest = (raw / std::f64::consts::FRAC_PI_4).round() * std::f64::consts::FRAC_PI_4;
+        // A wider release band prevents jitter. Retain the unsnapped remainder
+        // so many small samples can leave a detent and reverse without drift.
+        let tolerance = if self.contacts.twist_snapped { 5.0_f64 } else { 3.0_f64 }.to_radians();
+        self.contacts.twist_snapped = (raw - nearest).abs() <= tolerance;
+        let target = if self.contacts.twist_snapped { nearest } else { raw };
+        self.contacts.twist_snap_offset = raw - target;
+        let difference = target - current;
+        difference.sin().atan2(difference.cos())
     }
 }
 
@@ -1042,7 +1076,7 @@ impl Viewport {
                                 let current_angle = (point[1] - other[1]).atan2(point[0] - other[0]);
                                 let difference = current_angle - previous_angle;
                                 // The shortest signed turn avoids a jump at ±pi.
-                                let angle = difference.sin().atan2(difference.cos());
+                                let angle = self.snapped_twist(difference.sin().atan2(difference.cos()));
                                 self.navigate(&json!({"motion":"roll","angle":angle,
                                     "anchor_points":[(point[0]+other[0])*0.5,(point[1]+other[1])*0.5]}))?;
                             }

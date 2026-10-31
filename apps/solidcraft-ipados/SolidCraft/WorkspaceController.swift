@@ -215,6 +215,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var integratedGridAxes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.integratedGridAxes") as? Bool ?? true
     private var originInBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.originInBrowser") as? Bool ?? false
     private var resetChromeOffsets = false
+    private var sketchRotationSnap = UserDefaults.standard.object(forKey: "SolidCraft.workspace.sketchRotationSnap") as? Bool ?? true
     private var twoFingerTwist = UserDefaults.standard.object(forKey: "SolidCraft.workspace.twoFingerTwist") as? Bool ?? true
     private var viewpointOrbit = UserDefaults.standard.object(forKey: "SolidCraft.workspace.viewpointOrbit") as? Bool ?? true
     private var dragStepMM = DragResolution.current
@@ -576,6 +577,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.session.command("view.grid", params: ["visible": self.gridVisible, "integrated_axes": self.integratedGridAxes])
                 self.session.command("view.touch_orbit", params: ["follows_viewpoint": self.viewpointOrbit])
                 self.session.command("view.touch_twist", params: ["enabled": self.twoFingerTwist])
+                self.session.command("view.sketch_rotation_snap", params: ["enabled": self.sketchRotationSnap])
                 self.session.command("view.drag_precision", params: ["step_mm": self.dragStepMM])
                 self.session.command("view.tool_handles", params: ["enabled": self.directHandles])
                 self.session.command("view.automatic_subtract", params: ["enabled": self.automaticSubtract])
@@ -3023,6 +3025,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.rebuildMenus()
             }
         }
+        let rotationSnap = UIAction(title: WorkspaceStyle.text("sketch_rotation_snap"), attributes: numericEditing || modellingEditing ? .disabled : [], state: sketchRotationSnap ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            let enabled = !self.sketchRotationSnap
+            self.canvas.cancelInput()
+            self.session.command("view.sketch_rotation_snap", params: ["enabled": enabled]) { [weak self] result in
+                guard let self, case .success = result else { return }
+                self.sketchRotationSnap = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.sketchRotationSnap")
+                self.rebuildMenus()
+            }
+        }
         let orbit = UIAction(title: WorkspaceStyle.text("viewpoint_orbit"), attributes: numericEditing || modellingEditing ? .disabled : [], state: viewpointOrbit ? .on : .off) { [weak self] _ in
             guard let self else { return }
             let enabled = !self.viewpointOrbit
@@ -3110,7 +3123,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, historyGestures, orbit, twist, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, historyGestures, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
