@@ -4231,9 +4231,14 @@ private extension FoundationController {
                 }; return
             }
             session.command(fixture[index].0, params: fixture[index].1) { result in
-                // Finishing the changed base exposes its intentionally stale profile
-                // before the next command explicitly repairs that upstream input.
-                if case .failure(let error) = result, index != 11 { finish("Fixture: " + error.message); return }
+                // Removing a side temporarily opens the base profile; finishing
+                // the redraw exposes its old profile certificate. Both commands
+                // have committed, but native scene validation reports the expected
+                // evaluation failure until the following repair command.
+                if case .failure(let error) = result,
+                   !([9, 11].contains(index) && ["evaluation", "unresolved_reference"].contains(error.code)) {
+                    finish("Fixture step " + String(index) + ": " + error.code + ": " + error.message); return
+                }
                 prepare(index + 1)
             }
         }
