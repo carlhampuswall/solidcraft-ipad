@@ -12,9 +12,11 @@ the source history and current verification scope.
 `WorkspaceController.swift` hosts one real `MetalCanvas` behind native floating
 controls. The document header is a centred surface, normally 340 × 52 points,
 showing the actual document name and app-private persistence status. Its folder
-menu opens Projects, Save project, Import, Export and Share STEP. The separate top-left
+menu opens Projects and Save project. Import, Export and Share STEP live in the
+Projects panel. The separate top-left
 Model button opens the model browser. Projects presents the native design library
-with search, create/open, and context-menu duplicate/delete actions. Switching
+with search, create/open, swipe or context-menu rename, and context-menu
+duplicate/delete actions. Switching
 saves first; current projects cannot be deleted. Imports can open as a separate
 project or insert geometry into the current one. Export offers STEP, SolidCraft,
 STL, OBJ and 3MF through Files. Share STEP exports the current committed design
@@ -373,11 +375,31 @@ camera controller, undo stack, dependency or artwork.
 the actual document name, real history availability and Model/Properties/View
 access. The two-line subtitle identifies the active authoring component and exact
 occurrence path, alongside the local-document status. The engine's `is_dirty`
-projection distinguishes unsaved edits from context changes. Panels start closed.
+projection distinguishes unsaved edits from context changes. Model and Properties
+panels start closed.
 Feature history and assembly placements share the Model browser. Projects use
 the existing native container in private storage, autosave committed edits and
-restore the last project. The Tools menu preference “Reopen last project on
-launch” can retain the former starter-model launch behaviour.
+restore the last project. Projects opens on every launch after the session is
+ready, including when restoring a saved project fails. **Tools → Show Projects
+on launch** (`SolidCraft.projects.showBrowserOnLaunch`, default true) restores
+the former direct-to-workspace launch when disabled. **Reopen last project on
+launch** independently controls which document is loaded behind the panel.
+
+The Projects navigation controller follows the saved System/Light/Dark workspace
+appearance. Swipe a project row or long-press it to rename it. Renaming preserves
+the UUID, native extension and directory for relative component links. Current
+projects save through the existing command path, retaining history and publishing
+the updated revision; a failed save restores the original filename. Import is in
+the navigation bar; Export and Share STEP are in the bottom toolbar and operate
+on the current project named in the footer. Each transfer closes the panel before
+presenting the native file or share controller.
+
+Debug `--projects-check` extends the existing STEP share acceptance driver with
+the startup panel, Light/Dark/System appearance, busy controls, rename validation,
+identity/history preservation, saving to the new path and Projects → Share STEP.
+It uses a temporary project library and restores launch/appearance preferences;
+no saved project selection or library design is changed. Captures and the report
+use the existing `step-share-*` names in Documents.
 
 `WorkspaceLayout.swift` uses safe-area points and available window size. Below
 1000 points wide (1120 with accessibility text), one secondary panel uses a

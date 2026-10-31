@@ -494,7 +494,11 @@ final class NativeSession {
         projectTask({ state, library, current in
             if current?.id == project.id { try Self.saveProject(state, current) }
             return try library.rename(project, to: name) { renamed in
-                if current?.id == project.id { try Self.saveProject(state, renamed) }
+                if current?.id == project.id {
+                    // Saving under a new name can advance the document revision.
+                    // Publish through the command path so picking keeps a current scene.
+                    _ = try Self.fileCommand(state, "file.save_as", params: ["path": renamed.file.path])
+                }
             }
         }) { [weak self] result in
             if case .success(let project) = result, self?.currentProject?.id == project.id { self?.selectProject(project) }

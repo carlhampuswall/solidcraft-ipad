@@ -3784,7 +3784,7 @@ private extension FoundationController {
                             capture("projects-rename")
                             alert.dismiss(animated: false) {
                                 browser.onRename?(project, "Renamed project")
-                                wait({ self.session.currentProject?.name == "Renamed project" && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 0))?.contentConfiguration as? UIListContentConfiguration)?.text == "Renamed project" }) {
+                                wait({ self.session.currentProject?.name == "Renamed project" && self.canvas.geometryRevision == self.state?.geometry_revision && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 0))?.contentConfiguration as? UIListContentConfiguration)?.text == "Renamed project" }) {
                                     guard let renamed = self.session.currentProject else { report("Rename lost current project"); return }
                                     if renamed.id != project.id || FileManager.default.fileExists(atPath: project.file.path) { issues.append("Rename lost identity or left old file") }
                                     if self.state?.document_id != oldDocument || self.state?.can_undo != oldUndo || self.state?.rows.count != oldRows { issues.append("Rename replaced document/history") }
