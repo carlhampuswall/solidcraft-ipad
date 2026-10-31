@@ -89,6 +89,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--dark-sketch") {
         return dark_sketch_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--constrained-green") {
+        return constrained_green_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--history") {
         return history_proof(&destination);
     }
@@ -1776,6 +1779,57 @@ fn sketch_axis_order_proof(destination: &str) -> Result<(), Box<dyn std::error::
 }
 
 /// Real sketch strokes and native guides through the same GPU converters as Metal.
+fn constrained_green_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    for (command, params) in [
+        ("sketch.create", json!({"plane":"XY"})),
+        ("sketch.rectangle.two_point", json!({"p0":[10,10],"p1":[50,35]})),
+        ("sketch.circle.center", json!({"center":[80,20],"radius":8})),
+        ("sketch.dimension", json!({"entities":["l1"],"value":40})),
+        ("sketch.dimension", json!({"entities":["l2"],"value":25})),
+        ("sketch.dimension", json!({"entities":["origin","l1.start"],"type":"horizontal","value":10})),
+        ("sketch.dimension", json!({"entities":["origin","l1.start"],"type":"vertical","value":10})),
+    ] {
+        engine.execute(command, params)?;
+    }
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("view.origin", &json!({"group":"axes","visible":true}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless_single_sample()?;
+    for dark in [false, true] {
+        for enabled in [false, true] {
+            view.command(
+                "view.background",
+                &json!({
+                    "color":if dark { json!([28,28,30]) } else { json!(null) },
+                    "sketch":if dark { json!([100,210,255]) } else { json!(null) },
+                    "grid":if dark { json!([[45,45,47],[62,62,65]]) } else { json!(null) },
+                    "constrained_green":enabled
+                }),
+            )?;
+            let frame = view.snapshot().ok_or("missing constrained sketch frame")?;
+            let rgba = solidcraft_ipados_bridge::renderer::capture_appearance(&frame, &capturer, 960, 640)?;
+            if enabled {
+                let green = if dark { [70, 225, 155] } else { [0, 125, 85] };
+                let free = if dark { [100, 210, 255] } else { [30, 90, 200] };
+                for color in [green, free, [60, 170, 60]] {
+                    if rgba.chunks_exact(4).filter(|pixel| pixel[..3] == color).count() < 20 {
+                        return Err(format!("missing constrained/free/axis colour {color:?}").into());
+                    }
+                }
+            }
+            let stage = format!("{}-{}", if dark { "dark" } else { "light" }, if enabled { "green" } else { "legacy" });
+            let path = destination.replace(".png", &format!("-{stage}.png"));
+            std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+            println!("PASS {stage}: constrained rectangle, free circle and distinct green axis; {path}");
+        }
+    }
+    Ok(())
+}
+
 fn dark_sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = SessionAdapter::new();
     engine.execute("sketch.create", json!({"plane":"XZ"}))?;

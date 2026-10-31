@@ -26,6 +26,7 @@ pub struct NativeRenderer {
     error: Arc<Mutex<Option<String>>>,
     uploaded: Option<Arc<solidcraft_ipados_session::SceneSnapshot>>,
     uploaded_sketch_color: Option<solidcraft_render::Rgb>,
+    uploaded_constrained_green: bool,
     uploaded_construction_dashes: bool,
     scene_key: u64,
     scene: SceneSlot,
@@ -91,6 +92,7 @@ impl NativeRenderer {
             error,
             uploaded: None,
             uploaded_sketch_color: None,
+            uploaded_constrained_green: true,
             uploaded_construction_dashes: false,
             scene_key: 0,
             scene: Arc::new(Mutex::new(None)),
@@ -173,6 +175,7 @@ impl NativeRenderer {
         };
         if self.uploaded.as_ref().is_none_or(|model| !Arc::ptr_eq(model, &snapshot.model))
             || self.uploaded_sketch_color != snapshot.sketch_color
+            || self.uploaded_constrained_green != snapshot.constrained_green
             || self.uploaded_construction_dashes != snapshot.construction_dashes
         {
             self.scene_key = self.scene_key.checked_add(1).ok_or("render scene revision exhausted")?;
@@ -181,6 +184,7 @@ impl NativeRenderer {
             self.bodies = bodies;
             self.uploaded = Some(snapshot.model.clone());
             self.uploaded_sketch_color = snapshot.sketch_color;
+            self.uploaded_constrained_green = snapshot.constrained_green;
             self.uploaded_construction_dashes = snapshot.construction_dashes;
             self.highlight_revision = 0;
         }

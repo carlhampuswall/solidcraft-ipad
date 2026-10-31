@@ -517,6 +517,65 @@ fn engine_command(id: u64, command: &str, params: Value) -> Value {
 }
 
 #[test]
+fn constrained_sketch_green_survives_appearance_undo_and_redo_without_colouring_free_curves() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    for (command, params) in [
+        ("sketch.create", json!({"plane":"XY"})),
+        ("sketch.rectangle.two_point", json!({"p0":[10,10],"p1":[50,35]})),
+        ("sketch.circle.center", json!({"center":[80,20],"radius":8})),
+        ("sketch.dimension", json!({"entities":["l1"],"value":40})),
+        ("sketch.dimension", json!({"entities":["l2"],"value":25})),
+        ("sketch.dimension", json!({"entities":["origin","l1.start"],"type":"horizontal","value":10})),
+        ("sketch.dimension", json!({"entities":["origin","l1.start"],"type":"vertical","value":10})),
+    ] {
+        engine_command(id, command, params);
+    }
+    let entry = lookup(id).unwrap();
+    let model = entry.viewport.lock().unwrap().snapshot().unwrap().model;
+    let history = engine_command(id, "document.inspect", json!({}))["undo"].clone();
+    for (dark, green, free) in [(false, [0, 125, 85, 255], [30, 90, 200, 255]), (true, [70, 225, 155, 255], [100, 210, 255, 255])] {
+        for enabled in [true, false, true] {
+            view_request(
+                id,
+                json!({"kind":"command","command":"view.background","params":{
+                    "color":if dark { json!([28,28,30]) } else { json!(null) },
+                    "sketch":if dark { json!([100,210,255]) } else { json!(null) }, "constrained_green":enabled
+                }}),
+            );
+            let frame = entry.viewport.lock().unwrap().snapshot().unwrap();
+            assert!(Arc::ptr_eq(&model, &frame.model), "appearance must not rebuild CAD geometry");
+            let (gpu, _) = crate::renderer::model_geometry(&frame, 1).unwrap();
+            assert!(gpu.palette.entries().contains(&free), "the unconstrained circle stays blue");
+            let determined = if enabled {
+                green
+            } else if dark {
+                free
+            } else {
+                [20, 20, 20, 255]
+            };
+            assert!(gpu.palette.entries().contains(&determined));
+            assert_eq!(gpu.palette.entries().contains(&green), enabled);
+            for axis in frame.guides.lines.iter().chain(&frame.guides.grid) {
+                assert_eq!(frame.model_line_color(axis.color), axis.color, "axes retain their own green");
+                assert_ne!([axis.color.0, axis.color.1, axis.color.2, 255], green);
+            }
+        }
+    }
+    assert_eq!(engine_command(id, "document.inspect", json!({}))["undo"], history);
+    for (command, determined) in [("edit.undo", false), ("edit.redo", true)] {
+        engine_command(id, command, json!({}));
+        let frame = entry.viewport.lock().unwrap().snapshot().unwrap();
+        let (gpu, _) = crate::renderer::model_geometry(&frame, 2).unwrap();
+        assert_eq!(gpu.palette.entries().contains(&[70, 225, 155, 255]), determined);
+    }
+    let before = entry.viewport.lock().unwrap().diagnostic();
+    assert!(entry.viewport.lock().unwrap().command("view.background", &json!({"color":null,"constrained_green":"yes"})).is_err());
+    assert_eq!(entry.viewport.lock().unwrap().diagnostic(), before, "bad appearance input is atomic");
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
 fn dark_sketch_strokes_reach_gpu_for_active_finished_and_preview_scenes() {
     let _serial = isolated_registry();
     let id = sc_session_create();

@@ -17,6 +17,7 @@ pub struct RenderSnapshot {
     pub model: Arc<SceneSnapshot>,
     pub background: Option<(Rgb, Rgb)>,
     pub sketch_color: Option<Rgb>,
+    pub constrained_green: bool,
     pub construction_dashes: bool,
     pub camera: Camera,
     pub view_proj: Mat4,
@@ -38,12 +39,9 @@ impl RenderSnapshot {
         !self.construction_dashes || !crate::construction::construction_stroke(line)
     }
 
-    /// Native appearance changes only ordinary sketch strokes. These shared
-    /// palette entries identify free, determined and finished sketch curves;
-    /// body edges, construction/reference geometry and feedback keep their colours.
+    /// Preserve solver-state colours when applying the native appearance.
     pub fn model_line_color(&self, color: Rgb) -> Rgb {
-        let palette = view::Palette::DEFAULT;
-        if [palette.sketch, palette.sketch_fixed, palette.sketch_done].contains(&color) { self.sketch_color.unwrap_or(color) } else { color }
+        crate::appearance::sketch_line_color(color, self.sketch_color, self.constrained_green)
     }
 }
 
@@ -88,6 +86,7 @@ pub struct Viewport {
     pub(crate) origin: crate::origin::OriginReferences,
     background: Option<Rgb>,
     sketch_color: Option<Rgb>,
+    constrained_green: bool,
     pub(crate) construction_dashes: bool,
     grid: GridStyle,
     generation: u64,
@@ -133,6 +132,7 @@ impl Default for Viewport {
             origin: crate::origin::OriginReferences::default(),
             background: None,
             sketch_color: None,
+            constrained_green: true,
             construction_dashes: true,
             grid: GridStyle::default(),
             generation: 0,
@@ -296,8 +296,14 @@ impl Viewport {
             let color: Option<[u8; 3]> = serde_json::from_value(params["color"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
             let grid: Option<[[u8; 3]; 2]> = serde_json::from_value(params["grid"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
             let sketch: Option<[u8; 3]> = serde_json::from_value(params["sketch"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
+            let constrained_green = params
+                .get("constrained_green")
+                .map(|value| value.as_bool().ok_or_else(|| error("bad_params", "constrained_green must be a boolean")))
+                .transpose()?
+                .unwrap_or(self.constrained_green);
             self.background = color.map(|[r, g, b]| Rgb(r, g, b));
             self.sketch_color = sketch.map(|[r, g, b]| Rgb(r, g, b));
+            self.constrained_green = constrained_green;
             let colors = grid.map(|colors| colors.map(|[r, g, b]| Rgb(r, g, b)));
             if self.grid.colors != colors {
                 self.grid.colors = colors;
@@ -770,6 +776,7 @@ impl Viewport {
             geometry_revision: authoritative.geometry_revision,
             background: self.background.map(|color| (color, color)).or(model.scene.background),
             sketch_color: self.sketch_color,
+            constrained_green: self.constrained_green,
             construction_dashes: self.construction_dashes,
             model,
             camera: self.camera,
@@ -825,6 +832,7 @@ impl Viewport {
             "origin":self.origin,"reference_labels":self.reference_labels(),
             "background":self.background.map(|color| [color.0,color.1,color.2]),
             "sketch_color":self.sketch_color.map(|color| [color.0,color.1,color.2]),
+            "constrained_green":self.constrained_green,
             "grid":{"visible":self.grid.visible,"integrated_axes":self.grid.integrated_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
             "touch_orbit":{"follows_viewpoint":self.touch_orbit_follows_viewpoint},
             "touch_twist":{"enabled":self.two_finger_twist},

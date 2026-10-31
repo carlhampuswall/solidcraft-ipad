@@ -2,6 +2,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
 
+mod appearance;
 mod assembly;
 mod assembly_references;
 mod browser;
@@ -256,7 +257,14 @@ impl SessionAdapter {
         }
         // No camera-dependent guides or selection tint in the stable model upload.
         let selection = std::mem::take(&mut self.session.selection);
-        let scene = view::scene_with_guides(&self.session, &solidcraft_render::Camera::default(), None, view::Guides { grid: false, axes: false });
+        let scene = view::scene_with_palette_and_guides(
+            &self.session,
+            &solidcraft_render::Camera::default(),
+            None,
+            view::world_curve_parts,
+            &appearance::SKETCH_PALETTE,
+            view::Guides { grid: false, axes: false },
+        );
         self.session.selection = selection;
         let world = self.session.world_state();
         let names: Vec<String> = world.bodies.iter().filter(|b| self.session.body_visible(&b.name)).map(|b| b.name.clone()).collect();

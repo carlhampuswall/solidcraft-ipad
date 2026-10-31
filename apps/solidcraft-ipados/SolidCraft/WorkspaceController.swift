@@ -227,6 +227,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var distinguishDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.distinguishDimensions") as? Bool ?? true
     private var repeatRectangles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.repeatRectangles") as? Bool ?? false
     private var constructionDashes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.constructionDashes") as? Bool ?? true
+    private var constrainedGreen = UserDefaults.standard.object(forKey: "SolidCraft.workspace.constrainedGreen") as? Bool ?? true
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
     private var extrudeOnSketchSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnSketchSelection") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
@@ -3445,6 +3446,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.rebuildMenus()
                 }
             })
+            moreActions.append(UIAction(title: SketchText.text("constrained_green"), state: constrainedGreen ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                self.constrainedGreen.toggle()
+                UserDefaults.standard.set(self.constrainedGreen, forKey: "SolidCraft.workspace.constrainedGreen")
+                self.updateCanvasAppearance(); self.rebuildMenus()
+            })
         }
         moreButton.menu = UIMenu(children: moreActions)
         moreButton.showsMenuAsPrimaryAction = true
@@ -3547,7 +3554,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func updateCanvasAppearance() {
         guard canvas.traitCollection.userInterfaceStyle == .dark else {
-            session.command("view.background", params: ["color": NSNull()])
+            session.command("view.background", params: ["color": NSNull(), "constrained_green": constrainedGreen])
             return
         }
         func components(_ color: UIColor) -> ([CGFloat], CGFloat)? {
@@ -3565,7 +3572,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let grid = [CGFloat(0.5), 1].map { strength in
             rgb(zip(surface, separator).map { background, line in background + (line - background) * alpha * strength })
         }
-        session.command("view.background", params: ["color": rgb(surface), "grid": grid, "sketch": rgb(sketch)])
+        session.command("view.background", params: ["color": rgb(surface), "grid": grid, "sketch": rgb(sketch), "constrained_green": constrainedGreen])
     }
 
     private func updateStatus() {

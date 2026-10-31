@@ -1,5 +1,28 @@
 # Sketching (Step 6)
 
+## Constraint colours
+
+While editing a sketch, fully constrained curves use emerald green: RGB
+`0, 125, 85` in light appearance and `70, 225, 155` in dark appearance. Free
+curves remain blue/cyan, including free curves in a partly constrained sketch.
+The Y axis retains its distinct yellow-green `60, 170, 60`. Finished sketches,
+locked geometry, construction geometry and projected references retain their
+existing styling. The shared engine still determines each curve's constraint
+state; the native adapter supplies the palette through the existing scene API.
+
+Changes a default: yes — fully constrained curves turn green. Disable **Green
+fully constrained geometry** in the sketch More menu to restore the old
+black/light or cyan/dark appearance. The preference is saved as
+`SolidCraft.workspace.constrainedGreen`; `view.background` accepts the matching
+boolean `constrained_green` without changing CAD geometry or history.
+
+The bridge regression covers mixed constrained/free geometry, appearance and
+preference changes, undo/redo and malformed input. The `render_proof`
+`--constrained-green` mode captures both appearances and the legacy preference
+through the actual native GPU model path, checking for distinct constrained,
+free and Y-axis pixel colours. This is macOS offscreen evidence; it does not
+verify UIKit runtime or physical iPad input.
+
 ## Repair a sketch attachment
 
 After finishing or cancelling the current tool, select a sketch in the browser
