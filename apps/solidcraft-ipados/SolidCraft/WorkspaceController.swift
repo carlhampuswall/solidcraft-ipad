@@ -2221,7 +2221,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         browser.onClose = { [weak browser] in browser?.dismiss(animated: true) }
         browser.onOpen = { [weak self, weak browser] project in
             guard let self, let browser else { return }; browser.setBusy(true)
-            self.session.openProject(project) { [weak self, weak browser] result in self?.finishProjectChange(result, browser: browser) }
+            self.session.openProject(project) { [weak self, weak browser] result in
+                self?.finishProjectChange(result, browser: browser, repairProject: project)
+            }
         }
         browser.onCreate = { [weak self, weak browser] name, source in
             guard let self, let browser else { return }; browser.setBusy(true)
@@ -2270,10 +2272,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func finishProjectChange(_ result: Result<Void, BridgeError>, browser: ProjectBrowserController?) {
+    private func finishProjectChange(_ result: Result<Void, BridgeError>, browser: ProjectBrowserController?, repairProject: ProjectRecord? = nil) {
         browser?.setBusy(false)
         switch result {
-        case .failure(let error): if let browser { browser.showError(error) } else { showProjectFailure(error) }
+        case .failure(let error):
+            if let browser {
+                let repair: (() -> Void)? = error.code == "unresolved_reference" ? repairProject.map { project in
+                    { [weak self, weak browser] in
+                        guard let self, let browser else { return }
+                        browser.setBusy(true)
+                        self.session.openProjectForRepair(project) { [weak self, weak browser] result in
+                            self?.finishProjectChange(result, browser: browser)
+                        }
+                    }
+                } : nil
+                browser.showError(error, openForRepair: repair)
+            } else { showProjectFailure(error) }
         case .success:
             failure = nil; localSaveLabel = ProjectText.text("saved")
             browser?.dismiss(animated: true)

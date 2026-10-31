@@ -1,0 +1,9 @@
+{
+  "en": {
+    "ui.ipados.projects.open_for_repair": "Open for repair",
+    "ui.ipados.projects.repair_destination": "Open the repair copy as a new project to preserve the source and its recovery file.",
+    "ui.ipados.projects.repair_hint": "Open a separate copy to repair the feature named below. Select it in History, choose Edit original feature, and reselect its inputs. The displayed geometry needs review; the original project and its recovery copy will be kept.",
+    "ui.ipados.projects.repair_name": "{name} - repair",
+    "ui.ipados.projects.repair_source": "Choose a saved project to open for repair."
+  }
+}

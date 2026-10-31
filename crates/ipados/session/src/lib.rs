@@ -173,6 +173,26 @@ impl SessionAdapter {
     /// selection and the current document untouched. All file semantics remain
     /// in the upstream commands; this is only a native publication transaction.
     pub fn replace_document(&mut self, source: Option<&str>, name: &str, destination: &str) -> Result<(Value, Arc<SceneSnapshot>), AdapterError> {
+        self.replace_document_checked(source, name, destination, false)
+    }
+
+    /// Explicitly open a separate repair copy of a document with reference warnings.
+    /// Its evaluated geometry is for review, not proof of intended references.
+    /// Ordinary publication and modelling validation remain strict.
+    pub fn replace_document_for_repair(&mut self, source: &str, name: &str, destination: &str) -> Result<(Value, Arc<SceneSnapshot>), AdapterError> {
+        if solidcraft_engine::io::vfs::exists(destination) {
+            return Err(error("bad_params", "ui.ipados.projects.repair_destination"));
+        }
+        self.replace_document_checked(Some(source), name, destination, true)
+    }
+
+    fn replace_document_checked(
+        &mut self,
+        source: Option<&str>,
+        name: &str,
+        destination: &str,
+        repair: bool,
+    ) -> Result<(Value, Arc<SceneSnapshot>), AdapterError> {
         if name.trim().is_empty() || name.len() > 512 || destination.is_empty() || destination.len() >= 4096 {
             return Err(error("bad_params", "invalid project name or destination"));
         }
@@ -182,6 +202,12 @@ impl SessionAdapter {
             Some(path) => candidate.execute("doc.open", json!({"path":path}))?.value,
             None => candidate.execute("file.new", json!({"name":name}))?.value,
         };
+        if repair {
+            // A cached model can conceal the very downstream warning being repaired.
+            // Keep the existing engine evaluator and source path for linked resources.
+            let document = candidate.session.doc.as_ref().clone();
+            candidate.session = Session::opened_at(document, None, source);
+        }
         // Check the potentially large import-warning reply before adoption:
         // response overflow must never look like a failed project switch after
         // the live document has already changed. Leave room for viewport data.
@@ -189,13 +215,13 @@ impl SessionAdapter {
             return Err(error("response_limit", "project import diagnostics exceed 512 KiB"));
         }
         candidate.geometry_revision = revision;
-        let mut snapshot = candidate.snapshot()?;
+        let mut snapshot = candidate.snapshot_checked(repair)?;
         let saved = candidate.execute("file.save_as", json!({"path":destination}))?;
         // Save As may rename a design named after its previous file. Retain
         // prepared geometry and normalise the publication to one new revision.
         candidate.geometry_revision = revision;
         if saved.changed {
-            snapshot = candidate.snapshot()?;
+            snapshot = candidate.snapshot_checked(repair)?;
         }
         self.session = candidate.session;
         self.geometry_revision = revision;
@@ -242,6 +268,10 @@ impl SessionAdapter {
     }
 
     pub fn snapshot(&mut self) -> Result<Arc<SceneSnapshot>, AdapterError> {
+        self.snapshot_checked(false)
+    }
+
+    fn snapshot_checked(&mut self, allow_reference_warnings: bool) -> Result<Arc<SceneSnapshot>, AdapterError> {
         if let Some(result) = self.session.model.results.iter().find(|result| result.error.is_some()) {
             return Err(error("evaluation", format!("{}: {}", result.name, result.error.as_deref().unwrap_or_default())));
         }
@@ -249,8 +279,9 @@ impl SessionAdapter {
             if let Some(result) = self.session.model.results.iter().find(|result| !result.skipped && result.stale) {
                 return Err(error("stale_evaluation", format!("{} has not been regenerated for the current document.", result.name)));
             }
-            if let Some(result) =
-                self.session.model.results.iter().find(|result| result.warning.as_deref().is_some_and(references::risky_reference_warning))
+            if !allow_reference_warnings
+                && let Some(result) =
+                    self.session.model.results.iter().find(|result| result.warning.as_deref().is_some_and(references::risky_reference_warning))
             {
                 return Err(error("unresolved_reference", format!("{}: {}", result.name, result.warning.as_deref().unwrap_or_default())));
             }

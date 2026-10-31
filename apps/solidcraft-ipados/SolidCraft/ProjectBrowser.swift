@@ -81,10 +81,14 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         toolbarItems?.forEach { $0.isEnabled = !busy && current != nil }
     }
 
-    func showError(_ error: BridgeError) {
+    func showError(_ error: BridgeError, openForRepair: (() -> Void)? = nil) {
         setBusy(false)
-        let alert = UIAlertController(title: ProjectText.text("error"), message: error.description, preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: WorkspaceStyle.text("close"), style: .default))
+        let message = openForRepair == nil ? error.description : ProjectText.text("repair_hint") + "\n\n" + error.description
+        let alert = UIAlertController(title: ProjectText.text("error"), message: message, preferredStyle: .alert)
+        if let openForRepair {
+            alert.addAction(UIAlertAction(title: ProjectText.text("open_for_repair"), style: .default) { _ in openForRepair() })
+        }
+        alert.addAction(UIAlertAction(title: WorkspaceStyle.text("close"), style: openForRepair == nil ? .default : .cancel))
         present(alert, animated: true)
     }
 

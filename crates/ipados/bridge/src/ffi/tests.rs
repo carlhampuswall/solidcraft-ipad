@@ -9,6 +9,77 @@ fn isolated_registry() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[test]
+fn project_reference_warning_can_open_a_separate_repair_copy_without_weakening_modelling() {
+    let _serial = isolated_registry();
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-repair-abi-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let source = directory.join("Split.solidcraft");
+    let repaired = directory.join("Repair.solidcraft");
+    let mut author = SessionAdapter::new();
+    for (command, params) in [
+        ("sketch.create", json!({"plane":"XY","name":"Outline"})),
+        ("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,20]})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"distance":10,"profiles":[{"point":[10,10]}]})),
+        ("sketch.edit", json!({"sketch":"Outline"})),
+        ("sketch.line", json!({"points":[[20,0],[20,20]]})),
+        ("sketch.finish", json!({})),
+        ("file.save_as", json!({"path":source})),
+    ] {
+        author.execute(command, params).unwrap();
+    }
+    assert_eq!(author.snapshot().err().unwrap().code, "unresolved_reference");
+    let original = std::fs::read(&source).unwrap();
+    let id = sc_session_create();
+    assert_eq!(request(id, r#"{"kind":"fixture"}"#), 0);
+    let entry = lookup(id).unwrap();
+    let before = entry.viewport.lock().unwrap().snapshot().unwrap();
+    let open = json!({"kind":"document","source":source,"name":"Repair","destination":repaired});
+    assert_eq!(request(id, &open.to_string()), -1, "normal opening remains strict");
+    assert_eq!(response(id)["error"]["code"], "unresolved_reference");
+    assert_eq!(entry.viewport.lock().unwrap().snapshot().unwrap().model.document_id, before.model.document_id);
+    let mut open = open;
+    open["repair"] = json!(true);
+    let mut overwrite = open.clone();
+    overwrite["destination"] = json!(source);
+    assert_eq!(request(id, &overwrite.to_string()), -1, "repair cannot overwrite an existing source");
+    assert_eq!(std::fs::read(&source).unwrap(), original);
+    let corrupt = directory.join("Corrupt.solidcraft");
+    std::fs::write(&corrupt, b"not a design").unwrap();
+    let mut invalid = open.clone();
+    invalid["source"] = json!(corrupt);
+    assert_eq!(request(id, &invalid.to_string()), -1, "repair is not permission to adopt invalid data");
+    author.execute("file.save_as", json!({"path":corrupt,"format":"json","overwrite":true})).unwrap();
+    let mut broken: Value = serde_json::from_slice(&std::fs::read(&corrupt).unwrap()).unwrap();
+    broken["features"][1]["sketch"] = json!(999);
+    std::fs::write(&corrupt, serde_json::to_vec(&broken).unwrap()).unwrap();
+    assert_eq!(request(id, &invalid.to_string()), -1, "an evaluation error still blocks a repair copy");
+    assert_eq!(response(id)["error"]["code"], "evaluation");
+    assert_eq!(entry.viewport.lock().unwrap().snapshot().unwrap().model.document_id, before.model.document_id);
+    assert_eq!(request(id, &open.to_string()), 0, "{}", response(id));
+    assert_eq!(std::fs::read(&source).unwrap(), original, "repair never replaces the source project");
+    assert!(repaired.is_file());
+    assert!((entry.viewport.lock().unwrap().snapshot().unwrap().model.volume_mm3 - 8000.).abs() < 1e-5);
+    assert_eq!(request(id, r#"{"kind":"model","action":"begin","feature":2}"#), 0, "{}", response(id));
+    let edit = response(id)["result"].clone();
+    assert_eq!(
+        request(id, &json!({"kind":"model","action":"commit","token":edit["token"],"params":edit["params"]}).to_string()),
+        -1,
+        "opening for repair must not accept unresolved references"
+    );
+    let mut params = edit["params"].clone();
+    params["profile"] = json!({"sketch":1,"profiles":{"type":"indices","indices":[0,1]}});
+    assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":edit["token"],"params":params}).to_string()), 0, "{}", response(id));
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 8000.).abs() < 1e-5);
+    assert_eq!(request(id, &json!({"kind":"save_document","path":repaired}).to_string()), 0);
+    open["repair"] = json!(false);
+    open["source"] = json!(repaired);
+    assert_eq!(request(id, &open.to_string()), 0, "a repaired save reopens through the normal strict path");
+    assert_eq!(sc_session_destroy(id), 0);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn project_save_preserves_numeric_preview_and_replacement_publishes_only_complete_documents() {
     let _serial = isolated_registry();
     let directory = std::env::temp_dir().join(format!("solidcraft-project-abi-{}", std::process::id()));

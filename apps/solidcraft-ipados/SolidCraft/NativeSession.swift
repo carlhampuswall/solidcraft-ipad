@@ -420,9 +420,10 @@ final class NativeSession {
         try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": command, "params": params]), lane: .engine)
     }
 
-    private static func replaceProject(_ state: BridgeState, source: URL?, project: ProjectRecord) throws -> Data {
+    private static func replaceProject(_ state: BridgeState, source: URL?, project: ProjectRecord, repair: Bool = false) throws -> Data {
         var request: [String: Any] = ["kind": "document", "name": project.name, "destination": project.file.path]
         if let source { request["source"] = source.path }
+        if repair { request["repair"] = true }
         return try state.request(JSONSerialization.data(withJSONObject: request), lane: .engine)
     }
 
@@ -487,6 +488,22 @@ final class NativeSession {
             try Self.saveProject(state, current)
             if current?.id != project.id { _ = try Self.replaceProject(state, source: project.file, project: project) }
             return project
+        }) { [weak self] result in
+            if case .success(let project) = result { self?.selectProject(project) }
+            completion(result.map { _ in () })
+        }
+    }
+
+    /// Preserve a warned source and its working recovery sidecar. Repair uses a
+    /// separate project; modelling still requires explicitly resolved references.
+    func openProjectForRepair(_ source: ProjectRecord, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        projectTask({ state, library, current in
+            guard try library.projects().contains(where: { $0.id == source.id && $0.file == source.file }) else { throw ProjectLibrary.failure("invalid_project") }
+            try Self.saveProject(state, current)
+            let name = ProjectText.text("repair_name").replacingOccurrences(of: "{name}", with: source.name)
+            let project = try library.reserve(name: name)
+            do { _ = try Self.replaceProject(state, source: source.file, project: project, repair: true); return project }
+            catch { try? library.remove(project); throw error }
         }) { [weak self] result in
             if case .success(let project) = result { self?.selectProject(project) }
             completion(result.map { _ in () })

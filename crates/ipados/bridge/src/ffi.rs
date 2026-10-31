@@ -82,20 +82,52 @@ fn with_entry(id: u64, lane: usize, cleanup: bool, operation: impl FnOnce(&Entry
 enum Request {
     Proof,
     Fixture,
-    Command { command: String, params: Value },
-    Document { source: Option<String>, name: String, destination: String },
-    SaveDocument { path: String },
+    Command {
+        command: String,
+        params: Value,
+    },
+    Document {
+        source: Option<String>,
+        name: String,
+        destination: String,
+        #[serde(default)]
+        repair: bool,
+    },
+    SaveDocument {
+        path: String,
+    },
     Snapshot,
-    Input { event: InputEvent },
-    InputBatch { events: Vec<InputEvent> },
+    Input {
+        event: InputEvent,
+    },
+    InputBatch {
+        events: Vec<InputEvent>,
+    },
     ToolWork,
     Workspace,
-    Numeric { action: String, token: Option<u64>, expression: Option<String>, dimension: Option<String> },
-    Model { action: String, token: Option<u64>, operation: Option<String>, feature: Option<u64>, params: Option<Value> },
-    SketchPlane { plane: Value },
+    Numeric {
+        action: String,
+        token: Option<u64>,
+        expression: Option<String>,
+        dimension: Option<String>,
+    },
+    Model {
+        action: String,
+        token: Option<u64>,
+        operation: Option<String>,
+        feature: Option<u64>,
+        params: Option<Value>,
+    },
+    SketchPlane {
+        plane: Value,
+    },
     SketchPlaneCancel,
-    SketchProject { params: solidcraft_ipados_session::SketchProjection },
-    Viewport { metrics: ViewportMetrics },
+    SketchProject {
+        params: solidcraft_ipados_session::SketchProjection,
+    },
+    Viewport {
+        metrics: ViewportMetrics,
+    },
 }
 
 impl Entry {
@@ -447,7 +479,14 @@ impl Entry {
             match request {
                 Request::Proof => adapter.proof().map(|s| (metadata(&s), s)),
                 Request::Fixture => adapter.fixture().map(|s| (metadata(&s), s)),
-                Request::Document { source, name, destination } => adapter.replace_document(source.as_deref(), &name, &destination),
+                Request::Document { source, name, destination, repair } => {
+                    if repair {
+                        let source = source.as_deref().ok_or_else(|| error("bad_params", "ui.ipados.projects.repair_source"))?;
+                        adapter.replace_document_for_repair(source, &name, &destination)
+                    } else {
+                        adapter.replace_document(source.as_deref(), &name, &destination)
+                    }
+                }
                 Request::SketchProject { params } => adapter.project_sketch(params),
                 Request::Command { command, params } => {
                     adapter.selection(&selection)?;

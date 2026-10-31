@@ -382,10 +382,17 @@ only their disposable fixture and never restore/autosave the library.
 
 Two engine-lane JSON requests extend ABI 3 without changing C signatures:
 
-- `{kind:"document", source?:path, name, destination:path}` prepares a separate
+- `{kind:"document", source?:path, name, destination:path, repair?:false}` prepares a separate
   candidate with `doc.open` or `file.new`, validates a scene and saves with
   `file.save_as`, then replaces the authoritative session. Failures preserve its
   document, undo history and revision. Native geometry revisions stay monotonic.
+  Explicit `repair:true` requires a saved source and a new destination. It
+  cold-evaluates without the optional model cache and allows reference warnings
+  in this initial scene only. Evaluation errors and stale results still fail;
+  subsequent modelling validation remains strict. Projects offers this option
+  after an unresolved-reference failure and creates a separate repair project.
+  It preserves the source and working recovery file; no reference is silently
+  recaptured. See [RECOVERY.md](RECOVERY.md).
 - `{kind:"save_document", path}` calls `file.save` without viewport publication,
   so autosave persists the committed document without cancelling numeric/Pencil
   work or publishing its provisional geometry.

@@ -39,9 +39,13 @@ size_t sc_surface_response_len(uint64_t session);
 int32_t sc_surface_response_copy(uint64_t session, uint8_t *output, size_t capacity);
 
 /* Project files add engine-lane JSON requests (no C ABI signature changes):
- * {kind:"document",source?:path,name,destination:path}: prepare/open, evaluate
+ * {kind:"document",source?:path,name,destination:path,repair?:false}: prepare/open, evaluate
  * and persist a candidate through the existing engine commands, then replace
  * the live session. Failed preparation leaves the current document/history intact.
+ * Explicit repair:true requires a source and new destination; it cold-evaluates
+ * without a model cache and permits reference warnings in the initial scene for
+ * review. Evaluation errors and stale results still fail. Subsequent modelling
+ * checks remain strict; no reference is silently recaptured.
  * {kind:"save_document",path}: save committed state without replacing the
  * viewport snapshot or cancelling provisional tools/numeric edits.
  */
