@@ -13,6 +13,7 @@ mod input;
 mod modelling;
 mod origin;
 mod picking;
+mod recovery;
 mod references;
 mod sketch_input;
 mod sketching;
@@ -135,7 +136,11 @@ impl SessionAdapter {
         // Move both stacks aside first, so even a full undo stack loses no entry.
         let history = matches!(id, "timeline.roll_to" | "timeline.rollback")
             .then(|| (std::mem::take(&mut self.session.undo), std::mem::take(&mut self.session.redo)));
-        let result = self.session.execute(id, &params);
+        let result = if matches!(id, "file.save" | "file.save_as") {
+            self.save_with_recovery(id, &params)
+        } else {
+            self.session.execute(id, &params).map_err(AdapterError::from)
+        };
         if let Some((undo, redo)) = history {
             self.session.undo = undo;
             self.session.redo = redo;

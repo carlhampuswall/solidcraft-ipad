@@ -7,6 +7,7 @@ struct ProjectRecord: Equatable {
     let file: URL
     let modified: Date
     var name: String { file.deletingPathExtension().lastPathComponent }
+    var recoveryFile: URL { URL(fileURLWithPath: file.path + ".recovery") }
 }
 
 struct ProjectLibrary {
@@ -80,8 +81,16 @@ struct ProjectLibrary {
         guard file != project.file else { return project }
         try FileManager.default.moveItem(at: project.file, to: file)
         let renamed = ProjectRecord(id: project.id, file: file, modified: project.modified)
-        do { try persist(renamed) }
+        var movedRecovery = false
+        do {
+            if FileManager.default.fileExists(atPath: project.recoveryFile.path) {
+                try FileManager.default.moveItem(at: project.recoveryFile, to: renamed.recoveryFile)
+                movedRecovery = true
+            }
+            try persist(renamed)
+        }
         catch {
+            if movedRecovery { try FileManager.default.moveItem(at: renamed.recoveryFile, to: project.recoveryFile) }
             try FileManager.default.moveItem(at: file, to: project.file)
             throw error
         }

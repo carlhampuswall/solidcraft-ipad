@@ -446,6 +446,101 @@ fn projects_round_trip_native_step_and_failed_replacements_preserve_the_live_des
 }
 
 #[test]
+fn projects_recovery_keeps_the_last_cold_reopenable_save_during_sketch_edits() {
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-recovery-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("Plate.solidcraft");
+    let recovery = directory.join("Plate.solidcraft.recovery");
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("sketch.create", json!({"plane":"XY","name":"Outline"})).unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,20]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("solid.extrude", json!({"distance":10,"profiles":[{"point":[10,10]}]})).unwrap();
+    let saved = adapter.execute("file.save_as", json!({"path":path})).unwrap();
+    assert_eq!(saved.value["recovery_updated"], true);
+    let working = std::fs::read(&path).unwrap();
+    assert_eq!(std::fs::read(&recovery).unwrap(), working, "the first save already has recovery");
+
+    adapter.execute("sketch.edit", json!({"sketch":"Outline"})).unwrap();
+    adapter.execute("sketch.line", json!({"points":[[20,0],[20,20]]})).unwrap();
+    let history = adapter.session.undo.len();
+    let active = adapter.session.active_sketch;
+    let saved = adapter.execute("file.save", json!({"path":path})).unwrap();
+    assert_eq!(saved.value["recovery_updated"], false, "cold reopen must detect a warning hidden by the live sketch editor");
+    assert_eq!(adapter.session.active_sketch, active, "autosave must leave authoring alone");
+    assert_eq!(adapter.session.undo.len(), history);
+    let unfinished = std::fs::read(&path).unwrap();
+    assert_ne!(unfinished, working, "unfinished edits still reach the ordinary save");
+    adapter.execute("file.save", json!({"path":path})).unwrap();
+    assert_eq!(std::fs::read(directory.join("Plate.solidcraft.bak")).unwrap(), unfinished);
+    assert_eq!(std::fs::read(&recovery).unwrap(), working, "repeated saves cannot rotate away the working copy");
+
+    let mut restored = SessionAdapter::new();
+    restored.replace_document(Some(recovery.to_str().unwrap()), "Restored", directory.join("Restored.solidcraft").to_str().unwrap()).unwrap();
+    assert!((restored.snapshot().unwrap().volume_mm3 - 8000.).abs() < 1e-5);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("parameters.add", json!({"name":"Revision","expression":"2"})).unwrap();
+    let saved = adapter.execute("file.save", json!({"path":path})).unwrap();
+    assert_eq!(saved.value["recovery_updated"], true);
+    assert_eq!(std::fs::read(&recovery).unwrap(), std::fs::read(&path).unwrap());
+    assert_ne!(std::fs::read(&recovery).unwrap(), working);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn projects_recovery_upgrades_existing_saves_and_reports_recovery_write_failures() {
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-recovery-upgrade-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("Existing.solidcraft");
+    let recovery = directory.join("Existing.solidcraft.recovery");
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+    // An older build has an ordinary file and rolling backup, but no recovery yet.
+    adapter.session.execute("file.save_as", &json!({"path":path})).unwrap();
+    let old = std::fs::read(&path).unwrap();
+    adapter.execute("parameters.add", json!({"name":"Revision","expression":"1"})).unwrap();
+    assert!(adapter.execute("file.save", json!({"path":path,"format":"invalid"})).is_err());
+    assert_eq!(std::fs::read(&recovery).unwrap(), old, "upgrade protects the existing working file before replacement");
+    assert_eq!(std::fs::read(&path).unwrap(), old);
+    adapter.execute("file.save", json!({"path":path})).unwrap();
+    assert_ne!(std::fs::read(&recovery).unwrap(), old);
+
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::create_dir(&recovery).unwrap();
+    adapter.execute("parameters.change", json!({"name":"Revision","expression":"2"})).unwrap();
+    assert_eq!(adapter.execute("file.save", json!({"path":path})).unwrap_err().code, "recovery_write");
+    assert!(adapter.session.is_dirty(), "recovery failure must not be reported as fully saved");
+    std::fs::remove_dir(&recovery).unwrap();
+    adapter.execute("file.save", json!({"path":path})).unwrap();
+    assert_eq!(std::fs::read(&recovery).unwrap(), std::fs::read(&path).unwrap());
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn projects_recovery_seeds_only_rebuildable_files_after_primary_corruption() {
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-recovery-corruption-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("Existing.solidcraft");
+    let backup = directory.join("Existing.solidcraft.bak");
+    let recovery = directory.join("Existing.solidcraft.recovery");
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+    adapter.session.execute("file.save_as", &json!({"path":path})).unwrap();
+    let working = std::fs::read(&path).unwrap();
+    std::fs::write(&backup, &working).unwrap();
+    std::fs::write(&path, b"damaged primary").unwrap();
+    assert!(adapter.execute("file.save", json!({"path":path,"format":"invalid","overwrite":true})).is_err());
+    assert_eq!(std::fs::read(&recovery).unwrap(), working, "a validated rolling backup can seed recovery");
+    assert_eq!(std::fs::read(&path).unwrap(), b"damaged primary");
+    std::fs::remove_file(&recovery).unwrap();
+    std::fs::write(&backup, b"damaged backup").unwrap();
+    assert!(adapter.execute("file.save", json!({"path":path,"format":"invalid","overwrite":true})).is_err());
+    assert!(!recovery.exists(), "corrupt bytes must never become a working recovery file");
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn projects_preserve_upstream_reference_data_from_sc_through_legacy_native_containers() {
     let directory = std::env::temp_dir().join(format!(
         "solidcraft-ipados-upstream-roundtrip-{}-{}",
