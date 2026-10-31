@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.projects.share_step": "Share STEP…",
+    "ui.ipados.projects.shared": "Shared"
+  },
+  "de": {
+    "ui.ipados.projects.share_step": "STEP teilen…",
+    "ui.ipados.projects.shared": "Geteilt"
+  },
+  "ja": {
+    "ui.ipados.projects.share_step": "STEPを共有…",
+    "ui.ipados.projects.shared": "共有済み"
+  },
+  "ko": {
+    "ui.ipados.projects.share_step": "STEP 공유…",
+    "ui.ipados.projects.shared": "공유됨"
+  },
+  "zh": {
+    "ui.ipados.projects.share_step": "共享 STEP…",
+    "ui.ipados.projects.shared": "已共享"
+  }
+}

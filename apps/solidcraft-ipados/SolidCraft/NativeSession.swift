@@ -557,6 +557,29 @@ final class NativeSession {
         }
     }
 
+    #if DEBUG
+    /// Give the disposable launch fixture a temporary native file for exercising
+    /// the production export path, without selecting or changing a library project.
+    func developmentPrepareExportFixture(completion: @escaping (Result<URL, BridgeError>) -> Void) {
+        projectTask({ state, _, _ in
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("SolidCraft-Share-Check-" + UUID().uuidString, isDirectory: true)
+            do {
+                let project = try ProjectLibrary(root: root).reserve(name: "STEP Share Check")
+                try Self.saveProject(state, project)
+                return (root, project)
+            } catch { try? FileManager.default.removeItem(at: root); throw error }
+        }) { [weak self] result in
+            if case .success(let value) = result { self?.currentProject = value.1; self?.onProjectChange?(value.1) }
+            completion(result.map { $0.0 })
+        }
+    }
+
+    func developmentClearExportFixture(_ root: URL) {
+        autosave?.cancel(); autosave = nil; currentProject = nil
+        try? FileManager.default.removeItem(at: root)
+    }
+    #endif
+
     private func scheduleAutosave(_ workspace: WorkspaceState) {
         autosave?.cancel(); autosave = nil
         guard workspace.dirty == true, currentProject != nil, !projectBusy,

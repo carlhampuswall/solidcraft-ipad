@@ -12,12 +12,15 @@ the source history and current verification scope.
 `WorkspaceController.swift` hosts one real `MetalCanvas` behind native floating
 controls. The document header is a centred surface, normally 340 × 52 points,
 showing the actual document name and app-private persistence status. Its folder
-menu opens Projects, Save project, Import and Export. The separate top-left
+menu opens Projects, Save project, Import, Export and Share STEP. The separate top-left
 Model button opens the model browser. Projects presents the native design library
 with search, create/open, and context-menu duplicate/delete actions. Switching
 saves first; current projects cannot be deleted. Imports can open as a separate
 project or insert geometry into the current one. Export offers STEP, SolidCraft,
-STL, OBJ and 3MF through Files. See INTERFACES.md for ownership and limits.
+STL, OBJ and 3MF through Files. Share STEP exports the current committed design
+and opens the system share sheet with its named `.step` file for AirDrop and
+compatible apps. Temporary exports remain available until the activity finishes
+or is cancelled. See INTERFACES.md for ownership and limits.
 
 On iPadOS 26 and later, the floating document header moves up into the centre of
 the top status strip when it fits, retaining its full height and menu touch area.
@@ -596,6 +599,13 @@ and component names. Also insert STEP into an existing design and Undo it. Expor
 an editable SolidCraft design, import that file, edit its timeline and save.
 Cancel both pickers, try a damaged/empty file and confirm the current design
 remains intact. Check iCloud/local providers, file extensions and repeated names.
+Use Share STEP to open the system share sheet, cancel it, then reopen it and send
+the file to an available destination. Confirm the received file has the project
+name and `.step` extension. The opt-in DEBUG `--step-share-check` uses a temporary
+fixture to check real STEP output, iPad popover anchoring, repeated sharing,
+temporary-file cleanup and the existing Files export. Its activity completion
+callbacks are synthetic; it sends no file externally. The report and three
+UIKit captures are written as `step-share-*` files in Documents.
 During a numeric preview, autosave must preserve the preview while writing only
 the committed model. Suspend/relaunch with dirty work and verify the saved project.
 

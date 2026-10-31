@@ -194,6 +194,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private weak var projectsBrowser: ProjectBrowserController?
     private var importingIntoProject = false
     private var pendingExport: URL?
+    private var preparingExport = false
     private var hasLocalSave = false
     private var localSaveLabel: String?
     private var documentStatus = WorkspaceStyle.text("unsaved_session")
@@ -546,6 +547,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkViewControlsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-actions-check") {
                     self.developmentCheckStarted = true; self.checkHistoryActionsOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--step-share-check") {
+                    self.developmentCheckStarted = true; self.checkStepSharingOnDevice()
                 }
             }
             if presented { self.assemblyCheckPresented(document: documentID, revision: revision, preview: preview) }
@@ -2037,14 +2040,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func projectMenuActions() -> [UIMenuElement] {
-        let attributes: UIMenuElement.Attributes = numericEditing || modellingEditing || !pending.isEmpty ? .disabled : []
+        let attributes: UIMenuElement.Attributes = numericEditing || modellingEditing || !pending.isEmpty || preparingExport || pendingExport != nil ? .disabled : []
         return [
             UIAction(title: ProjectText.text("title"), image: WorkspaceIcon.image("folder", traits: traitCollection), attributes: attributes) { [weak self] _ in self?.showProjects() },
             UIAction(title: ProjectText.text("save"), image: WorkspaceIcon.image("save", traits: traitCollection), attributes: attributes) { [weak self] _ in self?.localDocument(reopen: false) },
             UIAction(title: ProjectText.text("import"), attributes: attributes) { [weak self] _ in self?.chooseProjectImport() },
             UIMenu(title: ProjectText.text("export"), children: ["step", "solidcraft", "stl", "obj", "3mf"].map { format in
                 UIAction(title: ProjectText.text("export_" + (format == "solidcraft" ? "native" : format)), attributes: attributes) { [weak self] _ in self?.exportProject(format: format) }
-            })
+            }),
+            UIAction(title: ProjectText.text("share_step"), attributes: attributes) { [weak self] _ in self?.exportProject(format: "step", share: true) }
         ]
     }
 
@@ -2133,20 +2137,55 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         present(picker, animated: true)
     }
 
-    private func exportProject(format: String) {
-        guard !numericEditing, !modellingEditing, presentedViewController == nil, pending.isEmpty else { return }
+    private func exportProject(format: String, share: Bool = false) {
+        guard !numericEditing, !modellingEditing, presentedViewController == nil, pending.isEmpty,
+              !preparingExport, pendingExport == nil else { return }
         canvas.cancelInput()
+        preparingExport = true; updateAvailability()
+        let expected = generation
         session.exportProject(format: format) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.generation == expected, self.active else {
+                if case .success(let file) = result { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+                self?.preparingExport = false
+                return
+            }
+            self.preparingExport = false; self.updateAvailability()
             switch result {
             case .failure(let error): self.showProjectFailure(error)
             case .success(let file):
+                guard self.presentedViewController == nil else {
+                    try? FileManager.default.removeItem(at: file.deletingLastPathComponent()); return
+                }
                 self.pendingExport = file
+                self.updateAvailability()
+                if share { self.presentExportShare(file); return }
                 let picker = UIDocumentPickerViewController(forExporting: [file], asCopy: true)
                 picker.delegate = self; picker.shouldShowFileExtensions = true; picker.isModalInPresentation = true
                 self.present(picker, animated: true)
             }
         }
+    }
+
+    private func presentExportShare(_ file: URL) {
+        let controller = UIActivityViewController(activityItems: [file], applicationActivities: nil)
+        let expected = generation
+        // Both the document menu and Tools menu reach this action. Anchor to the
+        // visible document control, with Tools as the compact-layout fallback.
+        let source = documentActionsButton.isHidden ? moreButton : documentActionsButton
+        controller.popoverPresentationController?.sourceView = source
+        controller.popoverPresentationController?.sourceRect = source.bounds
+        controller.completionWithItemsHandler = { [weak self] _, completed, _, error in
+            DispatchQueue.main.async {
+                // The receiving activity must finish before its file is removed.
+                // Keep cleanup independent of the workspace controller lifetime.
+                try? FileManager.default.removeItem(at: file.deletingLastPathComponent())
+                guard let self, self.generation == expected, self.pendingExport == file else { return }
+                self.pendingExport = nil; self.updateAvailability()
+                if let error { self.showProjectFailure(BridgeError(code: "share", message: error.localizedDescription)) }
+                else if completed { self.documentStatus = ProjectText.text("shared"); self.updateSubtitle() }
+            }
+        }
+        present(controller, animated: true)
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
@@ -2178,6 +2217,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func clearPendingExport() {
         if let pendingExport { try? FileManager.default.removeItem(at: pendingExport.deletingLastPathComponent()) }
         pendingExport = nil
+        updateAvailability()
     }
 
     private func chooseSketchPlane() {
@@ -3497,6 +3537,96 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 /// Opt-in device evidence driver. It uses the ordinary controller forms and their
 /// Preview/Apply/Cancel callbacks. It never synthesizes a hardware Pencil event.
 private extension FoundationController {
+    func checkStepSharingOnDevice() {
+        let expected = generation
+        var finished = false
+        var fixture: URL?
+        var issues: [String] = []
+        var captures: [String] = []
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        func report(_ problem: String? = nil) {
+            guard !finished else { return }; finished = true
+            if let problem { issues.append(problem) }
+            if let fixture { session.developmentClearExportFixture(fixture) }
+            do {
+                guard let documents else { return }
+                let data = try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                    "captures": captures, "completed_at": Date().timeIntervalSince1970,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "synthetic_activity_completions": true, "external_transfer": false], options: [.prettyPrinted, .sortedKeys])
+                try data.write(to: documents.appendingPathComponent("step-share-check.json"), options: .atomic)
+            } catch { print("STEP share report failed: \(error)") }
+            print("STEP share check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+        }
+        func wait(_ ready: @escaping () -> Bool, remaining: Int = 200, then next: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if ready() { next(); return }
+            guard remaining > 0 else { report("Timed out waiting for export presentation"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(ready, remaining: remaining - 1, then: next) }
+        }
+        func capture(_ name: String) {
+            do {
+                guard let documents else { report("Missing Documents directory"); return }
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                guard let png = image.pngData() else { report("Screenshot encoding failed"); return }
+                let filename = "step-share-" + name + ".png"
+                try png.write(to: documents.appendingPathComponent(filename), options: .atomic)
+                captures.append(filename)
+            } catch { report(error.localizedDescription) }
+        }
+        func run(_ index: Int) {
+            guard !finished else { return }
+            guard index < 3 else { report(); return }
+            let share = index < 2
+            let statusBefore = documentStatus
+            let revision = state?.geometry_revision
+            exportProject(format: "step", share: share)
+            wait({ !self.preparingExport && self.pendingExport != nil && self.presentedViewController != nil }) {
+                guard let file = self.pendingExport, let controller = self.presentedViewController else { report("Missing export"); return }
+                do {
+                    let data = try Data(contentsOf: file)
+                    if file.lastPathComponent != "STEP Share Check.step" || !String(decoding: data, as: UTF8.self).hasPrefix("ISO-10303-21;") {
+                        issues.append("Export did not produce a named STEP file")
+                    }
+                } catch { report(error.localizedDescription); return }
+                if self.state?.geometry_revision != revision { issues.append("Export changed geometry") }
+                if self.projectMenuActions().compactMap({ $0 as? UIAction }).contains(where: { !$0.attributes.contains(.disabled) }) {
+                    issues.append("Project actions remained enabled during export")
+                }
+                if share {
+                    guard let activity = controller as? UIActivityViewController,
+                          let source = activity.popoverPresentationController?.sourceView,
+                          source.window != nil, !source.isHidden else { report("Share sheet is missing its visible iPad anchor"); return }
+                } else if !(controller is UIDocumentPickerViewController) { report("Export no longer opens Files"); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    capture(index == 0 ? "sheet" : index == 1 ? "repeat" : "files")
+                    controller.dismiss(animated: false) {
+                        if let activity = controller as? UIActivityViewController {
+                            // Exercise cancellation and success without sending a file to anyone.
+                            activity.completionWithItemsHandler?(nil, index == 1, nil, nil)
+                        } else if let picker = controller as? UIDocumentPickerViewController { self.documentPickerWasCancelled(picker) }
+                        wait({ self.pendingExport == nil }) {
+                            if FileManager.default.fileExists(atPath: file.deletingLastPathComponent().path) { issues.append("Temporary export survived completion") }
+                            if index == 0, self.documentStatus != statusBefore { issues.append("Cancelled share reported success") }
+                            if index == 1, self.documentStatus != ProjectText.text("shared") { issues.append("Completed share did not report success") }
+                            run(index + 1)
+                        }
+                    }
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 75) { report("STEP share diagnostic timed out") }
+        wait({ self.pending.isEmpty }) {
+            self.session.developmentPrepareExportFixture { result in
+                switch result {
+                case .failure(let error): report(error.description)
+                case .success(let root): fixture = root; run(0)
+                }
+            }
+        }
+    }
+
     func checkLineFinishOnDevice() {
         let expected = generation
         var finished = false
