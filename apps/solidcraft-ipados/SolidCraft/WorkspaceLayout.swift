@@ -77,22 +77,23 @@ enum WorkspaceSelectionFilter: String, CaseIterable {
 }
 
 /// Consume every selection report, including those received while another tool
-/// owns input. Only a newly selected face in the same model can open Extrude.
-struct FaceExtrudeTrigger<Selection: Equatable> {
+/// owns input. Only newly selected compatible sources in the same model open Extrude.
+struct SelectionExtrudeTrigger<Selection: Equatable> {
     private var document: String?
     private var revision: UInt64?
     private var selection: [Selection] = []
 
     static func shouldDismiss(automatic: Bool, committing: Bool, selection: [Selection],
-                              isFace: (Selection) -> Bool) -> Bool {
-        automatic && !committing && !selection.contains(where: isFace)
+                              source: (Selection) -> String?) -> Bool {
+        automatic && !committing && !selection.contains { source($0) != nil }
     }
 
     mutating func update(document: String, revision: UInt64, selection: [Selection],
-                         enabled: Bool, idle: Bool, isFace: (Selection) -> Bool) -> Bool {
+                         enabled: Bool, idle: Bool, source: (Selection) -> String?) -> Bool {
         defer { self.document = document; self.revision = revision; self.selection = selection }
+        guard let first = selection.first, let key = source(first) else { return false }
         return enabled && idle && self.document == document && self.revision == revision &&
-            !selection.isEmpty && selection.allSatisfy(isFace) &&
+            selection.allSatisfy { source($0) == key } &&
             selection.contains { !self.selection.contains($0) }
     }
 }

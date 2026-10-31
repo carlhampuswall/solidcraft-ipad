@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.workspace.extrude_on_sketch_selection": "Extrude on sketch selection",
+    "ui.ipados.workspace.extrude_on_sketch_selection_help": "Open Extrude when selecting a closed sketch region. Turn off to select sketch regions without opening a tool."
+  },
+  "de": {
+    "ui.ipados.workspace.extrude_on_sketch_selection": "Bei Skizzenauswahl extrudieren",
+    "ui.ipados.workspace.extrude_on_sketch_selection_help": "Extrudieren beim Auswählen eines geschlossenen Skizzenbereichs öffnen. Deaktivieren, um Skizzenbereiche ohne Werkzeug zu wählen."
+  },
+  "ja": {
+    "ui.ipados.workspace.extrude_on_sketch_selection": "スケッチの選択時に押し出しを開始",
+    "ui.ipados.workspace.extrude_on_sketch_selection_help": "閉じたスケッチ領域を選択すると押し出しを開きます。オフにするとツールを開かずにスケッチ領域を選択できます。"
+  },
+  "ko": {
+    "ui.ipados.workspace.extrude_on_sketch_selection": "스케치 선택 시 돌출 시작",
+    "ui.ipados.workspace.extrude_on_sketch_selection_help": "닫힌 스케치 영역을 선택하면 돌출을 엽니다. 끄면 도구를 열지 않고 스케치 영역을 선택할 수 있습니다."
+  },
+  "zh": {
+    "ui.ipados.workspace.extrude_on_sketch_selection": "选择草图时打开拉伸",
+    "ui.ipados.workspace.extrude_on_sketch_selection_help": "选择闭合草图区域时打开拉伸工具。关闭后可选择草图区域而不打开工具。"
+  }
+}

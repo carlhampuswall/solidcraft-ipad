@@ -66,19 +66,19 @@ struct WorkspaceChecks {
             try require(WorkspaceSelectionFilter(storedValue: filter.rawValue) == filter, "saved selection filter was not restored")
         }
         func dismissFaceExtrude(_ selection: [String], automatic: Bool = true, committing: Bool = false) -> Bool {
-            FaceExtrudeTrigger<String>.shouldDismiss(automatic: automatic, committing: committing,
-                                                     selection: selection, isFace: { $0.hasPrefix("face:") })
+            SelectionExtrudeTrigger<String>.shouldDismiss(automatic: automatic, committing: committing,
+                                                     selection: selection, source: { $0.hasPrefix("face:") ? "face" : nil })
         }
         try require(dismissFaceExtrude([]), "deselecting the last face left automatic Extrude active")
         try require(dismissFaceExtrude(["edge:1"]), "switching away from faces left automatic Extrude active")
         try require(!dismissFaceExtrude(["face:top"]), "a remaining face dismissed automatic Extrude")
         try require(!dismissFaceExtrude([], automatic: false), "deselection cancelled a manually opened tool")
         try require(!dismissFaceExtrude([], committing: true), "deselection interrupted Apply")
-        var faceExtrude = FaceExtrudeTrigger<String>()
+        var faceExtrude = SelectionExtrudeTrigger<String>()
         func selectionReport(_ selection: [String], enabled: Bool = true, idle: Bool = true,
                              document: String = "part", revision: UInt64 = 1) -> Bool {
             faceExtrude.update(document: document, revision: revision, selection: selection,
-                               enabled: enabled, idle: idle, isFace: { $0.hasPrefix("face:") })
+                               enabled: enabled, idle: idle, source: { $0.hasPrefix("face:") ? "face" : nil })
         }
         try require(!selectionReport([]), "initial workspace opened Extrude")
         try require(selectionReport(["face:top"]), "selecting a face did not activate Extrude")
@@ -97,6 +97,48 @@ struct WorkspaceChecks {
         try require(!selectionReport(["face:top"], document: "other", revision: 2), "document replacement opened Extrude")
         _ = selectionReport([], document: "other", revision: 2)
         try require(selectionReport(["face:top"], document: "other", revision: 2), "reselecting a face did not reopen Extrude")
+        var sketchExtrude = SelectionExtrudeTrigger<String>()
+        func extrudeSource(_ value: String) -> String? {
+            let parts = value.split(separator: ":")
+            if parts.first == "face" { return "face" }
+            if parts.first == "profile", parts.count == 3 { return "profile:" + parts[1] }
+            return nil
+        }
+        func sketchSelectionReport(_ selection: [String], enabled: Bool = true, idle: Bool = true,
+                                   revision: UInt64 = 1) -> Bool {
+            sketchExtrude.update(document: "part", revision: revision, selection: selection,
+                                 enabled: true, idle: idle, source: { value in
+                if value.hasPrefix("profile:"), !enabled { return nil }
+                return extrudeSource(value)
+            })
+        }
+        _ = sketchSelectionReport([])
+        try require(sketchSelectionReport(["profile:1:0"]), "selecting a sketch region did not open Extrude")
+        try require(!sketchSelectionReport(["profile:1:0"]), "a refresh reopened sketch Extrude")
+        try require(sketchSelectionReport(["profile:1:0", "profile:1:1"]), "adding a sketch region did not open Extrude")
+        try require(!sketchSelectionReport(["profile:1:0"]), "removing a sketch region reopened Extrude")
+        try require(!sketchSelectionReport(["profile:1:0", "face:top"]), "mixed face and sketch sources opened Extrude")
+        try require(!sketchSelectionReport(["profile:1:0", "profile:2:0"]), "regions from different sketches opened Extrude")
+        try require(!sketchSelectionReport(["plane:XY"]), "an empty reference plane opened Extrude")
+        try require(!sketchSelectionReport(["profile:1:0"], enabled: false), "disabled sketch preference opened Extrude")
+        try require(!sketchSelectionReport(["profile:1:0"]), "enabling sketch Extrude reopened the existing selection")
+        try require(sketchSelectionReport(["face:top"], enabled: false), "sketch preference disabled automatic face Extrude")
+        _ = sketchSelectionReport([])
+        try require(!sketchSelectionReport(["profile:1:0"], idle: false), "sketch selection interrupted an active tool")
+        try require(!sketchSelectionReport(["profile:1:0"]), "a blocked sketch selection opened Extrude later")
+        try require(!sketchSelectionReport(["profile:1:1"], revision: 2), "geometry publication opened sketch Extrude")
+        _ = sketchSelectionReport([], revision: 2)
+        try require(sketchSelectionReport(["profile:1:0"], revision: 2), "reselecting a sketch region did not reopen Extrude")
+        for selection in [["profile:1:0"], ["face:top"]] {
+            try require(!SelectionExtrudeTrigger<String>.shouldDismiss(automatic: true, committing: false,
+                selection: selection, source: extrudeSource), "an extrusion source dismissed automatic Extrude")
+        }
+        try require(SelectionExtrudeTrigger<String>.shouldDismiss(automatic: true, committing: false,
+            selection: [], source: extrudeSource), "clearing sketch selection left automatic Extrude open")
+        try require(!SelectionExtrudeTrigger<String>.shouldDismiss(automatic: true, committing: true,
+            selection: [], source: extrudeSource), "clearing sketch selection interrupted Apply")
+        try require(!SelectionExtrudeTrigger<String>.shouldDismiss(automatic: false, committing: false,
+            selection: [], source: extrudeSource), "clearing sketch selection cancelled a manual tool")
         let dimensionContext = DimensionTapTracker.Context(document: "sketch", geometry: 1, viewport: 2, camera: 3)
         let wideCaption = CGRect(x: -14, y: 58, width: 100, height: 44)
         let helperTarget = DimensionTapTracker.hitFrame(wideCaption, helper: true)

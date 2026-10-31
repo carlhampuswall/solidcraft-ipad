@@ -89,7 +89,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
     }
     private var state: WorkspaceState?
-    private var faceExtrudeTrigger = FaceExtrudeTrigger<WorkspaceEntity>()
+    private var selectionExtrudeTrigger = SelectionExtrudeTrigger<WorkspaceEntity>()
     private var historyActivation: (feature: UInt64, document: String)?
     private var visibleRows: [WorkspaceRow] = []
     private var rowByID: [String: WorkspaceRow] = [:]
@@ -164,7 +164,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var transformGeneration: UInt64 = 0
     private var transformMessage: WorkspaceMessage?
     private var transformBusy = false
-    private var modellingStartedFromFaceSelection = false
+    private var modellingStartedFromSelection = false
     private var modellingStarting = false
     private var modellingToken: UInt64?
     private var modellingFeature: UInt64?
@@ -216,6 +216,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var freeDimensions = UserDefaults.standard.object(forKey: "SolidCraft.workspace.freeDimensions") as? Bool ?? true
     private var repeatRectangles = UserDefaults.standard.object(forKey: "SolidCraft.workspace.repeatRectangles") as? Bool ?? false
     private var cancelToolsOnDismiss = UserDefaults.standard.object(forKey: "SolidCraft.workspace.cancelToolsOnDismiss") as? Bool ?? true
+    private var extrudeOnSketchSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnSketchSelection") as? Bool ?? true
     private var extrudeOnFaceSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.extrudeOnFaceSelection") as? Bool ?? true
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
     private var legacyOriginPlanes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.legacyOriginPlanes")
@@ -694,9 +695,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         let previous = state
         state = value
-        if FaceExtrudeTrigger<WorkspaceEntity>.shouldDismiss(
-            automatic: modellingStartedFromFaceSelection, committing: modellingCommitting,
-            selection: value.selection, isFace: { $0.type == "face" }) {
+        if SelectionExtrudeTrigger<WorkspaceEntity>.shouldDismiss(
+            automatic: modellingStartedFromSelection, committing: modellingCommitting,
+            selection: value.selection, source: { self.extrudeSelectionSource($0) }) {
             // Cancel the draft as well as its chrome, including a begin request
             // still in flight. The generation guards discard its late callback.
             cancelModelling()
@@ -770,10 +771,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let idle = active && pending.isEmpty && !numericEditing && !modellingEditing &&
             !planeChoosing && planeDraft == nil && value.sketch == nil && value.active_tool == "select" &&
             !textEntryActive && presentedViewController == nil && !featureHistory.isScrubbing
-        if faceExtrudeTrigger.update(document: value.document_id, revision: value.geometry_revision,
-                                     selection: value.selection, enabled: extrudeOnFaceSelection, idle: idle,
-                                     isFace: { $0.type == "face" }) {
-            beginModelling(operation: "solid.extrude", fromFaceSelection: true)
+        if selectionExtrudeTrigger.update(document: value.document_id, revision: value.geometry_revision,
+                                     selection: value.selection, enabled: true, idle: idle,
+                                     source: { self.extrudeSelectionSource($0, respectingPreferences: true) }) {
+            beginModelling(operation: "solid.extrude", fromSelection: true)
+        }
+    }
+
+    private func extrudeSelectionSource(_ entity: WorkspaceEntity, respectingPreferences: Bool = false) -> String? {
+        switch entity.type {
+        case "face" where !respectingPreferences || extrudeOnFaceSelection: return "face"
+        case "profile" where !respectingPreferences || extrudeOnSketchSelection:
+            // A draft can use multiple regions of one sketch, but cannot mix
+            // sketches or combine sketch regions with solid faces.
+            return entity.sketch.map { "profile:\($0)" }
+        default: return nil
         }
     }
 
@@ -1626,12 +1638,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func beginModelling(operation: String? = nil, feature: UInt64? = nil, initialParams: [String: PresentationJSON]? = nil, fromFaceSelection: Bool = false) {
+    private func beginModelling(operation: String? = nil, feature: UInt64? = nil, initialParams: [String: PresentationJSON]? = nil, fromSelection: Bool = false) {
         guard !numericEditing, !modellingEditing, let context = state else { return }
         historyActivation = nil
         canvas.cancelInput(); modellingGeneration &+= 1; lastOperationFeedback = []
         let expected = modellingGeneration
-        modellingStartedFromFaceSelection = fromFaceSelection
+        modellingStartedFromSelection = fromSelection
         modellingStarting = true; modellingContext = (context.document_id, context.geometry_revision)
         updateAvailability()
         session.requestModelling(action: "begin", operation: operation, feature: feature, params: initialParams) { [weak self] result in
@@ -1675,13 +1687,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                             form?.contextRefreshed(model)
                             let selectionParams: [String: PresentationJSON] = field.map { ["field": .string($0)] } ?? [:]
                             // Explicit picking continues this draft after the adapter clears
-                            // the original face selection. It is no longer an automatic popup.
-                            let automatic = self.modellingStartedFromFaceSelection
-                            self.modellingStartedFromFaceSelection = false
+                            // the original source selection. It is no longer an automatic popup.
+                            let automatic = self.modellingStartedFromSelection
+                            self.modellingStartedFromSelection = false
                             self.session.requestModelling(action: "selection", token: token, params: selectionParams) { [weak self] result in
                                 guard let self, self.modellingToken == token else { return }
                                 if case .failure(let error) = result {
-                                    self.modellingStartedFromFaceSelection = automatic
+                                    self.modellingStartedFromSelection = automatic
                                     self.showFailure(error); return
                                 }
                                 self.inspectorOpen = false; self.browserOpen = false; self.relayoutPanels()
@@ -1839,7 +1851,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func clearModelling() {
-        modellingStartedFromFaceSelection = false
+        modellingStartedFromSelection = false
         modellingGeneration &+= 1
         if let editor = modelValueEditor { editor.dismiss(animated: false) { [weak self] in self?.updateAvailability() } }
         modelValueEditor = nil; modelValue = nil; modelValueButton.isHidden = true
@@ -2936,6 +2948,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.extrudeOnFaceSelection, forKey: "SolidCraft.workspace.extrudeOnFaceSelection")
             self.rebuildMenus()
         }
+        let sketchExtrude = UIAction(title: WorkspaceStyle.text("extrude_on_sketch_selection"), subtitle: WorkspaceStyle.text("extrude_on_sketch_selection_help"), state: extrudeOnSketchSelection ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.extrudeOnSketchSelection.toggle()
+            UserDefaults.standard.set(self.extrudeOnSketchSelection, forKey: "SolidCraft.workspace.extrudeOnSketchSelection")
+            self.rebuildMenus()
+        }
         let automaticCut = UIAction(title: NativeText.value("ui.ipados.extrude.automatic_subtract"), attributes: modellingEditing ? .disabled : [], state: automaticSubtract ? .on : .off) { [weak self] _ in
             guard let self, !self.modellingEditing else { return }
             let enabled = !self.automaticSubtract
@@ -2951,7 +2969,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, historyGestures, dimensionPreview, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, historyGestures, dimensionPreview, orbit, twist, handles, dragResolution, automaticCut, dismissal, faceExtrude, sketchExtrude, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
