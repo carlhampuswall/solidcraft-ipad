@@ -250,6 +250,17 @@ the native layout harness, Clippy, wasm compilation and device builds. The real
 iPad popover/keypad was visually inspected. The driver uses synthetic control
 actions; physical tap, Pencil and VoiceOver coverage remain unverified.
 
+To add a reference measurement, select sketch geometry, open **Properties >
+Reference dimension**, and choose a dimension type. It appears immediately at
+the native default annotation position and can be dragged into place. Reference
+dimensions show parentheses, follow the geometry, and do not constrain it or open
+the numeric editor. Select the dimension's constraint row in Properties to use
+**Make reference** or **Make driving**. Making a reference driving uses
+its current measurement; select its value afterwards to edit it. The engine
+refuses a driving conversion that would over-constrain the sketch and preserves
+the reference dimension. Creation and each conversion are independently undoable
+through the existing `sketch.dimension` and `sketch.toggle_driven` commands.
+
 **Dimension** opens the shared expression transaction for the chosen supported
 type. The initial expression is retained, units and parameter references are
 parsed upstream, and Preview/Apply/Cancel have the Step 5 contract. **Place

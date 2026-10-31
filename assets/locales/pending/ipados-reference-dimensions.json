@@ -1,0 +1,27 @@
+{
+  "en": {
+    "ui.ipados.sketch.create_reference_dimension": "Reference dimension",
+    "ui.ipados.sketch.make_driving": "Make driving",
+    "ui.ipados.sketch.make_reference": "Make reference"
+  },
+  "ja": {
+    "ui.ipados.sketch.create_reference_dimension": "参照寸法",
+    "ui.ipados.sketch.make_driving": "駆動寸法にする",
+    "ui.ipados.sketch.make_reference": "参照寸法にする"
+  },
+  "zh": {
+    "ui.ipados.sketch.create_reference_dimension": "参考尺寸",
+    "ui.ipados.sketch.make_driving": "设为驱动尺寸",
+    "ui.ipados.sketch.make_reference": "设为参考尺寸"
+  },
+  "de": {
+    "ui.ipados.sketch.create_reference_dimension": "Referenzmaß",
+    "ui.ipados.sketch.make_driving": "Als steuerndes Maß verwenden",
+    "ui.ipados.sketch.make_reference": "Als Referenzmaß verwenden"
+  },
+  "ko": {
+    "ui.ipados.sketch.create_reference_dimension": "참조 치수",
+    "ui.ipados.sketch.make_driving": "구동 치수로 전환",
+    "ui.ipados.sketch.make_reference": "참조 치수로 전환"
+  }
+}

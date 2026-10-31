@@ -4488,6 +4488,64 @@ fn sketch_free_dimensions_offer_circle_and_arc_radii_and_hide_equal_driven_sizes
 }
 
 #[test]
+fn sketch_reference_dimensions_create_convert_and_reject_redundant_driving_without_changes() {
+    for dimension in ["length", "horizontal", "vertical", "angle", "radius", "diameter"] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+        if matches!(dimension, "radius" | "diameter") {
+            engine.execute("sketch.circle.center", json!({"center":[15,15],"radius":10,"id":"edge","connect":false})).unwrap();
+        } else {
+            engine.execute("sketch.line", json!({"points":[[10,10],[40,50]],"ids":["edge"],"infer":false,"connect":false})).unwrap();
+        }
+        let freedom = engine.sketch_snapshot().unwrap().dof;
+        let parameters = engine.session.doc.params.len();
+        let history = engine.session.undo.len();
+        engine.execute("sketch.dimension", json!({"entities":["edge"],"type":dimension,"driven":true})).unwrap();
+        let snapshot = engine.sketch_snapshot().unwrap();
+        let constraint = snapshot.sketch.constraints.iter().find(|c| c.kind.is_dimension()).unwrap();
+        let id = constraint.id.clone();
+        let selection = [Sel::SketchConstraint { id: id.clone() }];
+        assert!(constraint.driven && constraint.param.is_none());
+        assert_eq!(snapshot.dof, freedom, "a reference must not constrain {dimension}");
+        assert_eq!(engine.session.doc.params.len(), parameters);
+        assert_eq!(engine.session.undo.len(), history + 1);
+        assert!(engine.begin_numeric(800, &selection).is_err());
+
+        engine.execute("sketch.toggle_driven", json!({"constraint":id,"driven":false})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().dof, freedom - 1);
+        assert!(engine.begin_numeric(801, &selection).is_ok(), "converted {dimension} must be editable");
+        assert_eq!(engine.session.doc.params.len(), parameters + 1);
+        assert_eq!(engine.session.undo.len(), history + 2);
+        engine.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(engine.sketch_snapshot().unwrap().dof, freedom);
+        assert!(engine.begin_numeric(802, &selection).is_err());
+        engine.execute("edit.redo", json!({})).unwrap();
+        assert!(engine.begin_numeric(803, &selection).is_ok());
+        engine.execute("sketch.toggle_driven", json!({"constraint":id,"driven":true})).unwrap();
+        assert_eq!(engine.session.doc.params.len(), parameters);
+        assert_eq!(engine.sketch_snapshot().unwrap().dof, freedom);
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        let annotations = view.sketch_annotations();
+        let annotation = annotations.as_array().unwrap().iter().find(|a| a["id"] == id).unwrap();
+        assert_eq!(annotation["driven"], true);
+        assert_eq!(annotation["units"], if dimension == "angle" { "deg" } else { "mm" });
+
+        // Keep the original driving and add a redundant reference through the
+        // exact creation path offered by the native inspector.
+        engine.execute("sketch.toggle_driven", json!({"constraint":id,"driven":false})).unwrap();
+        engine.execute("sketch.dimension", json!({"entities":["edge"],"type":dimension,"driven":true})).unwrap();
+        let snapshot = engine.sketch_snapshot().unwrap();
+        let duplicate = snapshot.sketch.constraints.iter().find(|c| c.kind.is_dimension() && c.driven).unwrap().id.clone();
+        let document = engine.session.doc.clone();
+        let history = engine.session.undo.len();
+        assert!(engine.execute("sketch.toggle_driven", json!({"constraint":duplicate,"driven":false})).is_err());
+        assert!(Arc::ptr_eq(&document, &engine.session.doc), "failed {dimension} conversion changed the design");
+        assert_eq!(engine.session.undo.len(), history);
+        assert!(engine.begin_numeric(804, &[Sel::SketchConstraint { id: duplicate }]).is_err());
+    }
+}
+
+#[test]
 fn sketch_edge_readouts_preserve_radial_and_endpoint_dimensions_and_reference_values() {
     for dimension in ["radius", "diameter", "horizontal", "vertical"] {
         let (mut engine, mut view) = sketch_input_fixture(json!("YZ"), "select");

@@ -519,6 +519,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkNumericEntryOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--inline-dimension-check") {
                     self.developmentCheckStarted = true; self.checkInlineDimensionsOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--reference-dimension-check") {
+                    self.developmentCheckStarted = true; self.checkReferenceDimensionsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-toolbar-check") {
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--line-finish-check") {
@@ -2438,6 +2440,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 edit.accessibilityIdentifier = "workspace-edit-dimension"
                 properties.addArrangedSubview(edit)
             }
+            if selection.count == 1 {
+                let toggle = WorkspaceButton(SketchText.text(dimension.driven ? "make_driving" : "make_reference")) { [weak self] in
+                    self?.run("sketch.toggle_driven", params: ["constraint": dimension.id, "driven": !dimension.driven])
+                }
+                toggle.commandArtwork("sketch.toggle_driven")
+                toggle.accessibilityIdentifier = "workspace-toggle-reference-dimension"
+                properties.addArrangedSubview(toggle)
+            }
         } else if let dimensions = sketch.eligible_dimensions, !dimensions.isEmpty {
             let dimension = WorkspaceButton(SketchText.text("dimension"), prominent: true, action: {})
             dimension.commandArtwork("sketch.dimension")
@@ -2447,6 +2457,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             dimension.showsMenuAsPrimaryAction = true
             dimension.accessibilityIdentifier = "workspace-create-dimension"
             properties.addArrangedSubview(dimension)
+            let entities = selection.filter { ["sketch_curve", "sketch_point"].contains($0.type) }.compactMap { $0.id?.readout }
+            let reference = WorkspaceButton(SketchText.text("create_reference_dimension"), action: {})
+            reference.commandArtwork("sketch.dimension")
+            reference.menu = UIMenu(children: dimensions.map { type in
+                UIAction(title: SketchText.text(type)) { [weak self] _ in
+                    self?.createReferenceDimension(entities: entities, type: type)
+                }
+            })
+            reference.showsMenuAsPrimaryAction = true
+            reference.accessibilityIdentifier = "workspace-create-reference-dimension"
+            properties.addArrangedSubview(reference)
             let place = WorkspaceButton(SketchText.text("place_dimension"), action: {})
             place.commandArtwork("sketch.dimension")
             place.menu = UIMenu(children: dimensions.map { type in
@@ -2519,6 +2540,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let placement = WorkspaceStyle.label(.footnote, secondary: true); placement.text = SketchText.text("annotation_hint"); properties.addArrangedSubview(placement)
         }
         properties.addArrangedSubview(WorkspaceButton(SketchText.text("delete_sketch")) { [weak self] in self?.confirmDeleteSketch(id: sketch.id) })
+    }
+
+    private func createReferenceDimension(entities: [String], type: String) {
+        run("sketch.dimension", params: ["entities": entities, "type": type, "driven": true])
     }
 
     private func confirmDeleteSketch(id: Any) {
@@ -4883,6 +4908,114 @@ private extension FoundationController {
                 }
             }
         }
+    }
+
+    /// Synthetic UIKit acceptance with real native commands; never opens a library project.
+    private func checkReferenceDimensionsOnDevice() {
+        let expected = generation
+        var log = "Reference dimension candidate: " + (Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped") + "\n"
+        func record(_ message: String) {
+            log += message + "\n"; print(message)
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                try Data(log.utf8).write(to: directory.appendingPathComponent("reference-dimension-check.log"), options: .atomic)
+            } catch { print("Reference dimension check FAIL: \(error)") }
+        }
+        func wait(_ stage: String, remaining: Int = 100, until condition: @escaping () -> Bool, then action: @escaping () -> Void) {
+            guard active, generation == expected else { return }
+            if condition() { record(stage); action(); return }
+            guard remaining > 0 else { record("Reference dimension check FAIL: " + stage); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                wait(stage, remaining: remaining - 1, until: condition, then: action)
+            }
+        }
+        func capture(_ stage: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                guard let data = image.pngData() else { record("Reference dimension check FAIL: image encoding"); return }
+                try data.write(to: directory.appendingPathComponent("reference-dimension-" + stage + ".png"), options: .atomic)
+            } catch { record("Reference dimension check FAIL: \(error)") }
+        }
+        func button(_ id: String) -> WorkspaceButton? {
+            properties.arrangedSubviews.compactMap { $0 as? WorkspaceButton }.first { $0.accessibilityIdentifier == id }
+        }
+        func hasDimension(driven: Bool) -> Bool {
+            let dimensions = state?.sketch?.constraints.filter(\.dimension) ?? []
+            return dimensions.count == 1 && dimensions.first?.driven == driven &&
+                sketchAnnotations.values.contains { $0.driven == driven && $0.dimension_type == nil && abs($0.value - 50) < 0.001 }
+        }
+        func selectDimension(_ next: @escaping () -> Void) {
+            guard let dimension = state?.sketch?.constraints.first(where: \.dimension) else { record("Reference dimension check FAIL: missing dimension"); return }
+            session.selectEntity(["type": "sketch_constraint", "id": dimension.id], additive: false) { result in
+                switch result {
+                case .failure(let error): record("Reference dimension check FAIL: \(error)")
+                case .success:
+                    wait("dimension selected", until: { button("workspace-toggle-reference-dimension") != nil }, then: next)
+                }
+            }
+        }
+        func toggle(to driven: Bool, _ next: @escaping () -> Void) {
+            selectDimension {
+                guard let toggle = button("workspace-toggle-reference-dimension"),
+                      toggle.accessibilityLabel == SketchText.text(driven ? "make_reference" : "make_driving") else {
+                    record("Reference dimension check FAIL: wrong toggle label"); return
+                }
+                capture(driven ? "driving-selected" : "reference-selected")
+                toggle.sendActions(for: .touchUpInside)
+                wait(driven ? "made reference" : "made driving", until: { hasDimension(driven: driven) && self.pending.isEmpty }, then: next)
+            }
+        }
+        let commands: [(String, [String: Any])] = [
+            ("file.new", [:]), ("sketch.create", ["plane": "XY"]),
+            ("sketch.line", ["points": [[0, 0], [30, 40]], "ids": ["reference-check"], "infer": false, "connect": false]),
+            ("tool.set", ["tool": "select"]), ("view.fit", [:])
+        ]
+        func setup(_ index: Int) {
+            guard active, generation == expected else { return }
+            guard index < commands.count else {
+                inspectorOpen = true; browserOpen = false; rebuildInspector(); relayoutPanels()
+                session.selectEntity(["type": "sketch_curve", "id": "reference-check"], additive: false) { result in
+                    switch result {
+                    case .failure(let error): record("Reference dimension check FAIL: \(error)")
+                    case .success:
+                        wait("reference type menu available", until: {
+                            button("workspace-create-reference-dimension")?.menu?.children.contains { $0.title == SketchText.text("length") } == true
+                        }) {
+                            capture("create")
+                            self.createReferenceDimension(entities: ["reference-check"], type: "length")
+                            wait("reference created without numeric editor", until: { hasDimension(driven: true) && !self.numericEditing && self.pending.isEmpty }) {
+                                toggle(to: false) {
+                                    toggle(to: true) {
+                                        self.run("edit.undo")
+                                        wait("undo restores driving", until: { hasDimension(driven: false) && self.pending.isEmpty }) {
+                                            self.run("edit.redo")
+                                            wait("redo restores reference", until: { hasDimension(driven: true) && self.pending.isEmpty }) {
+                                                selectDimension {
+                                                    guard button("workspace-edit-dimension") == nil else { record("Reference dimension check FAIL: reference is editable"); return }
+                                                    capture("reference-final"); record("Reference dimension check PASS")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return
+            }
+            let (command, params) = commands[index]
+            session.command(command, params: params) { result in
+                switch result {
+                case .failure(let error): record("Reference dimension check FAIL: \(error)")
+                case .success: setup(index + 1)
+                }
+            }
+        }
+        record("Reference dimension check started"); setup(0)
     }
 
     func checkInlineDimensionsOnDevice() {
