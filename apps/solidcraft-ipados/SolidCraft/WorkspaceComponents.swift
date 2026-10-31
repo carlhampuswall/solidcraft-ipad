@@ -1935,6 +1935,7 @@ private final class ViewOptionButton: UIButton {
         var style = UIButton.Configuration.plain()
         style.title = label
         style.titleAlignment = .leading
+        style.titleLineBreakMode = .byWordWrapping
         style.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 34)
         style.baseForegroundColor = WorkspaceStyle.foreground
         style.background.backgroundColor = selected ? WorkspaceStyle.accent.withAlphaComponent(0.16) : WorkspaceStyle.fieldBackground
@@ -1948,6 +1949,9 @@ private final class ViewOptionButton: UIButton {
         style.image = WorkspaceIcon.image(iconID, traits: traitCollection, size: 24)
         style.imagePlacement = .leading; style.imagePadding = 8
         configuration = style
+        titleLabel?.numberOfLines = 0
+        titleLabel?.adjustsFontForContentSizeCategory = true
+        invalidateIntrinsicContentSize(); setNeedsLayout()
         indicator.image = disclosure ? WorkspaceIcon.image("chevron_right", traits: traitCollection, size: 16) : UIImage(systemName: "checkmark")
         indicator.tintColor = WorkspaceStyle.accent
         indicator.isHidden = !disclosure && !selected

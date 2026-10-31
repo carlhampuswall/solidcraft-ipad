@@ -4025,8 +4025,9 @@ private extension FoundationController {
             NSLog("Deferred changes check %@", issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; "))
         }
         func capture(_ name: String, details: [String: Any] = [:]) {
-            view.layoutIfNeeded()
             let surface: UIView = view.window ?? view
+            surface.layoutIfNeeded()
+            viewControlsPopover?.view.layoutIfNeeded()
             let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
             do {
                 guard let png = image.pngData() else { throw BridgeError(code: "deferred_check", message: "PNG encoding failed") }
@@ -4044,7 +4045,15 @@ private extension FoundationController {
         }
         func frame(_ name: String, _ done: @escaping () -> Void) {
             commands([("view.grid", ["visible": true])]) {
-                self.gridAxesCheckAfterFrame = { DispatchQueue.main.async { if !finished { capture(name); done() } } }
+                self.gridAxesCheckAfterFrame = {
+                    // Trait/font changes need their UIKit layout transaction to
+                    // settle as well as a matching Metal frame.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        guard !finished else { return }
+                        self.viewControlsPopover?.view.setNeedsLayout()
+                        capture(name); done()
+                    }
+                }
             }
         }
         func wait(_ ready: @escaping () -> Bool, remaining: Int = 100, _ done: @escaping () -> Void) {
@@ -4077,6 +4086,9 @@ private extension FoundationController {
                 let iconFrame = icon.convert(icon.bounds, to: button)
                 require(abs(titleFrame.minX - iconFrame.maxX - 8) < 2, "View title separated from its icon: " + (button.accessibilityIdentifier ?? "unknown"))
                 require(button.bounds.height >= WorkspaceStyle.touch, "View action lost its touch target")
+                let fitted = label.sizeThatFits(CGSize(width: titleFrame.width, height: .greatestFiniteMagnitude))
+                require(fitted.height <= titleFrame.height + 1 && fitted.width <= titleFrame.width + 1,
+                        "View title clipped: " + (button.accessibilityIdentifier ?? "unknown"))
             }
         }
         func twists(_ index: Int) {
