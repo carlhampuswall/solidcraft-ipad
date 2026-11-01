@@ -43,7 +43,7 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
             grid: snapshot.guides.grid.iter().map(line).collect(),
             ..Scene::default()
         };
-        let rgba = capturer.rgba(&scene, &snapshot.camera, 960, 640)?;
+        let (rgba, stats) = capturer.rgba_with_stats(&scene, &snapshot.camera, 960, 640)?;
         if stage == "light" {
             light = Some(rgba.clone());
         }
@@ -67,7 +67,7 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
         if !dark_matches {
             return Err(format!("dark background pixels do not match native colour; inspect {path}").into());
         }
-        println!("{stage}: {} triangles; {path}", capturer.last_stats().triangles);
+        println!("{stage}: {} triangles; {path}", stats.triangles);
     }
     Ok(())
 }
@@ -200,8 +200,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             face_colors: m.face_colors.clone(),
             opacity: m.opacity,
         }));
-        std::fs::write(&path, capturer.png(&scene, &snapshot.camera, 960, 640)?)?;
-        let stats = capturer.last_stats();
+        let (rgba, stats) = capturer.rgba_with_stats(&scene, &snapshot.camera, 960, 640)?;
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding failed")?)?;
         if stats.triangles == 0 {
             return Err("GPU drew no engine geometry".into());
         }
@@ -1101,10 +1101,10 @@ fn assembly_capture(
 ) -> Result<(), Box<dyn std::error::Error>> {
     view.command("view.fit", &json!({}))?;
     let snapshot = view.snapshot().ok_or("assembly frame")?;
-    let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, capturer, 960, 640)?;
+    let (rgba, stats) = solidcraft_ipados_bridge::renderer::capture_feedback_with_stats(&snapshot, capturer, 960, 640)?;
     let path = destination.replace(".png", &format!("-{label}.png"));
     std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("assembly PNG")?)?;
-    if capturer.last_stats().triangles == 0 {
+    if stats.triangles == 0 {
         return Err("GPU drew no native assembly geometry".into());
     }
     println!(

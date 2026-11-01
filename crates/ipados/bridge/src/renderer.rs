@@ -262,7 +262,7 @@ impl NativeRenderer {
             clip: [0.0; 4],
             cap: [0.0; 4],
             images: Vec::new(),
-            points: Vec::new(),
+            clouds: Vec::new(),
             analysis: [0.0; 8],
             analysis_colors: [0.0; 36],
             access: None,
@@ -270,6 +270,7 @@ impl NativeRenderer {
             eye: [eye[0], eye[1], eye[2], if camera.fov > 0.0 { 1.0 } else { 0.0 }],
             ao_radius: 0.0,
             ao_samples: solidcraft_gpu::view::AO_SAMPLES,
+            sky: [0.0; 4],
             ssaa: 1.0,
             hover_tint: snapshot.hover_tint,
             selection_tint: snapshot.selection_tint,
@@ -533,6 +534,16 @@ pub(crate) fn highlight_geometry(snapshot: &RenderSnapshot, bodies: &ModelBodies
 /// Offscreen proof of this adapter's exact model-block and highlight references,
 /// using the shared viewport/capture pipelines; no native surface or fallback mesh.
 pub fn capture_feedback(snapshot: &RenderSnapshot, capturer: &solidcraft_gpu::capture::Capturer, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    capture_feedback_with_stats(snapshot, capturer, width, height).map(|(rgba, _)| rgba)
+}
+
+/// The native feedback picture and its own draw counts, captured together.
+pub fn capture_feedback_with_stats(
+    snapshot: &RenderSnapshot,
+    capturer: &solidcraft_gpu::capture::Capturer,
+    width: u32,
+    height: u32,
+) -> Result<(Vec<u8>, DrawStats), String> {
     let (model, bodies) = model_geometry(snapshot, 1)?;
     let highlight = highlight_geometry(snapshot, &bodies);
     let source = snapshot.model.preview_scene.as_ref().map_or(&snapshot.model.scene, |preview| &preview.scene);

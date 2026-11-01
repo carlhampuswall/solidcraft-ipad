@@ -148,20 +148,23 @@ impl SessionAdapter {
         // Move both stacks aside first, so even a full undo stack loses no entry.
         let history = matches!(id, "timeline.roll_to" | "timeline.rollback")
             .then(|| (std::mem::take(&mut self.session.undo), std::mem::take(&mut self.session.redo)));
-        let result = if matches!(id, "file.save" | "file.save_as") {
-            self.save_with_recovery(id, &params)
-        } else {
-            self.session.execute(id, &params).map_err(AdapterError::from)
-        };
+        let saving = matches!(id, "file.save" | "file.save_as");
+        let result = if saving { self.save_with_recovery(id, &params) } else { self.session.execute(id, &params).map_err(AdapterError::from) };
         if let Some((undo, redo)) = history {
             self.session.undo = undo;
             self.session.redo = redo;
         }
+        if saving && !Arc::ptr_eq(&doc, &self.session.doc) {
+            self.workspace_cache = None;
+        }
         // select.set increments the engine's general view revision but does not change
         // geometry. Other revision changes include visibility and occurrence placement.
-        let geometry_changed = !Arc::ptr_eq(&doc, &self.session.doc)
-            || before.0 != self.session.document_id
-            || (before.1 != self.session.revision && !id.starts_with("select.") && !id.starts_with("view."));
+        // Saving can rename the document after its file without changing any CAD
+        // geometry. Keep native edit tickets valid across that metadata update.
+        let geometry_changed = !saving
+            && (!Arc::ptr_eq(&doc, &self.session.doc)
+                || before.0 != self.session.document_id
+                || (before.1 != self.session.revision && !id.starts_with("select.") && !id.starts_with("view.")));
         if geometry_changed {
             self.geometry_revision = self.geometry_revision.checked_add(1).ok_or_else(|| error("revision_limit", "geometry revision exhausted"))?;
         }

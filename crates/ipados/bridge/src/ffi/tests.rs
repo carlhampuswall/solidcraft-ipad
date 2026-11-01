@@ -134,6 +134,12 @@ fn project_save_preserves_numeric_preview_and_replacement_publishes_only_complet
     let preview = entry.viewport.lock().unwrap().snapshot().unwrap();
     let generation = entry.generation.load(Ordering::Acquire);
     assert_eq!(request(id, &json!({"kind":"save_document","path":saved}).to_string()), 0, "{}", response(id));
+    assert_eq!(response(id)["result"]["value"]["name"], "Fixture", "Save keeps upstream's file-based naming");
+    assert_eq!(response(id)["result"]["changed"], false, "a save's rename is metadata, not new geometry");
+    assert_eq!(request(id, r#"{"kind":"workspace"}"#), 0);
+    let workspace = response(id)["result"].clone();
+    assert_eq!(workspace["title"], "Fixture");
+    assert_eq!(workspace["rows"].as_array().unwrap().iter().find(|row| row["id"] == "component:0").unwrap()["label"], "Fixture");
     assert!(entry.viewport.lock().unwrap().numeric_active());
     assert_eq!(entry.generation.load(Ordering::Acquire), generation);
     let after = entry.viewport.lock().unwrap().snapshot().unwrap();
@@ -143,7 +149,8 @@ fn project_save_preserves_numeric_preview_and_replacement_publishes_only_complet
     assert_eq!(
         request(id, &json!({"kind":"numeric","action":"commit","token":token,"expression":"10 mm"}).to_string()),
         0,
-        "autosave must not invalidate Apply"
+        "autosave must not invalidate Apply: {}",
+        response(id)
     );
     assert_eq!(request(id, &json!({"kind":"document","name":"Blank","destination":blank}).to_string()), 0, "{}", response(id));
     assert_eq!(entry.adapter.lock().unwrap().snapshot().unwrap().body_count, 0);

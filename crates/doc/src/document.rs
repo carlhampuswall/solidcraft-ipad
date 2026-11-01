@@ -97,6 +97,8 @@ pub enum PlaneRef {
     Midplane { a: Box<GeoRef>, b: Box<GeoRef> },
     /// Through two straight edges (lines) that lie in one plane.
     TwoEdges { a: Box<GeoRef>, b: Box<GeoRef> },
+    /// Through a line (axis) and a point not on that line.
+    AxisPoint { axis: Box<GeoRef>, point: Box<GeoRef> },
     /// Through three points.
     ThreePoints { a: Box<GeoRef>, b: Box<GeoRef>, c: Box<GeoRef> },
     /// Tangent to a face (cylinder, cone, sphere, torus) where the point `at` lies over it.
@@ -1084,6 +1086,11 @@ pub enum FeatureKind {
         /// bodies follow. Replaces `to`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         to_plane: Option<PlaneRef>,
+        /// Point-to-point alignment: the directions the offset moves along (the chosen world
+        /// X/Y/Z axes in the frame of the bodies being moved). `None`: all three axes, the
+        /// offset in full.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        axes: Option<Vec<Dir>>,
     },
     /// A helical coil: a circular or square section swept `turns` times about `axis`, rising
     /// `pitch` per turn, on a helix of `diameter` (the section's centre, or its inside or outside).
@@ -2015,7 +2022,7 @@ fn fair_keep_edges() -> bool {
 /// Triangles of one imported mesh body (millimetres). The arrays are shared by clones: every
 /// edit keeps the design as it was for undo, and a scanned part's triangles (hundreds of
 /// megabytes) are not copied for that.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MeshData {
     pub name: String,
     /// x, y, z per vertex.
@@ -2024,6 +2031,20 @@ pub struct MeshData {
     pub triangles: std::sync::Arc<[u32]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<[f32; 3]>,
+}
+
+/// The same mesh: shared arrays are the same without reading them, so the dirty check and
+/// autosave after an edit elsewhere do not walk a scan's millions of coordinates. Arrays that
+/// are not shared compare value by value, as before. Coordinates are finite (a design that
+/// holds others does not load), so the shortcut only skips work.
+impl PartialEq for MeshData {
+    fn eq(&self, other: &Self) -> bool {
+        use std::sync::Arc;
+        self.name == other.name
+            && self.color == other.color
+            && (Arc::ptr_eq(&self.triangles, &other.triangles) || self.triangles == other.triangles)
+            && (Arc::ptr_eq(&self.positions, &other.positions) || self.positions == other.positions)
+    }
 }
 
 /// Points of a sketch, by id.
@@ -2063,6 +2084,11 @@ pub struct Component {
     /// Free text properties of the definition (material grade, finish, supplier…), by name.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub properties: std::collections::BTreeMap<String, String>,
+    /// Keeps this component's features (and its children's) out of the History bar (#10393).
+    /// The features still rebuild and the component still shows in the Browser; imported copies
+    /// whose features only exist to rebuild the copy can carry this flag.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history_hidden: bool,
 }
 
 /// One loft section: profiles of a sketch.
@@ -2637,6 +2663,19 @@ pub struct DesignLink {
     /// local overrides and survive a source update. Older links start with no baseline.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inherited: Vec<LinkedBodyProperties>,
+    /// SHA-256 of the design file's bytes as this design last read them ([`Self::file_digest`]):
+    /// opened again, this design tells which linked files changed meanwhile (#9739). Links made
+    /// before it was kept have none and are taken as up to date.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_sha256: Option<String>,
+}
+
+impl DesignLink {
+    /// What [`Self::file_sha256`] keeps for a design file's `bytes`.
+    pub fn file_digest(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(bytes))
+    }
 }
 
 /// The values last inherited by a linked body, not another editable material library.
@@ -2745,6 +2784,9 @@ pub struct Document {
     /// Physical material per body (by body name); others use the default.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub materials: std::collections::BTreeMap<String, String>,
+    /// The flat face per body (by body name) that a slicer export lays on the print bed.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub print_faces: std::collections::BTreeMap<String, crate::config::ConfigFaceTarget>,
     /// Physical materials defined in this design (`material.create`), next to the built-in ones.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub user_materials: Vec<UserMaterial>,
@@ -2765,9 +2807,11 @@ pub struct Document {
     /// order; feature ids remain the source of truth when features are renamed or reordered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub timeline_groups: Vec<TimelineGroup>,
-    /// Browser item order per component folder (`"<component>/<folder>"` → item keys).
+    /// Browser order per component folder (`"<component>/<folder>"` → groups and item keys).
+    /// The `components` folder orders a component's sub-components (by placement id); it is not
+    /// drawn as a folder.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub browser_order: std::collections::BTreeMap<String, Vec<String>>,
+    pub browser_order: std::collections::BTreeMap<String, Vec<BrowserEntry>>,
     /// Named views: saved cameras.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub named_views: Vec<NamedView>,
@@ -2856,8 +2900,69 @@ pub struct BrowserGroup {
     #[serde(default)]
     pub component: u64,
     pub folder: String,
+    /// The group that holds this one; `None` is the top level of its folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u64>,
+    /// The group's items and child groups in display order. A child group missing here still
+    /// belongs to it (its `parent` says so) and is listed after the ones that are here.
     #[serde(default)]
-    pub items: Vec<String>,
+    pub items: Vec<BrowserEntry>,
+}
+
+/// One line of a browser order list: a group (a number in a saved design) or an item (a string:
+/// an item key or body name, so a body named `"1"` never clashes with group 1).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BrowserEntry {
+    Group(u64),
+    Item(String),
+}
+
+impl From<&str> for BrowserEntry {
+    fn from(key: &str) -> Self {
+        BrowserEntry::Item(key.to_string())
+    }
+}
+
+impl From<String> for BrowserEntry {
+    fn from(key: String) -> Self {
+        BrowserEntry::Item(key)
+    }
+}
+
+impl BrowserEntry {
+    pub fn item(key: &str) -> Self {
+        BrowserEntry::Item(key.to_string())
+    }
+
+    pub fn as_item(&self) -> Option<&str> {
+        match self {
+            BrowserEntry::Item(k) => Some(k),
+            BrowserEntry::Group(_) => None,
+        }
+    }
+
+    pub fn is_item(&self, key: &str) -> bool {
+        self.as_item() == Some(key)
+    }
+}
+
+/// How many groups may sit inside one another (a top-level group is level 1).
+pub const MAX_GROUP_NESTING: usize = 8;
+
+/// The folders a browser group or order list can be for. `components` only orders sub-components.
+pub const BROWSER_FOLDERS: [&str; 4] = ["bodies", "sketches", "construction", "components"];
+
+impl BrowserGroup {
+    /// The keys of the items directly in this group, in order.
+    pub fn item_keys(&self) -> impl Iterator<Item = &str> {
+        self.items.iter().filter_map(BrowserEntry::as_item)
+    }
+
+    /// Whether this group holds the item directly.
+    pub fn has_item(&self, key: &str) -> bool {
+        self.items.iter().any(|e| e.is_item(key))
+    }
 }
 
 /// A saved history folder. Folders may nest; each feature or joint belongs to at most one folder.
@@ -2991,6 +3096,7 @@ impl Document {
             body_components: Default::default(),
             body_offsets: Default::default(),
             materials: Default::default(),
+            print_faces: Default::default(),
             user_materials: Vec::new(),
             appearances: Default::default(),
             favorites: Default::default(),
@@ -3006,7 +3112,7 @@ impl Document {
     }
 
     /// Rename body `old` to `new` where the design keeps things by body name outside its
-    /// features: materials, appearances, plastic rules, configuration columns, offsets, components and the
+    /// features: materials, print faces, appearances, plastic rules, configuration columns, offsets, components and the
     /// browser's groups and order. (The features are the rename command's to change.)
     ///
     /// A name the design numbered (`Body1`) is not used again after the rename: the design's
@@ -3021,6 +3127,10 @@ impl Document {
         }
         if let Some(m) = self.materials.remove(old) {
             self.materials.insert(new.to_string(), m);
+        }
+        if let Some(mut face) = self.print_faces.remove(old) {
+            face.body = new.to_string();
+            self.print_faces.insert(new.to_string(), face);
         }
         if let Some(rule) = self.plastic.assigned.remove(old) {
             self.plastic.assigned.insert(new.to_string(), rule);
@@ -3048,22 +3158,23 @@ impl Document {
         if let Some(c) = self.body_components.remove(old) {
             self.body_components.insert(new.to_string(), c);
         }
-        for g in self.browser_groups.iter_mut().filter(|g| g.folder == "bodies") {
-            for k in g.items.iter_mut().filter(|k| *k == old) {
-                *k = new.to_string();
+        let rename = |e: &mut BrowserEntry| {
+            if e.is_item(old) {
+                *e = BrowserEntry::item(new);
             }
+        };
+        for g in self.browser_groups.iter_mut().filter(|g| g.folder == "bodies") {
+            g.items.iter_mut().for_each(rename);
         }
         for (_, v) in self.browser_order.iter_mut().filter(|(k, _)| k.ends_with("/bodies")) {
-            for k in v.iter_mut().filter(|k| *k == old) {
-                *k = new.to_string();
-            }
+            v.iter_mut().for_each(rename);
         }
     }
 
     /// The single body rename (old name, new name) that turns `previous` into this design,
     /// when that is all that changed: the features' stored body names (`made` gives the names
-    /// each feature's bodies have now, by feature id) and what [`Document::rename_body_keys`]
-    /// renames. `None` for any other change.
+    /// each feature's bodies have now, by feature id), typed body references, participants and
+    /// what [`Document::rename_body_keys`] renames. `None` for any other change.
     pub fn body_rename_from(&self, previous: &Document, made: impl Fn(u64) -> Vec<String>) -> Option<(String, String)> {
         if self.features.len() != previous.features.len() {
             return None;
@@ -3094,8 +3205,16 @@ impl Document {
         }
         let (old, new) = rename?;
         let mut expected = previous.clone();
+        let bodies = std::collections::BTreeMap::from([(old.clone(), new.clone())]);
         for (f, g) in expected.features.iter_mut().zip(&self.features) {
             f.body_names.clone_from(&g.body_names);
+            // Updating references to the renamed body changes no feature input other than its
+            // name (#6287). Keep the full comparison below: geometry, expressions, sketch links
+            // and face anchors must still agree before the model may reuse its geometry.
+            f.kind.remap_bodies(&bodies);
+            for body in f.participants.iter_mut().filter(|body| **body == old) {
+                body.clone_from(&new);
+            }
         }
         expected.rename_body_keys(&old, &new);
         (expected == *self).then_some((old, new))
@@ -3375,9 +3494,13 @@ impl Document {
     /// Read a design file's JSON (any format this build knows; older ones are upgraded).
     pub fn from_json(s: &str) -> Result<Document> {
         crate::render_resources::check_json_budget(s)?;
-        let d = crate::format::read(s)?;
+        let mut d = crate::format::read(s)?;
         if d.features.len() > MAX_FEATURES || d.params.len() > MAX_PARAMS {
             return Err(DocError::Invalid("document too large".into()));
+        }
+        // A design from elsewhere may nest groups too deep, loop, or name things that are gone.
+        if let Some((groups, order)) = d.browser_pruned() {
+            (d.browser_groups, d.browser_order) = (groups, order);
         }
         Ok(d)
     }
@@ -3404,15 +3527,35 @@ impl Document {
         self.features.iter().find(|f| f.name.eq_ignore_ascii_case(r))
     }
 
+    /// Resolve a textual timeline reference. An exact name wins even when it looks like an id.
+    /// Older scripts also pass ids as strings or use a different case for a unique name.
+    pub fn resolve_feature_name(&self, name: &str) -> Result<&Feature> {
+        if let Some(feature) = self.features.iter().find(|f| f.name == name) {
+            return Ok(feature);
+        }
+        if let Ok(id) = name.parse::<u64>()
+            && let Some(feature) = self.feature(id)
+        {
+            return Ok(feature);
+        }
+        let mut matches = self.features.iter().filter(|f| f.name.eq_ignore_ascii_case(name));
+        let feature = matches.next().ok_or_else(|| DocError::Invalid(format!("no feature `{name}`")))?;
+        if matches.next().is_some() {
+            return Err(DocError::Invalid(format!("ambiguous feature `{name}`. Use its exact name or numeric id")));
+        }
+        Ok(feature)
+    }
+
     /// The feature a pattern or mirror seed names, resolved the way `replay()` resolved seed
     /// names before seeds were keyed by id (#1134): an exact name match on a feature that is
     /// not a sketch or a construction plane wins — a sketch and its extrude often share a
-    /// name, and the feature that makes geometry is the one to copy — else [`find_feature`].
+    /// name, and the feature that makes geometry is the one to copy. Other references use
+    /// the timeline lookup.
     pub fn seed_feature(&self, name: &str) -> Option<&Feature> {
         self.features
             .iter()
             .find(|x| x.name == name && !matches!(x.kind, FeatureKind::Sketch { .. } | FeatureKind::ConstructionPlane { .. }))
-            .or_else(|| self.find_feature(name))
+            .or_else(|| self.resolve_feature_name(name).ok())
     }
 
     fn unique_name(&self, base: &str) -> String {
@@ -3904,6 +4047,7 @@ impl Document {
             }
             PlaneRef::Midplane { .. }
             | PlaneRef::TwoEdges { .. }
+            | PlaneRef::AxisPoint { .. }
             | PlaneRef::ThreePoints { .. }
             | PlaneRef::Tangent { .. }
             | PlaneRef::AlongPath { .. }
@@ -4056,7 +4200,7 @@ impl Document {
                 return Err(DocError::Invalid("a text's height must be positive".into()));
             }
             if let Some(e) = &exprs.text {
-                let words = self.eval_words(e).map_err(|error| DocError::Expr(format!("text: {error}")))?;
+                let words = self.eval_words(e, vals).map_err(|error| DocError::Expr(format!("text: {error}")))?;
                 if words.trim().is_empty() || words.chars().count() > solidcraft_sketch::MAX_TEXT_CHARS {
                     return Err(DocError::Invalid(format!("text: `{e}` gives no words, or too many")));
                 }
@@ -4101,6 +4245,11 @@ impl Document {
         analysis: solidcraft_sketch::Analysis,
     ) -> Result<solidcraft_sketch::SolveReport> {
         self.apply_dimension_values(vals, sk)?;
+        // A text built anew since it was stored (an expression gave it other words) has other
+        // outline entities: the stored sketch is taken with this sketch's, so the points still
+        // pair up for the side checks and the walk below.
+        let paired = moved_from.and_then(|from| sk.stored_with_rebuilt_texts(from));
+        let moved_from = paired.as_ref().or(moved_from);
         let was = |sk: &Sketch| moved_from.and_then(|from| sk.positions_in(from));
         let offsets = !sk.offsets.is_empty() || !sk.freeform_offsets.is_empty();
         // Offsets always require another solve after refresh. Only that last report is
@@ -4139,6 +4288,14 @@ impl Document {
             } else {
                 solidcraft_sketch::solve_after_edit_with_analysis(sk, stored, was(sk).as_deref(), analysis)
             };
+            // An attachment to the old offset can prevent the source from moving at all.
+            // Retry from a source-only seed, adopting it only if every constraint still holds.
+            if !report.ok()
+                && report.oversized.is_none()
+                && let Some(retried) = sk.solve_after_offset_edit(stored, was(sk).as_deref(), analysis)
+            {
+                report = retried;
+            }
         }
         Ok(report)
     }

@@ -15,7 +15,7 @@ use solidcraft_geom::Vec3;
 use solidcraft_render::{AnalysisMode, Camera, Rgb, SECTION_CAP, Scene};
 use wgpu::util::DeviceExt;
 
-use crate::view::{AccessMap, Frame, GpuScene, GpuTarget, Renderer, analysis_colors, analysis_uniform};
+use crate::view::{AccessMap, DrawStats, Frame, GpuScene, GpuTarget, Renderer, analysis_colors, analysis_uniform};
 use crate::{GpuError, Result, caught, error_scopes};
 
 /// The colour format pictures are drawn in: sRGB bytes as they are, like the viewport's usual
@@ -176,11 +176,17 @@ impl Capturer {
     /// [`Capturer::rgba`] with `highlight` drawn as the viewport draws its highlight scene
     /// (selection and hover feedback), over the model scene.
     pub fn rgba_highlighted(&self, scene: &Scene, highlight: Option<GpuScene>, cam: &Camera, width: u32, height: u32) -> Result<Vec<u8>> {
-        self.rgba_prepared(scene, cam, [width, height], None, None, highlight, ([0.0; 3], [0.0; 3]))
+        self.draw_prepared(scene, cam, [width, height], None, None, highlight, ([0.0; 3], [0.0; 3])).map(|(rgba, _)| rgba)
+    }
+
+    /// [`Capturer::rgba`] and what the picture drew ([`DrawStats`]). Both come from the same
+    /// turn on the device, so another thread's picture can't put its counts in their place.
+    pub fn rgba_with_stats(&self, scene: &Scene, cam: &Camera, width: u32, height: u32) -> Result<(Vec<u8>, DrawStats)> {
+        self.draw_prepared(scene, cam, [width, height], None, None, None, ([0.0; 3], [0.0; 3]))
     }
 
     /// Capture host-prepared viewport geometry and feedback, including references to
-    /// model blocks. The normal capture API and the device-loss/readback path are unchanged.
+    /// model blocks, returning this picture's draw counts with its pixels.
     pub fn rgba_viewport(
         &self,
         scene: &Scene,
@@ -189,8 +195,8 @@ impl Capturer {
         model: GpuScene,
         highlight: GpuScene,
         tints: ([f32; 3], [f32; 3]),
-    ) -> Result<Vec<u8>> {
-        self.rgba_prepared(scene, cam, size, Some(model), None, Some(highlight), tints)
+    ) -> Result<(Vec<u8>, DrawStats)> {
+        self.draw_prepared(scene, cam, size, Some(model), None, Some(highlight), tints)
     }
 
     /// Capture the viewport's separate model, sketch/guide and highlight slots
@@ -206,11 +212,11 @@ impl Capturer {
         highlight: GpuScene,
         tints: ([f32; 3], [f32; 3]),
     ) -> Result<Vec<u8>> {
-        self.rgba_prepared(scene, cam, size, Some(model), Some(guides), Some(highlight), tints)
+        self.draw_prepared(scene, cam, size, Some(model), Some(guides), Some(highlight), tints).map(|(rgba, _)| rgba)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn rgba_prepared(
+    fn draw_prepared(
         &self,
         scene: &Scene,
         cam: &Camera,
@@ -219,7 +225,7 @@ impl Capturer {
         guides: Option<GpuScene>,
         highlight: Option<GpuScene>,
         (hover_tint, selection_tint): ([f32; 3], [f32; 3]),
-    ) -> Result<Vec<u8>> {
+    ) -> Result<(Vec<u8>, DrawStats)> {
         if !(1..=self.max_side).contains(&width) || !(1..=self.max_side).contains(&height) {
             return Err(GpuError::Render(format!("a picture is 1 to {} pixels a side, not {width} × {height}", self.max_side)));
         }
@@ -337,11 +343,7 @@ impl Capturer {
         device
             .poll(wgpu::PollType::Wait { submission_index: Some(submission), timeout: Some(TIMEOUT) })
             .map_err(|e| GpuError::Render(format!("waiting for the picture: {e}")))?;
-        match rx.try_recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(GpuError::Render(format!("reading the picture back: {e}"))),
-            Err(_) => return Err(GpuError::Unsupported("reading a picture back without waiting for the browser".into())),
-        }
+        read_back(&rx)?;
         let data = slice.get_mapped_range().map_err(|e| GpuError::Render(format!("reading the picture back: {e}")))?;
         let mut rgba = Vec::with_capacity((row as usize) * (height as usize));
         for r in data.chunks(padded as usize).take(height as usize) {
@@ -350,13 +352,8 @@ impl Capturer {
         if rgba.len() != (row as usize) * (height as usize) {
             return Err(GpuError::Render("the picture read back short".into()));
         }
-        Ok(rgba)
-    }
-
-    /// What the last picture drew ([`crate::view::DrawStats`]).
-    pub fn last_stats(&self) -> crate::view::DrawStats {
-        let Ok(state) = self.state.lock() else { return Default::default() };
-        state.renderer.stats().lock().map(|s| *s).unwrap_or_default()
+        let stats = state.renderer.stats().lock().map(|s| *s).unwrap_or_default();
+        Ok((rgba, stats))
     }
 
     /// [`Capturer::rgba`] as PNG bytes.
@@ -444,7 +441,7 @@ fn frame(scene: &Scene, cam: &Camera, [width, height]: [u32; 2], key: u64, acces
         clip: scene.clip.map_or([0.0; 4], |(n, d)| [n.x as f32, n.y as f32, n.z as f32, d as f32]),
         cap: [f32::from(cap.0) / 255.0, f32::from(cap.1) / 255.0, f32::from(cap.2) / 255.0, if scene.plain_cap { 0.0 } else { 1.0 }],
         images: Vec::new(),
-        points: Vec::new(),
+        clouds: Vec::new(),
         analysis: analysis_uniform(mode, access.as_ref()),
         analysis_colors: scene.analysis.map_or([0.0; 36], |a| analysis_colors(&a.colors)),
         access,
@@ -452,6 +449,7 @@ fn frame(scene: &Scene, cam: &Camera, [width, height]: [u32; 2], key: u64, acces
         eye: [eye[0], eye[1], eye[2], if cam.fov > 0.0 { 1.0 } else { 0.0 }],
         ao_radius: 0.0,
         ao_samples: crate::view::AO_SAMPLES,
+        sky: [0.0; 4],
         ssaa: 1.0,
         hover_tint: [0.0; 3],
         selection_tint: [0.0; 3],
@@ -511,6 +509,19 @@ fn watch_lost(device: &wgpu::Device) -> Arc<AtomicBool> {
         seen.store(true, Ordering::Release);
     });
     lost
+}
+
+/// The answer to a picture's read-back, once the wait for its submission is over. The read-back
+/// is ready by then, but its answer may still be on its way: any other submit or poll on the
+/// device (the window's frames, another picture's device check) can pick it up and answer it on
+/// its own thread once it lets go of the device. So a native picture waits for the answer; a
+/// browser answers later, on its own, and a picture can't wait for it there.
+fn read_back(answer: &std::sync::mpsc::Receiver<std::result::Result<(), wgpu::BufferAsyncError>>) -> Result<()> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let answer = answer.recv_timeout(TIMEOUT).map_err(|e| GpuError::Render(format!("reading the picture back: {e}")))?;
+    #[cfg(target_arch = "wasm32")]
+    let answer = answer.try_recv().map_err(|_| GpuError::Unsupported("reading a picture back without waiting for the browser".into()))?;
+    answer.map_err(|e| GpuError::Render(format!("reading the picture back: {e}")))
 }
 
 /// The background gradient: the viewport's top colour at the top, its bottom one at the bottom,

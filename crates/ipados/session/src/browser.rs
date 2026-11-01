@@ -23,10 +23,17 @@ fn folder_row(scope: &Scope, folder: &str, group: Option<&solidcraft_engine::doc
     let suffix = group.map_or_else(|| folder.to_string(), |g| format!("g{}", g.id));
     let key = format!("{}/{suffix}", scope.key);
     let visible = !session.folder_hidden(&key);
-    json!({"id":folder_id(scope, &suffix),"parent_id":group.map_or_else(||scope.parent.clone(), |_|folder_id(scope,folder)),
+    let ancestors_visible = group.is_none_or(|group| {
+        std::iter::successors(group.parent, |id| session.doc.browser_group(*id).and_then(|g| g.parent))
+            .take(solidcraft_engine::doc::MAX_GROUP_NESTING + 1)
+            .all(|id| !session.folder_hidden(&format!("{}/g{id}", scope.key)))
+    });
+    let parent =
+        group.map_or_else(|| scope.parent.clone(), |g| folder_id(scope, &g.parent.map_or_else(|| folder.to_string(), |id| format!("g{id}"))));
+    json!({"id":folder_id(scope, &suffix),"parent_id":parent,
         "label":group.map_or_else(||format!("ui.ipados.browser.{folder}"),|g|g.name.clone()),"kind":"folder","entity":null,"selected":false,
         "browser":{"icon":"folder","localised":group.is_none(),"container":true,"component":scope.component,"folder":folder,
-            "group":group.map(|g|g.id),"visible":visible,"drawn":visible && scope.visible && (group.is_none() || !session.folder_hidden(&format!("{}/{folder}",scope.key))),
+            "group":group.map(|g|g.id),"visible":visible,"drawn":visible && scope.visible && ancestors_visible && (group.is_none() || !session.folder_hidden(&format!("{}/{folder}",scope.key))),
             "visibility":{"tree_folders":[key]},"rename":group.map(|g|json!({"command":"browser.rename_group","params":{"group":g.id}}))}})
 }
 
@@ -75,8 +82,8 @@ impl SessionAdapter {
         }
         let mut groups = BTreeMap::new();
         for group in &session.doc.browser_groups {
-            for key in &group.items {
-                groups.entry((group.component, group.folder.as_str(), key.as_str())).or_insert(group.id);
+            for key in group.item_keys() {
+                groups.entry((group.component, group.folder.as_str(), key)).or_insert(group.id);
             }
         }
         folders.insert(("component:0".into(), "sketches".into()), component_scope(0));

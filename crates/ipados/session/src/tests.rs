@@ -634,10 +634,14 @@ fn projects_preserve_upstream_reference_data_from_sc_through_legacy_native_conta
     std::fs::remove_file(&scan).unwrap();
 
     let mut adapter = SessionAdapter::new();
-    for (source, destination) in [(&desktop, &native), (&native, &reopened)] {
+    for (source, destination, name) in [(&desktop, &native, "native"), (&native, &reopened, "reopened")] {
         let (_, snapshot) =
             adapter.replace_document(Some(source.to_str().unwrap()), "Portable reference fixture", destination.to_str().unwrap()).unwrap();
-        assert_eq!(*adapter.session.doc, *expected, "the native project transaction preserves the complete upstream document");
+        // Upstream Save As names an imported copy after its destination. All
+        // geometry and reference data must remain exactly the original's.
+        let mut expected = (*expected).clone();
+        expected.name = name.into();
+        assert_eq!(*adapter.session.doc, expected, "only upstream's destination-based name changes in the native copy");
         assert_eq!(adapter.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), feature_ids);
         assert_eq!(adapter.session.doc.point_clouds, expected.point_clouds);
         let equation = adapter.session.doc.sketch(sketch).unwrap().equation_of(&curve).unwrap();
@@ -646,7 +650,7 @@ fn projects_preserve_upstream_reference_data_from_sc_through_legacy_native_conta
         assert_eq!(snapshot.body_count, 1);
         assert!((snapshot.volume_mm3 - 3000.0).abs() < 1e-6, "reference data must not change the 20 × 15 × 10 mm box");
         let saved = solidcraft_engine::io::read_design(&std::fs::read(destination).unwrap()).unwrap();
-        assert_eq!(saved, *expected, "the shared reader preserves the native .solidcraft output too");
+        assert_eq!(saved, expected, "the shared reader preserves the native .solidcraft output too");
     }
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -2939,6 +2943,34 @@ fn browser_folders_rename_visibility_and_history_use_native_document_state() {
     assert_eq!(row(&mut loaded, "body:Foot")["parent_id"], "folder:component:0:bodies");
     assert_eq!(loaded.snapshot().unwrap().body_count, 1, "removing a folder preserves its parts");
     std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn browser_nested_groups_preserve_parentage_and_inherited_visibility() {
+    fn row(adapter: &mut SessionAdapter, id: &str) -> Value {
+        adapter.workspace(&[], false, false)["rows"].as_array().unwrap().iter().find(|r| r["id"] == id).unwrap().clone()
+    }
+    let (mut adapter, _) = input_fixture();
+    let outer = adapter.execute("browser.group", json!({"folder":"bodies","name":"Frame"})).unwrap().value["group"].as_u64().unwrap();
+    let inner =
+        adapter.execute("browser.group", json!({"parent":outer,"name":"Legs","items":["Base","Post"]})).unwrap().value["group"].as_u64().unwrap();
+    let empty = adapter.execute("browser.group", json!({"parent":inner,"name":"Empty"})).unwrap().value["group"].as_u64().unwrap();
+    let folder = |id| format!("folder:component:0:g{id}");
+    assert_eq!(row(&mut adapter, &folder(outer))["parent_id"], "folder:component:0:bodies");
+    assert_eq!(row(&mut adapter, &folder(inner))["parent_id"], folder(outer));
+    assert_eq!(row(&mut adapter, &folder(empty))["parent_id"], folder(inner));
+    assert_eq!(row(&mut adapter, "body:Base")["parent_id"], folder(inner));
+    for visible in [false, true] {
+        let mut params = row(&mut adapter, &folder(outer))["browser"]["visibility"].clone();
+        params["visible"] = json!(visible);
+        adapter.execute("browser.visibility", params).unwrap();
+        for id in [folder(inner), folder(empty), "body:Base".into(), "body:Post".into()] {
+            let r = row(&mut adapter, &id);
+            assert_eq!(r["browser"]["visible"], true, "hiding an ancestor retains {id}'s own setting");
+            assert_eq!(r["browser"]["drawn"], visible, "{id} inherits the ancestor's visibility");
+        }
+        assert_eq!(adapter.snapshot().unwrap().body_count, if visible { 2 } else { 0 });
+    }
 }
 
 #[test]
