@@ -785,6 +785,78 @@ fn finished_profile_pencil_selection_seeds_the_exact_extrusion_region() {
 }
 
 #[test]
+fn finished_profile_projected_partition_wins_over_the_overlapping_source_sketch() {
+    let mut adapter = SessionAdapter::new();
+    let source = adapter.execute("sketch.create", json!({"plane":"XY","name":"Source"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[-20,-10],"p1":[20,10]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XY","name":"Partition"})).unwrap().value["sketch"].as_u64().unwrap();
+    let mut request = projection_request(&adapter, source, true);
+    request.construction = false;
+    adapter.project_sketch(request).unwrap();
+    adapter.execute("sketch.line", json!({"points":[[-10,-10],[-10,10]],"infer":false})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let world = adapter.session.world_state();
+    let profiles = &world.sketch(sketch).unwrap().profiles;
+    assert_eq!(profiles.len(), 2, "ordinary projected lines must partition the sketch");
+    let index = profiles.iter().position(|p| p.region.contains(solidcraft_engine::geom::Vec2::new(-15., 0.))).unwrap();
+    assert!((profiles[index].area - 200.).abs() < 1e-6);
+    // Feature recency alone must not decide which overlapping region wins.
+    adapter.execute("sketch.create", json!({"plane":"XY","name":"Later outline"})).unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[-20,-10],"p1":[20,10]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, adapter.snapshot().unwrap());
+    assert!(view.model.as_ref().unwrap().picks.profiles.iter().any(|p| p.sketch == source));
+    for perspective in [false, true] {
+        view.command("view.perspective", &json!({"enabled":perspective})).unwrap();
+        for direction in ["view.top", "view.isometric"] {
+            view.command(direction, &json!({})).unwrap();
+            for filter in [PickFilter::Auto, PickFilter::Face] {
+                view.filter = filter;
+                let tap = point(&view, Vec3::new(-15., 0., 0.));
+                assert_eq!(view.pick(tap, None), Some(Sel::Profile { sketch, index }));
+            }
+        }
+    }
+    let tap = point(&view, Vec3::new(-15., 0., 0.));
+    feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, tap, 1.);
+    feed(&mut view, InputSource::Pencil, InputPhase::Ended, 1, tap, 1.1);
+    assert_eq!(view.selection(), &[Sel::Profile { sketch, index }]);
+    let highlight = view.snapshot().unwrap();
+    let fill = &highlight.highlight.meshes[0].mesh;
+    assert!(fill.positions.iter().all(|p| p.x >= -20. - 1e-6 && p.x <= -10. + 1e-6));
+    let edit = adapter.begin_model(7003, Some("solid.extrude"), None, view.selection()).unwrap();
+    let prepared = adapter.prepare_model(&edit, edit.params.clone(), true).unwrap();
+    adapter.accept_model(&edit, prepared).unwrap();
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 2000.).abs() < 1e-6);
+}
+
+#[test]
+fn finished_profile_picking_keeps_nearer_planes_ahead_of_smaller_regions() {
+    let mut adapter = SessionAdapter::new();
+    let small = adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[-5,-5],"p1":[5,5]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let large = adapter.execute("sketch.create", json!({"plane":"XY","offset":10})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[-20,-10],"p1":[20,10]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, adapter.snapshot().unwrap());
+    for perspective in [false, true] {
+        view.command("view.perspective", &json!({"enabled":perspective})).unwrap();
+        for (direction, z, sketch) in [("view.top", 10., large), ("view.bottom", 0., small)] {
+            view.command(direction, &json!({})).unwrap();
+            assert_eq!(view.pick(point(&view, Vec3::new(0., 0., z)), None), Some(Sel::Profile { sketch, index: 0 }));
+        }
+    }
+}
+
+#[test]
 fn finished_profile_selection_refresh_keeps_distance_and_replaces_the_region() {
     let mut adapter = SessionAdapter::new();
     let sketch = adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap().value["sketch"].as_u64().unwrap();

@@ -9,6 +9,32 @@ totals, single-save-slot descriptions and no-commit/no-push status do not descri
 the final combined branch. The engine suite is excluded from this integration's
 checks at the user's request; no full-CI success is claimed.
 
+## Finished projected sketch region selection — 2026-11-01
+
+The native picker now chooses the smallest containing profile at the nearest
+visible depth. Previously an older overlapping source sketch could win over
+a smaller partition in a finished sketch, even with Construction disabled.
+The shared sketch evaluator already produced the correct regions; this fix
+is confined to native picking and retains solid occlusion and topology filters.
+
+The synthetic reproduction projects an 800 mm² rectangle as ordinary linked
+geometry, adds a dividing line, finishes the sketch and taps the 200 mm²
+partition. Both the regression and GPU proof failed before the fix by selecting
+the source sketch. After the fix, the highlight covers only the partition and
+a 10 mm extrusion measures 2000 mm³. Tests also cover a later overlapping
+outline, orthographic/perspective views and nearer planes taking priority.
+
+All 260 session tests and 35 bridge tests pass, as do affected Clippy with
+warnings denied, formatting, the deterministic native workspace/icon harness,
+the session WebAssembly check and the unsigned iPad build. WebAssembly retains
+the existing unused `Exported.bodies` warning. Xcode's first packaging attempt
+hit the outer sandbox's nested-sandbox restriction; the unchanged-source retry
+passed. Engine tests, full CI, simulators and physical iPad testing were not run;
+the installed iPad app is unchanged. Mac GPU captures with synthetic Pencil
+input are in `target/ipados-evidence/projected-profile-selection/`; both the
+before/after selection and final extrusion were visually inspected. Logs are
+`/tmp/solidcraft-projected-profile-*`. See BUILDING.md for `--projected-profiles`.
+
 ## Feature deletion and recoverable timeline errors — 2026-11-01
 
 Candidate `e0c083a2e9329b55867d20ccca0c7f0b2d7bdb86` fixes two related

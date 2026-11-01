@@ -76,6 +76,12 @@ The example uses real commands, rebuilds/tessellates the document and draws it
 with the shared GPU capture/viewport pipelines. It requires an accessible GPU;
 no CPU fallback is substituted for this proof.
 
+Append `--projected-profiles` to reproduce a finished sketch partition made
+with ordinary linked projected edges over a still-visible source sketch. It
+captures the selection and extrusion, verifies that the 200 mm² region wins
+over the overlapping 800 mm² source, and checks a 2000 mm³ extrusion. This uses
+synthetic Pencil events and the macOS GPU, not physical iPad input.
+
 Append `--grid-axes` for before/after grid-axis evidence in isometric, top, front
 and right views, individual overrides, hidden grid and restored defaults.
 Debug `--grid-axes-check` runs the production native View controls on a disposable

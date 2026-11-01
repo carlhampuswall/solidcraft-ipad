@@ -79,6 +79,7 @@ pub(crate) struct PickProfile {
     pub sketch: u64,
     pub index: usize,
     pub plane: Plane,
+    area: f64,
     region: Region2,
     pub fill: Arc<Mesh>,
     pub boundaries: Vec<Vec<Vec3>>,
@@ -199,6 +200,7 @@ impl PickScene {
                 sketch: sketch.feature,
                 index,
                 plane: sketch.plane,
+                area: profile.area,
                 region: region.clone(),
                 fill: Arc::new(fill),
                 boundaries,
@@ -210,22 +212,25 @@ impl PickScene {
         let [w, h] = metrics.pixels();
         let (origin, direction) = self.ray(camera, pixel[0], pixel[1], w, h);
         let solid_depth = self.nearest(origin, direction).map(|(depth, _, _)| depth);
-        self.profiles
-            .iter()
-            .filter_map(|profile| {
-                let point = profile.plane.intersect_ray(origin, direction)?;
-                let depth = (point - origin).dot(direction);
-                let epsilon = camera.distance.abs().max(point.len()).max(1.) * 1e-7;
-                if depth < 0.
-                    || solid_depth.is_some_and(|solid| depth > solid + epsilon)
-                    || project(vp, point, [w, h]).is_none()
-                    || !profile.region.contains(profile.plane.to_local(point))
-                {
-                    return None;
-                }
-                Some((depth, profile))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.sketch.cmp(&b.1.sketch)).then(a.1.index.cmp(&b.1.index)))
+        let hits = self.profiles.iter().filter_map(|profile| {
+            let point = profile.plane.intersect_ray(origin, direction)?;
+            let depth = (point - origin).dot(direction);
+            let epsilon = camera.distance.abs().max(point.len()).max(1.) * 1e-7;
+            if depth < 0.
+                || solid_depth.is_some_and(|solid| depth > solid + epsilon)
+                || project(vp, point, [w, h]).is_none()
+                || !profile.region.contains(profile.plane.to_local(point))
+            {
+                return None;
+            }
+            Some((depth, profile))
+        });
+        // Several visible sketches may cover the same point. At the nearest
+        // depth, choose the smallest region rather than the oldest sketch.
+        let nearest = hits.clone().map(|(depth, _)| depth).min_by(f64::total_cmp)?;
+        let epsilon = camera.distance.abs().max(origin.len()).max(nearest.abs()).max(1.) * 1e-7;
+        hits.filter(|(depth, _)| *depth <= nearest + epsilon)
+            .min_by(|a, b| a.1.area.total_cmp(&b.1.area).then(a.0.total_cmp(&b.0)).then(a.1.sketch.cmp(&b.1.sketch)).then(a.1.index.cmp(&b.1.index)))
             .map(|(_, profile)| Sel::Profile { sketch: profile.sketch, index: profile.index })
     }
 

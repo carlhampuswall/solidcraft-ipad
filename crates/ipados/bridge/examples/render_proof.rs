@@ -125,6 +125,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--profiles") {
         return profile_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--projected-profiles") {
+        return projected_profile_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--origin") {
         return origin_proof(&destination);
     }
@@ -650,6 +653,69 @@ fn profile_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     }
     capture(&view, "extruded")?;
     println!("PASS: synthetic Pencil selected the right-hand 200 mm² region; Extrude used it directly and produced 2000 mm³. macOS GPU only.");
+    Ok(())
+}
+
+/// Ordinary linked projections split a newer sketch over its still-visible source.
+/// The real picker must highlight and extrude only the small partition.
+fn projected_profile_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let source = engine.execute("sketch.create", json!({"plane":"XY","name":"Source"}))?.value["sketch"].as_u64().ok_or("source")?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-20,-10],"p1":[20,10]}))?;
+    engine.execute("sketch.finish", json!({}))?;
+    let sketch = engine.execute("sketch.create", json!({"plane":"XY","name":"Partition"}))?.value["sketch"].as_u64().ok_or("sketch")?;
+    let pin = engine.workspace(&[], false, false);
+    engine.project_sketch(solidcraft_ipados_session::SketchProjection {
+        document_id: pin["document_id"].as_str().ok_or("document")?.into(),
+        geometry_revision: pin["geometry_revision"].as_u64().ok_or("revision")?,
+        sketch,
+        source,
+        entities: Vec::new(),
+        all: true,
+        construction: false,
+        linked: true,
+    })?;
+    engine.execute("sketch.line", json!({"points":[[-10,-10],[-10,10]],"infer":false}))?;
+    engine.execute("sketch.finish", json!({}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("projected profile frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("{stage}: {path}");
+        Ok(())
+    };
+    capture(&view, "unselected")?;
+    let projected = view.command("view.project", &json!({"point":[-15,0,0]}))?;
+    let context = view.diagnostic();
+    for (phase, timestamp) in [("began", 1.), ("ended", 1.1)] {
+        view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":91,"timestamp":timestamp,
+            "x_points":projected["points"][0],"y_points":projected["points"][1],"x_pixels":projected["pixels"][0],"y_pixels":projected["pixels"][1],"scale":1,
+            "geometry_revision":context["geometry_revision"],"document_id":context["document_id"],"viewport_epoch":context["viewport_epoch"],
+            "camera_epoch":context["camera_epoch"],"display_preview":context["preview"]}))?)?;
+    }
+    capture(&view, "selected")?;
+    let selected = view.diagnostic()["selection"].clone();
+    if selected[0]["type"] != "profile" || selected[0]["sketch"] != sketch {
+        return Err(format!("small partition lost to overlapping source: {selected}").into());
+    }
+    let edit = engine.begin_model(9001, Some("solid.extrude"), None, view.selection())?;
+    view.begin_model(edit.clone())?;
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    view.finish_model(edit.token, Some(engine.accept_model(&edit, prepared)?))?;
+    let volume = view.snapshot().ok_or("extruded frame")?.model.volume_mm3;
+    if (volume - 2000.).abs() > 1e-6 {
+        return Err(format!("wrong projected partition volume: {volume}").into());
+    }
+    capture(&view, "extruded")?;
+    println!("PASS: projected 200 mm² partition wins over the visible 800 mm² source; extrusion is 2000 mm³. Synthetic Pencil and macOS GPU only.");
     Ok(())
 }
 
