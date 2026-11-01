@@ -6754,8 +6754,16 @@ private extension FoundationController {
     /// Production transport, evaluated stages and matching presented Metal frames
     /// on a disposable fixture. Does not simulate or certify physical touch.
     func checkHistoryPlaybackOnDevice() {
-        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
-              let original = state, let count = original.modelling?.timeline.count, count > 1 else { return }
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        // The initial Metal frame can precede the engine's fixture projection.
+        guard let original = state, let count = original.modelling?.timeline.count, count > 1 else {
+            historyCheckWorkspace = { [weak self] value in
+                guard let self, (value.modelling?.timeline.count ?? 0) > 1 else { return }
+                self.historyCheckWorkspace = nil; self.checkHistoryPlaybackOnDevice()
+            }
+            session.refreshWorkspace()
+            return
+        }
         let started = Date().timeIntervalSince1970, expected = generation
         var finished = false, stages: [Int] = [], captures: [String] = []
         func finish(_ problem: String? = nil) {
@@ -6823,17 +6831,19 @@ private extension FoundationController {
             if !featureHistory.isPlaying && stages == Array(0...count) { verifyCollapse(); return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { observeFullRun() }
         }
-        historyExpanded = true; featureHistory.setExpanded(true); relayoutPanels()
-        guard let play = button("workspace-history-play"), play.bounds.width >= 44, play.bounds.height >= 44,
-              play.configuration?.title == nil else { finish("playback layout or icon"); return }
-        capture("before")
-        tapPlay()
-        wait({ presented(0) && self.featureHistory.isPlaying && !self.featureHistory.playbackInFlight }) {
-            tapPlay(); capture("paused")
-            guard !self.featureHistory.isPlaying else { finish("pause left playback running"); return }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                guard presented(0), !self.featureHistory.isPlaying else { finish("paused playback advanced"); return }
-                stages = [0]; tapPlay(); observeFullRun()
+        wait({ presented(count) }) {
+            self.historyExpanded = true; self.featureHistory.setExpanded(true); self.relayoutPanels()
+            guard let play = button("workspace-history-play"), play.bounds.width >= 44, play.bounds.height >= 44,
+                  play.configuration?.title == nil else { finish("playback layout or icon"); return }
+            capture("before")
+            tapPlay()
+            wait({ presented(0) && self.featureHistory.isPlaying && !self.featureHistory.playbackInFlight }) {
+                tapPlay(); capture("paused")
+                guard !self.featureHistory.isPlaying else { finish("pause left playback running"); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    guard presented(0), !self.featureHistory.isPlaying else { finish("paused playback advanced"); return }
+                    stages = [0]; tapPlay(); observeFullRun()
+                }
             }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 45) { if !finished { finish("timed out waiting for playback/presentation") } }
