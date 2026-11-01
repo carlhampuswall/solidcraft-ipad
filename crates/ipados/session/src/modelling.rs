@@ -1618,9 +1618,6 @@ impl SessionAdapter {
         // optional lenient recovery can choose a different profile.
         let mut scratch = Self { session: self.session.scratch(), geometry_revision: self.geometry_revision, workspace_cache: None };
         let reply = scratch.execute(command, p.clone())?.value;
-        if let Some(r) = scratch.session.model.results.iter().find(|r| r.warning.is_some()) {
-            return Err(error("evaluation_warning", format!("{}: {}", r.name, r.warning.as_deref().unwrap_or_default())));
-        }
         scratch.validate_model_references()?;
         scratch.validate_joint_references()?;
         let mut model = scratch.snapshot()?;
@@ -1633,6 +1630,18 @@ impl SessionAdapter {
                 feedback = self.extrusion_preview_scene(&scratch, command, &p, feature, &mut model)?;
             }
         }
+        // A successful Boolean retry can carry a warning. Keep it visible without
+        // rejecting valid geometry; snapshot and strict reference checks above
+        // still refuse failed, stale or ambiguously recovered results.
+        feedback.extend(
+            scratch
+                .session
+                .model
+                .results
+                .iter()
+                .filter(|result| !result.skipped)
+                .filter_map(|result| result.warning.as_ref().map(|warning| format!("{}: {warning}", result.name))),
+        );
         let transaction = if commit { Some(self.session.scratch().compute_commands(&[(command.into(), p)], None)?) } else { None };
         let mut updated = edit.clone();
         updated.params = params.clone();

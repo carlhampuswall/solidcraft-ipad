@@ -7188,6 +7188,58 @@ fn modelling_combine_history_picking_reveals_original_tools_and_cancel_restores_
 }
 
 #[test]
+fn modelling_boolean_retry_warns_without_blocking_preview_commit_or_later_features() {
+    let mut adapter = SessionAdapter::new();
+    let slope = 1_f64.to_radians().tan();
+    for (command, params) in [
+        ("sketch.create", json!({"plane":"XZ","name":"Floor section"})),
+        ("sketch.line", json!({"points":[[0,0],[100,0],[100,-10.-slope*100.],[0,-10.]],"closed":true})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"sketch":"Floor section","distance":80,"body_name":"Floor"})),
+        ("solid.cylinder", json!({"base":[50,40,-5],"radius":10,"height":30,"operation":"cut"})),
+        ("sketch.create", json!({"plane":"XY","name":"Ring section"})),
+        ("sketch.circle.center", json!({"center":[50,40],"radius":20})),
+        ("sketch.circle.center", json!({"center":[50,40],"radius":10})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"sketch":"Ring section","profiles":[{"point":[65,40]}],"start_offset":-5,"distance":7,"body_name":"Ring"})),
+    ] {
+        adapter.execute(command, params).unwrap();
+    }
+    let original = adapter.session.doc.clone();
+    let history = adapter.session.undo.len();
+    let mut edit = adapter.begin_model(790, Some("solid.combine"), None, &[]).unwrap();
+    edit.params = json!({"target":"Floor","tools":["Ring"],"operation":"join","keep_tools":false});
+    let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+    assert!(preview.feedback.iter().any(|message| message.starts_with("Combine1: Boolean retry:")), "{:?}", preview.feedback);
+    assert_eq!(preview.model.body_count, 1);
+    assert!(Arc::ptr_eq(&adapter.session.doc, &original));
+    assert_eq!(adapter.session.undo.len(), history);
+    let prepared = adapter.prepare_model(&edit, edit.params.clone(), true).unwrap();
+    assert_eq!(prepared.feedback, preview.feedback);
+    adapter.accept_model(&edit, prepared).unwrap();
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let warning = adapter.session.model.result(feature).unwrap().warning.clone();
+    assert!(warning.as_deref().is_some_and(|warning| warning.starts_with("Boolean retry:")));
+    let expected = (10. + slope * 50.) * (8000. - std::f64::consts::PI * 100.) + std::f64::consts::PI * 300. * 5.;
+    assert!((modelling_volume(&adapter) - expected).abs() / expected < 2e-5);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(adapter.session.model.state().bodies.len(), 2);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(adapter.session.model.state().bodies.len(), 1);
+    assert_eq!(adapter.session.model.result(feature).unwrap().warning, warning);
+    let reopened = solidcraft_engine::doc::Document::from_json(&adapter.session.doc.to_json()).unwrap();
+    adapter.session = solidcraft_engine::Session::new(reopened);
+    adapter.snapshot().unwrap();
+    assert_eq!(adapter.session.model.result(feature).unwrap().warning, warning);
+    let edit = adapter.begin_model(791, Some("solid.pattern.rectangular"), None, &[Sel::Body { name: "Floor".into() }]).unwrap();
+    let prepared = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+    assert!(prepared.feedback.iter().any(|message| message.contains("Boolean retry:")), "an earlier warning must remain visible");
+    modelling_commit(&mut adapter, &edit, edit.params.clone());
+    assert!((modelling_volume(&adapter) - 2. * expected).abs() / expected < 4e-5);
+}
+
+#[test]
 fn modelling_boolean_modes_distinguish_target_tools_and_retain_behavior_with_history() {
     for (operation, expected) in [("join", 1500.0), ("cut", 500.0), ("intersect", 500.0)] {
         let mut adapter = SessionAdapter::new();

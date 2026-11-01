@@ -361,6 +361,10 @@ explicit reselection. The adapter does not implement general persistent topology
 naming. Native fallback-reference warnings and stale/failed evaluation are not
 labelled as a successful current model.
 
+Successful Boolean retries retain their feature warnings in preview and Apply
+feedback. These warnings do not block valid modelling results or later features;
+strict reference checks and failed/stale evaluation checks still apply.
+
 Public `Session::execute` restores its snapshot when a command returns an error.
 A successful upstream edit can still report failures on later features; the
 native layer surfaces those diagnostics and retains recoverable document state.
