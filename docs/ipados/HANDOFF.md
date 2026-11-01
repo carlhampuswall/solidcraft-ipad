@@ -9,6 +9,44 @@ totals, single-save-slot descriptions and no-commit/no-push status do not descri
 the final combined branch. The engine suite is excluded from this integration's
 checks at the user's request; no full-CI success is claimed.
 
+## Feature deletion and recoverable timeline errors — 2026-11-01
+
+Candidate `e0c083a2e9329b55867d20ccca0c7f0b2d7bdb86` fixes two related
+failure paths. Deleting a face-based operation now removes its unreferenced
+internal profile in the same undo step, preserving authored/shared/projected
+profiles. Ordinary workspace publication and project opening permit the shared
+evaluator's current partial model with feature errors, so deletion and history
+remain available. Failed helpers from older saves are exposed for inspection
+and repair. Modelling proposals, stale-result rejection, ambiguous-reference
+checks and the last-working recovery validator retain their existing guards.
+
+All 258 session tests, 35 bridge tests and the focused document lifecycle
+regression pass. Affected Clippy with warnings denied, Rust formatting, the
+adapter/bridge WebAssembly check and unsigned/signed iPad builds pass. The wasm
+build retains the existing unused `Exported.bodies` warning. Engine tests, full
+CI and simulators were not run. The first unsigned build was blocked by the
+outer sandbox's nested sandbox restriction; its unchanged-source retry passed.
+The existing signing team was verified and reused without account/profile changes.
+
+The original device error was a hidden orphan sketch referring to a face on
+the result of a deleted Combine. A separate recovery project removes only that
+orphan and shows the two bodies that were saved hidden. Local cold reopening
+passes strict validation, with unchanged remaining solid geometry. On the
+physical iPad, the installed candidate opens this recovery through Projects.
+The actual timeline Delete confirmation for its last face extrusion includes
+the hidden boundary; deletion rebuilds, and one Undo restores the entire
+prepared document. Device-written saves independently verify both IDs removed
+and restored. All original project, backup, recovery and preserved checkpoint
+files remain byte-identical. The restored recovery is left open; the exclusive
+device reservation is released.
+
+These are real-device UI actions through Device Hub, not physical Pencil/finger
+delivery tests. Real before/confirmation/after/undo screenshots were inspected
+in the chat. Ignored evidence, candidate/binary hashes, copied saves, original
+file hashes and the successful receipt are in `target/feature-delete-diagnosis/`
+and the task protocol's `feature-delete-recovery` device-session record. Check
+logs are `/tmp/solidcraft-feature-delete-*`.
+
 ## Fillet and chamfer device verification — 2026-10-31
 
 Signed candidate `c7dbc33f95a991163286644b47bba8249558e91e`, including surface-tool
