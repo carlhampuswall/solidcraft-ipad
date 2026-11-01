@@ -260,6 +260,39 @@ struct HistoryScrubQueue {
     }
 }
 
+/// Playback never skips a stage or queues ahead of evaluation/presentation.
+/// Tokens keep a paused or replaced run's late completion out of the next run.
+struct HistoryPlaybackQueue {
+    struct Request: Equatable { let token: UInt64; let position: Int }
+    private var token: UInt64 = 0
+    private var end = 0
+    private var nextPosition: Int?
+    private(set) var inFlight: Request?
+    var active: Bool { nextPosition != nil || inFlight != nil }
+
+    mutating func begin(at position: Int, count: Int) {
+        cancel()
+        guard count > 0 else { return }
+        end = count
+        nextPosition = position >= count ? 0 : max(0, position) + 1
+    }
+    mutating func next() -> Request? {
+        guard inFlight == nil, let position = nextPosition else { return nil }
+        token &+= 1
+        let request = Request(token: token, position: position)
+        inFlight = request; nextPosition = nil
+        return request
+    }
+    @discardableResult mutating func complete(_ request: Request, succeeded: Bool) -> Bool {
+        guard inFlight == request else { return false }
+        inFlight = nil
+        if succeeded && request.position < end { nextPosition = request.position + 1 }
+        else { cancel() }
+        return true
+    }
+    mutating func cancel() { token &+= 1; nextPosition = nil; inFlight = nil }
+}
+
 enum HistoryScrubGeometry {
     /// Icon centres are the halfway thresholds between adjacent history gaps.
     /// Coordinates are in scroll content points, including any scroll offset.

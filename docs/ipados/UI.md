@@ -99,6 +99,21 @@ overrides persist between launches without changing document history.
 There is no second orientation cube or camera path; the existing native triad
 still describes the real camera. Undo/Redo occupy a small bottom surface and
 retain their existing history availability checks and keyboard/gesture ownership.
+
+Expanded History includes Play/Pause between its step arrows. Play resumes after
+the current marker, or replays from the empty beginning when already at the end.
+Each existing `timeline.roll_to` command must finish and its matching model frame
+must be presented before an 800 ms dwell and the next step. Playback leaves the
+normal undo/redo stacks intact. Pause leaves the marker at the displayed stage;
+manual history actions, another command, collapsing History, a document change,
+an error or app suspension stop playback. Camera view commands remain available.
+The deterministic workspace harness checks ordering and late callbacks. Debug
+`--history-playback-check` uses a disposable fixture and actual UIKit transport
+controls, captures presented stages, and checks restart, pause/resume, collapse
+and undo/redo availability on a reserved physical iPad. It writes
+`history-playback-check.json` and `history-playback-*.png` to Documents; this is
+separate from physical finger or Pencil verification.
+
 Status is a fitted two-line pill reporting actual selection, solver/tool/snapping,
 processing or errors. Routine assembly diagnostics and the Post-radius development
 tool are available through **Tools → Show diagnostics**.

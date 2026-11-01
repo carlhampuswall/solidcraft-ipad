@@ -94,6 +94,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var edgeSelectorContext: (document: String, revision: UInt64)?
     private enum AutomaticModellingSource { case extrude, edges }
     private var historyActivation: (feature: UInt64, document: String)?
+    private var issuingHistoryPlaybackCommand = false
+    private var historyPlaybackGeneration: UInt64 = 0
+    private var historyPlaybackFrame: (document: String, position: Int, complete: (Bool) -> Void)?
     private var visibleRows: [WorkspaceRow] = []
     private var rowByID: [String: WorkspaceRow] = [:]
     private var parents: Set<String> = []
@@ -413,6 +416,29 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if case .success = result { completion(true) } else { completion(false) }
             }
         }
+        featureHistory.onPlaybackChanged = { [weak self] in
+            guard let self else { return }
+            self.historyPlaybackGeneration &+= 1
+            self.historyActivation = nil
+            if !self.featureHistory.isPlaying { self.historyPlaybackFrame = nil }
+            self.updateAvailability()
+        }
+        featureHistory.onPlaybackMove = { [weak self] position, completion in
+            guard let self, self.active, self.historyCanNavigate, let document = self.state?.document_id else { completion(false); return }
+            let expected = self.historyPlaybackGeneration
+            self.issuingHistoryPlaybackCommand = true
+            self.moveHistory(to: position) { [weak self] result in
+                guard let self, self.historyPlaybackGeneration == expected, self.featureHistory.isPlaying else { return }
+                guard case .success = result, self.state?.document_id == document else { completion(false); return }
+                self.historyPlaybackFrame = (document, position, completion)
+                self.completeHistoryPlaybackFrame()
+            }
+            self.issuingHistoryPlaybackCommand = false
+        }
+        session.onCommandWillBegin = { [weak self] command in
+            guard let self, !self.issuingHistoryPlaybackCommand, !command.hasPrefix("view.") else { return }
+            self.featureHistory.cancelPlayback()
+        }
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (controller: FoundationController, _: UITraitCollection) in
             controller.rebuildMenus()
             if controller.compactChrome {
@@ -512,6 +538,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.canvas.geometryRevision = revision; self.canvas.viewportEpoch = epoch
                 self.canvas.cameraEpoch = cameraEpoch; self.canvas.documentID = documentID
                 self.canvas.displayingPreview = preview
+                self.completeHistoryPlaybackFrame()
                 self.acceptsModelValueFrame = true
                 let staleChanged = self.previewStale != previewStale
                 self.previewStale = previewStale
@@ -574,6 +601,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkChromeOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--browser-check") || ProcessInfo.processInfo.arguments.contains("--browser-actions-check") {
                     self.developmentCheckStarted = true; self.checkBrowserOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--history-playback-check") {
+                    self.developmentCheckStarted = true; self.checkHistoryPlaybackOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-check") {
                     self.developmentCheckStarted = true; self.checkHistoryOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--deferred-changes-check") {
@@ -826,6 +855,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if !numericEditing && !modellingEditing { rebuildInspector() }
         if modellingToken != nil && previous?.selection != value.selection { inspectModelling() }
         updateAvailability(); rebuildMenus(); updateStatus(); view.setNeedsLayout()
+        completeHistoryPlaybackFrame()
         showStartupProjectsIfReady()
 #if DEBUG
         assemblyCheckWorkspace?(value)
@@ -836,7 +866,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         openActivatedHistoryFeature()
         let idle = active && pending.isEmpty && !numericEditing && !modellingEditing &&
             !planeChoosing && planeDraft == nil && value.sketch == nil && value.active_tool == "select" &&
-            !textEntryActive && presentedViewController == nil && !featureHistory.isScrubbing
+            !textEntryActive && presentedViewController == nil && !featureHistory.isScrubbing && !featureHistory.isPlaying
         if selectionExtrudeTrigger.update(document: value.document_id, revision: value.geometry_revision,
                                      selection: value.selection, enabled: true, idle: idle,
                                      source: { self.extrudeSelectionSource($0, respectingPreferences: true) }) {
@@ -1098,6 +1128,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             state?.sketch == nil && planeDraft == nil && !textEntryActive
     }
     private var historyCanNavigate: Bool { historyContextAllowsNavigation && pending.isEmpty }
+
+    private func completeHistoryPlaybackFrame() {
+        guard let frame = historyPlaybackFrame, let state,
+              state.document_id == frame.document, state.modelling?.activeFeatureCount == frame.position,
+              canvas.documentID == frame.document, canvas.geometryRevision == state.geometry_revision,
+              !canvas.displayingPreview else { return }
+        historyPlaybackFrame = nil
+        frame.complete(true)
+    }
 
     private func moveHistory(to position: Int, completion: ((Result<Void, BridgeError>) -> Void)? = nil) {
         guard historyCanNavigate, let model = state?.modelling, let documentPosition = model.documentPosition(for: position) else {
@@ -3243,7 +3282,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         })
         featureHistory.update(features: features, icons: featureIcons, selected: selectedFeatures,
             position: state?.modelling?.activeFeatureCount ?? 0, enabled: browserCanChange && state?.sketch == nil, navigationEnabled: historyCanNavigate,
-            scrubbingEnabled: historyContextAllowsNavigation && (pending.isEmpty || featureHistory.scrubInFlight), documentID: state?.document_id)
+            scrubbingEnabled: historyContextAllowsNavigation && (pending.isEmpty || featureHistory.scrubInFlight),
+            playbackEnabled: active && historyContextAllowsNavigation && state?.active_tool == "select" && presentedViewController == nil &&
+                (pending.isEmpty || featureHistory.playbackInFlight), documentID: state?.document_id)
         undoButton.availability(enabled: !locked && state?.can_undo == true, reason: numericEditing || modellingEditing ? WorkspaceStyle.text("editing_lock") : WorkspaceStyle.text("nothing_undo"))
         redoButton.availability(enabled: !locked && state?.can_redo == true, reason: numericEditing || modellingEditing ? WorkspaceStyle.text("editing_lock") : WorkspaceStyle.text("nothing_redo"))
         for button in [browserButton, inspectorButton, viewButton, moreButton] { button.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty, reason: numericEditing ? WorkspaceStyle.text("editing_lock") : nil) }
@@ -3823,6 +3864,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         status.text = WorkspaceStyle.text(numericEditing ? "editing" : (state?.active_tool == "post_radius" ? "radius_hint" : "select_hint")) + "\n" + (summary ?? "")
     }
     private func showFailure(_ error: BridgeError) {
+        featureHistory.cancelPlayback()
         failure = error.message; pending = ""
         if state == nil { browserMessage.text = error.message + "\n" + WorkspaceStyle.text("retry") }
         updateStatus(); updateAvailability()
@@ -3970,6 +4012,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
         historyActivation = nil
         featureHistory.cancelScrub()
+        featureHistory.cancelPlayback()
         edgeSelectorContext = nil
         active = false
         endpointFinishButton.isHidden = true
@@ -3992,6 +4035,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modellingAutomaticPreview.cancel()
         historyActivation = nil
         featureHistory.cancelScrub()
+        featureHistory.cancelPlayback()
         generation &+= 1; numericGeneration &+= 1; active = false
         canvas.cancelInput(); session.stop()
     }
@@ -6705,6 +6749,94 @@ private extension FoundationController {
                 }
             }
         }
+    }
+
+    /// Production transport, evaluated stages and matching presented Metal frames
+    /// on a disposable fixture. Does not simulate or certify physical touch.
+    func checkHistoryPlaybackOnDevice() {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+              let original = state, let count = original.modelling?.timeline.count, count > 1 else { return }
+        let started = Date().timeIntervalSince1970, expected = generation
+        var finished = false, stages: [Int] = [], captures: [String] = []
+        func finish(_ problem: String? = nil) {
+            guard !finished else { return }; finished = true
+            featureHistory.cancelPlayback()
+            let report: [String: Any] = ["passed": problem == nil, "failure": problem ?? "", "stages": stages,
+                "captures": captures, "started": started, "finished": Date().timeIntervalSince1970,
+                "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                "coverage": "Production UIKit transport and matching Metal frames on physical iPad; physical touch unverified"]
+            do {
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("history-playback-check.json"), options: .atomic)
+            } catch { print("History playback FAIL: report \(error)"); return }
+            print(problem.map { "History playback FAIL: " + $0 } ?? "History playback PASS: all stages, pause/resume, restart, collapse, undo/redo preservation")
+        }
+        func wait(_ ready: @escaping () -> Bool, _ next: @escaping () -> Void) {
+            guard !finished, active, generation == expected else { return }
+            if ready() { next(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(ready, next) }
+        }
+        func button(_ id: String) -> UIButton? {
+            func find(_ view: UIView) -> UIButton? {
+                if view.accessibilityIdentifier == id { return view as? UIButton }
+                return view.subviews.lazy.compactMap(find).first
+            }
+            return find(featureHistory)
+        }
+        func tapPlay() {
+            guard let play = button("workspace-history-play"), play.isEnabled else { finish("playback control unavailable"); return }
+            play.sendActions(for: .touchUpInside)
+        }
+        func presented(_ position: Int) -> Bool {
+            state?.document_id == original.document_id && state?.modelling?.activeFeatureCount == position &&
+                canvas.documentID == original.document_id && canvas.geometryRevision == state?.geometry_revision && !canvas.displayingPreview
+        }
+        func capture(_ stage: String) {
+            guard let window = view.window else { finish("missing window"); return }
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+            let name = "history-playback-" + stage + ".png"
+            do {
+                guard let data = image.pngData() else { finish("image encoding"); return }
+                try data.write(to: directory.appendingPathComponent(name), options: .atomic); captures.append(name)
+            } catch { finish("capture \(error)") }
+        }
+        func verifyCollapse() {
+            tapPlay()
+            wait({ presented(0) && self.featureHistory.isPlaying && !self.featureHistory.playbackInFlight }) {
+                button("workspace-feature-history-toggle")?.sendActions(for: .touchUpInside)
+                guard !self.featureHistory.isPlaying, !self.featureHistory.expanded else { finish("collapse left playback running"); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    guard presented(0), self.state?.can_undo == original.can_undo, self.state?.can_redo == original.can_redo else {
+                        finish("collapse advanced history or playback changed undo/redo"); return
+                    }
+                    finish()
+                }
+            }
+        }
+        func observeFullRun() {
+            guard !finished else { return }
+            if let position = state?.modelling?.activeFeatureCount, presented(position), stages.last != position {
+                let next = stages.last.map { $0 + 1 } ?? 0
+                guard position == next else { finish("skipped stage \(next), displayed \(position)"); return }
+                stages.append(position); capture(String(position))
+            }
+            if !featureHistory.isPlaying && stages == Array(0...count) { verifyCollapse(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { observeFullRun() }
+        }
+        historyExpanded = true; featureHistory.setExpanded(true); relayoutPanels()
+        guard let play = button("workspace-history-play"), play.bounds.width >= 44, play.bounds.height >= 44,
+              play.configuration?.title == nil else { finish("playback layout or icon"); return }
+        capture("before")
+        tapPlay()
+        wait({ presented(0) && self.featureHistory.isPlaying && !self.featureHistory.playbackInFlight }) {
+            tapPlay(); capture("paused")
+            guard !self.featureHistory.isPlaying else { finish("pause left playback running"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                guard presented(0), !self.featureHistory.isPlaying else { finish("paused playback advanced"); return }
+                stages = [0]; tapPlay(); observeFullRun()
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45) { if !finished { finish("timed out waiting for playback/presentation") } }
     }
 
     /// Opt-in disposable fixture: actual UIKit buttons and engine selection,

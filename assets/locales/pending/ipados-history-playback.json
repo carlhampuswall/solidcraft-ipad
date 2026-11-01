@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.history.pause": "Pause history playback",
+    "ui.ipados.history.play": "Play feature history"
+  },
+  "de": {
+    "ui.ipados.history.pause": "Verlaufswiedergabe pausieren",
+    "ui.ipados.history.play": "Elementverlauf abspielen"
+  },
+  "ja": {
+    "ui.ipados.history.pause": "履歴の再生を一時停止",
+    "ui.ipados.history.play": "フィーチャー履歴を再生"
+  },
+  "ko": {
+    "ui.ipados.history.pause": "기록 재생 일시 정지",
+    "ui.ipados.history.play": "피처 기록 재생"
+  },
+  "zh": {
+    "ui.ipados.history.pause": "暂停历史回放",
+    "ui.ipados.history.play": "播放特征历史"
+  }
+}

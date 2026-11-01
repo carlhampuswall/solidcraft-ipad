@@ -213,6 +213,7 @@ final class NativeSession {
     var onFrame: ((Bool, UInt64?, UInt64?, UInt64?, String?, [Double]?, Bool, Bool, String) -> Void)?
     var onStatus: ((String) -> Void)?
     var onWorkspace: ((WorkspaceState) -> Void)?
+    var onCommandWillBegin: ((String) -> Void)?
     var onProjectChange: ((ProjectRecord) -> Void)?
     private(set) var currentProject: ProjectRecord?
     private var projectBusy = false
@@ -292,6 +293,7 @@ final class NativeSession {
     private func performCommand(_ command: String, params: [String: Any], requestKind: String = "command",
                                 completion: ((Result<Void, BridgeError>) -> Void)?) {
         guard alive else { return }
+        onCommandWillBegin?(command)
         let isView = command.hasPrefix("view.") || command.hasPrefix("select.") || command.hasPrefix("tool.") || command == "input.cancel"
         let lane: BridgeState.Lane = isView ? .viewport : .engine
         let queue = isView ? display : engine
@@ -1020,7 +1022,7 @@ final class NativeSession {
         onFailure = nil
         onFrame = nil
         onStatus = nil
-        onWorkspace = nil; onProjectChange = nil
+        onWorkspace = nil; onProjectChange = nil; onCommandWillBegin = nil
         onModelDismissed = nil
         onSketchInput = nil; onSketchAnnotations = nil; onConstraintIndicators = nil; onReferenceLabels = nil; onViewPresentation = nil; onModelValue = nil
         // Engine work finishes before the display queue releases the retained layer/handle.

@@ -104,13 +104,16 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     var onMove: ((Int) -> Void)?
     var onScrubBegan: (() -> Void)?
     var onScrubMove: ((Int, @escaping (Bool) -> Void) -> Void)?
+    var onPlaybackMove: ((Int, @escaping (Bool) -> Void) -> Void)?
+    var onPlaybackChanged: (() -> Void)?
     private lazy var toggle = WorkspaceButton(HistoryText.text("title")) { [weak self] in self?.onToggle?() }
     private lazy var back = WorkspaceButton(HistoryText.text("back")) { [weak self] in
-        guard let self, !self.scrub.active else { return }; self.onMove?(max(0, self.position - 1))
+        guard let self, !self.scrub.active else { return }; self.cancelPlayback(); self.onMove?(max(0, self.position - 1))
     }
     private lazy var forward = WorkspaceButton(HistoryText.text("forward")) { [weak self] in
-        guard let self, !self.scrub.active else { return }; self.onMove?(self.position < self.features.count ? self.position + 1 : self.features.count)
+        guard let self, !self.scrub.active else { return }; self.cancelPlayback(); self.onMove?(self.position < self.features.count ? self.position + 1 : self.features.count)
     }
+    private lazy var play = WorkspaceButton(HistoryText.text("play")) { [weak self] in self?.togglePlayback() }
     private let transport = UIStackView()
     private let marker = HistoryMarkerView()
     private lazy var markerPan = UIPanGestureRecognizer(target: self, action: #selector(dragMarker(_:)))
@@ -128,6 +131,9 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private var position = 0
     private var revealMarker = false
     private var scrub = HistoryScrubQueue()
+    private var playback = HistoryPlaybackQueue()
+    private var playbackEnabled = false
+    private var playbackTimer: Timer?
     private var scrubbingEnabled = false
     private var documentID: String?
     private var grabOffset: CGFloat = 0
@@ -137,6 +143,8 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     var preferredToggleWidth: CGFloat { max(52, ceil(toggle.intrinsicContentSize.width) + 8) }
     var scrubInFlight: Bool { scrub.inFlight != nil }
     var isScrubbing: Bool { scrub.active }
+    var isPlaying: Bool { playback.active }
+    var playbackInFlight: Bool { playback.inFlight != nil }
     private(set) var expanded = false
 
     override init(frame: CGRect) {
@@ -146,15 +154,18 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         toggle.accessibilityIdentifier = "workspace-feature-history-toggle"
         addSubview(toggle); addSubview(transport); addSubview(scroll)
         transport.axis = .horizontal; transport.spacing = 0; transport.distribution = .fillEqually
-        for (control, id) in [(back, "back"), (forward, "forward")] {
-            control.artwork("chevron_right", compact: true)
+        for (control, id) in [(back, "back"), (play, "play"), (forward, "forward")] {
+            if control === play { control.systemArtwork("play.fill", compact: true) }
+            else { control.artwork("chevron_right", compact: true) }
             control.accessibilityIdentifier = "workspace-history-" + id
             transport.addArrangedSubview(control)
         }
         back.imageView?.transform = CGAffineTransform(rotationAngle: .pi)
-        back.menu = UIMenu(children: [UIAction(title: HistoryText.text("first")) { [weak self] _ in self?.onMove?(0) }])
+        back.menu = UIMenu(children: [UIAction(title: HistoryText.text("first")) { [weak self] _ in
+            self?.cancelPlayback(); self?.onMove?(0)
+        }])
         forward.menu = UIMenu(children: [UIAction(title: HistoryText.text("last")) { [weak self] _ in
-            guard let self else { return }; self.onMove?(self.features.count)
+            guard let self else { return }; self.cancelPlayback(); self.onMove?(self.features.count)
         }])
         marker.backgroundColor = WorkspaceStyle.accent
         marker.isAccessibilityElement = true
@@ -165,7 +176,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         marker.onStep = { [weak self] direction in
             guard let self, self.navigationEnabled, !self.scrub.active else { return }
             let next = direction > 0 ? (self.position < self.features.count ? self.position + 1 : self.position) : max(0, self.position - 1)
-            if next != self.position { self.onMove?(next) }
+            if next != self.position { self.cancelPlayback(); self.onMove?(next) }
         }
         scroll.addSubview(items)
         scroll.addSubview(marker)
@@ -202,10 +213,10 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { nil }
-    deinit { dragScrollTimer?.invalidate() }
+    deinit { dragScrollTimer?.invalidate(); playbackTimer?.invalidate() }
 
     func setExpanded(_ value: Bool) {
-        if !value { cancelScrub() }
+        if !value { cancelScrub(); cancelPlayback() }
         expanded = value; scroll.isHidden = !value; transport.isHidden = !value
         accessibilityElements = value ? [transport, scroll, toggle] : [toggle]
         toggle.active(value)
@@ -224,8 +235,10 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
 
     func update(features: [ModellingPresentation.Feature], icons: [UInt64: String], selected: Set<UInt64>, position: Int,
-                enabled: Bool, navigationEnabled: Bool, scrubbingEnabled: Bool, documentID: String?) {
+                enabled: Bool, navigationEnabled: Bool, scrubbingEnabled: Bool, playbackEnabled: Bool, documentID: String?) {
         let documentChanged = self.documentID != documentID
+        if documentChanged || self.features.map(\.id) != features.map(\.id) || !playbackEnabled { cancelPlayback() }
+        self.playbackEnabled = playbackEnabled
         if documentChanged || self.features.map(\.id) != features.map(\.id) || !scrubbingEnabled { cancelScrub() }
         self.documentID = documentID; self.scrubbingEnabled = scrubbingEnabled
         let position = min(features.count, max(0, position))
@@ -236,6 +249,11 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         let changedSelection = self.selected != selected
         self.position = position; self.selected = selected; self.enabled = enabled; self.navigationEnabled = navigationEnabled
         scrub.acknowledge(position)
+        if playback.inFlight?.position == position && playbackTimer == nil {
+            // Evaluation may take arbitrarily long. Only bound a missing frame
+            // after the authoritative workspace has reached the requested stage.
+            schedulePlayback(after: 30) { $0.cancelPlayback() }
+        }
         marker.accessibilityValue = "\(scrub.target ?? position) / \(features.count)"
         if expanded { rebuildIfNeeded() }
         refreshControls()
@@ -244,6 +262,9 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
 
     private func refreshControls() {
+        play.updateTitle(HistoryText.text(isPlaying ? "pause" : "play"))
+        play.systemArtwork(isPlaying ? "pause.fill" : "play.fill", compact: true)
+        play.availability(enabled: isPlaying || (playbackEnabled && !scrub.active && !features.isEmpty), reason: play.accessibilityLabel)
         back.availability(enabled: navigationEnabled && !scrub.active && position > 0, reason: HistoryText.text("back"))
         forward.availability(enabled: navigationEnabled && !scrub.active && position < features.count, reason: HistoryText.text("forward"))
         for feature in features {
@@ -260,7 +281,9 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         buttons.removeAll()
         if features.isEmpty { items.addArrangedSubview(empty) }
         for feature in features {
-            let button = WorkspaceButton(feature.name, activationEvent: .primaryActionTriggered) { [weak self] in self?.onSelect?(feature.id) }
+            let button = WorkspaceButton(feature.name, activationEvent: .primaryActionTriggered) { [weak self] in
+                self?.cancelPlayback(); self?.onSelect?(feature.id)
+            }
             // Reserve the hold for our anchored action sheet. The built-in
             // context-menu preview can hide this icon and raise the keyboard.
             button.showsLargeContentViewer = false
@@ -294,6 +317,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     func showActions(for id: UInt64, source: UIView) -> Bool {
         guard enabled, !scrub.active, buttons[id] === source, source.window != nil,
               features.contains(where: { $0.id == id }), let onShowActions else { return false }
+        cancelPlayback()
         onShowActions(id, source)
         return true
     }
@@ -333,6 +357,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
 
     private func beginDrag(at point: CGPoint) {
         guard expanded, scrubbingEnabled, !scrub.active else { return }
+        cancelPlayback()
         scrub.begin(at: position); needsReveal = false
         onScrubBegan?()
         let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.scrollDraggedMarker() }
@@ -374,6 +399,41 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         markerPan.isEnabled = false; markerPan.isEnabled = true
         refreshControls()
         setNeedsLayout()
+    }
+
+    private func togglePlayback() {
+        if isPlaying { cancelPlayback(); return }
+        guard expanded, playbackEnabled, !scrub.active, !features.isEmpty else { return }
+        playback.begin(at: position, count: features.count)
+        refreshControls(); onPlaybackChanged?()
+        advancePlayback()
+    }
+
+    private func advancePlayback() {
+        guard let request = playback.next(), let onPlaybackMove else { cancelPlayback(); return }
+        onPlaybackMove(request.position) { [weak self] succeeded in
+            guard let self, self.playback.complete(request, succeeded: succeeded) else { return }
+            self.playbackTimer?.invalidate(); self.playbackTimer = nil
+            self.refreshControls()
+            if self.isPlaying {
+                // Start the dwell only after the actual model frame was shown.
+                self.schedulePlayback(after: 0.8) { $0.advancePlayback() }
+            } else { self.onPlaybackChanged?() }
+        }
+    }
+
+    private func schedulePlayback(after delay: TimeInterval, action: @escaping (FeatureHistoryBar) -> Void) {
+        playbackTimer?.invalidate()
+        let timer = Timer(timeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self else { return }; self.playbackTimer = nil; action(self)
+        }
+        playbackTimer = timer; RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func cancelPlayback() {
+        guard isPlaying else { return }
+        playback.cancel(); playbackTimer?.invalidate(); playbackTimer = nil
+        refreshControls(); onPlaybackChanged?()
     }
 
     private func scrollDraggedMarker() {
@@ -425,7 +485,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window == nil { cancelScrub() }
+        if window == nil { cancelScrub(); cancelPlayback() }
     }
 
     override func layoutSubviews() {
@@ -435,7 +495,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         let toggleWidth = min(preferredToggleWidth - 2 * inset, max(0, bounds.width - 2 * inset))
         toggle.frame = CGRect(x: max(inset, bounds.width - inset - toggleWidth), y: inset,
             width: toggleWidth, height: max(0, bounds.height - 2 * inset))
-        transport.frame = CGRect(x: inset, y: inset, width: 88, height: max(0, bounds.height - 2 * inset))
+        transport.frame = CGRect(x: inset, y: inset, width: 132, height: max(0, bounds.height - 2 * inset))
         scroll.frame = CGRect(x: min(bounds.width, transport.frame.maxX + inset), y: inset,
             width: max(0, toggle.frame.minX - transport.frame.maxX - 2 * inset), height: max(0, bounds.height - 2 * inset))
         scroll.layoutIfNeeded(); layoutMarker()

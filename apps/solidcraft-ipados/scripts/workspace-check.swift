@@ -689,6 +689,34 @@ struct WorkspaceChecks {
         try require(!scrub.complete(returnToStart, succeeded: true) && scrub.inFlight == replacement, "completion from a cancelled document moved its replacement")
         scrub.complete(replacement, succeeded: false)
         try require(!scrub.active && scrub.next() == nil, "failed timeline command continued the drag")
+        // Playback must show every evaluated stage, including the empty start
+        // when replaying a finished model. Slow evaluations cannot queue ahead.
+        var playback = HistoryPlaybackQueue()
+        playback.begin(at: 3, count: 3)
+        for position in 0...3 {
+            guard let step = playback.next() else { throw NSError(domain: "HistoryPlayback", code: 1) }
+            try require(step.position == position && playback.next() == nil, "playback skipped a stage or queued concurrent evaluations")
+            try require(playback.active, "playback stopped before the stage was presented")
+            try require(playback.complete(step, succeeded: true), "presented playback stage was rejected")
+            try require(!playback.complete(step, succeeded: true), "playback accepted a duplicate callback")
+        }
+        try require(!playback.active && playback.next() == nil, "playback did not stop at the end")
+        playback.begin(at: 1, count: 3)
+        guard let paused = playback.next() else { throw NSError(domain: "HistoryPlayback", code: 2) }
+        try require(paused.position == 2, "playback did not resume from the current marker")
+        playback.cancel(); playback.begin(at: 2, count: 3)
+        guard let resumed = playback.next() else { throw NSError(domain: "HistoryPlayback", code: 3) }
+        try require(resumed.position == 3 && !playback.complete(paused, succeeded: true) && playback.inFlight == resumed,
+                    "a paused run's late callback changed its replacement")
+        playback.complete(resumed, succeeded: false)
+        try require(!playback.active && playback.next() == nil, "failed playback continued")
+        playback.begin(at: 0, count: 0)
+        try require(!playback.active && playback.next() == nil, "empty history allowed playback")
+        playback.begin(at: 0, count: 1)
+        guard let only = playback.next() else { throw NSError(domain: "HistoryPlayback", code: 4) }
+        try require(only.position == 1, "single-feature playback missed its final stage")
+        playback.complete(only, succeeded: true)
+        try require(!playback.active, "single-feature playback never finished")
         // A long View page must scroll above History, including in short windows;
         // a short page should retain its natural height without empty space.
         for container in [CGRect(x: 0, y: 24, width: 1366, height: 976),
