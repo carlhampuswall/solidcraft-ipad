@@ -392,6 +392,37 @@ fn params_and_serialization() {
     assert!(doc.param("d1").is_none(), "unused model parameters are pruned");
 }
 
+#[test]
+fn deleting_an_operation_removes_only_its_unused_generated_profile() {
+    for (internal, shared) in [(false, 0), (true, 0), (true, 1), (true, 2)] {
+        let (mut doc, sketch) = plate_doc();
+        doc.feature_mut(sketch).unwrap().internal_profile = internal;
+        let extrusion = doc.features[1].id;
+        if shared == 1 {
+            doc.add_feature(doc.features[1].kind.clone(), Some("Second extrusion")).unwrap();
+        } else if shared == 2 {
+            let mut projected = Sketch::new();
+            projected
+                .add_link(
+                    solidcraft_sketch::LinkKind::Project,
+                    solidcraft_sketch::LinkSource::SketchCurve { sketch, curve: "l1".into() },
+                    &[solidcraft_sketch::LinkGeom::Line(Vec2::ZERO, Vec2::new(40., 0.))],
+                )
+                .unwrap();
+            doc.add_feature(FeatureKind::Sketch { plane: PlaneRef::Origin { name: "XY".into() }, sketch: projected }, None).unwrap();
+        }
+        doc.marker = Some(2);
+        let before = doc.clone();
+        let deleted = doc.delete_feature(extrusion).unwrap();
+        let remove_profile = internal && shared == 0;
+        assert_eq!(doc.feature(sketch).is_none(), remove_profile);
+        assert_eq!(deleted, if remove_profile { vec![extrusion, sketch] } else { vec![extrusion] });
+        assert_eq!(doc.marker, Some(if remove_profile { 0 } else { 1 }));
+        assert_eq!(Document::from_json(&doc.to_json()).unwrap(), doc);
+        assert!(before.feature(sketch).is_some(), "the command's undo snapshot retains its helper");
+    }
+}
+
 /// #4783: a body reads the material its mass is computed with, as the library or the design
 /// spells it. An unknown name, or a design material with an unusable density, reads as the
 /// default material it weighs. `density` agrees in every case, and a configuration keeps the

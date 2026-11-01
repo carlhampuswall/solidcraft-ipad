@@ -230,8 +230,12 @@ become sources for saving a design or applying geometry changes.
 
 `Viewport::begin_update` disables picking while current geometry is being
 computed. `Viewport::install` checks its generation and clears topology selection
-when document/geometry changes. A controlled evaluation failure retains the
-previous visible scene but must not present its picking data as current. Selection
+when document/geometry changes. Ordinary history commands publish the shared
+evaluator's current partial model: failed features remain unapplied, independent
+features still rebuild, and feature diagnostics stay in the timeline. A stale
+result or scene-construction failure retains the previous visible scene without
+presenting its picking data as current. Modelling proposals and last-working
+recovery validation still require a complete error-free model. Selection
 is conservatively invalidated by regeneration, undo/redo, visibility changes,
 deletion or document replacement; persistent face/edge indices are not promised.
 
@@ -386,6 +390,11 @@ Two engine-lane JSON requests extend ABI 3 without changing C signatures:
   candidate with `doc.open` or `file.new`, validates a scene and saves with
   `file.save_as`, then replaces the authoritative session. Failures preserve its
   document, undo history and revision. Native geometry revisions stay monotonic.
+  Ordinary opening permits feature evaluation errors so the current partial
+  model can be repaired, suppressed or deleted through the workspace. Failed
+  internal face profiles are exposed in the browser and timeline, including
+  orphaned helpers retained by older builds. Stale results and ambiguous
+  reference-recovery warnings still block ordinary publication.
   Explicit `repair:true` requires a saved source and a new destination. It
   cold-evaluates without the optional model cache and allows reference warnings
   in this initial scene only. Evaluation errors and stale results still fail;

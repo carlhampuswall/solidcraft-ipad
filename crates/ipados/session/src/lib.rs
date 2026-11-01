@@ -122,6 +122,13 @@ pub struct SessionAdapter {
     workspace_cache: Option<workspace::WorkspaceCache>,
 }
 
+#[derive(Clone, Copy)]
+enum SnapshotValidation {
+    Complete,
+    Workspace,
+    Repair,
+}
+
 impl Default for SessionAdapter {
     fn default() -> Self {
         Self::new()
@@ -169,7 +176,7 @@ impl SessionAdapter {
     }
 
     /// Prepare and persist a browser project before replacing the live document.
-    /// A bad import, failed evaluation or unwritable destination leaves history,
+    /// A bad import or unwritable destination leaves history,
     /// selection and the current document untouched. All file semantics remain
     /// in the upstream commands; this is only a native publication transaction.
     pub fn replace_document(&mut self, source: Option<&str>, name: &str, destination: &str) -> Result<(Value, Arc<SceneSnapshot>), AdapterError> {
@@ -215,13 +222,14 @@ impl SessionAdapter {
             return Err(error("response_limit", "project import diagnostics exceed 512 KiB"));
         }
         candidate.geometry_revision = revision;
-        let mut snapshot = candidate.snapshot_checked(repair)?;
+        let validation = if repair { SnapshotValidation::Repair } else { SnapshotValidation::Workspace };
+        let mut snapshot = candidate.snapshot_checked(validation)?;
         let saved = candidate.execute("file.save_as", json!({"path":destination}))?;
         // Save As may rename a design named after its previous file. Retain
         // prepared geometry and normalise the publication to one new revision.
         candidate.geometry_revision = revision;
         if saved.changed {
-            snapshot = candidate.snapshot_checked(repair)?;
+            snapshot = candidate.snapshot_checked(validation)?;
         }
         self.session = candidate.session;
         self.geometry_revision = revision;
@@ -268,18 +276,29 @@ impl SessionAdapter {
     }
 
     pub fn snapshot(&mut self) -> Result<Arc<SceneSnapshot>, AdapterError> {
-        self.snapshot_checked(false)
+        self.snapshot_checked(SnapshotValidation::Complete)
     }
 
-    fn snapshot_checked(&mut self, allow_reference_warnings: bool) -> Result<Arc<SceneSnapshot>, AdapterError> {
-        if let Some(result) = self.session.model.results.iter().find(|result| result.error.is_some()) {
+    /// Publish the current evaluated state after ordinary history commands. The
+    /// shared evaluator leaves failed features unapplied and continues evaluating
+    /// independent features. Their diagnostics remain in the workspace timeline;
+    /// they must not strand deletion, Undo or reopening. Previews and recovery
+    /// validation continue using the strict `snapshot` contract above.
+    pub fn workspace_snapshot(&mut self) -> Result<Arc<SceneSnapshot>, AdapterError> {
+        self.snapshot_checked(SnapshotValidation::Workspace)
+    }
+
+    fn snapshot_checked(&mut self, validation: SnapshotValidation) -> Result<Arc<SceneSnapshot>, AdapterError> {
+        if !matches!(validation, SnapshotValidation::Workspace)
+            && let Some(result) = self.session.model.results.iter().find(|result| result.error.is_some())
+        {
             return Err(error("evaluation", format!("{}: {}", result.name, result.error.as_deref().unwrap_or_default())));
         }
         if self.session.active_sketch.is_none() {
             if let Some(result) = self.session.model.results.iter().find(|result| !result.skipped && result.stale) {
                 return Err(error("stale_evaluation", format!("{} has not been regenerated for the current document.", result.name)));
             }
-            if !allow_reference_warnings
+            if !matches!(validation, SnapshotValidation::Repair)
                 && let Some(result) =
                     self.session.model.results.iter().find(|result| result.warning.as_deref().is_some_and(references::risky_reference_warning))
             {

@@ -153,6 +153,15 @@ their existing paths. Unmarked older sketches retain their previous meaning.
 This is an Apple-independent provenance improvement suitable for upstream;
 desktop/web retain their existing tree presentation and explicit ID access.
 
+`Document::delete_features` removes an internal face profile when its last
+consuming operation is deleted, in the same command/history step. Authored or
+still-referenced profiles remain. This small shared lifecycle correction keeps
+hidden face references from outliving their operation; no format or kernel
+change is involved. The native workspace can publish the shared evaluator's
+current partial state after feature errors and expose failed internal profiles
+from older saves. Preview acceptance and working-recovery validation retain their
+strict complete-model checks; stale scenes are never published as current.
+
 `crates/doc/src/profile_refs.rs` also preserves a complete drawn profile by its
 whole source boundary when projected face edges split it into ambiguous graph
 regions. Previously the shared capture could retain list indices; resizing the

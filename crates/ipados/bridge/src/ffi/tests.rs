@@ -4,6 +4,43 @@ use super::*;
 // more ABI tests concurrently in one process, unlike the repository test runner.
 static ABI_TESTS: Mutex<()> = Mutex::new(());
 
+#[test]
+fn deleting_a_body_producer_publishes_feature_errors_without_stranding_the_workspace() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    for (command, params) in [
+        ("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"})),
+        ("solid.remove", json!({"bodies":["Stock"]})),
+        ("solid.box", json!({"corner":[30,0,0],"length":2,"width":3,"height":4,"body_name":"Independent","operation":"new"})),
+        ("timeline.delete", json!({"feature":1})),
+    ] {
+        assert_eq!(request(id, &json!({"kind":"command","command":command,"params":params}).to_string()), 0, "{command}: {}", response(id));
+    }
+    let entry = lookup(id).unwrap();
+    assert!(entry.adapter.lock().unwrap().snapshot().is_err(), "strict proposal validation still sees the failed Remove");
+    let check = || {
+        let viewport = entry.viewport.lock().unwrap();
+        assert!(!viewport.is_updating());
+        let frame = viewport.snapshot().unwrap();
+        assert_eq!(frame.model.body_count, 1);
+        assert_eq!(frame.model.instances[0].body, "Independent");
+        assert!((frame.model.volume_mm3 - 24.).abs() < 1e-6);
+    };
+    check();
+    assert_eq!(request(id, r#"{"kind":"workspace"}"#), 0);
+    assert!(response(id)["result"]["modelling"]["timeline"].as_array().unwrap().iter().any(|f| f["id"] == 2 && f["error"].is_string()));
+    assert_eq!(request(id, r#"{"kind":"snapshot"}"#), 0);
+    assert_eq!(request(id, r#"{"kind":"command","command":"solid.not_a_command","params":{}}"#), -1);
+    check();
+    for command in ["edit.undo", "edit.redo"] {
+        assert_eq!(request(id, &json!({"kind":"command","command":command,"params":{}}).to_string()), 0, "{}", response(id));
+        check();
+    }
+    assert_eq!(request(id, r#"{"kind":"command","command":"timeline.delete","params":{"feature":2}}"#), 0);
+    assert!(entry.adapter.lock().unwrap().snapshot().is_ok());
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
 fn isolated_registry() -> std::sync::MutexGuard<'static, ()> {
     ABI_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

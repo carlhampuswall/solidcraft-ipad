@@ -415,16 +415,22 @@ impl SessionAdapter {
         self.session.doc.feature(id).is_some_and(|feature| feature.is_internal_profile())
     }
 
+    // Older saves can contain orphaned helpers. Expose a failed one so its
+    // diagnostic can be inspected and it can be deleted or reattached.
+    pub(crate) fn hidden_internal_profile(&self, feature: &solidcraft_engine::doc::Feature) -> bool {
+        feature.is_internal_profile() && self.session.model.result(feature.id).is_none_or(|result| result.error.is_none())
+    }
+
     pub fn modelling_workspace(&self) -> Value {
         let marker = self.session.doc.marker.unwrap_or(self.session.doc.features.len());
-        let position = self.session.doc.features.iter().take(marker).filter(|feature| !feature.is_internal_profile()).count();
+        let position = self.session.doc.features.iter().take(marker).filter(|feature| !self.hidden_internal_profile(feature)).count();
         let timeline: Vec<_> = self
             .session
             .doc
             .features
             .iter()
             .enumerate()
-            .filter(|(_, feature)| !feature.is_internal_profile())
+            .filter(|(_, feature)| !self.hidden_internal_profile(feature))
             .enumerate()
             .map(|(order, (document_order, f))| {
                 let result = self.session.model.result(f.id);

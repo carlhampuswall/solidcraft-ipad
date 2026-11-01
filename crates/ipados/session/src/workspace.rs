@@ -84,7 +84,7 @@ impl SessionAdapter {
             for c in &self.session.doc.components {
                 rows.push(row(format!("component:{}", c.id), Some(format!("component:{}", c.parent)), c.name.clone(), "component", Value::Null));
             }
-            for f in self.session.doc.features.iter().filter(|f| !f.is_internal_profile()) {
+            for f in self.session.doc.features.iter().filter(|f| !self.hidden_internal_profile(f)) {
                 let kind = if matches!(&f.kind, FeatureKind::Sketch { .. }) { "sketch" } else { "feature" };
                 rows.push(row(
                     format!("feature:{}", f.id),

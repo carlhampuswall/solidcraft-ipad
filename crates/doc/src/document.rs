@@ -3617,6 +3617,38 @@ impl Document {
             .map(|f| f.id)
             .collect();
         gone.extend(dependants);
+        // A generated face boundary belongs to its consuming operation. Leaving it
+        // behind can fail on a face that disappears when earlier history is deleted,
+        // even though the operation itself is already gone. Authored sketches stay.
+        let profiles: std::collections::BTreeSet<_> =
+            self.features.iter().filter(|f| gone.contains(&f.id)).flat_map(|f| f.kind.input_sketches()).collect();
+        let unused: Vec<_> = self
+            .features
+            .iter()
+            .filter(|f| f.is_internal_profile() && profiles.contains(&f.id) && !gone.contains(&f.id))
+            .filter(|profile| {
+                !self.features.iter().filter(|f| !gone.contains(&f.id)).any(|f| {
+                    f.kind.input_sketches().contains(&profile.id)
+                        || f.kind.names_feature(profile.id, &profile.name)
+                        || matches!(&f.kind, FeatureKind::Sketch { sketch, .. } if sketch.links.iter().any(|link| {
+                            let mut sources = vec![&link.source];
+                            while let Some(source) = sources.pop() {
+                                use solidcraft_sketch::LinkSource;
+                                match source {
+                                    LinkSource::SketchCurve { sketch, .. }
+                                    | LinkSource::SketchPoint { sketch, .. }
+                                    | LinkSource::OnSurface { sketch, .. } if *sketch == profile.id => return true,
+                                    LinkSource::Intersection { a, b } => sources.extend([a.as_ref(), b.as_ref()]),
+                                    _ => {}
+                                }
+                            }
+                            false
+                        }))
+                })
+            })
+            .map(|f| f.id)
+            .collect();
+        gone.extend(unused);
         // How many of them come before the rollback marker: it keeps its place among the rest.
         let before_marker = self.marker.map(|m| self.features.iter().take(m).filter(|f| gone.contains(&f.id)).count());
         let gone_params: Vec<String> = self.features.iter().filter(|f| gone.contains(&f.id)).flat_map(|f| f.param_names.clone()).collect();

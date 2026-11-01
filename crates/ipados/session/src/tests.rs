@@ -490,6 +490,61 @@ fn projects_recovery_keeps_the_last_cold_reopenable_save_during_sketch_edits() {
 }
 
 #[test]
+fn projects_with_deleted_face_dependencies_remain_editable_and_preserve_working_recovery() {
+    let directory = std::env::temp_dir().join(format!("solidcraft-deleted-dependencies-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("Part.solidcraft");
+    let mut adapter = SessionAdapter::new();
+    let base =
+        adapter.execute("solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"})).unwrap().value["feature"].as_u64().unwrap();
+    let face = modelling_face(&adapter, "Stock", Vec3::new(2., 2., 10.));
+    let Sel::Face { index, point, .. } = face else { panic!("face") };
+    let sketch = adapter.execute("sketch.create", json!({"plane":{"face":point,"body":"Stock","index":index},"project_edges":false})).unwrap().value
+        ["sketch"]
+        .as_u64()
+        .unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[1,1],"p1":[3,3]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("solid.extrude", json!({"distance":5,"operation":"new"})).unwrap();
+    adapter.execute("solid.box", json!({"corner":[30,0,0],"length":2,"width":3,"height":4,"body_name":"Independent","operation":"new"})).unwrap();
+    adapter.execute("file.save_as", json!({"path":path})).unwrap();
+    let recovery = directory.join("Part.solidcraft.recovery");
+    let working = std::fs::read(&recovery).unwrap();
+    let deleted = adapter.execute("timeline.delete", json!({"feature":base})).unwrap();
+    assert!(!deleted.value["failing"].as_array().unwrap().is_empty());
+    assert!(adapter.snapshot().is_err(), "modelling and recovery validation remain strict");
+    let scene = adapter.workspace_snapshot().unwrap();
+    assert_eq!(scene.body_count, 1, "failed features must not retain bodies from before deletion");
+    assert_eq!(scene.picks.bodies[0].name, "Independent");
+    assert!((scene.volume_mm3 - 24.).abs() < 1e-6);
+    let workspace = adapter.workspace(&[], false, false);
+    assert!(workspace["modelling"]["timeline"].as_array().unwrap().iter().any(|f| f["id"] == sketch && f["error"].is_string()));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 1044.).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    let saved = adapter.execute("file.save", json!({"path":path})).unwrap();
+    assert_eq!(saved.value["recovery_updated"], false);
+    assert_eq!(std::fs::read(&recovery).unwrap(), working);
+
+    let mut reopened = SessionAdapter::new();
+    let (_, scene) = reopened.replace_document(Some(path.to_str().unwrap()), "Part", path.to_str().unwrap()).unwrap();
+    assert_eq!(scene.body_count, 1);
+    assert!((scene.volume_mm3 - 24.).abs() < 1e-6);
+    assert_eq!(std::fs::read(&recovery).unwrap(), working, "opening a partial model must not replace its working recovery");
+    assert!(reopened.session.model.result(sketch).unwrap().error.is_some());
+    // Existing saves can hold a failed helper whose consumer was deleted by an
+    // older build. It must be reachable through the ordinary inspector/timeline.
+    Arc::make_mut(&mut reopened.session.doc).feature_mut(sketch).unwrap().internal_profile = true;
+    reopened.workspace_cache = None;
+    let workspace = reopened.workspace(&[], false, false);
+    assert!(workspace["rows"].as_array().unwrap().iter().any(|f| f["entity"]["id"] == sketch));
+    assert!(workspace["modelling"]["timeline"].as_array().unwrap().iter().any(|f| f["id"] == sketch));
+    reopened.execute("timeline.delete", json!({"feature":sketch})).unwrap();
+    assert!((reopened.snapshot().unwrap().volume_mm3 - 24.).abs() < 1e-6);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn projects_recovery_upgrades_existing_saves_and_reports_recovery_write_failures() {
     let directory = std::env::temp_dir().join(format!("solidcraft-project-recovery-upgrade-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
@@ -6134,6 +6189,20 @@ fn modelling_face_extrusion_keeps_its_boundary_internal_and_authored_face_sketch
     adapter.execute("edit.redo", json!({})).unwrap();
     assert!(adapter.session.doc.feature(internal).unwrap().is_internal_profile());
     assert!((modelling_volume(&adapter) - 1500.).abs() < 1e-5);
+    // Deletion owns the generated boundary too, in the same undo step. Keeping
+    // it would strand a hidden face reference when earlier features are removed.
+    let history = adapter.session.undo.len();
+    let deleted = adapter.execute("timeline.delete", json!({"feature":extrusion})).unwrap();
+    assert!(deleted.value["deleted"].as_array().unwrap().contains(&json!(internal)));
+    assert!(adapter.session.doc.feature(internal).is_none());
+    assert!(adapter.session.doc.feature(authored).is_some(), "authored face sketches remain independent");
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert!((modelling_volume(&adapter) - 1000.).abs() < 1e-5);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.doc.feature(internal).is_some());
+    assert!((modelling_volume(&adapter) - 1500.).abs() < 1e-5);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!(adapter.session.doc.feature(internal).is_none());
 }
 
 #[test]

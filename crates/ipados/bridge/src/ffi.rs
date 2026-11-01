@@ -496,18 +496,18 @@ impl Entry {
                     let snapshot =
                         match existing.filter(|s| s.model.document_id == reply.document_id && s.geometry_revision == reply.geometry_revision) {
                             Some(snapshot) => snapshot.model,
-                            None => adapter.snapshot()?,
+                            None => adapter.workspace_snapshot()?,
                         };
                     let reply = serde_json::to_value(reply).map_err(|e| error("response", e.to_string()))?;
                     Ok((reply, snapshot))
                 }
-                Request::Snapshot => adapter.snapshot().map(|s| (metadata(&s), s)),
+                Request::Snapshot => adapter.workspace_snapshot().map(|s| (metadata(&s), s)),
                 _ => Err(error("request", "invalid engine request")),
             }
         })();
         // Bad parameters/unknown commands leave a valid engine document. Recover its
         // current scene on this worker so an ordinary command error cannot strand picking.
-        let recovered = if result.is_err() { self.adapter.lock().ok().and_then(|mut adapter| adapter.snapshot().ok()) } else { None };
+        let recovered = if result.is_err() { self.adapter.lock().ok().and_then(|mut adapter| adapter.workspace_snapshot().ok()) } else { None };
         let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
         match result {
             Ok((reply, snapshot)) => {
