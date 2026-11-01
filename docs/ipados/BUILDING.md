@@ -126,6 +126,14 @@ project. Each capture follows a matching presented frame. The receipt includes
 fresh timestamps and an optional `SolidCraftCandidate` Info.plist stamp.
 Both checks use synthetic Pencil samples; actual Pencil contact remains separate.
 
+For a failure that only occurs with actual Pencil input, launch a Debug build
+with `--input-trace`. It uses the ordinary project and input routing, and writes
+`Documents/input-trace.json` after contact batches. The local trace contains the
+latest UIKit samples, viewport state before delivery, and selection replies or
+errors, bounded to 64 batches and 1 MiB. It injects no input and establishes no
+selection acceptance result on its own. The file can contain project identifiers
+and picked coordinates; keep it local unless the user agrees to share it.
+
 Debug `--edge-length-check` uses the same disposable fixture and native input
 mailbox to select a 40 mm edge, add a 30 mm edge, and clear the selection. It
 checks the bottom status readout and its disabled preference, then writes

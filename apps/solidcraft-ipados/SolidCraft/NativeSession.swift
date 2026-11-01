@@ -880,6 +880,33 @@ final class NativeSession {
 
     private let input = InputMailbox()
     private var toolBusy = false // display queue; at most one queued/running CAD job
+#if DEBUG
+    private let inputTracing = ProcessInfo.processInfo.arguments.contains("--input-trace")
+    private let inputTraceStarted = Date().timeIntervalSince1970
+    private var inputTraceBatches: [[String: Any]] = [] // display queue only
+
+    /// Opt-in, local-only evidence of actual UIKit samples and the viewport that
+    /// accepted or rejected them. Bound the trace and keep file I/O off main.
+    private func traceInput(_ samples: [InputSample], before: Data?, reply: Data?, failure: Error? = nil) {
+        guard inputTracing, samples.contains(where: { $0.id != 0 }) else { return }
+        do {
+            var entry: [String: Any] = ["received_at": Date().timeIntervalSince1970,
+                "samples": try JSONSerialization.jsonObject(with: JSONEncoder().encode(samples))]
+            if let before { entry["before"] = try JSONSerialization.jsonObject(with: before) }
+            if let reply { entry["reply"] = try JSONSerialization.jsonObject(with: reply) }
+            if let failure { entry["failure"] = String(describing: failure) }
+            inputTraceBatches.append(entry)
+            if inputTraceBatches.count > 64 { inputTraceBatches.removeFirst(inputTraceBatches.count - 64) }
+            var data = try JSONSerialization.data(withJSONObject: ["started_at": inputTraceStarted, "batches": inputTraceBatches])
+            while data.count > 1_048_576, inputTraceBatches.count > 1 {
+                inputTraceBatches.removeFirst()
+                data = try JSONSerialization.data(withJSONObject: ["started_at": inputTraceStarted, "batches": inputTraceBatches])
+            }
+            let documents = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+            try data.write(to: documents.appendingPathComponent("input-trace.json"), options: .atomic)
+        } catch { NSLog("SolidCraft input trace could not be saved: %@", String(describing: error)) }
+    }
+#endif
 
     func record(_ sample: InputSample) {
         guard alive, let ticket = lifecycle.ticket else { return }
@@ -887,13 +914,26 @@ final class NativeSession {
         display.async { [weak self, state, lifecycle, input] in
             guard let batch = input.take(token: inputToken) else { return }
             guard lifecycle.accepts(ticket) else { return }
+#if DEBUG
+            let before = self?.inputTracing == true ? try? state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport) : nil
+#endif
             do {
                 if batch.cancelled { _ = try state.request(Data("{\"kind\":\"command\",\"command\":\"input.cancel\",\"params\":{}}".utf8), lane: .viewport) }
                 let events = try JSONEncoder().encode(batch.samples)
-                _ = try state.request(Data("{\"kind\":\"input_batch\",\"events\":".utf8) + events + Data("}".utf8), lane: .viewport)
+                let reply = try state.request(Data("{\"kind\":\"input_batch\",\"events\":".utf8) + events + Data("}".utf8), lane: .viewport)
+#if DEBUG
+                self?.traceInput(batch.samples, before: before, reply: reply)
+#else
+                _ = reply
+#endif
                 self?.drainToolWork()
                 DispatchQueue.main.async { [weak self] in self?.redraw() }
-            } catch { self?.cancelInput(); self?.failure(error) }
+            } catch {
+#if DEBUG
+                self?.traceInput(batch.samples, before: before, reply: nil, failure: error)
+#endif
+                self?.cancelInput(); self?.failure(error)
+            }
         }
     }
 
