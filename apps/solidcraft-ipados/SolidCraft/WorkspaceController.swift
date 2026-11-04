@@ -33,6 +33,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var browserFindButton = WorkspaceButton(BrowserText.text("find")) { [weak self] in self?.toggleBrowserSearch() }
     private lazy var browserSearchDismiss = WorkspaceButton(BrowserText.text("dismiss_find")) { [weak self] in self?.dismissBrowserSearch() }
     private var browserSearchOpen = false
+    private var browserSwipesEnabled = BrowserSwipeActions.enabled(UserDefaults.standard.object(forKey: BrowserSwipeActions.preferenceKey) as? Bool)
     private var browserSearchBookmark: BrowserScrollBookmark?
     private var browserSearching = false
     private var visibleOriginRows: [String] = []
@@ -129,6 +130,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var browserCheckWorkspace: ((WorkspaceState) -> Void)?
     private var historyCheckWorkspace: ((WorkspaceState) -> Void)?
     private var historyDeleteConfirmation: (() -> Void)?
+    private var browserDeleteConfirmation: (() -> Void)?
+    private var browserNameSubmission: (() -> Void)?
     private var historyMenuDelete: (() -> Void)?
     private var historyMenuSuppress: (() -> Void)?
     private var assemblyCheckBegan: ((Result<ModellingState, BridgeError>) -> Void)?
@@ -607,7 +610,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.startGroupedInspectorCheckIfReady()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
                     self.developmentCheckStarted = true; self.checkChromeOnDevice()
-                } else if ProcessInfo.processInfo.arguments.contains("--browser-check") || ProcessInfo.processInfo.arguments.contains("--browser-actions-check") {
+                } else if ProcessInfo.processInfo.arguments.contains("--browser-check") || ProcessInfo.processInfo.arguments.contains("--browser-actions-check") || ProcessInfo.processInfo.arguments.contains("--browser-swipes-check") {
                     self.developmentCheckStarted = true; self.checkBrowserOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--history-playback-check") {
                     self.developmentCheckStarted = true; self.checkHistoryPlaybackOnDevice()
@@ -1133,6 +1136,115 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         return space
     }
 
+    func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        browserSwipeConfiguration(at: indexPath, leading: true)
+    }
+
+    func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        browserSwipeConfiguration(at: indexPath, leading: false)
+    }
+
+    private func browserDeleteTarget(_ row: WorkspaceRow) -> BrowserDeleteTarget? {
+        let feature: UInt64?
+        if case .number(let id)? = row.entity?.id { feature = id } else { feature = nil }
+        return BrowserDeleteTarget.resolve(kind: row.kind, entityType: row.entity?.type, name: row.entity?.name,
+            feature: feature, path: row.entity?.path, component: row.assembly?.component,
+            joint: row.assembly?.joint, group: row.browser?.group)
+    }
+
+    private func browserSwipeConfiguration(at index: IndexPath, leading: Bool) -> UISwipeActionsConfiguration? {
+        guard index.section == 1, visibleRows.indices.contains(index.row), presentedViewController == nil else { return nil }
+        let row = visibleRows[index.row], browser = row.browser
+        let actions = leading ? BrowserSwipeActions.leading(enabled: browserSwipesEnabled, available: browserCanChange,
+            rename: browser?.rename != nil, folder: browser?.folder != nil && browser?.component != nil, item: browser?.key != nil)
+            : BrowserSwipeActions.trailing(enabled: browserSwipesEnabled, available: browserCanChange, target: browserDeleteTarget(row))
+        guard !actions.isEmpty else { return nil }
+        let document = state?.document_id, revision = state?.geometry_revision
+        let configuration = UISwipeActionsConfiguration(actions: actions.map { intent in
+            let title: String
+            switch intent {
+            case .delete: title = row.kind == "folder" ? BrowserText.text("remove_folder") : NativeText.value("ui.delete")
+            case .rename: title = BrowserText.text("rename")
+            case .newFolder: title = BrowserText.text("new_folder")
+            case .moveToFolder: title = BrowserText.text("move_to_folder")
+            }
+            let action = UIContextualAction(style: intent == .delete ? .destructive : .normal, title: title) { [weak self] _, source, complete in
+                guard let self, self.browserSwipesEnabled, self.presentedViewController == nil,
+                      let current = self.currentBrowserRow(row.id, document: document, revision: revision) else { complete(false); return }
+                // Delete is only a request for confirmation here. Keep UIKit from
+                // removing the row before the engine publishes the confirmed edit.
+                complete(intent != .delete)
+                self.table.setEditing(false, animated: true)
+                self.performBrowserSwipe(intent, row: current, source: source)
+            }
+            if intent != .delete { action.backgroundColor = intent == .rename ? .systemBlue : .systemTeal }
+            return action
+        })
+        configuration.performsFirstActionWithFullSwipe = false
+        return configuration
+    }
+
+    private func performBrowserSwipe(_ intent: BrowserSwipeAction, row: WorkspaceRow, source: UIView) {
+        guard browserCanChange, presentedViewController == nil else { return }
+        canvas.cancelInput(); view.endEditing(true)
+        switch intent {
+        case .delete: confirmBrowserDelete(row)
+        case .rename:
+            guard let rename = row.browser?.rename else { return }
+            askBrowserName(title: BrowserText.text("rename"), initial: row.label, command: rename.command,
+                params: rename.params.mapValues(\.value), rowID: row.id)
+        case .newFolder:
+            guard let browser = row.browser, let folder = browser.folder, let component = browser.component else { return }
+            var params: [String: Any] = ["component": component, "folder": folder]
+            if let key = browser.key { params["items"] = [key] }
+            askBrowserName(title: BrowserText.text("new_folder"), initial: "", command: "browser.group", params: params, rowID: row.id)
+        case .moveToFolder:
+            guard let item = browserMenu(row).children.first(where: { $0.title == BrowserText.text("move_to_folder") }) else { return }
+            // The swipe button disappears when editing ends; anchor to the row.
+            let anchor: UIView = visibleRows.firstIndex(where: { $0.id == row.id }).flatMap { table.cellForRow(at: IndexPath(row: $0, section: 1)) } ?? source
+            showBrowserActions(row, source: anchor, menu: BrowserActionMenu(title: item.title, children: item.children))
+        }
+    }
+
+    private func confirmBrowserDelete(_ row: WorkspaceRow) {
+        guard browserCanChange, presentedViewController == nil, let target = browserDeleteTarget(row), let context = state else { return }
+        func show(_ impact: BrowserDeleteImpact?) {
+            guard self.presentedViewController == nil,
+                  let current = self.currentBrowserRow(row.id, document: context.document_id, revision: context.geometry_revision),
+                  self.browserDeleteTarget(current) == target else { return }
+            var message = BrowserText.text("delete_warning").replacingOccurrences(of: "{name}", with: self.browserName(current))
+            if let impact {
+                if !impact.deleted.isEmpty { message += "\n\n" + ModellingText.text("deleted_dependents") + "\n" + impact.deleted.joined(separator: "\n") }
+                if !impact.would_fail.isEmpty { message += "\n\n" + ModellingText.text("failing_dependents") + "\n" + impact.would_fail.joined(separator: "\n") }
+                if !impact.deleted_joints.isEmpty { message += "\n\n" + BrowserText.text("deleted_joints").replacingOccurrences(of: "{count}", with: String(impact.deleted_joints.count)) }
+                if !impact.skipped.isEmpty { message += "\n\n" + impact.skipped.joined(separator: "\n") }
+            }
+            let title = row.kind == "folder" ? BrowserText.text("remove_folder") : NativeText.value("ui.delete")
+            let alert = UIAlertController(title: title + ": " + self.browserName(current), message: message, preferredStyle: .alert)
+            let confirm = { [weak self] in
+                guard let self, let current = self.currentBrowserRow(row.id, document: context.document_id, revision: context.geometry_revision),
+                      self.browserDeleteTarget(current) == target else { return }
+                self.run(target.command, params: target.parameters.mapValues(\.value))
+            }
+#if DEBUG
+            self.browserDeleteConfirmation = confirm
+#endif
+            alert.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
+            alert.addAction(UIAlertAction(title: title, style: .destructive) { _ in confirm() })
+            self.present(alert, animated: true)
+        }
+        if case .folder = target { show(nil) }
+        else {
+            session.browserDeleteImpact(target.parameters.mapValues(\.value)) { [weak self] result in
+                guard let self, self.currentBrowserRow(row.id, document: context.document_id, revision: context.geometry_revision) != nil else { return }
+                switch result {
+                case .success(let impact): show(impact)
+                case .failure(let error): self.showFailure(error)
+                }
+            }
+        }
+    }
+
     private func currentBrowserRow(_ id: String, document: String?, revision: UInt64?) -> WorkspaceRow? {
         guard browserCanChange, state?.document_id == document, state?.geometry_revision == revision else { return nil }
         return rowByID[id]
@@ -1398,12 +1510,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             return !value.isEmpty && value.utf8.count <= 128
         }
         alert.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
-        let save = UIAlertAction(title: BrowserText.text("save"), style: .default) { [weak self, weak alert] _ in
+        let submit = { [weak self, weak alert] in
             guard let self, self.currentBrowserRow(rowID, document: document, revision: revision) != nil,
                   let name = alert?.textFields?.first?.text?.trimmingCharacters(in: .whitespacesAndNewlines), valid(name) else { return }
             var values = params; values["name"] = name
             self.run(command, params: values)
         }
+#if DEBUG
+        browserNameSubmission = submit
+#endif
+        let save = UIAlertAction(title: BrowserText.text("save"), style: .default) { _ in submit() }
         save.isEnabled = valid(initial)
         alert.textFields?.first?.addAction(UIAction { [weak save] action in
             guard let field = action.sender as? UITextField else { return }
@@ -3521,6 +3637,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.canvas.historyGesturesEnabled, forKey: "SolidCraft.workspace.historyGestures")
             self.rebuildMenus()
         }
+        let browserSwipes = UIAction(title: BrowserText.text("swipe_actions"), subtitle: BrowserText.text("swipe_actions_help"), state: browserSwipesEnabled ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.table.setEditing(false, animated: true)
+            self.browserSwipesEnabled.toggle()
+            UserDefaults.standard.set(self.browserSwipesEnabled, forKey: BrowserSwipeActions.preferenceKey)
+            self.rebuildMenus()
+        }
         let immediateSketchEdit = UIAction(title: WorkspaceStyle.text("edit_sketch_on_history_selection"),
             subtitle: WorkspaceStyle.text("edit_sketch_on_history_selection_help"), state: editSketchOnHistorySelection ? .on : .off) { [weak self] _ in
             guard let self else { return }
@@ -3647,7 +3770,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, immediateSketchEdit, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -6711,6 +6834,10 @@ private extension FoundationController {
                       let row = self.visibleRows.first(where: { $0.id == "body:Post" }), let button = eye(row) else {
                     print("Browser check FAIL: browser or eye unavailable"); return
                 }
+                if ProcessInfo.processInfo.arguments.contains("--browser-swipes-check") {
+                    self.checkBrowserSwipesOnDevice(capture: capture)
+                    return
+                }
                 if ProcessInfo.processInfo.arguments.contains("--browser-actions-check") {
                     self.checkBrowserActionsOnDevice(row, source: self.table.cellForRow(at: IndexPath(row: self.visibleRows.firstIndex(where: { $0.id == row.id }) ?? 0, section: 1)), capture: capture)
                     return
@@ -6753,6 +6880,193 @@ private extension FoundationController {
             }
         }
         session.command("browser.group", params: ["folder": "bodies", "name": "Frame", "items": ["Base"]])
+    }
+
+    /// Actual delegate configurations and public UIKit handlers on a disposable
+    /// fixture. Physical finger swipes remain separate from these handler calls.
+    private func checkBrowserSwipesOnDevice(capture: @escaping (String) -> Void) {
+        let started = Date().timeIntervalSince1970
+        let savedPreference = UserDefaults.standard.object(forKey: BrowserSwipeActions.preferenceKey)
+        let savedEnabled = browserSwipesEnabled
+        var issues: [String] = [], screenshots: [String] = []
+        var finished = false
+        browserSwipesEnabled = true
+        rebuildMenus()
+        func check(_ value: Bool, _ message: String) { if !value { issues.append(message) } }
+        func shot(_ name: String) {
+            capture("swipes-" + name)
+            screenshots.append("browser-check-swipes-" + name + ".png")
+        }
+        func finish() {
+            guard !finished else { return }; finished = true
+            self.browserDeleteConfirmation = nil; self.browserNameSubmission = nil
+            self.browserSwipesEnabled = savedEnabled
+            if let savedPreference { UserDefaults.standard.set(savedPreference, forKey: BrowserSwipeActions.preferenceKey) }
+            else { UserDefaults.standard.removeObject(forKey: BrowserSwipeActions.preferenceKey) }
+            self.rebuildMenus()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "started_at": started,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "screenshots": screenshots, "input": "real swipe delegate configurations and UIContextualAction handlers; physical finger swipes unverified"]
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("browser-swipes-check.json"), options: .atomic)
+            } catch { print("Browser swipes check FAIL: \(error)"); return }
+            print("Browser swipes check \(issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")); complete")
+        }
+        func wait(_ label: String, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+            let deadline = Date().addingTimeInterval(30)
+            func poll() {
+                guard !finished else { return }
+                if ready() { self.view.layoutIfNeeded(); next(); return }
+                if Date() >= deadline { issues.append("timeout: " + label); finish(); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: poll)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: poll)
+        }
+        func invoke(_ id: String, leading: Bool, title: String) -> UIContextualAction? {
+            guard let index = self.visibleRows.firstIndex(where: { $0.id == id }) else { issues.append("missing row: " + id); finish(); return nil }
+            let path = IndexPath(row: index, section: 1)
+            self.table.scrollToRow(at: path, at: .middle, animated: false); self.table.layoutIfNeeded()
+            let config = leading ? self.tableView(self.table, leadingSwipeActionsConfigurationForRowAt: path)
+                : self.tableView(self.table, trailingSwipeActionsConfigurationForRowAt: path)
+            guard let config, let action = config.actions.first(where: { $0.title == title }), let cell = self.table.cellForRow(at: path) else {
+                issues.append("missing swipe: " + title); finish(); return nil
+            }
+            check(!config.performsFirstActionWithFullSwipe, "full swipe bypassed deliberate action choice")
+            var completed: Bool?
+            action.handler(action, cell) { completed = $0 }
+            check(completed == (action.style != .destructive), "swipe completion prematurely removed a row")
+            return action
+        }
+        func submitName(_ value: String, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+            wait("name form", until: { self.presentedViewController is UIAlertController }) {
+                guard let alert = self.presentedViewController as? UIAlertController, let field = alert.textFields?.first,
+                      let submit = self.browserNameSubmission else { issues.append("missing name submission"); finish(); return }
+                field.text = " "; field.sendActions(for: .editingChanged)
+                check(alert.actions.last?.isEnabled == false, "blank name could be saved")
+                field.text = value; field.sendActions(for: .editingChanged)
+                check(alert.actions.last?.isEnabled == true, "valid name could not be saved")
+                shot(value == "Swipe Post" ? "rename" : "new-folder")
+                alert.dismiss(animated: false) { [alert] in
+                    check(alert.textFields?.first?.text == value, "name form lost input")
+                    submit()
+                    wait("saved name", until: { self.pending.isEmpty && ready() }, then: next)
+                }
+            }
+        }
+        func confirmDelete(then next: @escaping () -> Void) {
+            wait("delete confirmation", until: { self.presentedViewController is UIAlertController && self.browserDeleteConfirmation != nil }) {
+                guard let alert = self.presentedViewController as? UIAlertController,
+                      let confirm = self.browserDeleteConfirmation else { issues.append("missing delete confirmation"); finish(); return }
+                check(alert.actions.contains { $0.style == .destructive }, "deletion lost its destructive confirmation")
+                self.browserDeleteConfirmation = nil
+                alert.dismiss(animated: false) { confirm(); next() }
+            }
+        }
+        func undo(until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+            self.run("edit.undo"); wait("undo", until: { self.pending.isEmpty && ready() }, then: next)
+        }
+        let deleteTitle = NativeText.value("ui.delete"), postID = "body:Swipe Post"
+        func checkSketchDeletion() {
+            guard let sketch = self.state?.rows.first(where: { $0.kind == "sketch" }) else { issues.append("missing sketch"); finish(); return }
+            let bodyIDs = Set((self.state?.rows ?? []).filter { $0.kind == "body" }.map(\.id))
+            guard invoke(sketch.id, leading: false, title: deleteTitle) != nil else { return }
+            wait("sketch dependency warning", until: { self.presentedViewController is UIAlertController }) {
+                guard let alert = self.presentedViewController as? UIAlertController else { finish(); return }
+                check(alert.message?.contains(ModellingText.text("deleted_dependents")) == true, "sketch deletion omitted dependent features")
+                shot("sketch-warning")
+                confirmDelete {
+                    wait("sketch deleted", until: { self.pending.isEmpty && self.rowByID[sketch.id] == nil }) {
+                        undo(until: { self.rowByID[sketch.id] != nil && Set((self.state?.rows ?? []).filter { $0.kind == "body" }.map(\.id)) == bodyIDs }) {
+                            shot("sketch-restored"); finish()
+                        }
+                    }
+                }
+            }
+        }
+        func checkBodyDeletion() {
+            self.session.selectEntity(["type": "body", "name": "Base"], additive: false) { result in
+                guard case .success = result else { issues.append("could not select unrelated body"); finish(); return }
+                let revision = self.state?.geometry_revision
+                guard invoke(postID, leading: false, title: deleteTitle) != nil else { return }
+                wait("body warning", until: { self.presentedViewController is UIAlertController }) {
+                    check(self.rowByID[postID] != nil && self.state?.geometry_revision == revision, "dry run deleted or changed the body")
+                    shot("delete-cancel")
+                    self.presentedViewController?.dismiss(animated: false) {
+                        check(self.rowByID[postID] != nil, "Cancel deleted the body")
+                        guard invoke(postID, leading: false, title: deleteTitle) != nil else { return }
+                        confirmDelete {
+                            wait("body deleted", until: { self.pending.isEmpty && self.rowByID[postID] == nil }) {
+                                check(self.rowByID["body:Base"] != nil, "deletion removed the unrelated selected body")
+                                shot("deleted")
+                                undo(until: { self.rowByID[postID] != nil }) {
+                                    self.run("edit.redo")
+                                    wait("redo body deletion", until: { self.pending.isEmpty && self.rowByID[postID] == nil }) {
+                                        undo(until: { self.rowByID[postID] != nil }, then: checkSketchDeletion)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        func checkFolderRemoval() {
+            guard let folder = self.state?.rows.first(where: { $0.kind == "folder" && $0.label == "Frame" }),
+                  invoke(folder.id, leading: false, title: BrowserText.text("remove_folder")) != nil else { issues.append("missing custom folder"); finish(); return }
+            confirmDelete {
+                wait("folder removed", until: { self.pending.isEmpty && self.rowByID[folder.id] == nil }) {
+                    check(self.rowByID[postID] != nil && self.rowByID["body:Base"] != nil, "folder removal deleted items")
+                    undo(until: { self.rowByID[folder.id] != nil }) {
+                        shot("folder-restored"); checkBodyDeletion()
+                    }
+                }
+            }
+        }
+        func moveToFrame() {
+            guard invoke(postID, leading: true, title: BrowserText.text("move_to_folder")) != nil else { return }
+            wait("folder picker", until: { self.presentedViewController is UINavigationController }) {
+                guard let navigation = self.presentedViewController as? UINavigationController,
+                      let picker = navigation.topViewController as? BrowserActionController,
+                      let index = picker.menu.children.firstIndex(where: { $0.title == "Frame" }),
+                      let folder = self.state?.rows.first(where: { $0.kind == "folder" && $0.label == "Frame" }) else {
+                    issues.append("missing existing folder destination"); finish(); return
+                }
+                check(self.keyboardTop == nil && !self.textEntryActive, "folder picker summoned keyboard")
+                shot("move")
+                picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: index, section: 0))
+                wait("item moved", until: { self.pending.isEmpty && self.rowByID[postID]?.parent_id == folder.id && self.presentedViewController == nil }) {
+                    shot("moved"); checkFolderRemoval()
+                }
+            }
+        }
+        guard let index = visibleRows.firstIndex(where: { $0.id == "body:Post" }) else { issues.append("missing Post fixture"); finish(); return }
+        let path = IndexPath(row: index, section: 1)
+        guard let leading = tableView(table, leadingSwipeActionsConfigurationForRowAt: path),
+              let stale = tableView(table, trailingSwipeActionsConfigurationForRowAt: path)?.actions.first else { issues.append("missing swipe configurations"); finish(); return }
+        check(leading.actions.map(\.title) == [BrowserText.text("rename"), BrowserText.text("new_folder"), BrowserText.text("move_to_folder")], "unexpected right swipe actions")
+        check(stale.style == .destructive, "Delete was not destructive")
+        check(tableView(table, trailingSwipeActionsConfigurationForRowAt: IndexPath(row: 0, section: 0)) == nil, "origin offered Delete")
+        if let preference = moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == BrowserText.text("swipe_actions") }) {
+            preference.performWithSender(moreButton, target: nil)
+            check(!browserSwipesEnabled && !UserDefaults.standard.bool(forKey: BrowserSwipeActions.preferenceKey) &&
+                  tableView(table, leadingSwipeActionsConfigurationForRowAt: path) == nil && tableView(table, trailingSwipeActionsConfigurationForRowAt: path) == nil,
+                  "legacy preference did not disable swipe actions")
+            stale.handler(stale, table) { check(!$0, "disabled stale action remained executable") }
+            moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == BrowserText.text("swipe_actions") })?
+                .performWithSender(moreButton, target: nil)
+        } else { issues.append("missing swipe preference") }
+        guard invoke("body:Post", leading: true, title: BrowserText.text("rename")) != nil else { return }
+        submitName("Swipe Post", until: { self.rowByID[postID] != nil && self.rowByID["body:Post"] == nil }) {
+            stale.handler(stale, self.table) { check(!$0, "stale action accepted a changed model") }
+            check(self.presentedViewController == nil && self.rowByID[postID] != nil, "stale action opened a dialog or deleted an item")
+            guard invoke(postID, leading: true, title: BrowserText.text("new_folder")) != nil else { return }
+            submitName("Swipe folder", until: {
+                guard let folder = self.state?.rows.first(where: { $0.kind == "folder" && $0.label == "Swipe folder" }) else { return false }
+                return self.rowByID[postID]?.parent_id == folder.id
+            }) { shot("grouped"); moveToFrame() }
+        }
     }
 
     /// Production menu presentation on a disposable fixture. Physical holds remain

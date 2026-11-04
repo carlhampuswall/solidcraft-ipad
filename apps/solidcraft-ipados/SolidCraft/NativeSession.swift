@@ -103,6 +103,13 @@ struct ReferenceLabelPresentation: Decodable {
 }
 struct SketchDependents: Decodable { let deleted_with_it: [String]; let would_fail: [String] }
 
+struct BrowserDeleteImpact: Decodable {
+    let deleted: [String]
+    let deleted_joints: [UInt64]
+    let would_fail: [String]
+    let skipped: [String]
+}
+
 struct WorkspaceRow: Decodable {
     let id: String
     let parent_id: String?
@@ -805,6 +812,26 @@ final class NativeSession {
                 guard lifecycle.accepts(ticket) else { return }
                 let result = Result { try JSONDecoder().decode(EngineCommandEnvelope<SketchDependents>.self, from: state.request(data, lane: .engine)).result.command.value }.mapError(BridgeState.error)
                 DispatchQueue.main.async { [weak self] in guard let self, self.alive, lifecycle.accepts(ticket) else { return }; completion(result) }
+            }
+        } catch { completion(.failure(BridgeState.error(error))) }
+    }
+
+    /// Query the existing engine delete command without changing selection/history.
+    func browserDeleteImpact(_ params: [String: Any], completion: @escaping (Result<BrowserDeleteImpact, BridgeError>) -> Void) {
+        guard alive, let ticket = lifecycle.ticket else { return }
+        do {
+            var values = params; values["dry_run"] = true
+            let data = try JSONSerialization.data(withJSONObject: ["kind": "command", "command": "selection.delete", "params": values])
+            engine.async { [weak self, state, lifecycle] in
+                guard lifecycle.accepts(ticket) else { return }
+                let result = Result {
+                    try JSONDecoder().decode(EngineCommandEnvelope<BrowserDeleteImpact>.self,
+                        from: state.request(data, lane: .engine)).result.command.value
+                }.mapError(BridgeState.error)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.alive, lifecycle.accepts(ticket) else { return }
+                    completion(result)
+                }
             }
         } catch { completion(.failure(BridgeState.error(error))) }
     }

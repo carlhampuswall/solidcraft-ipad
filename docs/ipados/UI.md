@@ -457,6 +457,23 @@ Native presentation preferences use UserDefaults keys
 
 ## Presentation mapping and browser
 
+Swipe left on a body, sketch, construction feature, component, occurrence or joint
+to reveal **Delete**. The existing engine dry run reports dependent features and
+connected joints before confirmation; Cancel leaves the design intact, and Undo
+restores a confirmed deletion. Removing a custom folder keeps its items. The
+document root, origin references and built-in folders cannot be deleted.
+Swipe right for **Rename**, **New folder** and **Move to folder**, according to the
+row's existing capabilities. Creating a folder from an item places that item in
+the new folder. Full swipes do not automatically run an action. Commands retain
+their native history and reject actions from an older document/model revision.
+Changes a default: yes — **Tools → Swipe model items** is enabled; disabling it
+restores the previous browser gestures (`SolidCraft.workspace.browserSwipeActions`).
+The disposable DEBUG `--browser-swipes-check` invokes the actual UIKit swipe
+configurations and handlers, verifies name validation, folder creation/movement,
+folder removal with contents retained, body/sketch deletion, Cancel, Undo/Redo,
+stale actions and the preference. It writes `browser-swipes-check.json` and
+`browser-check-swipes-*.png`; these calls do not verify physical finger swipes.
+
 The Model browser shows bodies, sketches, construction geometry, components,
 joints and folders. Modelling operations such as Extrude and Fillet appear only
 in feature history by default, including while using Find in model. **Tools >

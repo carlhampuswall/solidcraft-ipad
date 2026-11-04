@@ -7,6 +7,7 @@ trap 'rm -rf "$check_dir"' EXIT HUP INT TERM
 xcrun --sdk macosx swiftc \
   -module-cache-path "$check_dir/module-cache" \
   "$script_dir/../SolidCraft/WorkspaceLayout.swift" \
+  "$script_dir/../SolidCraft/BrowserSwipeActions.swift" \
   "$script_dir/../SolidCraft/ModellingFormPresentation.swift" \
   "$script_dir/../SolidCraft/ProjectLibrary.swift" \
   "$script_dir/workspace-check.swift" \

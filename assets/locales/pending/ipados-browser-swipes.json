@@ -1,0 +1,8 @@
+{
+  "en": {
+    "ui.ipados.browser.delete_warning": "Delete “{name}”? You can restore it with Undo.",
+    "ui.ipados.browser.deleted_joints": "Connected joints removed: {count}",
+    "ui.ipados.browser.swipe_actions": "Swipe model items",
+    "ui.ipados.browser.swipe_actions_help": "Swipe left to delete; swipe right to rename, create a folder or move to a folder."
+  }
+}

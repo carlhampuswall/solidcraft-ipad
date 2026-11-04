@@ -8,6 +8,46 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        try require(BrowserSwipeActions.enabled(nil) && BrowserSwipeActions.enabled(true) && !BrowserSwipeActions.enabled(false),
+                    "browser swipes lost their default or legacy preference")
+        try require(BrowserSwipeActions.leading(enabled: true, available: true, rename: true, folder: true, item: true) == [.rename, .newFolder, .moveToFolder],
+                    "body/sketch swipes lost rename, grouping or existing-folder movement")
+        try require(BrowserSwipeActions.leading(enabled: true, available: true, rename: false, folder: true, item: false) == [.newFolder],
+                    "built-in folders offered rename or item movement")
+        try require(BrowserSwipeActions.leading(enabled: true, available: true, rename: true, folder: false, item: false) == [.rename],
+                    "an ungroupable row offered folder actions")
+        for enabled in [false, true] {
+            for available in [false, true] where !enabled || !available {
+                try require(BrowserSwipeActions.leading(enabled: enabled, available: available, rename: true, folder: true, item: true).isEmpty &&
+                            BrowserSwipeActions.trailing(enabled: enabled, available: available, target: .body("Post")).isEmpty,
+                            "disabled swipes or a competing edit still exposed actions")
+            }
+        }
+        func deletion(_ kind: String, type: String? = nil, name: String? = nil, feature: UInt64? = nil, path: [UInt64]? = nil,
+                      component: UInt64? = nil, joint: UInt64? = nil, group: UInt64? = nil) -> BrowserDeleteTarget? {
+            BrowserDeleteTarget.resolve(kind: kind, entityType: type, name: name, feature: feature, path: path, component: component, joint: joint, group: group)
+        }
+        try require(deletion("body", type: "body", name: "Post") == .body("Post") &&
+                    deletion("sketch", type: "feature", feature: 7) == .feature(7) &&
+                    deletion("feature", type: "feature", feature: 9) == .feature(9) &&
+                    deletion("occurrence", type: "occurrence", path: [3, 8]) == .occurrence([3, 8]) &&
+                    deletion("component", component: 4) == .component(4) && deletion("joint", joint: 6) == .joint(6) &&
+                    deletion("folder", group: 5) == .folder(5), "swipe deletion lost a supported row identity")
+        for target in [deletion("component", component: 0), deletion("folder"), deletion("body", type: "face", name: "Post"),
+                       deletion("occurrence", type: "occurrence", path: []), deletion("origin", type: "feature", feature: 7), deletion("sketch")] {
+            try require(target == nil && BrowserSwipeActions.trailing(enabled: true, available: true, target: target).isEmpty,
+                        "the document root, origin, built-in folder or incomplete row offered Delete")
+        }
+        try require(BrowserDeleteTarget.body("Post").parameters == ["items": .array([.object(["type": .string("body"), "name": .string("Post")])])],
+                    "body deletion depended on the unrelated current selection")
+        try require(BrowserDeleteTarget.feature(7).parameters == ["items": .array([.object(["type": .string("feature"), "id": .unsignedInteger(7)])])],
+                    "sketch deletion lost its exact feature identity")
+        try require(BrowserDeleteTarget.occurrence([3, 8]).parameters == ["items": .array([.object(["type": .string("occurrence"), "path": .array([.unsignedInteger(3), .unsignedInteger(8)])])])],
+                    "nested occurrence deletion lost its complete placement path")
+        try require(BrowserDeleteTarget.component(4).parameters == ["components": .array([.unsignedInteger(4)])] &&
+                    BrowserDeleteTarget.joint(6).parameters == ["joints": .array([.unsignedInteger(6)])], "assembly deletion lost its command targets")
+        try require(BrowserDeleteTarget.folder(5).command == "browser.ungroup" && BrowserDeleteTarget.folder(5).parameters == ["group": .unsignedInteger(5)] &&
+                    BrowserDeleteTarget.body("Post").command == "selection.delete", "removing a folder would delete its contents")
         try require(!SketchHeaderAction.immediateEditing(nil) && !SketchHeaderAction.immediateEditing(false) &&
                     SketchHeaderAction.immediateEditing(true), "sketch selection lost explicit editing or its legacy preference")
         try require(SketchHeaderAction.resolve(inSketch: false, selection: [7], sketches: [7, 8], available: true) == .edit(7),
