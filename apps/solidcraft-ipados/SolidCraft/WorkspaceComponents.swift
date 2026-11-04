@@ -1,3 +1,4 @@
+import CoreText
 import UIKit
 
 enum BrowserText {
@@ -187,6 +188,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         super.init(frame: frame)
         accessibilityIdentifier = "workspace-feature-history"
         toggle.artwork("rollback")
+        toggle.centerIconAndTitleVertically()
         toggle.titleLabel?.numberOfLines = 1
         toggle.accessibilityIdentifier = "workspace-feature-history-toggle"
         addSubview(toggle); addSubview(transport); addSubview(scroll)
@@ -623,6 +625,7 @@ final class WorkspaceButton: UIButton {
     private var commandID: String?
     private var systemIcon: String?
     private var compactIcon = false
+    private var verticallyCenteredContent = false
     private var choiceCheck: UIImageView?
     private var isHistoryAction: Bool {
         iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"
@@ -673,6 +676,11 @@ final class WorkspaceButton: UIButton {
     func systemArtwork(_ name: String, compact: Bool = false) {
         iconID = nil; commandID = nil; systemIcon = name; compactIcon = compact; refreshIcon()
     }
+    func centerIconAndTitleVertically() {
+        verticallyCenteredContent = true
+        contentVerticalAlignment = .center
+        refreshIcon()
+    }
     private func refreshIcon() {
         // The Rust guide is the visible dot. Keep only its accessible touch target.
         guard !isViewportPoint else { return }
@@ -685,12 +693,31 @@ final class WorkspaceButton: UIButton {
         config?.image = isHistoryAction ? image?.withRenderingMode(.alwaysTemplate) : image
         config?.imagePadding = compactIcon ? 0 : 8
         config?.title = compactIcon && image != nil ? nil : fullTitle
-        config?.contentInsets = NSDirectionalEdgeInsets(top: compactIcon ? 8 : 10, leading: 8, bottom: compactIcon ? 8 : 10, trailing: 8)
+        let verticalInset: CGFloat = compactIcon || verticallyCenteredContent ? 8 : 10
+        config?.contentInsets = NSDirectionalEdgeInsets(top: verticalInset, leading: 8, bottom: verticalInset, trailing: 8)
         configuration = config
         accessibilityLabel = fullTitle
         largeContentImage = image
         if choiceCheck != nil { styleChoice() }
         setNeedsUpdateConfiguration()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        guard verticallyCenteredContent else { return }
+        let middle = CGPoint(x: bounds.midX, y: bounds.midY)
+        if let image = imageView, let parent = image.superview {
+            image.center.y = convert(middle, to: parent).y
+        }
+        guard let label = titleLabel, let parent = label.superview, let font = label.font,
+              label.bounds.height > 0 else { return }
+        let title = label.attributedText ?? NSAttributedString(string: fullTitle, attributes: [.font: font])
+        let ink = CTLineGetBoundsWithOptions(CTLineCreateWithAttributedString(title), .useGlyphPathBounds)
+        guard !ink.isEmpty, !ink.isNull, ink.midY.isFinite else { return }
+        // Centre the visible glyphs rather than the font's extra ascender space.
+        let text = label.textRect(forBounds: label.bounds, limitedToNumberOfLines: 1)
+        let inkMiddle = label.convert(CGPoint(x: label.bounds.midX, y: text.minY + font.ascender - ink.midY), to: parent)
+        label.center.y += convert(middle, to: parent).y - inkMiddle.y
     }
 
     override func updateConfiguration() {
