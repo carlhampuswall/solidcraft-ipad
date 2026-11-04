@@ -6939,8 +6939,12 @@ private extension FoundationController {
             check(completed == (action.style != .destructive), "swipe completion prematurely removed a row")
             return action
         }
+        func alertReady() -> Bool {
+            guard let alert = self.presentedViewController as? UIAlertController else { return false }
+            return !alert.isBeingPresented && alert.viewIfLoaded?.window != nil
+        }
         func submitName(_ value: String, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
-            wait("name form", until: { self.presentedViewController is UIAlertController }) {
+            wait("name form", until: alertReady) {
                 guard let alert = self.presentedViewController as? UIAlertController, let field = alert.textFields?.first,
                       let submit = self.browserNameSubmission else { issues.append("missing name submission"); finish(); return }
                 field.text = " "; field.sendActions(for: .editingChanged)
@@ -6956,7 +6960,7 @@ private extension FoundationController {
             }
         }
         func confirmDelete(then next: @escaping () -> Void) {
-            wait("delete confirmation", until: { self.presentedViewController is UIAlertController && self.browserDeleteConfirmation != nil }) {
+            wait("delete confirmation", until: { alertReady() && self.browserDeleteConfirmation != nil }) {
                 guard let alert = self.presentedViewController as? UIAlertController,
                       let confirm = self.browserDeleteConfirmation else { issues.append("missing delete confirmation"); finish(); return }
                 check(alert.actions.contains { $0.style == .destructive }, "deletion lost its destructive confirmation")
@@ -6972,7 +6976,7 @@ private extension FoundationController {
             guard let sketch = self.state?.rows.first(where: { $0.kind == "sketch" }) else { issues.append("missing sketch"); finish(); return }
             let bodyIDs = Set((self.state?.rows ?? []).filter { $0.kind == "body" }.map(\.id))
             guard invoke(sketch.id, leading: false, title: deleteTitle) != nil else { return }
-            wait("sketch dependency warning", until: { self.presentedViewController is UIAlertController }) {
+            wait("sketch dependency warning", until: alertReady) {
                 guard let alert = self.presentedViewController as? UIAlertController else { finish(); return }
                 check(alert.message?.contains(ModellingText.text("deleted_dependents")) == true, "sketch deletion omitted dependent features")
                 shot("sketch-warning")
@@ -6990,7 +6994,7 @@ private extension FoundationController {
                 guard case .success = result else { issues.append("could not select unrelated body"); finish(); return }
                 let revision = self.state?.geometry_revision
                 guard invoke(postID, leading: false, title: deleteTitle) != nil else { return }
-                wait("body warning", until: { self.presentedViewController is UIAlertController }) {
+                wait("body warning", until: alertReady) {
                     check(self.rowByID[postID] != nil && self.state?.geometry_revision == revision, "dry run deleted or changed the body")
                     shot("delete-cancel")
                     self.presentedViewController?.dismiss(animated: false) {
@@ -7026,7 +7030,7 @@ private extension FoundationController {
         }
         func moveToFrame() {
             guard invoke(postID, leading: true, title: BrowserText.text("move_to_folder")) != nil else { return }
-            wait("folder picker", until: { self.presentedViewController is UINavigationController }) {
+            wait("folder picker", until: { self.presentedViewController is UINavigationController && self.presentedViewController?.isBeingPresented == false && self.presentedViewController?.viewIfLoaded?.window != nil }) {
                 guard let navigation = self.presentedViewController as? UINavigationController,
                       let picker = navigation.topViewController as? BrowserActionController,
                       let index = picker.menu.children.firstIndex(where: { $0.title == "Frame" }),
