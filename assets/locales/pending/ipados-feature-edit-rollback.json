@@ -1,0 +1,6 @@
+{
+  "en": {
+    "ui.ipados.workspace.rollback_feature_editing": "Roll back history while editing",
+    "ui.ipados.workspace.rollback_feature_editing_help": "Show the feature at its place in history, then rebuild through the latest feature when finished."
+  }
+}

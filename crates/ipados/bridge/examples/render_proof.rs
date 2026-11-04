@@ -608,6 +608,39 @@ fn history_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     if solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)? != plain {
         return Err("clearing history selection did not restore the original rendering".into());
     }
+    let capture = |view: &Viewport, label: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("feature editing scene unavailable")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-edit-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("history feature edit {label}: {path}");
+        Ok(())
+    };
+    let base = *features.first().ok_or("base feature unavailable")?;
+    let edit = engine.begin_model(90, None, Some(base), &[])?;
+    view.begin_model(edit.clone())?;
+    if view.snapshot().ok_or("rollback scene")?.model.body_count != 1 {
+        return Err("opening the base feature did not hide its downstream geometry".into());
+    }
+    capture(&view, "begin")?;
+    let mut params = edit.params.clone();
+    params["height"] = json!("14 mm");
+    let preview = engine.prepare_model(&edit, params.clone(), false)?;
+    if preview.model.body_count != 1 || (preview.model.volume_mm3 - 16_800.).abs() > 1e-6 {
+        return Err("feature preview included downstream geometry".into());
+    }
+    view.publish_model(90, &preview)?;
+    capture(&view, "preview")?;
+    view.finish_model(90, None)?;
+    capture(&view, "cancel")?;
+    let edit = engine.begin_model(91, None, Some(base), &[])?;
+    view.begin_model(edit.clone())?;
+    let prepared = engine.prepare_model(&edit, params, true)?;
+    view.finish_model(91, Some(engine.accept_model(&edit, prepared)?))?;
+    if view.snapshot().ok_or("completed scene")?.model.body_count != 2 || engine.modelling_workspace()["position"] != features.len() {
+        return Err("Apply did not restore the latest feature".into());
+    }
+    capture(&view, "applied")?;
     Ok(())
 }
 

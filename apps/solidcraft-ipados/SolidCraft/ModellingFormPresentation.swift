@@ -4,6 +4,16 @@ import Foundation
 /// These helpers choose controls and edit lists; they do not interpret CAD semantics.
 enum ModellingFormPresentation {
     static let automaticExtrudeDepthKey = "SolidCraft.workspace.automaticExtrudeDepth"
+    static let rollbackEditingKey = "SolidCraft.workspace.rollbackFeatureEditing"
+
+    static func rollbackEditing(_ stored: Bool?) -> Bool { stored ?? true }
+
+    static func sketchEditParameters(_ params: [String: Any], rollback: Bool) -> [String: Any] {
+        guard rollback else { return params }
+        var result = params
+        result["restore_marker"] = NSNull()
+        return result
+    }
 
     static func automaticallyPreviews(selectionField: String?) -> Bool {
         guard let selectionField else { return true }

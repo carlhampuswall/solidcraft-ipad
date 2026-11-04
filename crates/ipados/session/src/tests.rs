@@ -1349,7 +1349,8 @@ fn history_navigation_keeps_native_edits_undoable_and_new_edits_clear_redo() {
     let (mut adapter, _, _, extrude) = modelling_plate(40., "10 mm");
     let undo = adapter.session.undo.len();
     adapter.execute("timeline.roll_to", json!({"position":1})).unwrap();
-    let edit = adapter.begin_model(819, None, Some(extrude), &[]).unwrap();
+    // The legacy preference preserves the manually chosen history position.
+    let edit = adapter.begin_model_with_rollback(819, None, Some(extrude), &[], false).unwrap();
     let mut params = edit.params.clone();
     params["extent"]["distance"] = json!("20 mm");
     modelling_commit(&mut adapter, &edit, params);
@@ -1392,16 +1393,41 @@ fn history_rollback_displays_each_stage_and_rebuilds_all_downstream_features_aft
     adapter.execute("timeline.roll_to", json!({"position":2})).unwrap();
     assert_eq!(adapter.workspace(&[], false, false)["modelling"]["position"], 2);
     assert!((adapter.snapshot().unwrap().volume_mm3 - 12_000.).abs() < 1e-6);
-    // Use the same provisional edit/Apply path as the native inspector while
-    // the later fillet and pattern remain behind the marker.
+    // The inspector temporarily shows only the feature being edited, then
+    // rebuilds the fillet and pattern through the latest feature on Apply.
     let edit = adapter.begin_model(818, None, Some(extrude), &[]).unwrap();
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800., 600., 2.)).unwrap();
+    viewport.begin_update(1);
+    assert!(viewport.install(1, adapter.snapshot().unwrap()));
+    viewport.begin_model(edit.clone()).unwrap();
+    assert!((viewport.snapshot().unwrap().model.volume_mm3 - 12_000.).abs() < 1e-6);
+    assert_eq!(adapter.workspace_with_model(&[], false, true, Some(&edit))["modelling"]["position"], 2);
+    assert_eq!(adapter.session.doc.marker, Some(2), "opening the form never moves the authoritative marker");
     let mut params = edit.params.clone();
     params["extent"]["distance"] = json!("20 mm");
+    let preview = adapter.prepare_model(&edit, params.clone(), false).unwrap();
+    assert!((preview.model.volume_mm3 - 24_000.).abs() < 1e-6, "the preview must exclude the fillet and pattern");
+    viewport.publish_model(818, &preview).unwrap();
+    viewport.finish_model(818, None).unwrap();
+    assert!((viewport.snapshot().unwrap().model.volume_mm3 - 12_000.).abs() < 1e-6, "Cancel restores the original view");
+    // The preference preserves the previous preview and marker behavior.
+    let legacy = adapter.begin_model_with_rollback(819, None, Some(extrude), &[], false).unwrap();
+    assert!(legacy.repair_source.is_none());
+    assert!((adapter.prepare_model(&legacy, params.clone(), true).unwrap().model.volume_mm3 - 24_000.).abs() < 1e-6);
+    let history = adapter.session.undo.len();
     let edited = modelling_commit(&mut adapter, &edit, params);
-    assert_eq!(adapter.session.doc.marker, Some(2));
-    assert!((edited.volume_mm3 - 24_000.).abs() < 1e-6);
+    let expected_edited = 2. * (24_000. - corner_loss * 20.);
+    assert_eq!(adapter.session.doc.marker, None);
+    assert_eq!(adapter.session.undo.len(), history + 1, "Apply creates one undo step");
+    assert!((edited.volume_mm3 - expected_edited).abs() < expected_edited * 5e-4);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.marker, None, "Undo must not leave the temporary marker");
+    assert!((adapter.snapshot().unwrap().volume_mm3 - expected_original).abs() < expected_original * 5e-4);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((adapter.snapshot().unwrap().volume_mm3 - expected_edited).abs() < expected_edited * 5e-4);
     let mut loaded = modelling_roundtrip(&adapter);
-    assert_eq!(loaded.session.doc.marker, Some(2), "native save/reopen retains the viewing position and future features");
+    assert_eq!(loaded.session.doc.marker, None, "native save/reopen retains the completed timeline");
     for engine in [&mut adapter, &mut loaded] {
         let mut view = Viewport::default();
         view.set_metrics(metrics(800., 600., 2.)).unwrap();
@@ -1427,6 +1453,33 @@ fn history_rollback_displays_each_stage_and_rebuilds_all_downstream_features_aft
             assert_eq!(engine.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), ids);
         }
     }
+}
+
+#[test]
+fn history_sketch_edit_temporarily_rolls_back_and_finishes_at_latest_with_one_undo_step() {
+    let (mut adapter, sketch, width, extrude) = modelling_plate(40., "10 mm");
+    adapter.execute("solid.box", json!({"corner":[80,0,0],"length":2,"width":3,"height":4,"body_name":"Later","operation":"new"})).unwrap();
+    let ids: Vec<_> = adapter.session.doc.features.iter().map(|feature| feature.id).collect();
+    let history = adapter.session.undo.len();
+    adapter.execute("sketch.edit", json!({"sketch":sketch,"restore_marker":null})).unwrap();
+    assert_eq!(adapter.session.doc.marker, Some(1));
+    assert_eq!(adapter.snapshot().unwrap().body_count, 0, "downstream solids must disappear while editing their sketch");
+    numeric_apply(&mut adapter, &[Sel::SketchConstraint { id: width.clone() }], None, "60 mm");
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.marker, None);
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 18_024.).abs() < 1e-6);
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert_eq!(adapter.session.doc.features.iter().map(|feature| feature.id).collect::<Vec<_>>(), ids);
+    assert!(adapter.session.doc.feature(extrude).is_some());
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.marker, None);
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 12_024.).abs() < 1e-6);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    adapter.execute("sketch.edit", json!({"sketch":sketch,"restore_marker":null})).unwrap();
+    numeric_apply(&mut adapter, &[Sel::SketchConstraint { id: width }], None, "80 mm");
+    adapter.execute("sketch.cancel", json!({})).unwrap();
+    assert_eq!(adapter.session.doc.marker, None);
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 18_024.).abs() < 1e-6, "Cancel restores the latest unchanged model");
 }
 
 #[test]

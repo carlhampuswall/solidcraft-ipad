@@ -673,6 +673,7 @@ final class NativeSession {
     }
 
     func requestModelling(action: String, token: UInt64? = nil, operation: String? = nil, feature: UInt64? = nil,
+                          rollback: Bool? = nil,
                           params: [String: PresentationJSON]? = nil,
                           completion: @escaping (Result<ModellingState, BridgeError>) -> Void) {
         guard alive, let ticket = lifecycle.ticket else { return }
@@ -682,6 +683,7 @@ final class NativeSession {
         if let token { request["token"] = token }
         if let operation { request["operation"] = operation }
         if let feature { request["feature"] = feature }
+        if let rollback { request["rollback"] = rollback }
         if let params { request["params"] = params.mapValues(\.value) }
         do {
             let data = try JSONSerialization.data(withJSONObject: request)

@@ -8,6 +8,13 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        try require(ModellingFormPresentation.rollbackEditing(nil) && ModellingFormPresentation.rollbackEditing(true) &&
+                    !ModellingFormPresentation.rollbackEditing(false), "feature rollback lost its default or legacy preference")
+        let sketchEdit = ModellingFormPresentation.sketchEditParameters(["sketch": UInt64(7)], rollback: true)
+        try require(sketchEdit["sketch"] as? UInt64 == 7 && sketchEdit["restore_marker"] is NSNull,
+                    "sketch editing did not request temporary rollback and restoration to the latest feature")
+        try require(ModellingFormPresentation.sketchEditParameters(["sketch": UInt64(7)], rollback: false)["restore_marker"] == nil,
+                    "legacy sketch editing moved the history marker")
         try require(BrowserSwipeActions.enabled(nil) && BrowserSwipeActions.enabled(true) && !BrowserSwipeActions.enabled(false),
                     "browser swipes lost their default or legacy preference")
         try require(BrowserSwipeActions.leading(enabled: true, available: true, rename: true, folder: true, item: true) == [.rename, .newFolder, .moveToFolder],

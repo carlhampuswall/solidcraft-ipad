@@ -116,6 +116,7 @@ enum Request {
         token: Option<u64>,
         operation: Option<String>,
         feature: Option<u64>,
+        rollback: Option<bool>,
         params: Option<Value>,
     },
     SketchPlane {
@@ -199,14 +200,16 @@ impl Entry {
 
     fn workspace(&self) -> Result<Value, AdapterError> {
         let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
-        let (selection, radius, numeric, input) = {
+        let (selection, radius, numeric, input, edit) = {
             let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
             // Publication can briefly lag the engine worker; never apply old
             // selection identities to a document whose update is still pending.
             let selection = if viewport.is_updating() { Vec::new() } else { viewport.selection().to_vec() };
-            (selection, viewport.radius_tool_active(), viewport.numeric_active() || viewport.model_active(), viewport.diagnostic()["input"].clone())
+            let input = viewport.diagnostic();
+            let edit = input["model_token"].as_u64().and_then(|token| viewport.model_edit(token).ok());
+            (selection, viewport.radius_tool_active(), viewport.numeric_active() || viewport.model_active(), input["input"].clone(), edit)
         };
-        let mut workspace = adapter.workspace(&selection, radius, numeric);
+        let mut workspace = adapter.workspace_with_model(&selection, radius, numeric, edit.as_ref());
         workspace["active_tool"] = input["tool"].clone();
         workspace["input"] = input;
         Ok(workspace)
@@ -286,6 +289,7 @@ impl Entry {
         token: Option<u64>,
         operation: Option<String>,
         feature: Option<u64>,
+        rollback: Option<bool>,
         params: Option<Value>,
     ) -> Result<Value, AdapterError> {
         let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
@@ -316,7 +320,7 @@ impl Entry {
                     + 1;
                 (viewport.selection().to_vec(), token)
             };
-            let mut edit = adapter.begin_model(token, operation.as_deref(), feature, &selection)?;
+            let mut edit = adapter.begin_model_with_rollback(token, operation.as_deref(), feature, &selection, rollback.unwrap_or(true))?;
             if let Some(params) = params {
                 let initial = params.as_object().ok_or_else(|| error("bad_params", "Initial modelling parameters must be an object."))?;
                 let mut merged = edit.params.clone();
@@ -406,7 +410,7 @@ impl Entry {
         if action == "inspect" {
             valid = result["valid"] == true;
         }
-        let mut workspace = adapter.workspace(&selection, radius, numeric);
+        let mut workspace = adapter.workspace_with_model(&selection, radius, numeric, edit.as_ref());
         workspace["active_tool"] = diagnostic["input"]["tool"].clone();
         workspace["input"] = diagnostic["input"].clone();
         result["valid"] = json!(valid);
@@ -431,8 +435,8 @@ impl Entry {
         if let Request::Numeric { action, token, expression, dimension } = request {
             return self.numeric(&action, token, expression, dimension);
         }
-        if let Request::Model { action, token, operation, feature, params } = request {
-            return self.model(&action, token, operation, feature, params);
+        if let Request::Model { action, token, operation, feature, rollback, params } = request {
+            return self.model(&action, token, operation, feature, rollback, params);
         }
         if let Request::SketchPlane { plane } = request {
             let scene = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.diagnostic()["scene_revision"].clone();

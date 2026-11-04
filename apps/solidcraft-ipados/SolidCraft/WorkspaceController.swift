@@ -96,6 +96,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private enum AutomaticModellingSource { case extrude, edges }
     private var historyActivation: (feature: UInt64, document: String)?
     private var editSketchOnHistorySelection = SketchHeaderAction.immediateEditing(UserDefaults.standard.object(forKey: SketchHeaderAction.immediateEditingKey) as? Bool)
+    private var rollbackFeatureEditing = ModellingFormPresentation.rollbackEditing(UserDefaults.standard.object(forKey: ModellingFormPresentation.rollbackEditingKey) as? Bool)
     private var issuingHistoryPlaybackCommand = false
     private var historyPlaybackGeneration: UInt64 = 0
     private var historyPlaybackFrame: (document: String, position: Int, complete: (Bool) -> Void)?
@@ -2018,7 +2019,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         updateAvailability()
         let params = ModellingFormPresentation.initialParameters(operation: operation, feature: feature,
             automatic: fromSelection != nil, legacyDepth: automaticExtrudeDepth, supplied: initialParams)
-        session.requestModelling(action: "begin", operation: operation, feature: feature, params: params) { [weak self] result in
+        session.requestModelling(action: "begin", operation: operation, feature: feature, rollback: rollbackFeatureEditing, params: params) { [weak self] result in
             guard let self, self.modellingGeneration == expected else { return }
             self.modellingStarting = false
             switch result {
@@ -3295,7 +3296,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         guard sketchInput?.projection == nil || command == "tool.cancel" || command.hasPrefix("view.") || command.hasPrefix("select.") else { return }
         historyActivation = nil
         canvas.cancelInput(); failure = nil; lastOperationFeedback = []
-        session.command(command, params: params)
+        let parameters = command == "sketch.edit" ? ModellingFormPresentation.sketchEditParameters(params, rollback: rollbackFeatureEditing) : params
+        session.command(command, params: parameters)
     }
 
     private func showSketchProjection() {
@@ -3652,6 +3654,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.editSketchOnHistorySelection, forKey: SketchHeaderAction.immediateEditingKey)
             self.rebuildMenus()
         }
+        let rollbackEditing = UIAction(title: WorkspaceStyle.text("rollback_feature_editing"),
+            subtitle: WorkspaceStyle.text("rollback_feature_editing_help"),
+            attributes: numericEditing || modellingEditing || state?.sketch != nil ? .disabled : [],
+            state: rollbackFeatureEditing ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.rollbackFeatureEditing.toggle()
+            UserDefaults.standard.set(self.rollbackFeatureEditing, forKey: ModellingFormPresentation.rollbackEditingKey)
+            self.rebuildMenus()
+        }
         let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
             guard let self else { return }
             let enabled = !self.twoFingerTwist
@@ -3771,7 +3782,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()

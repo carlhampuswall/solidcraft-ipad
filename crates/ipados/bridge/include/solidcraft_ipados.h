@@ -79,9 +79,12 @@ int32_t sc_surface_response_copy(uint64_t session, uint8_t *output, size_t capac
  */
 
 /* Step 7 adds engine-lane modelling transactions without C signature changes:
- * {kind:"model",action:"begin",operation?:<native tool id>,feature?:<feature id>}
+ * {kind:"model",action:"begin",operation?:<native tool id>,feature?:<feature id>,rollback?:true}
  * begins a new feature or edits the original document feature. It returns a
  * token, native input/target choices, original expressions and parameters.
+ * Feature edits temporarily display that history stage, with earlier geometry
+ * available for reference picking. Apply rebuilds through the latest feature;
+ * Cancel restores the original view. rollback:false retains full-history editing.
  * {kind:"model",action:"preview"|"commit",token,params:<tool parameters>}
  * evaluates on an upstream scratch session; commit revalidates current document
  * and draft ownership, then accepts one logical undoable action. Preview failure

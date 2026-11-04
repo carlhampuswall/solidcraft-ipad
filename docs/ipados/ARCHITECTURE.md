@@ -236,8 +236,15 @@ Step 7 adds `modelling.rs` presentation forms and `references.rs` strict native
 reference checks at the same platform boundary. The one Session evaluates on
 scratch, and ComputedCommands/accept_commands adopt a prepared operation after
 interaction/version/document validation. The authoritative history marker never
-moves merely to open a form; failed-feature repair displays a scratch upstream
-source state and updates the original feature. Handle work shares the existing
+moves merely to open a form. Feature editing displays a scratch state through
+that feature, or its preceding source state while picking references; previews
+exclude the downstream suffix. Apply uses the existing computed-command marker
+restoration to rebuild through the latest feature in one Undo step. Cancel and
+lifecycle suspension restore the original scene. Sketch editing uses the shared
+`sketch.edit` temporary marker and restores the latest feature on Finish/Cancel.
+The native `rollbackFeatureEditing` preference retains full-history editing.
+Failed-feature repair uses the same scratch source state and original feature.
+Handle work shares the existing
 bounded mailbox, with exact parameter/version checks and explicit confirmation.
 Native file services save/reopen the existing full container in one app-private
 slot. No engine/kernel/document source, format or dependency delta is added.

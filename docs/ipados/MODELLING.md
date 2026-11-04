@@ -60,6 +60,34 @@ section hole counts and coplanar loft sections. These do not require a new kerne
 and do not prevent the supported basic workflows. Arbitrary fillets, shells and
 Booleans are not promised to succeed.
 
+## Editing at a feature's history stage
+
+Opening a feature temporarily displays its place in history. Later features stay
+in the timeline but disappear from the viewport and previews. Reference picking
+uses the geometry immediately before the feature. Apply edits the same feature,
+rebuilds all later features and returns to the latest feature as one Undo step.
+An invalid change keeps the editor open; Cancel restores the original view and
+document. Suspension discards the provisional feature edit and restores its scene.
+Autosave never saves a provisional feature marker or preview.
+
+Editing an existing sketch uses the shared engine's `restore_marker: null`
+contract. Finish or Cancel restores the latest feature; Finish groups the sketch
+changes into one Undo step. Creating a new sketch keeps the current insertion
+position. The **Roll back history while editing** option in the More menu is on
+by default; turn it off to retain the previous full-history editing behavior.
+Its native preference key is `SolidCraft.workspace.rollbackFeatureEditing`.
+
+Changes a default: yes - feature and sketch editing temporarily roll back history;
+the previous behavior remains behind `rollbackFeatureEditing = false`.
+
+The existing GPU history proof also captures feature editing before rollback,
+during preview, after Cancel and after Apply:
+
+```sh
+cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
+  --example render_proof -- /tmp/solidcraft-history.png --history
+```
+
 ## Direct surface-tool controls
 
 The compact inspector uses model picks, a draggable viewport handle and exact

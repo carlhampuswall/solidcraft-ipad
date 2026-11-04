@@ -37,6 +37,7 @@ pub struct ModelEdit {
     pub version: u64,
     pub operation: String,
     pub feature: Option<u64>,
+    pub(crate) rollback: bool,
     pub params: Value,
     pub(crate) selection_field: Option<String>,
     pub(crate) source_selection_changed: bool,
@@ -50,6 +51,7 @@ pub struct ModelEdit {
     pub(crate) handle: Option<ModelHandle>,
     pub(crate) repair_source: Option<Arc<SceneSnapshot>>,
     pub(crate) repair_original: Option<Arc<SceneSnapshot>>,
+    pub(crate) input_source: Option<Arc<SceneSnapshot>>,
     pub reply: Value,
     pub feedback: Vec<String>,
 }
@@ -492,6 +494,17 @@ impl SessionAdapter {
     }
 
     pub fn begin_model(&self, token: u64, operation: Option<&str>, feature: Option<u64>, selection: &[Sel]) -> Result<ModelEdit, AdapterError> {
+        self.begin_model_with_rollback(token, operation, feature, selection, true)
+    }
+
+    pub fn begin_model_with_rollback(
+        &self,
+        token: u64,
+        operation: Option<&str>,
+        feature: Option<u64>,
+        selection: &[Sel],
+        rollback: bool,
+    ) -> Result<ModelEdit, AdapterError> {
         if self.session.active_sketch.is_some() {
             return Err(error("disabled", "Finish the sketch before modelling."));
         }
@@ -523,6 +536,7 @@ impl SessionAdapter {
             version: 1,
             operation: operation.into(),
             feature,
+            rollback: rollback && feature.is_some(),
             params,
             selection_field: None,
             source_selection_changed: false,
@@ -534,6 +548,7 @@ impl SessionAdapter {
             handle: None,
             repair_source: None,
             repair_original: None,
+            input_source: None,
             reply: Value::Null,
             feedback: Vec::new(),
         };
@@ -745,20 +760,43 @@ impl SessionAdapter {
         if matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer") || treatment_edit {
             edit.selection_field = Some("edges".into());
         }
-        if reattach
+        let source_picking = reattach
             || combine && feature.is_some()
             || treatment_edit
-            || feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err())
-        {
-            let mut source = context.snapshot()?;
-            let model = Arc::get_mut(&mut source).ok_or_else(|| error("preview", "The repair source must be uniquely owned."))?;
-            model.geometry_revision = self.geometry_revision;
-            model.document_id = self.session.document_id.clone();
-            model.revision = self.session.revision;
-            edit.repair_source = Some(source);
+            || feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err());
+        if source_picking || edit.rollback {
+            let snapshot = |context: &mut Self| -> Result<Arc<SceneSnapshot>, AdapterError> {
+                let mut source = context.snapshot()?;
+                let model = Arc::get_mut(&mut source).ok_or_else(|| error("preview", "The editing source must be uniquely owned."))?;
+                model.geometry_revision = self.geometry_revision;
+                model.document_id = self.session.document_id.clone();
+                model.revision = self.session.revision;
+                Ok(source)
+            };
+            if !source_picking && let Some(position) = feature.and_then(|id| self.session.doc.feature_index(id)) {
+                // The form uses the preceding state for references, while the
+                // viewport shows this feature without its dependent suffix.
+                edit.input_source = Some(snapshot(&mut context)?);
+                context.execute("timeline.roll_to", json!({"position":position + 1}))?;
+            }
+            edit.repair_source = Some(snapshot(&mut context)?);
         }
         edit.handle = if crate::assembly::supported(&edit.operation) { self.assembly_handle(&edit) } else { self.extrusion_handle(&edit) };
         Ok(edit)
+    }
+
+    /// Present the temporary editing position without saving it in the design
+    /// or changing the authoritative session's undo/redo stacks.
+    pub fn workspace_with_model(&mut self, selection: &[Sel], radius: bool, numeric: bool, edit: Option<&ModelEdit>) -> Value {
+        let mut workspace = self.workspace(selection, radius, numeric);
+        if let Some(edit) = edit.filter(|edit| edit.rollback)
+            && let Some(position) = workspace["modelling"]["timeline"]
+                .as_array()
+                .and_then(|timeline| timeline.iter().position(|feature| feature["id"].as_u64() == edit.feature))
+        {
+            workspace["modelling"]["position"] = json!(position + 1);
+        }
+        workspace
     }
 
     fn extrusion_handle(&self, edit: &ModelEdit) -> Option<ModelHandle> {
@@ -1686,6 +1724,15 @@ impl SessionAdapter {
         // Reject references that no longer resolve exactly before the evaluator's
         // optional lenient recovery can choose a different profile.
         let mut scratch = Self { session: self.session.scratch(), geometry_revision: self.geometry_revision, workspace_cache: None };
+        let restore_marker = if edit.rollback {
+            let position =
+                edit.feature.and_then(|id| self.session.doc.feature_index(id)).ok_or_else(|| error("stale_edit", "The feature no longer exists."))?;
+            let marker = if commit { json!("end") } else { json!(position + 1) };
+            scratch.execute("timeline.roll_to", json!({"position":marker}))?;
+            Some(None)
+        } else {
+            None
+        };
         let reply = scratch.execute(command, p.clone())?.value;
         scratch.validate_model_references()?;
         scratch.validate_joint_references()?;
@@ -1711,7 +1758,7 @@ impl SessionAdapter {
                 .filter(|result| !result.skipped)
                 .filter_map(|result| result.warning.as_ref().map(|warning| format!("{}: {warning}", result.name))),
         );
-        let transaction = if commit { Some(self.session.scratch().compute_commands(&[(command.into(), p)], None)?) } else { None };
+        let transaction = if commit { Some(self.session.scratch().compute_commands(&[(command.into(), p)], restore_marker)?) } else { None };
         let mut updated = edit.clone();
         updated.params = params.clone();
         let offset =
@@ -1985,6 +2032,9 @@ impl Viewport {
             return Err(error("bad_params", "Choose a modelling source or target field."));
         }
         self.fail_model(token)?;
+        if let Some(source) = &edit.input_source {
+            self.model = Some(source.clone());
+        }
         self.selection.clear();
         if edit.has_body_picks() {
             self.selection = edit.body_pick_selection(field.unwrap_or("target"));

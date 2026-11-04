@@ -1089,6 +1089,56 @@ fn modelling_boundary_previews_real_sketch_then_commits_once_and_cancels_cleanly
 }
 
 #[test]
+fn modelling_history_rollback_restores_latest_geometry_after_apply_cancel_and_suspend() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    engine_command(id, "solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Base"}));
+    engine_command(id, "solid.box", json!({"corner":[30,0,0],"length":2,"width":3,"height":4,"body_name":"Later","operation":"new"}));
+    let entry = lookup(id).unwrap();
+    let feature = entry.adapter.lock().unwrap().modelling_workspace()["timeline"][0]["id"].as_u64().unwrap();
+    let begin = |rollback: bool| {
+        assert_eq!(request(id, &json!({"kind":"model","action":"begin","feature":feature,"rollback":rollback}).to_string()), 0, "{}", response(id));
+        response(id)["result"]["token"].as_u64().unwrap()
+    };
+    let volume = || entry.viewport.lock().unwrap().snapshot().unwrap().model.volume_mm3;
+    let token = begin(true);
+    assert!((volume() - 1000.).abs() < 1e-6, "opening the feature must hide later bodies");
+    assert_eq!(response(id)["result"]["workspace"]["modelling"]["position"], 1);
+    assert_eq!(request(id, r#"{"kind":"workspace"}"#), 0);
+    assert_eq!(response(id)["result"]["modelling"]["position"], 1, "workspace refresh must retain the editing position");
+    assert_eq!(entry.adapter.lock().unwrap().modelling_workspace()["position"], 2, "temporary rollback must not enter the document");
+    let params = json!({"height":"15 mm"});
+    assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":params}).to_string()), 0, "{}", response(id));
+    assert!((entry.viewport.lock().unwrap().diagnostic()["preview_volume_mm3"].as_f64().unwrap() - 1500.).abs() < 1e-6);
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 1024.).abs() < 1e-6);
+    assert_eq!(request(id, &json!({"kind":"model","action":"cancel","token":token}).to_string()), 0);
+    assert!((volume() - 1024.).abs() < 1e-6);
+    assert_eq!(response(id)["result"]["workspace"]["modelling"]["position"], 2);
+
+    let token = begin(false);
+    assert!((volume() - 1024.).abs() < 1e-6, "the preference retains the previous full-history editor");
+    assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":params}).to_string()), 0);
+    assert!((entry.viewport.lock().unwrap().diagnostic()["preview_volume_mm3"].as_f64().unwrap() - 1524.).abs() < 1e-6);
+    assert_eq!(request(id, &json!({"kind":"model","action":"cancel","token":token}).to_string()), 0);
+
+    let token = begin(true);
+    assert_eq!(request(id, &json!({"kind":"model","action":"preview","token":token,"params":{"height":"invalid"}}).to_string()), -1);
+    assert!((volume() - 1000.).abs() < 1e-6);
+    assert_eq!(sc_surface_suspend(id), 0);
+    assert!((volume() - 1024.).abs() < 1e-6, "suspension must restore the full original scene");
+    assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":params}).to_string()), -1);
+    let token = begin(true);
+    assert_eq!(request(id, &json!({"kind":"model","action":"commit","token":token,"params":params}).to_string()), 0, "{}", response(id));
+    assert_eq!(response(id)["result"]["workspace"]["modelling"]["position"], 2);
+    assert!((volume() - 1524.).abs() < 1e-6);
+    engine_command(id, "edit.undo", json!({}));
+    assert!((volume() - 1024.).abs() < 1e-6);
+    engine_command(id, "edit.redo", json!({}));
+    assert!((volume() - 1524.).abs() < 1e-6);
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
 fn modelling_lifecycle_suspend_invalidates_a_prepared_commit_without_mutation() {
     let _serial = isolated_registry();
     let id = sc_session_create();
