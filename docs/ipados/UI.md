@@ -403,7 +403,7 @@ access. The two-line subtitle identifies the active authoring component and exac
 occurrence path, alongside the local-document status. The engine's `is_dirty`
 projection distinguishes unsaved edits from context changes. Model and Properties
 panels start closed.
-Feature history and assembly placements share the Model browser. Projects use
+Feature history has its own viewer; assembly placements remain in Model. Projects use
 the existing native container in private storage, autosave committed edits and
 restore the last project. Projects opens on every launch after the session is
 ready, including when restoring a saved project fails. **Tools → Show Projects
