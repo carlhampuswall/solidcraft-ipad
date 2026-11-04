@@ -7691,10 +7691,15 @@ private extension FoundationController {
                     wait("suppression result", until: {
                         self.state?.modelling?.timeline.first(where: { $0.id == post })?.suppressed == suppressed && self.pending.isEmpty
                     }) {
-                        guard self.state?.modelling?.timeline.map(\.id) == features.map(\.id),
-                              self.state?.rows.filter({ $0.kind == "body" }).count == (suppressed ? 1 : 2),
-                              item(post)?.alpha == (suppressed ? 0.55 : 1) else { fail("suppression changed IDs or retained incorrect geometry/style"); return }
                         capture(suppressed ? "suppressed" : "unsuppressed")
+                        let ids = self.state?.modelling?.timeline.map(\.id) ?? []
+                        guard ids == features.map(\.id) else { fail("suppression changed feature IDs: \(ids)"); return }
+                        let bodies = self.state?.rows.filter({ $0.kind == "body" }).count ?? -1
+                        guard bodies == (suppressed ? 1 : 2) else { fail("suppression body count: \(bodies)"); return }
+                        let alpha = item(post)?.alpha ?? -1
+                        let expectedAlpha: CGFloat = suppressed ? 0.55 : 1
+                        // UIKit may retain opacity at Float precision.
+                        guard abs(alpha - expectedAlpha) < 0.001 else { fail("suppression icon opacity: \(alpha)"); return }
                         // Reusing the previous sheet must not toggle the new state.
                         action()
                         next()
