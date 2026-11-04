@@ -4609,10 +4609,15 @@ private extension FoundationController {
             overrideUserInterfaceStyle = theme
             failure = nil; historyExpanded = false; featureHistory.setExpanded(false)
             browserOpen = false; inspectorOpen = false; relayoutPanels(); updateStatus()
+            // Relayout updates availability/configurations after its first layout
+            // pass. Measure the resulting button, not its previous title frame.
+            view.layoutIfNeeded(); featureHistory.layoutIfNeeded()
+            button("workspace-feature-history-toggle")?.layoutIfNeeded()
             let color = FeatureDiagnosticStyle.color(severity).resolvedColor(with: traitCollection)
-            guard let title = button("workspace-feature-history-toggle")?.titleLabel,
-                  title.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)).width <= title.bounds.width + 1 else {
-                finish("History badge clipped or wrapped its label"); return
+            guard let title = button("workspace-feature-history-toggle")?.titleLabel else { finish("Missing History label"); return }
+            let fittedWidth = title.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)).width
+            guard fittedWidth <= title.bounds.width + 1 else {
+                finish("History label needs " + String(describing: fittedWidth) + " points, has " + String(describing: title.bounds.width)); return
             }
             guard status.diagnosticSeverity == severity, status.text?.contains(feature.name) == true,
                   button("workspace-feature-history-toggle")?.configuration?.background.strokeWidth == 2 else {

@@ -373,10 +373,12 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
 
     private func updateAttention() {
+        let oldWidth = preferredToggleWidth
         let affected = features.filter { $0.order < position && $0.diagnosticSeverity != nil }
         let severity = affected.contains { $0.diagnosticSeverity == .error } ? FeatureDiagnosticSeverity.error : affected.first?.diagnosticSeverity
         toggle.diagnostic(severity)
         toggle.accessibilityValue = affected.map(FeatureDiagnosticStyle.title).joined(separator: ", ")
+        if abs(preferredToggleWidth - oldWidth) > 0.5 { onPreferredSizeChange?() }
     }
 
     private func revealSelection() {
