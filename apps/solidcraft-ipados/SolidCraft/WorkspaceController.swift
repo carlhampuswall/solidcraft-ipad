@@ -1163,7 +1163,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let configuration = UISwipeActionsConfiguration(actions: actions.map { intent in
             let title: String
             switch intent {
-            case .delete: title = row.kind == "folder" ? BrowserText.text("remove_folder") : NativeText.value("ui.delete")
+            case .delete: title = row.kind == "folder" ? BrowserText.text("remove_folder") : BrowserText.text("delete")
             case .rename: title = BrowserText.text("rename")
             case .newFolder: title = BrowserText.text("new_folder")
             case .moveToFolder: title = BrowserText.text("move_to_folder")
@@ -1219,7 +1219,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if !impact.deleted_joints.isEmpty { message += "\n\n" + BrowserText.text("deleted_joints").replacingOccurrences(of: "{count}", with: String(impact.deleted_joints.count)) }
                 if !impact.skipped.isEmpty { message += "\n\n" + impact.skipped.joined(separator: "\n") }
             }
-            let title = row.kind == "folder" ? BrowserText.text("remove_folder") : NativeText.value("ui.delete")
+            let title = row.kind == "folder" ? BrowserText.text("remove_folder") : BrowserText.text("delete")
             let alert = UIAlertController(title: title + ": " + self.browserName(current), message: message, preferredStyle: .alert)
             let confirm = { [weak self] in
                 guard let self, let current = self.currentBrowserRow(row.id, document: context.document_id, revision: context.geometry_revision),
@@ -6971,7 +6971,8 @@ private extension FoundationController {
         func undo(until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
             self.run("edit.undo"); wait("undo", until: { self.pending.isEmpty && ready() }, then: next)
         }
-        let deleteTitle = NativeText.value("ui.delete"), postID = "body:Swipe Post"
+        let deleteTitle = BrowserText.text("delete"), postID = "body:Swipe Post"
+        check(!deleteTitle.hasPrefix("ui."), "Delete label was missing from the bundled native catalogue")
         func checkSketchDeletion() {
             guard let sketch = self.state?.rows.first(where: { $0.kind == "sketch" }) else { issues.append("missing sketch"); finish(); return }
             let bodyIDs = Set((self.state?.rows ?? []).filter { $0.kind == "body" }.map(\.id))

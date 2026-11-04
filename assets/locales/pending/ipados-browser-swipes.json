@@ -1,5 +1,6 @@
 {
   "en": {
+    "ui.ipados.browser.delete": "Delete",
     "ui.ipados.browser.delete_warning": "Delete “{name}”? You can restore it with Undo.",
     "ui.ipados.browser.deleted_joints": "Connected joints removed: {count}",
     "ui.ipados.browser.swipe_actions": "Swipe model items",
