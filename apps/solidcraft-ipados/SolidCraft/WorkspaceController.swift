@@ -2108,10 +2108,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func scheduleModellingPreview() {
-        guard modellingInspector?.isPickingBodies != true else { return }
+        guard modellingInspector?.automaticallyPreviews != false else { return }
         let expected = modellingGeneration
         modellingAutomaticPreview.schedule { [weak self] in
-            guard let self, self.modellingGeneration == expected, let form = self.modellingInspector else { return }
+            guard let self, self.modellingGeneration == expected, let form = self.modellingInspector, form.automaticallyPreviews else { return }
             self.evaluateModelling(form.params, commit: false, live: true)
         }
     }
@@ -2179,7 +2179,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func inspectModelling() {
-        if modellingInspector?.isAttachmentRepair == true || modellingInspector?.hasBodyPicks == true {
+        if modellingInspector?.isAttachmentRepair == true || modellingInspector?.hasBodyPicks == true || modellingInspector?.isPickingMultipleInputs == true {
             modellingAutomaticPreview.cancel()
             modellingPreviewQueue.discardPending()
             modellingSelectionPending = true
@@ -2227,11 +2227,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     /// A tap arriving during a preview/context refresh must be inspected after
     /// that work finishes. Coalesce to the viewport's latest real selection.
     private func drainModellingSelection() {
-        guard modellingSelectionPending, let token = modellingToken, let form = modellingInspector, form.isAttachmentRepair || form.hasBodyPicks,
+        guard modellingSelectionPending, let token = modellingToken, let form = modellingInspector,
+              form.isAttachmentRepair || form.hasBodyPicks || form.isPickingMultipleInputs,
               !modellingInspectPending, !modellingCommitting, modellingPreviewQueue.active == nil,
               !modellingContextInspectInFlight, !modellingContextNeedsRefresh else { return }
         modellingSelectionPending = false; modellingInspectPending = true
-        if form.hasBodyPicks { form.beginContextRefresh() } else { form.invalidatePreview() }
+        if form.hasBodyPicks || form.isPickingMultipleInputs { form.beginContextRefresh() } else { form.invalidatePreview() }
         let expected = modellingGeneration, expectedForm = modellingFormVersion
         session.requestModelling(action: "inspect", token: token) { [weak self, weak form] result in
             guard let self, self.modellingGeneration == expected, self.modellingToken == token else { return }
@@ -2239,7 +2240,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             if self.modellingFormVersion == expectedForm {
                 switch result {
                 case .success(let model):
-                    if form?.hasBodyPicks == true { form?.contextRefreshed(model) } else { form?.inspected(model) }
+                    if form?.hasBodyPicks == true || form?.isPickingMultipleInputs == true { form?.contextRefreshed(model) } else { form?.inspected(model) }
                     if model.params?["plane"] != nil && model.params?["plane"] != .null {
                         self.inspectorOpen = true; self.browserOpen = false; self.relayoutPanels()
                     }

@@ -7092,6 +7092,134 @@ fn modelling_surface_handles_drag_preview_numeric_edit_and_cancel_keep_history_a
 }
 
 #[test]
+fn modelling_surface_live_preview_keeps_multiple_source_edge_picks() {
+    for operation in ["solid.fillet", "solid.chamfer"] {
+        for source in [InputSource::Pencil, InputSource::Finger] {
+            let mut adapter = SessionAdapter::new();
+            adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();
+            let mut viewport = Viewport::default();
+            viewport.set_metrics(metrics(800., 600., 2.)).unwrap();
+            // List-valued tool inputs accumulate independently of the ordinary
+            // single-selection preference and saved topology filter.
+            viewport.multiple = false;
+            viewport.filter = PickFilter::Body;
+            let mut feature = None;
+            for ticket in 1..=2 {
+                let original = adapter.snapshot().unwrap();
+                viewport.begin_update(ticket);
+                assert!(viewport.install(ticket, original.clone()));
+                let doc = adapter.session.doc.clone();
+                let history = adapter.session.undo.len();
+                let edit = adapter.begin_model(915, feature.is_none().then_some(operation), feature, &[]).unwrap();
+                viewport.begin_model(edit).unwrap();
+                if feature.is_some() {
+                    assert_eq!(viewport.selection().len(), 2, "reopening an operation retains its original edge inputs");
+                    let edit = viewport.model_edit(915).unwrap();
+                    let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+                    viewport.publish_model(915, &preview).unwrap();
+                    let p = point(&viewport, Vec3::new(10., 0., 20.));
+                    for phase in [InputPhase::Began, InputPhase::Ended] {
+                        let mut input = sample(&viewport, source, phase, 916, p, 0.5);
+                        input.display_preview = true;
+                        viewport.input(input).unwrap();
+                    }
+                    assert_eq!(viewport.selection().len(), 3, "an edit can add a shortened surviving edge without replacing its saved inputs");
+                    viewport.select_model_inputs(915, None).unwrap();
+                    assert!(!Arc::ptr_eq(viewport.display_model().unwrap(), &original), "editing reveals the geometry before the blend");
+                }
+                assert_eq!(viewport.model_edit(915).unwrap().selection_field.as_deref(), Some("edges"));
+                let mut earlier_preview = None;
+                for (index, location) in [Vec3::new(20., 0., 10.), Vec3::new(20., 20., 10.)].into_iter().enumerate() {
+                    let p = point(&viewport, location);
+                    for phase in [InputPhase::Began, InputPhase::Ended] {
+                        let mut input = sample(&viewport, source, phase, 915, p, 1. + index as f64);
+                        input.display_preview = viewport.diagnostic()["preview"] == true;
+                        viewport.input(input).unwrap();
+                    }
+                    assert_eq!(viewport.selection().len(), index + 1, "{operation}: {source:?} must accumulate source edges");
+                    if let Some(stale) = earlier_preview.take() {
+                        assert_eq!(viewport.diagnostic()["preview"], true, "keep the previous preview visible while adding an edge");
+                        assert_eq!(viewport.diagnostic()["preview_stale"], true, "the previous edge set cannot validate the new selection");
+                        assert!(viewport.publish_model(915, &stale).is_err(), "a late preview cannot close picking with the previous edge set");
+                    }
+                    let edit = adapter.refresh_model(&viewport.model_edit(915).unwrap(), viewport.selection(), None).unwrap();
+                    assert_eq!(edit.params["edges"].as_array().unwrap().len(), index + 1);
+                    assert_eq!(edit.selection_field.as_deref(), Some("edges"));
+                    viewport.update_model(edit.clone()).unwrap();
+                    let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+                    viewport.publish_model(915, &preview).unwrap();
+                    assert_eq!(viewport.diagnostic()["preview"], true, "every picked edge updates the live preview");
+                    assert_eq!(viewport.model_edit(915).unwrap().selection_field.as_deref(), Some("edges"));
+                    if index == 0 {
+                        let generated = point(&viewport, Vec3::new(20., 1., 10.));
+                        assert!(
+                            viewport.pick(generated, Some(adapter.geometry_revision)).is_none(),
+                            "a new blend boundary is not an original source edge"
+                        );
+                        for phase in [InputPhase::Began, InputPhase::Ended] {
+                            let mut input = sample(&viewport, source, phase, 917, generated, 1.5);
+                            input.display_preview = true;
+                            viewport.input(input).unwrap();
+                        }
+                        assert_eq!(viewport.selection().len(), 1, "tapping a generated preview boundary must keep the original inputs");
+                    }
+                    earlier_preview = Some(preview);
+                }
+                let edit = viewport.model_edit(915).unwrap();
+                assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+                assert_eq!(adapter.session.undo.len(), history);
+                viewport.cancel_model();
+                assert!(Arc::ptr_eq(viewport.display_model().unwrap(), &original), "Cancel restores the complete current model");
+                modelling_commit(&mut adapter, &edit, edit.params.clone());
+                assert_eq!(adapter.session.undo.len(), history + 1);
+                let applied = adapter.session.doc.features.last().unwrap().id;
+                if let Some(feature) = feature {
+                    assert_eq!(applied, feature, "editing retains the existing feature identity");
+                }
+                feature = Some(applied);
+            }
+        }
+    }
+}
+
+#[test]
+fn modelling_surface_live_preview_can_add_curved_edges() {
+    for operation in ["solid.fillet", "solid.chamfer"] {
+        let mut adapter = SessionAdapter::new();
+        adapter.execute("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Round"})).unwrap();
+        let mut viewport = Viewport::default();
+        viewport.set_metrics(metrics(800., 600., 2.)).unwrap();
+        viewport.begin_update(1);
+        assert!(viewport.install(1, adapter.snapshot().unwrap()));
+        viewport.filter = PickFilter::Edge;
+        viewport.camera.target = Vec3::Z * 10.;
+        viewport.camera = viewport.camera.looking_from(Vec3::X + Vec3::Z * 2.);
+        viewport.changed();
+        let first = viewport.pick(point(&viewport, Vec3::new(10., 0., 20.)), Some(adapter.geometry_revision)).unwrap();
+        let edit = adapter.begin_model(918, Some(operation), None, &[first]).unwrap();
+        viewport.begin_model(edit.clone()).unwrap();
+        let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+        viewport.publish_model(918, &preview).unwrap();
+        viewport.camera = viewport.camera.looking_from(Vec3::X - Vec3::Z * 2.);
+        viewport.changed();
+        let p = point(&viewport, Vec3::new(10., 0., 0.));
+        for phase in [InputPhase::Began, InputPhase::Ended] {
+            let mut input = sample(&viewport, InputSource::Pencil, phase, 918, p, 1.);
+            input.display_preview = true;
+            viewport.input(input).unwrap();
+        }
+        assert_eq!(viewport.selection().len(), 2, "{operation}: a visible curved rim maps to its original edge");
+        let edit = adapter.refresh_model(&viewport.model_edit(918).unwrap(), viewport.selection(), None).unwrap();
+        assert_eq!(edit.params["edges"].as_array().unwrap().len(), 2);
+        let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+        viewport.update_model(edit).unwrap();
+        viewport.publish_model(918, &preview).unwrap();
+        assert_eq!(viewport.diagnostic()["preview"], true);
+        assert_eq!(adapter.session.doc.features.len(), 1, "live edge picking does not commit the preview");
+    }
+}
+
+#[test]
 fn modelling_surface_source_picks_replace_old_references_without_resetting_size() {
     let mut adapter = SessionAdapter::new();
     adapter.execute("solid.box", json!({"length":20,"width":20,"height":20,"body_name":"Block"})).unwrap();

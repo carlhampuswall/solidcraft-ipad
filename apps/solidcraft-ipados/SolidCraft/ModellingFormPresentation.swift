@@ -5,6 +5,11 @@ import Foundation
 enum ModellingFormPresentation {
     static let automaticExtrudeDepthKey = "SolidCraft.workspace.automaticExtrudeDepth"
 
+    static func automaticallyPreviews(selectionField: String?) -> Bool {
+        guard let selectionField else { return true }
+        return !["target", "tools"].contains(selectionField)
+    }
+
     static func needsCombineBodies(_ params: [String: PresentationJSON]) -> Bool {
         guard params["keep_tools"] != nil else { return false }
         guard case .string(let target) = params["target"], !target.isEmpty,

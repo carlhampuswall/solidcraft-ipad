@@ -39,6 +39,7 @@ pub struct ModelEdit {
     pub feature: Option<u64>,
     pub params: Value,
     pub(crate) selection_field: Option<String>,
+    pub(crate) source_selection_changed: bool,
     pub(crate) document_id: String,
     pub(crate) geometry_revision: u64,
     pub(crate) fields: Vec<Value>,
@@ -54,6 +55,27 @@ pub struct ModelEdit {
 }
 
 impl ModelEdit {
+    pub(crate) fn live_edge_picking(&self) -> bool {
+        self.selection_field.as_deref() == Some("edges") && (self.params.get("radius").is_some() || self.params.get("distance").is_some())
+    }
+
+    fn edge_pick_selection(&self, model: &SceneSnapshot) -> Vec<Sel> {
+        self.params["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(1024)
+            .filter_map(|reference| {
+                let body = reference["body"].as_str().or_else(|| self.params["body"].as_str())?;
+                if let Some(index) = reference["index"].as_u64().and_then(|index| usize::try_from(index).ok()) {
+                    model.picks.edge_selection(body, index)
+                } else {
+                    model.picks.edge_at_point(body, serde_json::from_value(reference.clone()).ok()?)
+                }
+            })
+            .collect()
+    }
+
     pub(crate) fn body_pick_field(&self) -> Option<&str> {
         self.selection_field
             .as_deref()
@@ -503,6 +525,7 @@ impl SessionAdapter {
             feature,
             params,
             selection_field: None,
+            source_selection_changed: false,
             document_id: self.session.document_id.clone(),
             geometry_revision: self.geometry_revision,
             fields: Vec::new(),
@@ -716,8 +739,15 @@ impl SessionAdapter {
             }
             edit.selection_field = Some(if edit.params["target"].as_str().is_some_and(|name| !name.is_empty()) { "tools" } else { "target" }.into());
         }
+        let treatment_edit = feature
+            .and_then(|id| self.session.doc.feature(id))
+            .is_some_and(|feature| matches!(feature.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. }));
+        if matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer") || treatment_edit {
+            edit.selection_field = Some("edges".into());
+        }
         if reattach
             || combine && feature.is_some()
+            || treatment_edit
             || feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err())
         {
             let mut source = context.snapshot()?;
@@ -1001,7 +1031,11 @@ impl SessionAdapter {
                 .feature
                 .and_then(|id| self.session.doc.feature(id))
                 .is_some_and(|feature| matches!(feature.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. } | FeatureKind::Shell { .. }));
-        if canvas_selection && treatment && (edit.feature.is_none() || matches!(edit.selection_field.as_deref(), Some("edges" | "faces"))) {
+        if canvas_selection
+            && treatment
+            && (edit.feature.is_none()
+                || matches!(edit.selection_field.as_deref(), Some("edges" | "faces")) && (!edit.live_edge_picking() || edit.source_selection_changed))
+        {
             let key = if refreshed.params.get("thickness").is_some() { "faces" } else { "edges" };
             let bodies = selection
                 .iter()
@@ -1030,6 +1064,7 @@ impl SessionAdapter {
             }) {
                 refreshed.params["body"] = json!(body);
             }
+            refreshed.source_selection_changed = false;
         }
         if let Some(profile) = canvas_profile {
             refreshed.params["profile"] = profile;
@@ -1057,11 +1092,11 @@ impl SessionAdapter {
         if refreshed.params != edit.params || refreshed.fields != edit.fields {
             refreshed.version = edit.version.checked_add(1).ok_or_else(|| error("revision_limit", "Interaction version exhausted."))?;
             refreshed.preview = None;
-            refreshed.last_preview = None;
+            refreshed.last_preview = if edit.live_edge_picking() { edit.preview.clone().or_else(|| edit.last_preview.clone()) } else { None };
         }
         refreshed.handle =
             if crate::assembly::supported(&edit.operation) { self.assembly_handle(&refreshed) } else { self.extrusion_handle(&refreshed) };
-        if refreshed.selection_field.is_some() {
+        if refreshed.selection_field.is_some() && !refreshed.live_edge_picking() {
             refreshed.handle = None;
         }
         Ok(refreshed)
@@ -1842,6 +1877,11 @@ impl Viewport {
         if let Some(field) = edit.body_pick_field() {
             self.selection = edit.body_pick_selection(field);
         }
+        if edit.live_edge_picking()
+            && let Some(model) = &self.model
+        {
+            self.selection = edit.edge_pick_selection(model);
+        }
         self.modelling = Some(edit);
         self.changed();
         Ok(())
@@ -1878,6 +1918,11 @@ impl Viewport {
         if let Some(field) = edit.body_pick_field() {
             self.selection = edit.body_pick_selection(field);
         }
+        if edit.live_edge_picking()
+            && let Some(model) = &self.model
+        {
+            self.selection = edit.edge_pick_selection(model);
+        }
         self.modelling = Some(edit);
         self.changed();
         Ok(())
@@ -1896,7 +1941,9 @@ impl Viewport {
         }
         if let Some(e) = &mut self.modelling {
             e.preview = Some(prepared.model.clone());
-            e.selection_field = None;
+            if !e.live_edge_picking() {
+                e.selection_field = None;
+            }
             e.last_preview = None;
             e.params = prepared.params.clone();
             e.handle = prepared.handle.clone();
@@ -1924,6 +1971,8 @@ impl Viewport {
                 Some("plane")
             } else if edit.has_body_picks() {
                 Some("target")
+            } else if edit.fields.iter().any(|input| input["key"] == "edges") {
+                Some("edges")
             } else {
                 (edit.operation == "solid.extrude" && edit.params["operation"] != "new" && edit.params["profile"].is_object()).then_some("targets")
             }
@@ -1942,6 +1991,7 @@ impl Viewport {
         }
         if let Some(edit) = &mut self.modelling {
             edit.selection_field = field.map(str::to_string);
+            edit.source_selection_changed = true;
             if edit.operation == "sketch.redefine" {
                 edit.params["plane"] = Value::Null;
             }

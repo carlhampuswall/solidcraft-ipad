@@ -712,6 +712,13 @@ impl Viewport {
             return None;
         }
         let pixel = self.metrics.pixel(points)?;
+        if self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking())
+            && let Some(display) = self.display_model()
+            && !Arc::ptr_eq(model, display)
+        {
+            let picked = display.picks.pick(&self.camera, self.vp(), self.metrics, pixel, PickFilter::Edge)?;
+            return model.picks.source_edge(&display.picks, &picked);
+        }
         if model.sketch.is_some() {
             return self.pick_sketch(points);
         }
@@ -812,6 +819,11 @@ impl Viewport {
 
     pub(crate) fn select(&mut self, hit: Option<Sel>, add: bool) {
         let body_field = self.modelling.as_ref().and_then(|edit| edit.body_pick_field()).map(str::to_string);
+        let source_field = self.modelling.as_ref().and_then(|edit| edit.selection_field.as_deref()).filter(|field| *field == "edges");
+        if source_field.is_some() && hit.as_ref().is_some_and(|hit| !matches!(hit, Sel::Edge { .. })) {
+            return;
+        }
+        let picking_sources = source_field.is_some();
         if body_field.is_some() && hit.as_ref().is_some_and(|hit| !matches!(hit, Sel::Body { .. })) {
             return;
         }
@@ -833,9 +845,10 @@ impl Viewport {
         let add = match body_field.as_deref() {
             Some("target") => false,
             Some("tools") => hit.is_some(),
+            _ if picking_sources => hit.is_some(),
             _ => add,
         };
-        let previous = body_field.as_ref().map(|_| self.selection.clone());
+        let previous = (body_field.is_some() || picking_sources).then(|| self.selection.clone());
         if !add {
             self.selection.clear();
         }
@@ -853,10 +866,15 @@ impl Viewport {
         if previous.as_ref().is_some_and(|previous| previous != &self.selection)
             && let Some(edit) = &mut self.modelling
         {
-            // A late preview must never validate an earlier set of body picks.
+            // A late preview must never validate an earlier set of input picks.
             edit.version = edit.version.saturating_add(1);
-            edit.preview = None;
-            edit.last_preview = None;
+            if edit.live_edge_picking() {
+                edit.source_selection_changed = true;
+                edit.last_preview = edit.preview.take().or_else(|| edit.last_preview.clone());
+            } else {
+                edit.preview = None;
+                edit.last_preview = None;
+            }
         }
         self.hover = None;
         self.changed();

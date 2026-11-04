@@ -1007,6 +1007,14 @@ struct WorkspaceChecks {
             try require(!ModellingFormPresentation.usesDirectSurfaceControls(fields, compact: false), "expanded inspector lost the previous reference lists")
         }
         try require(!ModellingFormPresentation.usesDirectSurfaceControls(model.fields ?? [], compact: true), "unrelated tools acquired surface controls")
+        for field in ["target", "tools"] {
+            try require(!ModellingFormPresentation.automaticallyPreviews(selectionField: field),
+                        "an automatic preview would stop multi-input picking after the first selection")
+        }
+        for field: String? in [nil, "edges", "faces", "profile", "plane"] {
+            try require(ModellingFormPresentation.automaticallyPreviews(selectionField: field),
+                        "live edge picking, single-input or ordinary forms lost their automatic preview")
+        }
         for mode in ["equal", "two_distances", "angle"] {
             let params: [String: PresentationJSON] = ["chamfer_mode": .string(mode)]
             try require(ModellingFormPresentation.visibleSurfaceField("distance2", params: params) == (mode == "two_distances"), "chamfer showed an inactive second distance")

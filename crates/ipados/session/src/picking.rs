@@ -94,6 +94,47 @@ pub struct PickScene {
 }
 
 impl PickScene {
+    pub(crate) fn edge_selection(&self, name: &str, index: usize) -> Option<Sel> {
+        let body = self.bodies.iter().find(|body| body.name == name)?;
+        if !body.mesh.edge_pickable(index) {
+            return None;
+        }
+        let edge = body.mesh.edges.get(index)?;
+        let a = *edge.get(edge.len().saturating_sub(1) / 2)?;
+        let b = *edge.get(edge.len() / 2)?;
+        Some(Sel::Edge { body: name.into(), index, point: (a + b) * 0.5 })
+    }
+
+    pub(crate) fn edge_at_point(&self, name: &str, point: Vec3) -> Option<Sel> {
+        let body = self.bodies.iter().find(|body| body.name == name)?;
+        let tolerance = 0.01;
+        let (index, _) = body
+            .mesh
+            .edges
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| body.mesh.edge_pickable(*index))
+            .filter_map(|(index, edge)| {
+                let distance = edge.windows(2).map(|segment| point.dist_to_segment(segment[0], segment[1])).fold(f64::INFINITY, f64::min);
+                (distance <= tolerance).then_some((index, distance))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        self.edge_selection(name, index)
+    }
+
+    /// A preview has its own edge indices. Accept only visible preview edges
+    /// lying on an original source edge, including a shortened surviving edge.
+    /// New blend boundaries must never silently become different source inputs.
+    pub(crate) fn source_edge(&self, preview: &Self, picked: &Sel) -> Option<Sel> {
+        let Sel::Edge { body, index, point } = picked else { return None };
+        let source = self.edge_at_point(body, *point)?;
+        let Sel::Edge { index: source_index, .. } = &source else { return None };
+        let original = self.bodies.iter().find(|candidate| candidate.name == *body)?.mesh.edges.get(*source_index)?;
+        let displayed = preview.bodies.iter().find(|candidate| candidate.name == *body)?.mesh.edges.get(*index)?;
+        let tolerance = self.bounds.diagonal().max(1.) * 1e-7;
+        displayed.iter().all(|point| original.windows(2).any(|segment| point.dist_to_segment(segment[0], segment[1]) <= tolerance)).then_some(source)
+    }
+
     /// Endpoint connectivity stays within the picked body/occurrence. Never use
     /// intermediate tessellation samples: an edge touching a middle is separate.
     pub(crate) fn connected_edges(&self, selection: &Sel) -> Option<Vec<Sel>> {

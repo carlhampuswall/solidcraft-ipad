@@ -868,12 +868,12 @@ impl Viewport {
             if (owner == Owner::PencilCandidate || direct) && self.begin_tool(&e, point) {
                 owner = Owner::Tool;
             }
-            // A validated provisional solid has different topology from the
-            // source document. The selection action reveals that source first;
-            // never pick invisible source faces through a displayed preview.
+            // Live edge tools map visible preview edges back to source inputs.
+            // Other forms must reveal their source before topology picking.
             if matches!(owner, Owner::PencilCandidate | Owner::Pointer)
                 && e.display_preview
                 && self.modelling.as_ref().is_some_and(|e| e.preview.is_some() || e.last_preview.is_some())
+                && self.modelling.as_ref().is_none_or(|edit| !edit.live_edge_picking())
             {
                 owner = if self.cancel_tools_on_dismiss { Owner::ModelDismiss } else { Owner::Suppressed };
             }
@@ -982,12 +982,12 @@ impl Viewport {
         if matches!(e.phase, InputPhase::Ended | InputPhase::Cancelled) {
             // A handle gets first refusal for dragging, but a stationary Pencil
             // or pointer tap still selects the visible source underneath it.
-            // Never pick source topology through an evaluated preview.
+            // Live edge tools resolve the visible preview back to source inputs.
             let handle_tap = owner == Owner::Tool
                 && !moved
-                && !e.display_preview
+                && (!e.display_preview || self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking()))
                 && matches!(e.source, InputSource::Pencil | InputSource::Indirect)
-                && self.modelling.as_ref().is_some_and(|edit| edit.preview.is_none() && edit.last_preview.is_none())
+                && self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking() || edit.preview.is_none() && edit.last_preview.is_none())
                 && self
                     .contacts
                     .drag
@@ -1087,6 +1087,15 @@ impl Viewport {
                     return Ok(true);
                 }
                 let hit = self.pick(tap_point, revision);
+                if hit.is_none()
+                    && self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking())
+                    && let (Some(model), Some(pixel)) = (self.display_model(), self.metrics.pixel(tap_point))
+                    && model.picks.pick(&self.camera, self.vp(), self.metrics, pixel, crate::PickFilter::Body).is_some()
+                {
+                    // A generated blend edge or face is occupied preview space,
+                    // not an empty-space request to clear the source inputs.
+                    return Ok(true);
+                }
                 // Accumulate real picks, while an ordinary empty-space tap
                 // clears the set without requiring a trip through Tools.
                 let reattaching = self.modelling.as_ref().is_some_and(|edit| edit.operation == "sketch.redefine");
