@@ -4610,6 +4610,10 @@ private extension FoundationController {
             failure = nil; historyExpanded = false; featureHistory.setExpanded(false)
             browserOpen = false; inspectorOpen = false; relayoutPanels(); updateStatus()
             let color = FeatureDiagnosticStyle.color(severity).resolvedColor(with: traitCollection)
+            guard let title = button("workspace-feature-history-toggle")?.titleLabel,
+                  title.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)).width <= title.bounds.width + 1 else {
+                finish("History badge clipped or wrapped its label"); return
+            }
             guard status.diagnosticSeverity == severity, status.text?.contains(feature.name) == true,
                   button("workspace-feature-history-toggle")?.configuration?.background.strokeWidth == 2 else {
                 finish("Status or collapsed History lost its named severity indicator"); return

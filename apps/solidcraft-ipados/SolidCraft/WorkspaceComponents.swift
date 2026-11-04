@@ -169,7 +169,14 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private var dragPoint: CGPoint?
     private var dragScrollTimer: Timer?
     private var lastLayoutSize: CGSize = .zero
-    var preferredToggleWidth: CGFloat { max(52, ceil(toggle.intrinsicContentSize.width) + 8) }
+    var preferredToggleWidth: CGFloat {
+        let config = toggle.configuration
+        let insets = config?.contentInsets ?? .zero
+        let font = toggle.titleLabel?.font ?? .preferredFont(forTextStyle: .body)
+        let title = (HistoryText.text("title") as NSString).size(withAttributes: [.font: font]).width
+        let content = title + (config?.image?.size.width ?? 0) + (config?.imagePadding ?? 0) + insets.leading + insets.trailing
+        return max(52, ceil(max(content, toggle.intrinsicContentSize.width)) + 8)
+    }
     var scrubInFlight: Bool { scrub.inFlight != nil }
     var isScrubbing: Bool { scrub.active }
     var isPlaying: Bool { playback.active }
@@ -180,6 +187,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         super.init(frame: frame)
         accessibilityIdentifier = "workspace-feature-history"
         toggle.artwork("rollback")
+        toggle.titleLabel?.numberOfLines = 1
         toggle.accessibilityIdentifier = "workspace-feature-history-toggle"
         addSubview(toggle); addSubview(transport); addSubview(scroll)
         transport.axis = .horizontal; transport.spacing = 0; transport.distribution = .fillEqually
