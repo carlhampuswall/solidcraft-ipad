@@ -373,12 +373,10 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
 
     private func updateAttention() {
-        let oldWidth = preferredToggleWidth
         let affected = features.filter { $0.order < position && $0.diagnosticSeverity != nil }
         let severity = affected.contains { $0.diagnosticSeverity == .error } ? FeatureDiagnosticSeverity.error : affected.first?.diagnosticSeverity
         toggle.diagnostic(severity)
         toggle.accessibilityValue = affected.map(FeatureDiagnosticStyle.title).joined(separator: ", ")
-        if abs(preferredToggleWidth - oldWidth) > 0.5 { onPreferredSizeChange?() }
     }
 
     private func revealSelection() {
@@ -626,7 +624,6 @@ final class WorkspaceButton: UIButton {
     private var systemIcon: String?
     private var compactIcon = false
     private var choiceCheck: UIImageView?
-    private var diagnosticBadge: UIImageView?
     private var isHistoryAction: Bool {
         iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"
     }
@@ -769,28 +766,7 @@ final class WorkspaceButton: UIButton {
         var config = configuration
         config?.background.strokeColor = severity.map(FeatureDiagnosticStyle.color) ?? .clear
         config?.background.strokeWidth = severity == nil ? 0 : 2
-        config?.contentInsets.trailing = severity != nil && !compactIcon ? 24 : 8
         configuration = config
-        guard let severity else { diagnosticBadge?.isHidden = true; return }
-        if diagnosticBadge == nil {
-            let badge = UIImageView()
-            badge.translatesAutoresizingMaskIntoConstraints = false
-            badge.isUserInteractionEnabled = false; badge.isAccessibilityElement = false
-            badge.contentMode = .scaleAspectFit
-            badge.backgroundColor = WorkspaceStyle.surface
-            badge.layer.cornerRadius = 4
-            addSubview(badge)
-            NSLayoutConstraint.activate([
-                badge.topAnchor.constraint(equalTo: topAnchor, constant: 1),
-                badge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
-                badge.widthAnchor.constraint(equalToConstant: 16),
-                badge.heightAnchor.constraint(equalToConstant: 16)
-            ])
-            diagnosticBadge = badge
-        }
-        diagnosticBadge?.image = FeatureDiagnosticStyle.image(severity)
-        diagnosticBadge?.tintColor = FeatureDiagnosticStyle.color(severity)
-        diagnosticBadge?.isHidden = false
     }
 }
 

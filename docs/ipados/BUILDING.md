@@ -184,7 +184,7 @@ build does not waive failures; see HANDOFF for results actually obtained.
 ## Signing and runtime validation
 
 Debug `--feature-diagnostics-check` builds disposable warning and error fixtures
-through the shared evaluator. It checks yellow warning and red error badges,
+through the shared evaluator. It checks yellow warning and red error outlines,
 affected history entries and Model rows, named status messages, direct opening
 of feature diagnostics, and clearing after repair. It writes
 `feature-diagnostics-check.json` and thirteen `feature-diagnostics-*.png` captures
