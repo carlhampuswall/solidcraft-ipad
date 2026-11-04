@@ -546,28 +546,34 @@ extension WorkspaceLayout {
             result.floating = true
             return result
         }
+        let viewWidth = min(max(44, viewButtonSize.width.isFinite ? viewButtonSize.width : 96), max(0, w - 2 * gap))
         let headerHeight = min(max(0, h - 2 * gap), max(largeText ? 76 : 52, header))
-        let headerWidth = min(largeText ? 420 : 340, max(0, w - 2 * (railWidth + 2 * gap)))
+        // Reserve the View column even in narrow windows so a taller sketch
+        // header cannot push View and its navigation controls down.
+        let headerWidth = min(largeText ? 420 : 340, max(0, w - 2 * (max(railWidth, viewWidth) + 2 * gap)))
         let top = CGRect(x: (w - headerWidth) / 2, y: gap, width: headerWidth, height: headerHeight)
         let bottomHeight = min(max(0, h - top.maxY - 2 * gap), max(48, status))
         let controlsY = min(h, top.maxY + gap)
-        let controlsHeight = max(0, h - bottomHeight - 2 * gap - controlsY)
         let railX = railRight ? max(gap, w - gap - railWidth) : gap
         let navX = railRight ? gap : max(gap, w - gap - railWidth)
-        let viewWidth = min(max(44, viewButtonSize.width.isFinite ? viewButtonSize.width : 96), max(0, w - 2 * gap))
         let viewHeight = min(max(44, viewButtonSize.height.isFinite ? viewButtonSize.height : 52), max(0, h - bottomHeight - 2 * gap))
         var viewAccess = CGRect(x: railRight ? gap : max(gap, w - gap - viewWidth), y: gap,
                                 width: viewWidth, height: viewHeight)
         let browserAccess = CGRect(x: leftBrowser || viewSharesBrowserColumn ? gap : railX, y: gap, width: railWidth, height: min(headerHeight, 52))
-        // Wide windows put View beside the header. Crowded windows and mirrored
-        // chrome put it above its navigation group without covering the title.
-        if viewAccess.intersects(top) || viewAccess.intersects(browserAccess) { viewAccess.origin.y = controlsY }
+        // Only the browser button can share View's column in a crowded window.
+        if viewAccess.intersects(browserAccess) { viewAccess.origin.y = browserAccess.maxY + gap }
         viewAccess.origin.y = min(viewAccess.minY, max(gap, h - gap - viewAccess.height))
-        let navigationY = min(h, max(controlsY, viewAccess.maxY + gap))
-        let sharesRailColumn = railX < viewAccess.maxX && railX + railWidth > viewAccess.minX
-        let railY = min(h, sharesRailColumn ? max(controlsY, viewAccess.maxY + gap) : controlsY)
+        let navigationY = min(h, viewAccess.maxY + gap)
+        // The tool rail stays centred in the available workspace, clamped only
+        // to the side controls and bottom row when its content needs scrolling.
+        let railTop = min(h, [browserAccess, viewAccess].reduce(gap) { y, frame in
+            railX < frame.maxX && railX + railWidth > frame.minX ? max(y, frame.maxY + gap) : y
+        })
+        let railBottom = max(railTop, h - bottomHeight - 2 * gap)
+        let railHeight = min(max(0, railBottom - railTop), max(0, railContentHeight))
+        let railY = min(max(railTop, (h - railHeight) / 2), railBottom - railHeight)
         let rail = CGRect(x: railX, y: railY, width: railWidth,
-                          height: min(controlsHeight, max(0, h - bottomHeight - 2 * gap - railY), max(0, railContentHeight)))
+                          height: railHeight)
         let nav = CGRect(x: navX, y: navigationY, width: railWidth,
                          height: min(max(0, h - bottomHeight - 2 * gap - navigationY), max(0, navigationContentHeight)))
         var canvas = CGRect(x: 0, y: 0, width: w, height: h)

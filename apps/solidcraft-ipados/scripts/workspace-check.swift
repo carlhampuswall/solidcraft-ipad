@@ -559,9 +559,51 @@ struct WorkspaceChecks {
                     }
                     try require(opened.canvas == closed.canvas, "unpinned browser changes picking coordinates")
                     let legacy = WorkspaceLayout.resolve(size: size, browser: true, inspector: false, railRight: railRight, largeText: largeText, leftBrowser: false)
-                    try require(legacy.browser?.minY == legacy.rail.minY, "legacy anchored browser preference was lost")
+                    try require(legacy.browser?.minY == legacy.topBar.maxY + 8, "legacy browser no longer starts below the header")
                     try require(legacy.canvas == closed.canvas, "legacy browser changes the viewport")
                     cases += 1
+                }
+            }
+        }
+        // Edit/Finish sketch enlarge only the centre header. Side controls keep
+        // their anchors, including when the browser leaves a narrow workspace.
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 834, height: 1140),
+                     CGSize(width: 600, height: 420), CGSize(width: 390, height: 760)] {
+            for largeText in [false, true] {
+                for railRight in [false, true] {
+                    for browser in [false, true] {
+                        for expanded in [false, true] {
+                            func resolve(header: CGFloat, content: CGFloat = 192) -> WorkspaceLayout {
+                                WorkspaceLayout.resolve(size: size, browser: browser, inspector: false,
+                                    railRight: railRight, largeText: largeText, minimumHeaderHeight: header,
+                                    railContentHeight: content, historyExpanded: expanded)
+                            }
+                            let idle = resolve(header: largeText ? 76 : 52)
+                            let editing = resolve(header: largeText ? 164 : 104)
+                            try require(idle.topBar.height < editing.topBar.height, "sketch header fixture did not expand")
+                            try require(idle.rail == editing.rail && idle.navigation == editing.navigation && idle.viewAccess == editing.viewAccess,
+                                        "Edit/Finish sketch moved the side controls: size=\(size) browser=\(browser) mirrored=\(railRight)")
+                            for layout in [idle, editing] {
+                                try require(layout.navigation.minY == layout.viewAccess.maxY + 8,
+                                            "navigation is not directly below View")
+                                try require(layout.topBar.isEmpty || (!layout.topBar.intersects(layout.viewAccess) && !layout.topBar.intersects(layout.rail) && !layout.topBar.intersects(layout.navigation)),
+                                            "sketch header overlaps a side control: size=\(size) browser=\(browser) mirrored=\(railRight) header=\(layout.topBar) rail=\(layout.rail) navigation=\(layout.navigation) view=\(layout.viewAccess)")
+                                try require(!layout.rail.intersects(layout.browserAccess) && !layout.rail.intersects(layout.viewAccess) && !layout.rail.intersects(layout.featureHistory),
+                                            "centred tool rail covers another control")
+                            }
+                            if size.height >= 760 {
+                                for content in [CGFloat(192), 460] {
+                                    if content == 460 && size.width < 600 { continue }
+                                    let layout = resolve(header: 164, content: content)
+                                    let availableHeight = size.height - (expanded ? (largeText ? 84 : 60) : 0)
+                                    try require(layout.rail.height == content && layout.rail.midY == availableHeight / 2,
+                                                "tool rail is not vertically centred as its content changes")
+                                }
+                            }
+                            try require(idle.canvas == editing.canvas, "sketch header changed rendering/picking coordinates")
+                            cases += 1
+                        }
+                    }
                 }
             }
         }
@@ -858,7 +900,7 @@ struct WorkspaceChecks {
                                 try require(bounds.contains(layout.featureHistory), "history escaped the keyboard-reduced window")
                                 if compactChrome {
                                     try require(bounds.contains(layout.viewAccess), "View escaped the available window")
-                                    for other in [layout.topBar, layout.navigation, layout.browserAccess, layout.rail] {
+                                    for other in [layout.topBar, layout.navigation, layout.browserAccess, layout.rail] where !other.isEmpty {
                                         try require(!layout.viewAccess.intersects(other), "standalone View overlaps other chrome: size=\(size) railRight=\(railRight) browser=\(browser) expanded=\(layout.featureHistory.width > 112) view=\(layout.viewAccess) other=\(other)")
                                     }
                                     try require(layout.viewAccess.maxY <= layout.navigation.minY, "View is not above the navigation controls")
