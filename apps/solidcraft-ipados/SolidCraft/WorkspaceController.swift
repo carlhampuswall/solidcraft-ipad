@@ -7822,7 +7822,7 @@ private extension FoundationController {
                     }
                 }
             }
-            guard let body = self.state?.rows.first(where: { $0.kind == "body" && $0.entity?.name == "Foundation" })?.entity,
+            guard let body = self.state?.rows.first(where: { $0.kind == "body" && $0.entity?.name == "Base" })?.entity,
                   let preference = self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == HistoryText.text("highlight_selection") }),
                   let original = self.state else { fail("body selection fixture or highlighting preference"); return }
             self.session.selectEntity(body.dictionary, additive: false)
