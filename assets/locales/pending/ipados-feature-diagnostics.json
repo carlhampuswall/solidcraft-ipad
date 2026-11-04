@@ -1,0 +1,37 @@
+{
+  "en": {
+    "ui.ipados.history.error": "Error",
+    "ui.ipados.history.feature_diagnostic": "{severity}: {feature}",
+    "ui.ipados.history.feature_diagnostics_more": "{severity}: {feature} (+{count})",
+    "ui.ipados.history.show_diagnostic": "Tap to show the feature in History.",
+    "ui.ipados.history.warning": "Warning"
+  },
+  "de": {
+    "ui.ipados.history.error": "Fehler",
+    "ui.ipados.history.feature_diagnostic": "{severity}: {feature}",
+    "ui.ipados.history.feature_diagnostics_more": "{severity}: {feature} (+{count})",
+    "ui.ipados.history.show_diagnostic": "Tippen, um das Feature im Verlauf anzuzeigen.",
+    "ui.ipados.history.warning": "Warnung"
+  },
+  "ja": {
+    "ui.ipados.history.error": "エラー",
+    "ui.ipados.history.feature_diagnostic": "{severity}: {feature}",
+    "ui.ipados.history.feature_diagnostics_more": "{severity}: {feature}（他{count}件）",
+    "ui.ipados.history.show_diagnostic": "タップして履歴にフィーチャーを表示します。",
+    "ui.ipados.history.warning": "警告"
+  },
+  "ko": {
+    "ui.ipados.history.error": "오류",
+    "ui.ipados.history.feature_diagnostic": "{severity}: {feature}",
+    "ui.ipados.history.feature_diagnostics_more": "{severity}: {feature} (외 {count}개)",
+    "ui.ipados.history.show_diagnostic": "탭하여 기록에서 피처를 표시합니다.",
+    "ui.ipados.history.warning": "경고"
+  },
+  "zh": {
+    "ui.ipados.history.error": "错误",
+    "ui.ipados.history.feature_diagnostic": "{severity}：{feature}",
+    "ui.ipados.history.feature_diagnostics_more": "{severity}：{feature}（另有 {count} 项）",
+    "ui.ipados.history.show_diagnostic": "轻点以在历史记录中显示该特征。",
+    "ui.ipados.history.warning": "警告"
+  }
+}

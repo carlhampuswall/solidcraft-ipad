@@ -36,6 +36,7 @@ enum WorkspaceStyle {
     static let darkSketchLine = UIColor.systemCyan
     static let selectedForeground = UIColor.white
     static let error = UIColor.systemRed
+    static let warning = UIColor.systemYellow
 
     static func floatingSurface(_ view: UIView) {
         view.backgroundColor = surface.withAlphaComponent(0.96)
@@ -53,6 +54,34 @@ enum WorkspaceStyle {
         label.textColor = secondary ? self.secondary : foreground
         label.numberOfLines = 0
         return label
+    }
+}
+
+/// Status decoration uses native semantic colours; feature artwork stays intact.
+enum FeatureDiagnosticStyle {
+    static func color(_ severity: FeatureDiagnosticSeverity) -> UIColor {
+        severity == .error ? WorkspaceStyle.error : WorkspaceStyle.warning
+    }
+    static func textColor(_ severity: FeatureDiagnosticSeverity) -> UIColor {
+        // Yellow identifies the badge/outline; normal text remains readable on
+        // a light surface as well as in Dark appearance.
+        severity == .error ? WorkspaceStyle.error : WorkspaceStyle.foreground
+    }
+    static func image(_ severity: FeatureDiagnosticSeverity) -> UIImage? {
+        UIImage(systemName: severity == .error ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
+    }
+    static func label(_ severity: FeatureDiagnosticSeverity) -> String {
+        HistoryText.text(severity.rawValue)
+    }
+    static func title(_ feature: ModellingPresentation.Feature) -> String {
+        guard let severity = feature.diagnosticSeverity else { return feature.name }
+        return HistoryText.text("feature_diagnostic")
+            .replacingOccurrences(of: "{severity}", with: label(severity))
+            .replacingOccurrences(of: "{feature}", with: feature.name)
+    }
+    static func detail(_ feature: ModellingPresentation.Feature) -> String? {
+        if let error = feature.error, !error.isEmpty { return error }
+        return feature.stale == true ? ModellingText.text("stale_geometry") : feature.warning
     }
 }
 
@@ -229,6 +258,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         toggle.configuration = toggleStyle
         toggle.accessibilityHint = HistoryText.text(value ? "collapse" : "expand")
         toggle.toolTip = toggle.accessibilityHint
+        updateAttention()
         WorkspaceStyle.floatingSurface(self)
         if value { rebuildIfNeeded(); revealSelection() }
         setNeedsLayout()
@@ -262,6 +292,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
 
     private func refreshControls() {
+        updateAttention()
         play.updateTitle(HistoryText.text(isPlaying ? "pause" : "play"))
         play.systemArtwork(isPlaying ? "pause.fill" : "play.fill", compact: true)
         play.availability(enabled: isPlaying || (playbackEnabled && !scrub.active && !features.isEmpty), reason: play.accessibilityLabel)
@@ -325,8 +356,19 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private func style(_ button: WorkspaceButton, feature: ModellingPresentation.Feature) {
         let future = feature.order >= (scrub.target ?? position)
         button.availability(enabled: enabled && !scrub.active && (!future || navigationEnabled), reason: enabled ? HistoryText.text("edit_hint") : WorkspaceStyle.text("editing_lock"))
-        button.accessibilityValue = feature.error ?? (future ? HistoryText.text("future") : (feature.suppressed ? ModellingText.text("suppressed") : feature.warning))
+        let severity = future ? nil : feature.diagnosticSeverity
+        button.diagnostic(severity)
+        button.accessibilityValue = severity.map { FeatureDiagnosticStyle.label($0) + ": " + (FeatureDiagnosticStyle.detail(feature) ?? "") }
+            ?? (future ? HistoryText.text("future") : (feature.suppressed ? ModellingText.text("suppressed") : nil))
+        button.toolTip = severity == nil ? feature.name : FeatureDiagnosticStyle.title(feature) + "\n" + (FeatureDiagnosticStyle.detail(feature) ?? "")
         button.alpha = future ? 0.35 : (feature.suppressed ? 0.55 : 1)
+    }
+
+    private func updateAttention() {
+        let affected = features.filter { $0.order < position && $0.diagnosticSeverity != nil }
+        let severity = affected.contains { $0.diagnosticSeverity == .error } ? FeatureDiagnosticSeverity.error : affected.first?.diagnosticSeverity
+        toggle.diagnostic(severity)
+        toggle.accessibilityValue = affected.map(FeatureDiagnosticStyle.title).joined(separator: ", ")
     }
 
     private func revealSelection() {
@@ -507,25 +549,60 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
                 scroll.scrollRectToVisible(marker.convert(marker.bounds, to: scroll).insetBy(dx: -44, dy: 0), animated: false)
             } else if let id = features.first(where: { selected.contains($0.id) })?.id, let button = buttons[id] {
                 scroll.scrollRectToVisible(button.convert(button.bounds, to: scroll).insetBy(dx: -4, dy: 0), animated: false)
+            } else if let feature = features.first(where: { $0.order < position && $0.diagnosticSeverity != nil }), let button = buttons[feature.id] {
+                scroll.scrollRectToVisible(button.convert(button.bounds, to: scroll).insetBy(dx: -4, dy: 0), animated: false)
             }
         }
     }
 }
 
 final class WorkspaceStatusLabel: UILabel {
+    private let diagnosticBadge = UIImageView()
+    private(set) var diagnosticSeverity: FeatureDiagnosticSeverity?
+    var onActivate: (() -> Void)? {
+        didSet {
+            isUserInteractionEnabled = onActivate != nil
+            accessibilityTraits = onActivate == nil ? .staticText : .button
+        }
+    }
     override init(frame: CGRect) {
         super.init(frame: frame)
         font = .preferredFont(forTextStyle: .caption1)
         adjustsFontForContentSizeCategory = true
         textColor = WorkspaceStyle.secondary
         numberOfLines = 2
+        addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(activate)))
+        diagnosticBadge.isHidden = true; diagnosticBadge.isAccessibilityElement = false
+        diagnosticBadge.contentMode = .scaleAspectFit
+        addSubview(diagnosticBadge)
     }
     convenience init() { self.init(frame: .zero) }
     required init?(coder: NSCoder) { nil }
-    override func drawText(in rect: CGRect) { super.drawText(in: rect.insetBy(dx: 10, dy: 4)) }
+    @objc private func activate() { onActivate?() }
+    override func accessibilityActivate() -> Bool {
+        guard let onActivate else { return false }
+        onActivate(); return true
+    }
+    func diagnostic(_ severity: FeatureDiagnosticSeverity?) {
+        diagnosticSeverity = severity
+        diagnosticBadge.isHidden = severity == nil
+        diagnosticBadge.image = severity.flatMap(FeatureDiagnosticStyle.image)
+        diagnosticBadge.tintColor = severity.map(FeatureDiagnosticStyle.color)
+        if let severity { textColor = FeatureDiagnosticStyle.textColor(severity) }
+        setNeedsDisplay(); invalidateIntrinsicContentSize()
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        diagnosticBadge.frame = CGRect(x: 10, y: max(4, (bounds.height - 18) / 2), width: 18, height: 18)
+    }
+    private var leadingInset: CGFloat { diagnosticBadge.isHidden ? 10 : 36 }
+    override func drawText(in rect: CGRect) {
+        super.drawText(in: rect.inset(by: UIEdgeInsets(top: 4, left: leadingInset, bottom: 4, right: 10)))
+    }
     override func sizeThatFits(_ size: CGSize) -> CGSize {
-        let fitted = super.sizeThatFits(CGSize(width: max(0, size.width - 20), height: max(0, size.height - 8)))
-        return CGSize(width: fitted.width + 20, height: fitted.height + 8)
+        let padding = leadingInset + 10
+        let fitted = super.sizeThatFits(CGSize(width: max(0, size.width - padding), height: max(0, size.height - 8)))
+        return CGSize(width: fitted.width + padding, height: fitted.height + 8)
     }
 }
 
@@ -539,6 +616,7 @@ final class WorkspaceButton: UIButton {
     private var systemIcon: String?
     private var compactIcon = false
     private var choiceCheck: UIImageView?
+    private var diagnosticBadge: UIImageView?
     private var isHistoryAction: Bool {
         iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"
     }
@@ -675,6 +753,34 @@ final class WorkspaceButton: UIButton {
         if value { accessibilityTraits.insert(.selected) }
         else { accessibilityTraits.remove(.selected) }
         if choiceCheck != nil { styleChoice() }
+    }
+
+    func diagnostic(_ severity: FeatureDiagnosticSeverity?) {
+        var config = configuration
+        config?.background.strokeColor = severity.map(FeatureDiagnosticStyle.color) ?? .clear
+        config?.background.strokeWidth = severity == nil ? 0 : 2
+        config?.contentInsets.trailing = severity != nil && !compactIcon ? 24 : 8
+        configuration = config
+        guard let severity else { diagnosticBadge?.isHidden = true; return }
+        if diagnosticBadge == nil {
+            let badge = UIImageView()
+            badge.translatesAutoresizingMaskIntoConstraints = false
+            badge.isUserInteractionEnabled = false; badge.isAccessibilityElement = false
+            badge.contentMode = .scaleAspectFit
+            badge.backgroundColor = WorkspaceStyle.surface
+            badge.layer.cornerRadius = 4
+            addSubview(badge)
+            NSLayoutConstraint.activate([
+                badge.topAnchor.constraint(equalTo: topAnchor, constant: 1),
+                badge.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -1),
+                badge.widthAnchor.constraint(equalToConstant: 16),
+                badge.heightAnchor.constraint(equalToConstant: 16)
+            ])
+            diagnosticBadge = badge
+        }
+        diagnosticBadge?.image = FeatureDiagnosticStyle.image(severity)
+        diagnosticBadge?.tintColor = FeatureDiagnosticStyle.color(severity)
+        diagnosticBadge?.isHidden = false
     }
 }
 
@@ -844,18 +950,27 @@ final class WorkspacePropertyRow: UIStackView {
 /// Inline validation/progress is used by both panels and numeric transactions.
 final class WorkspaceMessage: UIStackView {
     private let spinner = UIActivityIndicatorView(style: .medium)
+    private let diagnosticBadge = UIImageView()
     private let label = WorkspaceStyle.label(.footnote, secondary: true)
     init() {
         super.init(frame: .zero)
         axis = .horizontal; alignment = .center; spacing = 8
-        addArrangedSubview(spinner); addArrangedSubview(label)
+        diagnosticBadge.contentMode = .scaleAspectFit; diagnosticBadge.isAccessibilityElement = false
+        diagnosticBadge.widthAnchor.constraint(equalToConstant: 18).isActive = true
+        diagnosticBadge.heightAnchor.constraint(equalToConstant: 18).isActive = true
+        diagnosticBadge.isHidden = true
+        addArrangedSubview(spinner); addArrangedSubview(diagnosticBadge); addArrangedSubview(label)
         spinner.hidesWhenStopped = true
         isHidden = true
     }
     required init(coder: NSCoder) { super.init(coder: coder) }
-    func show(_ message: String?, error: Bool = false, busy: Bool = false) {
+    func show(_ message: String?, error: Bool = false, warning: Bool = false, busy: Bool = false) {
         label.text = message
-        label.textColor = error ? WorkspaceStyle.error : WorkspaceStyle.secondary
+        let severity: FeatureDiagnosticSeverity? = error ? .error : (warning ? .warning : nil)
+        label.textColor = severity.map(FeatureDiagnosticStyle.textColor) ?? WorkspaceStyle.secondary
+        diagnosticBadge.isHidden = severity == nil
+        diagnosticBadge.image = severity.flatMap(FeatureDiagnosticStyle.image)
+        diagnosticBadge.tintColor = severity.map(FeatureDiagnosticStyle.color)
         if busy { spinner.startAnimating() } else { spinner.stopAnimating() }
         isHidden = message?.isEmpty != false && !busy
         accessibilityLabel = message
@@ -1748,8 +1863,9 @@ final class ModellingInspector: UIStackView {
     private func showFeedback(_ state: ModellingState) {
         let status = validated == nil ? entryHint : WorkspaceStyle.text("preview_ready")
         let details = (state.feedback ?? []).filter { $0 != "ui.ipados.attachment.hint" }.map(ModellingText.label)
-        message.show(compact ? status : ([status] + details).joined(separator: "\n"))
-        feedback.show(compact ? details.joined(separator: "\n") : nil)
+        let warning = !details.isEmpty && state.workspace.modelling?.attentionFeatures.contains(where: { $0.diagnosticSeverity == .warning }) == true
+        message.show(compact ? status : ([status] + details).joined(separator: "\n"), warning: !compact && warning)
+        feedback.show(compact ? details.joined(separator: "\n") : nil, warning: warning)
     }
     func beginContextRefresh() {
         contextRefreshing = true; validated = nil; busy = false; inputWhileBusy = false

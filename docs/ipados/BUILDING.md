@@ -183,6 +183,15 @@ build does not waive failures; see HANDOFF for results actually obtained.
 
 ## Signing and runtime validation
 
+Debug `--feature-diagnostics-check` builds disposable warning and error fixtures
+through the shared evaluator. It checks yellow warning and red error badges,
+affected history entries and Model rows, named status messages, direct opening
+of feature diagnostics, and clearing after repair. It writes
+`feature-diagnostics-check.json` and thirteen `feature-diagnostics-*.png` captures
+in Documents, covering Light and Dark appearance. No library project is opened
+or autosaved. Reserve the physical iPad through the task protocol; these checks
+use synthetic UIKit activation and do not verify physical contacts.
+
 For installation, supply your own bundle ID/team and provisioning profile in
 local Xcode settings, select a registered physical iPad, and enable its developer
 mode as required. No team, credential, profile or signing secret is checked in.

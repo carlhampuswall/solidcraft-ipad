@@ -934,6 +934,18 @@ struct WorkspaceChecks {
             try require(faceHistory.documentPosition(for: visible) == document, "history scrub stopped on an internal boundary")
         }
         try require(faceHistory.documentPosition(for: -1) == nil && faceHistory.documentPosition(for: 4) == nil, "invalid history positions were accepted")
+        let diagnosticsJSON = Data(#"{"tools":[],"timeline":[{"id":1,"name":"Attachment","kind":"Sketch","order":0,"suppressed":false,"warning":"Face changed"},{"id":2,"name":"Round","kind":"Fillet","order":1,"suppressed":false,"error":"Radius too large","warning":"Older warning"},{"id":3,"name":"Cached cut","kind":"Cut","order":2,"suppressed":false,"stale":true},{"id":4,"name":"Suppressed","kind":"Fillet","order":3,"suppressed":true,"error":"Old error"},{"id":5,"name":"Future","kind":"Fillet","order":4,"suppressed":false,"error":"Old error"}],"position":4,"parameters":[]}"#.utf8)
+        let diagnostics = try JSONDecoder().decode(ModellingPresentation.self, from: diagnosticsJSON)
+        try require(diagnostics.attentionFeatures.map(\.id) == [1, 2, 3], "suppressed/future diagnostics leaked into current attention markers")
+        try require(diagnostics.timeline[0].diagnosticSeverity == .warning, "a valid feature warning was promoted to an error")
+        try require(diagnostics.timeline[1].diagnosticSeverity == .error && diagnostics.timeline[2].diagnosticSeverity == .error,
+                    "an error or stale displayed shape was downgraded to a warning")
+        try require(diagnostics.firstAttentionFeature?.id == 2, "an earlier warning hid a later failed feature")
+        let warningOnly = ModellingPresentation(tools: [], timeline: [diagnostics.timeline[0]], position: nil, parameters: [])
+        try require(warningOnly.firstAttentionFeature?.id == 1 && warningOnly.firstAttentionFeature?.diagnosticSeverity == .warning,
+                    "warning-only documents lost their affected feature")
+        let repaired = ModellingPresentation(tools: [], timeline: faceHistory.timeline, position: nil, parameters: [])
+        try require(repaired.attentionFeatures.isEmpty && repaired.firstAttentionFeature == nil, "healthy features retained an attention marker")
         let finishedModelJSON = Data(#"{"ok":true,"result":{"token":null,"valid":true,"committed":true,"workspace":{"modelling":{"tools":[],"timeline":[],"parameters":[]}},"viewport":{}}}"#.utf8)
         let finishedModel = try JSONDecoder().decode(ModelEnvelope.self, from: finishedModelJSON).result
         try require(finishedModel.token == nil && finishedModel.fields == nil && finishedModel.params == nil, "completed model response requires an active form")

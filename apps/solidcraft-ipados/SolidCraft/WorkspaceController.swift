@@ -403,7 +403,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.relayoutPanels()
         }
         featureHistory.onSelect = { [weak self] id in
-            self?.activateHistoryFeature(id)
+            guard let self else { return }
+            if self.state?.modelling?.attentionFeatures.contains(where: { $0.id == id }) == true {
+                self.showFeatureDiagnostics(id)
+            } else { self.activateHistoryFeature(id) }
         }
         featureHistory.onShowActions = { [weak self] id, source in self?.showHistoryFeatureActions(id, source: source) }
         featureHistory.onMove = { [weak self] position in
@@ -595,6 +598,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkEdgeLengthOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--selection-taps-check") {
                     self.developmentCheckStarted = true; self.checkSelectionTapsOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--feature-diagnostics-check") {
+                    self.developmentCheckStarted = true; self.checkFeatureDiagnosticsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
                     self.startGroupedInspectorCheckIfReady()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
@@ -1012,6 +1017,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         content.imageProperties.reservedLayoutSize = CGSize(width: 24, height: 24)
         content.imageToTextPadding = 8
         content.secondaryText = nil
+        let diagnostic = state?.modelling?.attentionFeatures.first {
+            row.entity?.type == "feature" && row.entity?.id?.readout == String($0.id)
+        }
+        if let severity = diagnostic?.diagnosticSeverity {
+            content.secondaryText = FeatureDiagnosticStyle.label(severity)
+            content.secondaryTextProperties.color = FeatureDiagnosticStyle.textColor(severity)
+        }
         content.textProperties.font = .preferredFont(forTextStyle: parents.contains(row.id) ? .headline : .body)
         content.textProperties.numberOfLines = 1
         content.textProperties.color = row.browser?.drawn == false ? .secondaryLabel : .label
@@ -1025,6 +1037,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let selected = row.selected || selectedAssemblyRowID == row.id
         background.backgroundColor = selected ? WorkspaceStyle.selectionFill : .clear
         background.cornerRadius = 8
+        if let severity = diagnostic?.diagnosticSeverity {
+            background.strokeColor = FeatureDiagnosticStyle.color(severity)
+            background.strokeWidth = 2
+        }
         cell.backgroundConfiguration = background
         let controls = UIStackView()
         controls.axis = .horizontal
@@ -1057,6 +1073,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         cell.accessoryView = controls.arrangedSubviews.isEmpty ? nil : controls
         cell.accessibilityLabel = browserName(row)
         cell.accessibilityValue = row.browser?.drawn.map { BrowserText.text($0 ? "visible" : "hidden") }
+        if let diagnostic {
+            cell.accessibilityValue = [cell.accessibilityValue, FeatureDiagnosticStyle.title(diagnostic), FeatureDiagnosticStyle.detail(diagnostic)]
+                .compactMap { $0 }.joined(separator: ". ")
+        }
         cell.accessibilityCustomActions = browserMenu(row).children.map { item in
             UIAccessibilityCustomAction(name: item.title) { [weak self, weak cell] _ in
                 guard let self, let cell, self.browserCanChange, self.presentedViewController == nil else { return false }
@@ -1194,6 +1214,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             if case .failure = result { self.historyActivation = nil }
             else { self.session.refreshWorkspace() }
         }
+    }
+
+    private func showFeatureDiagnostics(_ id: UInt64) {
+        guard browserCanChange, state?.sketch == nil, presentedViewController == nil,
+              let document = state?.document_id,
+              state?.modelling?.attentionFeatures.contains(where: { $0.id == id }) == true else { return }
+        historyActivation = nil
+        featureHistory.cancelPlayback()
+        historyExpanded = true; featureHistory.setExpanded(true)
+        selectHistoryFeature(id) { [weak self] result in
+            guard let self, case .success = result, self.state?.document_id == document else { return }
+            self.inspectorOpen = true; self.browserOpen = false
+            self.rebuildInspector(); self.relayoutPanels()
+        }
+        relayoutPanels()
     }
 
     private func openActivatedHistoryFeature() {
@@ -1671,7 +1706,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let error = feature.error {
             let message = WorkspaceMessage(); message.show(error, error: true); properties.addArrangedSubview(message)
         }
-        if let warning = feature.warning { let message = WorkspaceMessage(); message.show(warning); properties.addArrangedSubview(message) }
+        if let warning = feature.warning { let message = WorkspaceMessage(); message.show(warning, warning: true); properties.addArrangedSubview(message) }
         if feature.stale == true { let message = WorkspaceMessage(); message.show(ModellingText.text("stale_geometry"), error: true); properties.addArrangedSubview(message) }
         if feature.can_reattach == true {
             let repair = WorkspaceButton(NativeText.value("ui.ipados.attachment.repair")) { [weak self] in
@@ -3801,6 +3836,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func updateStatus() {
+        status.diagnostic(nil)
+        status.onActivate = nil; status.accessibilityHint = nil
         if let failure { status.textColor = WorkspaceStyle.error; status.text = failure; return }
         status.textColor = WorkspaceStyle.secondary
         if planeChoosing { status.text = SketchText.text("tap_plane"); return }
@@ -3809,9 +3846,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             status.text = ModellingText.text("draft_hint") + "\n" + (cancelToolsOnDismiss ? WorkspaceStyle.text("tool_dismiss_hint") : ModellingText.text("navigation_hint"))
             return
         }
-        if state?.sketch == nil, state?.modelling?.timeline.contains(where: { $0.error != nil || $0.stale == true }) == true {
-            status.textColor = WorkspaceStyle.error
-            status.text = ModellingText.text("repair_required")
+        if state?.sketch == nil, let model = state?.modelling,
+           let feature = model.firstAttentionFeature, let severity = feature.diagnosticSeverity {
+            status.diagnostic(severity)
+            let count = model.attentionFeatures.count - 1
+            let title = count == 0 ? FeatureDiagnosticStyle.title(feature) : HistoryText.text("feature_diagnostics_more")
+                .replacingOccurrences(of: "{severity}", with: FeatureDiagnosticStyle.label(severity))
+                .replacingOccurrences(of: "{count}", with: NumberFormatter.localizedString(from: NSNumber(value: count), number: .decimal))
+                .replacingOccurrences(of: "{feature}", with: feature.name)
+            status.text = title + "\n" + HistoryText.text("show_diagnostic")
+            status.accessibilityHint = HistoryText.text("show_diagnostic")
+            status.onActivate = { [weak self] in self?.showFeatureDiagnostics(feature.id) }
             return
         }
         if !lastOperationFeedback.isEmpty {
@@ -4500,6 +4545,138 @@ private extension FoundationController {
             }
             self.checkGroupedInspectorOnDevice()
         }
+    }
+
+    /// Real evaluator warnings/errors on disposable documents, with native badges
+    /// and diagnostic navigation. No library project is loaded or autosaved.
+    private func checkFeatureDiagnosticsOnDevice() {
+        let started = Date().timeIntervalSince1970, expected = generation
+        let savedStyle = overrideUserInterfaceStyle
+        var finished = false, stages: [[String: Any]] = []
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        func finish(_ error: String? = nil) {
+            guard !finished else { return }; finished = true
+            gridAxesCheckAfterFrame = nil; overrideUserInterfaceStyle = savedStyle
+            let report: [String: Any] = ["passed": error == nil, "error": error ?? "", "started_at": started,
+                "completed_at": Date().timeIntervalSince1970, "stages": stages,
+                "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                "library_project_untouched": session.currentProject == nil,
+                "coverage": "Real evaluator warnings/errors, production UIKit history/browser/inspector and synthetic activation on physical iPad; physical contacts unverified"]
+            do { try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("feature-diagnostics-check.json"), options: .atomic) }
+            catch { NSLog("Feature diagnostic evidence failed: %@", String(describing: error)) }
+            NSLog("Feature diagnostics check %@", error == nil ? "PASS" : "FAIL: " + (error ?? ""))
+        }
+        func wait(_ ready: @escaping () -> Bool, remaining: Int = 200, then next: @escaping () -> Void) {
+            guard !finished else { return }
+            guard active, generation == expected else { finish("Workspace lifecycle changed"); return }
+            if ready() { next(); return }
+            guard remaining > 0 else { finish("Native diagnostic state timed out"); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { wait(ready, remaining: remaining - 1, then: next) }
+        }
+        func button(_ id: String, in root: UIView? = nil) -> WorkspaceButton? {
+            guard let root = root ?? view else { return nil }
+            if root.accessibilityIdentifier == id { return root as? WorkspaceButton }
+            return root.subviews.compactMap { button(id, in: $0) }.first
+        }
+        func capture(_ name: String, feature: ModellingPresentation.Feature? = nil) {
+            view.layoutIfNeeded()
+            let surface: UIView = view.window ?? view
+            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+            do {
+                guard let png = image.pngData() else { finish("Screenshot encoding failed"); return }
+                let filename = "feature-diagnostics-" + name + ".png"
+                try png.write(to: directory.appendingPathComponent(filename), options: .atomic)
+                stages.append(["name": name, "screenshot": filename, "status": status.text ?? "",
+                    "feature": feature?.name ?? "", "severity": feature?.diagnosticSeverity?.rawValue ?? "none"])
+            } catch { finish(String(describing: error)) }
+        }
+        func commands(_ values: [(String, [String: Any])], index: Int = 0, then next: @escaping () -> Void) {
+            guard !finished else { return }
+            guard index < values.count else { wait({ self.pending.isEmpty }, then: next); return }
+            session.command(values[index].0, params: values[index].1) { result in
+                if case .failure(let error) = result,
+                   !(["sketch.delete", "sketch.finish"].contains(values[index].0) && ["evaluation", "unresolved_reference"].contains(error.code)) {
+                    finish("Fixture step " + String(index) + ": " + error.description); return
+                }
+                commands(values, index: index + 1, then: next)
+            }
+        }
+        func inspect(_ severity: FeatureDiagnosticSeverity, theme: UIUserInterfaceStyle, then next: @escaping () -> Void) {
+            guard let feature = state?.modelling?.firstAttentionFeature, feature.diagnosticSeverity == severity else {
+                finish("Evaluator did not publish the expected " + severity.rawValue); return
+            }
+            overrideUserInterfaceStyle = theme
+            failure = nil; historyExpanded = false; featureHistory.setExpanded(false)
+            browserOpen = false; inspectorOpen = false; relayoutPanels(); updateStatus()
+            let color = FeatureDiagnosticStyle.color(severity).resolvedColor(with: traitCollection)
+            guard status.diagnosticSeverity == severity, status.text?.contains(feature.name) == true,
+                  button("workspace-feature-history-toggle")?.configuration?.background.strokeWidth == 2 else {
+                finish("Status or collapsed History lost its named severity indicator"); return
+            }
+            let name = severity.rawValue + (theme == .dark ? "-dark" : "-light")
+            capture(name + "-collapsed", feature: feature)
+            guard status.accessibilityActivate() else { finish("Diagnostic status is not actionable"); return }
+            wait({ self.inspectorOpen && self.state?.selection.contains(where: { $0.type == "feature" && $0.id?.readout == String(feature.id) }) == true }) {
+                self.view.layoutIfNeeded()
+                guard self.modellingToken == nil, self.state?.sketch == nil,
+                      let item = button("workspace-history-feature-" + String(feature.id)),
+                      item.configuration?.background.strokeWidth == 2,
+                      item.configuration?.background.strokeColor?.resolvedColor(with: self.traitCollection).isEqual(color) == true,
+                      item.accessibilityValue?.contains(FeatureDiagnosticStyle.label(severity)) == true else {
+                    finish("Affected feature was not visibly marked or details opened an editor"); return
+                }
+                capture(name + "-details", feature: feature)
+                self.browserOpen = true; self.inspectorOpen = false; self.collapsed.removeAll(); self.updateRows(); self.relayoutPanels()
+                guard let index = self.visibleRows.firstIndex(where: { $0.entity?.type == "feature" && $0.entity?.id?.readout == String(feature.id) }) else {
+                    finish("Affected feature is missing from Model"); return
+                }
+                let path = IndexPath(row: index, section: 1)
+                self.table.scrollToRow(at: path, at: .middle, animated: false); self.table.layoutIfNeeded()
+                guard let cell = self.table.cellForRow(at: path), let content = cell.contentConfiguration as? UIListContentConfiguration,
+                      content.secondaryText == FeatureDiagnosticStyle.label(severity), cell.backgroundConfiguration?.strokeWidth == 2 else {
+                    finish("Model row lost its severity label or outline"); return
+                }
+                capture(name + "-model", feature: feature); next()
+            }
+        }
+        let warningFixture: [(String, [String: Any])] = [
+            ("file.new", [:]), ("sketch.create", ["plane":"XY","name":"Base outline"]),
+            ("sketch.rectangle.two_point", ["p0":[0,0],"p1":[40,20]]), ("sketch.finish", [:]),
+            ("solid.extrude", ["distance":"10 mm","name":"Extrude1","body_name":"Base"]),
+            ("sketch.create", ["plane":["face":[10,10,10]],"name":"Stand Base","project_edges":false]),
+            ("sketch.rectangle.two_point", ["p0":[2,2],"p1":[8,8]]), ("sketch.finish", [:]),
+            ("sketch.edit", ["sketch":"Base outline"]), ("sketch.delete", ["entities":["l2"]]),
+            ("sketch.line", ["points":[[40,0],[40,20]]]), ("sketch.finish", [:]),
+            ("timeline.edit", ["feature":"Extrude1","set":["profiles":[["point":[10,10]]]]]), ("view.fit", [:])]
+        let errorFixture: [(String, [String: Any])] = [
+            ("file.new", [:]), ("solid.box", ["length":10,"width":10,"height":10,"body_name":"Stock"]),
+            ("solid.remove", ["bodies":["Stock"]]),
+            ("solid.box", ["corner":[30,0,0],"length":2,"width":3,"height":4,"body_name":"Independent","operation":"new"]),
+            ("timeline.delete", ["feature":1]), ("view.fit", [:])]
+        guard session.currentProject == nil else { finish("Diagnostic loaded a library project"); return }
+        commands(warningFixture) {
+            inspect(.warning, theme: .light) {
+                inspect(.warning, theme: .dark) {
+                    commands(errorFixture) {
+                        inspect(.error, theme: .light) {
+                            inspect(.error, theme: .dark) {
+                                commands([("edit.undo", [:])]) {
+                                    wait({ self.state?.modelling?.attentionFeatures.isEmpty == true }) {
+                                        self.failure = nil; self.updateStatus(); self.updateAvailability()
+                                        guard button("workspace-feature-history-toggle")?.configuration?.background.strokeWidth == 0 else {
+                                            finish("Repaired model kept its History indicator"); return
+                                        }
+                                        capture("repaired"); finish()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 90) { if !finished { finish("Diagnostic timed out") } }
     }
 
     /// Production repair controls on a disposable changed-face fixture. No library

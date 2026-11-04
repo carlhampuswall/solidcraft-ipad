@@ -681,6 +681,11 @@ enum PresentationJSON: Decodable, Equatable {
 
 /// Engine-authored presentation only. Native forms retain opaque references and
 /// raw expressions; Rust owns eligibility, evaluation, history and persistence.
+enum FeatureDiagnosticSeverity: String {
+    case warning
+    case error
+}
+
 struct ModellingPresentation: Decodable {
     struct Tool: Decodable { let id: String; let label: String }
     struct Feature: Decodable, Equatable {
@@ -694,6 +699,11 @@ struct ModellingPresentation: Decodable {
         let can_reattach: Bool?
         let order: Int
         let document_order: Int?
+        var diagnosticSeverity: FeatureDiagnosticSeverity? {
+            guard !suppressed else { return nil }
+            if error?.isEmpty == false || stale == true { return .error }
+            return warning?.isEmpty == false ? .warning : nil
+        }
     }
     struct Parameter: Decodable { let name: String; let expression: String; let unit: String; let value: Double? }
     let tools: [Tool]
@@ -701,6 +711,12 @@ struct ModellingPresentation: Decodable {
     let position: Int?
     let parameters: [Parameter]
     var activeFeatureCount: Int { min(timeline.count, max(0, position ?? timeline.count)) }
+    var attentionFeatures: [Feature] {
+        timeline.filter { $0.order < activeFeatureCount && $0.diagnosticSeverity != nil }
+    }
+    var firstAttentionFeature: Feature? {
+        attentionFeatures.first { $0.diagnosticSeverity == .error } ?? attentionFeatures.first
+    }
     func documentPosition(for visiblePosition: Int) -> Int? {
         guard (0...timeline.count).contains(visiblePosition) else { return nil }
         guard visiblePosition > 0 else { return 0 }
