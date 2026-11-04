@@ -1,11 +1,13 @@
 //! Source-aware interaction ownership. UIKit sends values, never retained touches.
 //! All camera changes delegate to the existing engine navigation implementation.
+use solidcore_record::Vec3;
+use solidcraft_engine::geom::prelude::*;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use solidcraft_engine::{Sel, geom::Vec3};
+use solidcraft_engine::Sel;
 
 use crate::{AdapterError, PreparedTool, RadiusHandle, SceneSnapshot, ToolEvent, ToolOperation, ToolPhase, ToolWork, Viewport, error};
 
@@ -498,7 +500,7 @@ impl Viewport {
             |e| e.value,
         )))
     }
-    pub(crate) fn plane_point(&self, point: [f64; 2], plane: solidcraft_engine::geom::Plane) -> Option<Vec3> {
+    pub(crate) fn plane_point(&self, point: [f64; 2], plane: solidcore_record::Plane) -> Option<Vec3> {
         let p = self.metrics.pixel(point)?;
         let [w, h] = self.metrics.pixels();
         let (o, d) = self.camera.ray(p[0], p[1], w, h);

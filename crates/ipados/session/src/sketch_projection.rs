@@ -1,11 +1,12 @@
 //! Native presentation and transaction composition over the upstream sketch commands.
 use serde::Deserialize;
 use serde_json::{Value, json};
+use solidcraft_engine::geom::prelude::*;
 use solidcraft_engine::{doc::FeatureKind, sketch::CurveKind};
 use std::collections::BTreeSet;
 
 use crate::{AdapterError, SceneSnapshot, SessionAdapter, Viewport, error};
-use solidcraft_engine::geom::Vec3;
+use solidcore_record::Vec3;
 use std::sync::Arc;
 
 #[derive(Deserialize)]
@@ -72,7 +73,7 @@ impl SessionAdapter {
     }
 
     pub(crate) fn projection_geometry(&self) -> Vec<ProjectionSource> {
-        let world = self.session.world_state();
+        let Ok(world) = self.session.world_state() else { return Vec::new() };
         self.projection_sources()
             .iter()
             .filter_map(|source| {
@@ -82,7 +83,7 @@ impl SessionAdapter {
                     .as_array()?
                     .iter()
                     .filter_map(|entity| {
-                        let local: Vec<solidcraft_engine::geom::Vec2> = serde_json::from_value(entity["polyline"].clone()).ok()?;
+                        let local: Vec<solidcore_record::Vec2> = serde_json::from_value(entity["polyline"].clone()).ok()?;
                         Some(ProjectionEntity {
                             id: entity["id"].as_str()?.into(),
                             point: entity["kind"] == "point",
@@ -306,7 +307,7 @@ impl Viewport {
         let palette = solidcraft_engine::view::Palette::DEFAULT;
         let unit = 2. * self.camera.half_height() / self.metrics.height_points.max(1.);
         // Markers use the destination sketch axes; all positions come from engine world state.
-        let plane = model.sketch_plane.unwrap_or(solidcraft_engine::geom::Plane::XY);
+        let plane = model.sketch_plane.unwrap_or(solidcore_record::Plane::XY);
         for source in model.projection_sources.iter().filter(|s| picking.source.is_none_or(|id| s.id == id)) {
             for entity in &source.entities {
                 if entity.point && picking.filter == "curves" {

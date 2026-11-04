@@ -8,9 +8,10 @@
 use crate::ui_kit::{Container, Surface};
 use egui::{Pos2, vec2};
 use serde_json::{Value, json};
+use solidcore_record::Vec2;
 use solidcraft_engine::doc::Document;
 use solidcraft_engine::doc::expr::{Kind as ValueKind, definition};
-use solidcraft_engine::geom::Vec2;
+use solidcraft_engine::geom::prelude::*;
 
 use crate::SolveApp;
 use crate::theme::Tokens;
@@ -223,7 +224,7 @@ fn on_curve_axis(app: &SolveApp, t: &Tool, p: &(Vec2, Option<String>)) -> Option
     if ang == v.angle() {
         return None;
     }
-    let st = app.session.world_state();
+    let st = crate::open_meshing::session_world(&app.session);
     let sk = &st.sketch(app.session.active_sketch?)?.sketch;
     let shape = sk.shape(sk.curve_index(curve)?)?;
     let dir = Vec2::from_angle(ang);
@@ -567,7 +568,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui, proj: &Proj) {
 fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option<Vec2> {
     let tk = Tokens::get();
     let sid = app.session.active_sketch?;
-    let st = app.session.world_state();
+    let st = crate::open_meshing::session_world(&app.session);
     let plane = st.sketch(sid)?.plane;
     // When the pointer is over the value box itself after releasing on a shared centre (#8899),
     // the tool may have no hover for a frame: still show the boxes from the first point.
@@ -648,7 +649,7 @@ fn boxes(app: &SolveApp, ui: &mut egui::Ui, proj: &Proj, t: &mut Tool) -> Option
             ui.ctx(),
             |ui| {
                 let fill = if b.locked { tk.accent_soft } else { tk.panel };
-                field_frame.fill(fill).show(ui, |ui| {
+                Container::show_backing(ui, field_frame.fill(fill), |ui| {
                     let r = crate::ui_kit::placement_field(ui, id, &mut b.value, b.label);
                     // A completion gets first use of forward Tab. Shift+Tab always moves back;
                     // the box reached by egui's generic traversal must not complete its text.
@@ -717,6 +718,15 @@ fn polygon_input_positions(bounds: egui::Rect, sizes: &[egui::Vec2], view: Optio
 
 /// About the size of a value box, for keeping it in view.
 pub(crate) const BOX: egui::Vec2 = egui::vec2(76.0, 24.0);
+
+/// Whether `p` is over the active tool's own floating boxes: a value box or the construction
+/// line's construction/normal switch. #10600: these must not swallow a click that lands on a
+/// sketch point, so the viewport asks before letting one take the click.
+pub(crate) fn over_tool_boxes(app: &SolveApp, ctx: &egui::Context, p: egui::Pos2) -> bool {
+    let Some(t) = app.tool.as_ref() else { return false };
+    (0..t.dims.len()).any(|i| ctx.memory(|m| m.area_rect(egui::Id::new(("sc_dim_area", i)))).is_some_and(|r| r.contains(p)))
+        || ctx.memory(|m| m.area_rect(egui::Id::new("sc_construction_switch"))).is_some_and(|r| r.contains(p))
+}
 
 /// Where a value box whose top left would be `pos` goes so it stays in the drawing area `view`:
 /// as it is when it fits; else mirrored through the pointer (a box set off the cursor, past the

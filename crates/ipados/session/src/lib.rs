@@ -29,7 +29,8 @@ pub use modelling::{ModelEdit, PreparedModel};
 pub use picking::{PickFilter, PickScene, ViewportMetrics};
 pub use sketch_projection::SketchProjection;
 pub use sketching::SketchSnapshot;
-pub use solidcraft_engine::geom::Vec3 as WorldPoint;
+pub use solidcore_record::Vec3 as WorldPoint;
+use solidcraft_engine::geom::prelude::*;
 pub use viewport::{RenderSnapshot, Viewport};
 pub use workspace::{NumericEdit, PreparedNumeric};
 
@@ -58,7 +59,8 @@ impl From<EngineError> for AdapterError {
             EngineError::Disabled(_, _) => "disabled",
             EngineError::BadParams { .. } => "bad_params",
             EngineError::Internal(_, _) => "internal",
-            EngineError::Other(_) => "engine",
+            EngineError::Other(_) | EngineError::Panel(_) => "engine",
+            EngineError::Refused { .. } => "refused",
         };
         Self { code, message: error.to_string() }
     }
@@ -100,8 +102,8 @@ pub struct SceneSnapshot {
     pub(crate) feature_feedback: std::collections::BTreeMap<u64, feature_selection::FeatureFeedback>,
     pub sketch: Option<SketchSnapshot>,
     pub(crate) projection_sources: Vec<sketch_projection::ProjectionSource>,
-    pub sketch_plane: Option<solidcraft_engine::geom::Plane>,
-    pub construction_planes: Vec<(String, solidcraft_engine::geom::Plane)>,
+    pub sketch_plane: Option<solidcore_record::Plane>,
+    pub construction_planes: Vec<(String, solidcore_record::Plane)>,
     pub occurrence_paths: std::collections::BTreeMap<String, Vec<u64>>,
     pub occurrences: Vec<Vec<u64>>,
     pub joint_frames: Vec<solidcraft_engine::doc::Mat>,
@@ -319,9 +321,10 @@ impl SessionAdapter {
             view::Guides { grid: false, axes: false },
         );
         self.session.selection = selection;
-        let world = self.session.world_state();
+        let scene = scene?;
+        let world = self.session.world_state()?;
         let names: Vec<String> = world.bodies.iter().filter(|b| self.session.body_visible(&b.name)).map(|b| b.name.clone()).collect();
-        let mut bounds = view::bounds(&self.session);
+        let mut bounds = view::bounds(&self.session)?;
         // Shared curve bounds omit standalone points. Include the active
         // sketch's visible points so Fit also works for a point-only sketch.
         for sketch in world.sketches.iter().filter(|sketch| self.session.active_sketch == Some(sketch.feature)) {
@@ -373,7 +376,7 @@ impl SessionAdapter {
             feature_feedback: self.feature_feedback(&world),
             sketch: self.sketch_snapshot(),
             projection_sources: self.projection_geometry(),
-            sketch_plane: view::open_sketch_plane(&self.session),
+            sketch_plane: view::open_sketch_plane(&self.session)?,
             construction_planes: world
                 .construct
                 .iter()

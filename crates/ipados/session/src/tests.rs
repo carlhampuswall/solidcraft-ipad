@@ -1,6 +1,7 @@
 use super::*;
 use crate::picking::project;
-use solidcraft_engine::{doc::FeatureKind, geom::Vec3};
+use solidcore_record::Vec3;
+use solidcraft_engine::doc::FeatureKind;
 
 fn metrics(w: f64, h: f64, scale: f64) -> ViewportMetrics {
     ViewportMetrics { width_points: w, height_points: h, scale, origin_points: [0.0; 2] }
@@ -101,7 +102,7 @@ fn viewport_grid_toggle_preserves_references_camera_model_and_history_in_3d_and_
     viewport.begin_update(2);
     assert!(viewport.install(2, adapter.snapshot().unwrap()));
     assert!(viewport.snapshot().unwrap().guides.grid.is_empty(), "hidden survives theme and scene changes");
-    viewport.command("view.sketch_plane", &json!({"plane":solidcraft_engine::geom::Plane::XY})).unwrap();
+    viewport.command("view.sketch_plane", &json!({"plane":solidcore_record::Plane::XY})).unwrap();
     assert!(viewport.snapshot().unwrap().guides.grid.is_empty(), "the same toggle applies to planar sketch views");
     viewport.command("view.grid", &json!({"visible":true})).unwrap();
     assert!(!viewport.snapshot().unwrap().guides.grid.is_empty());
@@ -220,7 +221,7 @@ fn viewport_integrated_axes_preference_retains_legacy_defaults_and_validates_ato
 
 #[test]
 fn viewport_integrated_axes_use_sketch_plane_world_colours_and_keep_offset_local_guides() {
-    use solidcraft_engine::geom::Plane;
+    use solidcore_record::Plane;
     let offset = Plane::new(Vec3::new(5., 6., 7.), Vec3::Y, Vec3::Z).unwrap();
     let tilted = Plane::new(Vec3::new(5., 6., 7.), Vec3::new(1., 1., 0.), Vec3::Z).unwrap();
     for (plane, expected) in [(Plane::XZ, [true, false, true]), (Plane::YZ, [false, true, true]), (offset, [false; 3]), (tilted, [false; 3])] {
@@ -761,11 +762,12 @@ fn finished_profile_pencil_selection_seeds_the_exact_extrusion_region() {
     let index = adapter
         .session
         .world_state()
+        .unwrap()
         .sketch(sketch)
         .unwrap()
         .profiles
         .iter()
-        .position(|p| p.region.contains(solidcraft_engine::geom::Vec2::new(20., 0.)))
+        .position(|p| p.region.contains(solidcore_record::Vec2::new(20., 0.)))
         .unwrap();
     let mut view = Viewport::default();
     view.set_metrics(metrics(800., 600., 2.)).unwrap();
@@ -800,10 +802,10 @@ fn finished_profile_projected_partition_wins_over_the_overlapping_source_sketch(
     adapter.project_sketch(request).unwrap();
     adapter.execute("sketch.line", json!({"points":[[-10,-10],[-10,10]],"infer":false})).unwrap();
     adapter.execute("sketch.finish", json!({})).unwrap();
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     let profiles = &world.sketch(sketch).unwrap().profiles;
     assert_eq!(profiles.len(), 2, "ordinary projected lines must partition the sketch");
-    let index = profiles.iter().position(|p| p.region.contains(solidcraft_engine::geom::Vec2::new(-15., 0.))).unwrap();
+    let index = profiles.iter().position(|p| p.region.contains(solidcore_record::Vec2::new(-15., 0.))).unwrap();
     assert!((profiles[index].area - 200.).abs() < 1e-6);
     // Feature recency alone must not decide which overlapping region wins.
     adapter.execute("sketch.create", json!({"plane":"XY","name":"Later outline"})).unwrap();
@@ -874,11 +876,12 @@ fn finished_profile_selection_refresh_keeps_distance_and_replaces_the_region() {
     let index = adapter
         .session
         .world_state()
+        .unwrap()
         .sketch(sketch)
         .unwrap()
         .profiles
         .iter()
-        .position(|p| p.region.contains(solidcraft_engine::geom::Vec2::new(20., 0.)))
+        .position(|p| p.region.contains(solidcore_record::Vec2::new(20., 0.)))
         .unwrap();
     let edit = adapter.refresh_model(&edit, &[Sel::Profile { sketch, index }], None).unwrap();
     assert_eq!(edit.params["distance"], "7 mm");
@@ -895,7 +898,7 @@ fn finished_profile_picking_respects_holes_visibility_depth_filters_and_stale_sc
     adapter.execute("sketch.rectangle.two_point", json!({"p0":[-20,-15],"p1":[20,15]})).unwrap();
     adapter.execute("sketch.rectangle.two_point", json!({"p0":[-5,-5],"p1":[5,5]})).unwrap();
     adapter.execute("sketch.finish", json!({})).unwrap();
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     let ss = world.sketch(sketch).unwrap();
     let mut view = Viewport::default();
     view.set_metrics(ViewportMetrics { origin_points: [17., 83.], ..metrics(800., 600., 3.) }).unwrap();
@@ -906,7 +909,7 @@ fn finished_profile_picking_respects_holes_visibility_depth_filters_and_stale_sc
     for perspective in [false, true] {
         view.command("view.perspective", &json!({"enabled":perspective})).unwrap();
         for local in [[0., 0.], [10., 0.]] {
-            let local = solidcraft_engine::geom::Vec2::new(local[0], local[1]);
+            let local = solidcore_record::Vec2::new(local[0], local[1]);
             let expected = ss.profiles.iter().position(|p| p.region.contains(local)).unwrap();
             assert_eq!(view.pick(point(&view, ss.plane.to_world(local)), None), Some(Sel::Profile { sketch, index: expected }));
         }
@@ -1288,7 +1291,7 @@ fn history_feature_selection_highlights_visible_sketches_construction_and_exact_
     assert!(!view.snapshot().unwrap().highlight.lines.is_empty(), "consumed sketch selection still outlines its source geometry");
 
     let (mut adapter, _, arm) = assembly_pair();
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     let placements = adapter.assembly_body_paths().unwrap();
     let body = world.bodies.iter().find(|b| placements.get(&b.name) == Some(&vec![arm])).unwrap();
     let feature = body.feature;
@@ -1370,7 +1373,7 @@ fn history_navigation_keeps_native_edits_undoable_and_new_edits_clear_redo() {
 #[test]
 fn history_rollback_displays_each_stage_and_rebuilds_all_downstream_features_after_native_edit() {
     let (mut adapter, _, _, extrude) = modelling_plate(40., "10 mm");
-    let body = adapter.session.world_state().bodies[0].name.clone();
+    let body = adapter.session.world_state().unwrap().bodies[0].name.clone();
     adapter.execute("solid.fillet", json!({"edges":[[40,0,5]],"radius":2,"body":body})).unwrap();
     let pattern = adapter.begin_model(817, Some("solid.pattern.rectangular"), None, &[Sel::Body { name: body }]).unwrap();
     let mut params = pattern.params.clone();
@@ -1636,7 +1639,7 @@ fn pencil_edge_tap_does_not_lose_its_target_at_the_pick_tolerance_boundary() {
 }
 
 #[test]
-fn cylindrical_rim_hover_and_taps_select_both_halves_and_keep_other_rims_separate() {
+fn cylindrical_rim_hover_and_taps_select_complete_rims_and_keep_other_rims_separate() {
     let mut adapter = SessionAdapter::new();
     adapter.execute("solid.cylinder", json!({"radius":10,"height":20,"body_name":"Sleeve"})).unwrap();
     adapter.execute("solid.cylinder", json!({"radius":6,"height":22,"base":[0,0,-1],"operation":"cut","targets":["Sleeve"]})).unwrap();
@@ -1660,7 +1663,8 @@ fn cylindrical_rim_hover_and_taps_select_both_halves_and_keep_other_rims_separat
         for perspective in [false, true] {
             view.command("view.perspective", &json!({"enabled":perspective})).unwrap();
             for rim in &rims {
-                assert_eq!(rim.len(), 2);
+                assert_eq!(rim.len(), 1, "solidcore keeps each analytic circle as one closed edge");
+                assert!(mesh.edges[rim[0]].first().unwrap().dist(*mesh.edges[rim[0]].last().unwrap()) < 1e-6);
                 for &edge in rim {
                     view.command("select.clear", &json!({})).unwrap();
                     let points = &mesh.edges[edge];
@@ -1674,7 +1678,7 @@ fn cylindrical_rim_hover_and_taps_select_both_halves_and_keep_other_rims_separat
                     assert!(matches!(&picked, Sel::Edge { index, .. } if *index == edge), "{picked:?}, expected {edge}");
                     feed(&mut view, source, InputPhase::Hover, 0, p, 1.);
                     let frame = view.snapshot().unwrap();
-                    assert_eq!(frame.highlight.lines.len(), 2, "hover must cover the complete rim");
+                    assert_eq!(frame.highlight.lines.len(), rim.len(), "hover must cover the complete rim");
                     for &piece in rim {
                         assert_eq!(frame.highlight.lines.iter().filter(|line| line.points == mesh.edges[piece]).count(), 1);
                     }
@@ -1682,22 +1686,22 @@ fn cylindrical_rim_hover_and_taps_select_both_halves_and_keep_other_rims_separat
                     for phase in [InputPhase::Began, InputPhase::Ended] {
                         feed(&mut view, source, phase, 703, p, 2.);
                     }
-                    assert_eq!(view.selection().len(), 2, "one tap selects both native edge indices");
+                    assert_eq!(view.selection().len(), rim.len(), "one tap selects the complete rim");
                     assert_eq!(view.selection().first(), Some(&picked), "preserve the actual pick and its placement point");
                     feed(&mut view, source, InputPhase::Hover, 0, p, 3.);
-                    assert_eq!(view.snapshot().unwrap().highlight.lines.len(), 2, "selected hover must not draw either half twice");
-                    let other = *rim.iter().find(|&&i| i != edge).unwrap();
+                    assert_eq!(view.snapshot().unwrap().highlight.lines.len(), rim.len(), "selected hover must not draw the rim twice");
+                    let other = *rim.last().unwrap();
                     view.select(Some(Sel::Edge { body: "Sleeve".into(), index: other, point: mesh.edges[other][0] }), true);
-                    assert!(view.selection().is_empty(), "either half toggles the entire rim off");
+                    assert!(view.selection().is_empty(), "a second pick toggles the entire rim off");
                     view.command("select.multiple", &json!({"enabled":false})).unwrap();
                     view.select(Some(picked.clone()), false);
-                    assert_eq!(view.selection().len(), 2, "single selection still includes the complete rim");
+                    assert_eq!(view.selection().len(), rim.len(), "single selection still includes the complete rim");
                     let other_rim = rims.iter().find(|other| *other != rim).unwrap();
                     let other = Sel::Edge { body: "Sleeve".into(), index: other_rim[0], point: mesh.edges[other_rim[0]][0] };
                     view.select(Some(other.clone()), true);
-                    assert_eq!(view.selection().len(), 4, "another rim stays independently selectable");
+                    assert_eq!(view.selection().len(), rim.len() + other_rim.len(), "another rim stays independently selectable");
                     view.select(Some(picked), true);
-                    assert_eq!(view.selection().len(), 2, "toggling one rim retains the other");
+                    assert_eq!(view.selection().len(), rim.len(), "toggling one rim retains the other");
                     view.select(Some(other), true);
                     assert!(view.selection().is_empty());
                     view.command("select.multiple", &json!({"enabled":true})).unwrap();
@@ -1745,19 +1749,15 @@ fn cylindrical_wall_hover_and_taps_group_hidden_seams_without_merging_inner_oute
         for perspective in [false, true] {
             view.command("view.perspective", &json!({"enabled":perspective})).unwrap();
             for wall in &walls {
-                assert_eq!(wall.len(), 2);
+                assert_eq!(wall.len(), 1, "solidcore keeps each analytic cylinder as one face");
                 let triangle_count = mesh.tri_face.iter().filter(|face| wall.contains(face)).count();
                 for &face in wall {
                     view.command("select.clear", &json!({})).unwrap();
                     view.command("select.multiple", &json!({"enabled":true})).unwrap();
-                    let center = mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, id)| **id == face).fold(Vec3::ZERO, |sum, (tri, _)| {
-                        let [a, b, c] = mesh.tri(tri).unwrap();
-                        sum + (a + b + c) / 3.
-                    });
-                    let radial = Vec3::new(center.x, center.y, 0.).normalized().unwrap();
                     let tri = mesh.triangles.iter().zip(&mesh.tri_face).find(|(_, id)| **id == face).unwrap().0;
                     let [a, b, c] = mesh.tri(tri).unwrap();
                     let centroid = (a + b + c) / 3.;
+                    let radial = Vec3::new(centroid.x, centroid.y, 0.).normalized().unwrap();
                     let radius = if centroid.x.hypot(centroid.y) > 8. { 10. } else { 6. };
                     let location = radial * radius + Vec3::Z * 10.;
                     view.camera.target = Vec3::Z * 10.;
@@ -1778,34 +1778,34 @@ fn cylindrical_wall_hover_and_taps_group_hidden_seams_without_merging_inner_oute
                     for phase in [InputPhase::Began, InputPhase::Ended] {
                         feed(&mut view, source, phase, 702, p, 2.);
                     }
-                    assert_eq!(view.selection().len(), 2, "one tap selects both kernel halves");
+                    assert_eq!(view.selection().len(), wall.len(), "one tap selects the complete cylinder");
                     assert_eq!(view.selection().first(), Some(&picked), "keep the picked tool placement point first");
                     feed(&mut view, source, InputPhase::Hover, 0, p, 3.);
                     let snapshot = view.snapshot().unwrap();
                     assert_eq!(
                         snapshot.highlight.meshes.iter().map(|m| m.mesh.triangles.len()).sum::<usize>(),
                         triangle_count,
-                        "selected hover draws each half once"
+                        "selected hover draws the wall once"
                     );
                     assert!(Arc::ptr_eq(&snapshot.model, &model));
-                    let other = *wall.iter().find(|&&id| id != face).unwrap() as usize;
+                    let other = *wall.last().unwrap() as usize;
                     view.select(Some(Sel::Face { body: "Sleeve".into(), index: other, point: location }), true);
-                    assert!(view.selection().is_empty(), "either half toggles the entire wall off");
+                    assert!(view.selection().is_empty(), "a second pick toggles the entire wall off");
                     view.command("select.multiple", &json!({"enabled":false})).unwrap();
                     view.select(Some(picked.clone()), false);
-                    assert_eq!(view.selection().len(), 2, "single selection still selects one whole surface");
+                    assert_eq!(view.selection().len(), wall.len(), "single selection still selects one whole surface");
                     view.command("view.top", &json!({})).unwrap();
                     let cap = view.pick(point(&view, Vec3::new(8., 0., 20.)), Some(model.geometry_revision)).unwrap();
                     view.select(Some(cap), false);
                     assert_eq!(view.selection().len(), 1, "the planar cap stays separate from both walls");
                     view.select(Some(picked.clone()), true);
-                    assert_eq!(view.selection().len(), 3, "a wall adds two pieces while retaining the cap");
+                    assert_eq!(view.selection().len(), wall.len() + 1, "a wall retains the separate cap");
                     let other_wall = walls.iter().find(|other| *other != wall).unwrap();
                     let other = Sel::Face { body: "Sleeve".into(), index: other_wall[0] as usize, point: location };
                     view.select(Some(other.clone()), true);
-                    assert_eq!(view.selection().len(), 5, "inner and outer walls remain independent surfaces");
+                    assert_eq!(view.selection().len(), wall.len() + other_wall.len() + 1, "inner and outer walls remain independent surfaces");
                     view.select(Some(other), true);
-                    assert_eq!(view.selection().len(), 3, "toggling the other wall keeps this wall and cap");
+                    assert_eq!(view.selection().len(), wall.len() + 1, "toggling the other wall keeps this wall and cap");
                     view.select(Some(picked), true);
                     assert_eq!(view.selection().len(), 1, "toggling this wall keeps the cap");
                 }
@@ -1925,12 +1925,10 @@ fn sketch_rotation_snap_uses_sketch_axes_in_both_directions_and_preserves_free_r
                 for error in [-2.0_f64, 2.0] {
                     // Preview an arbitrary face basis as well as the principal planes.
                     let plane = match plane_name {
-                        "XZ" => solidcraft_engine::geom::Plane::XZ,
-                        "YZ" => solidcraft_engine::geom::Plane::YZ,
-                        "rotated" => {
-                            solidcraft_engine::geom::Plane::new(Vec3::new(12., 7., -3.), Vec3::new(1., 2., 3.), Vec3::new(2., -1., 0.)).unwrap()
-                        }
-                        _ => solidcraft_engine::geom::Plane::XY,
+                        "XZ" => solidcore_record::Plane::XZ,
+                        "YZ" => solidcore_record::Plane::YZ,
+                        "rotated" => solidcore_record::Plane::new(Vec3::new(12., 7., -3.), Vec3::new(1., 2., 3.), Vec3::new(2., -1., 0.)).unwrap(),
+                        _ => solidcore_record::Plane::XY,
                     };
                     let mut view = Viewport::default();
                     view.set_metrics(metrics(800., 600., 2.)).unwrap();
@@ -2047,7 +2045,7 @@ fn two_finger_twist_preserves_anchor_and_rejects_hostile_navigation() {
     let (_, mut view) = proof();
     let screen = [300.0, 220.0];
     let (x, y, _) = view.camera.basis();
-    let pivot = view.plane_point(screen, solidcraft_engine::geom::Plane { origin: view.camera.target, x, y }).unwrap();
+    let pivot = view.plane_point(screen, solidcore_record::Plane { origin: view.camera.target, x, y }).unwrap();
     let camera = view.camera;
     view.command("view.navigate", &json!({"motion":"roll","angle":0.7,"anchor_points":screen})).unwrap();
     let after = point(&view, pivot);
@@ -2802,7 +2800,7 @@ fn workspace_edge_length_tracks_latest_pick_and_preserves_document_history() {
     let mut view = Viewport::default();
     view.begin_update(1);
     assert!(view.install(1, adapter.snapshot().unwrap()));
-    let mesh = adapter.session.world_state().body("Block").unwrap().mesh();
+    let mesh = adapter.session.world_state().unwrap().body("Block").unwrap().mesh();
     let pick = |axis: usize, length: f64| {
         let (index, points) = mesh
             .edges
@@ -2842,8 +2840,9 @@ fn workspace_edge_length_tracks_latest_pick_and_preserves_document_history() {
 fn workspace_edge_length_uses_circular_rim_circumference() {
     let mut adapter = SessionAdapter::new();
     adapter.execute("solid.cylinder", json!({"radius":7,"height":20,"body_name":"Post"})).unwrap();
-    let mesh = adapter.session.world_state().body("Post").unwrap().mesh();
-    let (index, points) = mesh.edges.iter().enumerate().find(|(_, p)| p.len() > 2).unwrap();
+    let mesh = adapter.session.world_state().unwrap().body("Post").unwrap().mesh();
+    let (index, points) =
+        mesh.edges.iter().enumerate().find(|(index, _)| !mesh.circular_rim(*index).is_empty() && mesh.edge_pickable(*index)).unwrap();
     let edge = Sel::Edge { body: "Post".into(), index, point: points[points.len() / 2] };
     let measured = adapter.workspace(&[edge], false, false);
     let length = measured["selection_edge_length_mm"].as_f64().unwrap();
@@ -2859,7 +2858,7 @@ fn workspace_edge_length_and_radius_measure_a_semicircle_and_clear_together() {
     adapter.execute("sketch.line", json!({"points":[[-7,0],[7,0]],"infer":false})).unwrap();
     adapter.execute("sketch.finish", json!({})).unwrap();
     adapter.execute("solid.extrude", json!({"distance":15,"operation":"new","body_name":"Half"})).unwrap();
-    let mesh = adapter.session.world_state().body("Half").unwrap().mesh();
+    let mesh = adapter.session.world_state().unwrap().body("Half").unwrap().mesh();
     let (index, points) = mesh.edges.iter().enumerate().find(|(_, p)| p.len() > 2 && p.iter().all(|p| (p.z - 15.0).abs() < 1e-6)).unwrap();
     let edge = Sel::Edge { body: "Half".into(), index, point: points[points.len() / 2] };
     let document = adapter.session.doc.clone();
@@ -3237,7 +3236,7 @@ fn sketch_resize_preserves_circle_cut_split_by_projected_face_edges() {
     }
     adapter.execute("sketch.finish", json!({})).unwrap();
     adapter.execute("solid.extrude", json!({"sketch":sketch,"distance":4})).unwrap();
-    let body = adapter.session.world_state().bodies[0].name.clone();
+    let body = adapter.session.world_state().unwrap().bodies[0].name.clone();
     let face = modelling_face(&adapter, &body, Vec3::new(40., 40., 4.));
     let Sel::Face { index, point, .. } = face else { panic!("top face") };
     let top = adapter.execute("sketch.create", json!({"plane":{"face":point,"body":body,"index":index}})).unwrap().value["sketch"].as_u64().unwrap();
@@ -3260,7 +3259,7 @@ fn sketch_resize_preserves_circle_cut_split_by_projected_face_edges() {
         .profiles
         .iter()
         .enumerate()
-        .filter(|(_, profile)| (profile.region.interior_point() - solidcraft_engine::geom::Vec2::new(80., 80.)).len() < 45.)
+        .filter(|(_, profile)| (profile.region.interior_point() - solidcore_record::Vec2::new(80., 80.)).len() < 45.)
         .map(|(index, _)| Sel::Profile { sketch: top, index })
         .collect();
     assert_eq!(selected.len(), 2);
@@ -3417,7 +3416,7 @@ fn sketch_plane_preview_uses_upstream_transform_and_never_adds_history() {
     adapter.execute("sketch.create", json!({"plane":plane})).unwrap();
     adapter.execute("sketch.line", json!({"points":[[0,0],[10,0]]})).unwrap();
     let sk = adapter.sketch_snapshot().unwrap();
-    assert_eq!(sk.plane.to_world(solidcraft_engine::geom::Vec2::new(10., 0.)), Vec3::new(5., 16., 7.));
+    assert_eq!(sk.plane.to_world(solidcore_record::Vec2::new(10., 0.)), Vec3::new(5., 16., 7.));
     let view = adapter.workspace(&[], false, false);
     assert_eq!(view["sketch"]["curves"][0]["type"], "line");
 }
@@ -3478,7 +3477,7 @@ fn origin_references_are_automatic_during_sketch_creation_without_changing_saved
 
 #[test]
 fn origin_plane_display_is_compact_neutral_spaced_and_restores_original_style() {
-    use solidcraft_engine::geom::Plane;
+    use solidcore_record::Plane;
     let mut engine = SessionAdapter::new();
     let document = engine.session.doc.clone();
     let mut view = Viewport::default();
@@ -3519,12 +3518,12 @@ fn origin_plane_display_is_compact_neutral_spaced_and_restores_original_style() 
             assert_eq!(frame.guides.meshes[0].color, color);
             let outline = frame.guides.lines.iter().find(|line| line.points.len() == 5 && line.points[..4] == positions[..]).unwrap();
             assert_eq!(outline.color, color);
-            let inside = plane.to_world(solidcraft_engine::geom::Vec2::new(10., 10. * y_sign));
-            let outside = plane.to_world(solidcraft_engine::geom::Vec2::new(20., 20. * y_sign));
+            let inside = plane.to_world(solidcore_record::Vec2::new(10., 10. * y_sign));
+            let outside = plane.to_world(solidcore_record::Vec2::new(20., 20. * y_sign));
             assert_eq!(view.pick_reference(point(&view, inside)), Some(Sel::Plane { name: name.into() }));
             assert_eq!(view.pick_reference(point(&view, outside)).is_some(), legacy);
             for local in [(0.5, 10.), (10., 0.5)] {
-                let gap = plane.to_world(solidcraft_engine::geom::Vec2::new(local.0, local.1 * y_sign));
+                let gap = plane.to_world(solidcore_record::Vec2::new(local.0, local.1 * y_sign));
                 assert_eq!(view.pick_reference(point(&view, gap)).is_some(), legacy, "the axis gap must not select {name}");
             }
             assert_eq!(view.diagnostic()["reference_labels"].as_array().unwrap().len(), usize::from(legacy));
@@ -3542,7 +3541,7 @@ fn origin_plane_display_is_compact_neutral_spaced_and_restores_original_style() 
 
 #[test]
 fn origin_planes_pick_with_finger_pencil_and_pointer_and_create_native_sketches() {
-    use solidcraft_engine::geom::Plane;
+    use solidcore_record::Plane;
     for (name, plane, world) in
         [("XY", Plane::XY, Vec3::new(10., 10., 0.)), ("XZ", Plane::XZ, Vec3::new(10., 0., 10.)), ("YZ", Plane::YZ, Vec3::new(0., 10., 10.))]
     {
@@ -3760,7 +3759,7 @@ fn origin_references_respect_explicit_topology_filters_and_native_construction_v
     view.command("view.origin", &json!({"visible":false})).unwrap();
     view.command("view.choose_sketch_plane", &json!({})).unwrap();
     let plane = engine.preview_sketch_plane(json!("Tilted")).unwrap();
-    let world = plane.to_world(solidcraft_engine::geom::Vec2::new(15., 20.));
+    let world = plane.to_world(solidcore_record::Vec2::new(15., 20.));
     let p = point(&view, world);
     for legacy in [false, true, false] {
         view.command("view.origin_style", &json!({"legacy":legacy})).unwrap();
@@ -3792,7 +3791,7 @@ fn sketch_input_fixture(plane: Value, tool: &str) -> (SessionAdapter, Viewport) 
 
 #[test]
 fn constraint_first_taps_apply_repeatedly_without_dragging_and_are_undoable() {
-    use solidcraft_engine::geom::Vec2;
+    use solidcore_record::Vec2;
     for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
         let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
         for (id, points) in [("first", [[-30., -20.], [30., -10.]]), ("second", [[-30., 15.], [30., 25.]])] {
@@ -3834,7 +3833,7 @@ fn constraint_first_taps_apply_repeatedly_without_dragging_and_are_undoable() {
 
 #[test]
 fn constraint_first_pair_accumulates_without_multiple_selection_and_rejects_bad_picks() {
-    use solidcraft_engine::geom::Vec2;
+    use solidcore_record::Vec2;
     for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
         let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
         engine.execute("sketch.line", json!({"points":[[-30,-20],[30,-10]],"ids":["first"],"infer":false,"connect":false})).unwrap();
@@ -4052,7 +4051,7 @@ fn constraint_first_preselection_cancellation_redundancy_and_lifecycle() {
 
 #[test]
 fn sketch_select_drags_free_points_and_edges_with_one_undo_step() {
-    use solidcraft_engine::geom::Vec2;
+    use solidcore_record::Vec2;
 
     for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
         for (grab, delta) in [(Vec2::new(40., 20.), Vec2::new(10., 15.)), (Vec2::new(20., 20.), Vec2::new(0., 15.))] {
@@ -4102,7 +4101,7 @@ fn sketch_select_drag_moves_the_selected_group_and_single_selection_excludes_oth
         view.command("select.entity", &json!({"entity":{"type":"sketch_curve","id":"second"}})).unwrap();
         let snapshot = engine.snapshot().unwrap();
         let plane = snapshot.sketch.as_ref().unwrap().plane;
-        let screen = |xy| point(&view, plane.to_world(solidcraft_engine::geom::Vec2::from(xy)));
+        let screen = |xy| point(&view, plane.to_world(solidcore_record::Vec2::from(xy)));
         let start = screen([20., 20.]);
         let end = screen([20., 30.]);
         feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, start, 1.);
@@ -4117,7 +4116,7 @@ fn sketch_select_drag_moves_the_selected_group_and_single_selection_excludes_oth
 
 #[test]
 fn sketch_select_drag_respects_partial_and_fixed_constraints() {
-    use solidcraft_engine::geom::Vec2;
+    use solidcore_record::Vec2;
 
     for locked in [false, true] {
         let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
@@ -4218,13 +4217,13 @@ fn sketch_select_geometry_cancel_and_two_finger_navigation_reject_late_previews(
 
 fn sketch_tap(view: &mut Viewport, id: u64, xy: [f64; 2]) {
     let plane = view.model.as_ref().unwrap().sketch.as_ref().unwrap().plane;
-    let screen = point(view, plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1])));
+    let screen = point(view, plane.to_world(solidcore_record::Vec2::new(xy[0], xy[1])));
     feed(view, InputSource::Pencil, InputPhase::Began, id, screen, id as f64);
     feed(view, InputSource::Pencil, InputPhase::Ended, id, screen, id as f64 + 0.1);
 }
 #[test]
 fn sketch_point_taps_repeat_render_pick_and_roundtrip_with_one_undo_each() {
-    use solidcraft_engine::geom::Vec2;
+    use solidcore_record::Vec2;
     for plane in ["XY", "XZ", "YZ"] {
         let (mut engine, mut view) = sketch_input_fixture(json!(plane), "sketch.point");
         assert!(engine.workspace(&[], false, false)["tools"].as_array().unwrap().iter().any(|t| t["id"] == "sketch.point" && t["enabled"] == true));
@@ -4277,7 +4276,7 @@ fn sketch_point_drag_preview_cancel_and_final_lift_are_atomic() {
     let history = engine.session.undo.len();
     let plane = engine.sketch_snapshot().unwrap().plane;
     for (phase, xy) in [(InputPhase::Began, [20., 15.]), (InputPhase::Moved, [35., 25.])] {
-        let at = point(&view, plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1])));
+        let at = point(&view, plane.to_world(solidcore_record::Vec2::new(xy[0], xy[1])));
         feed(&mut view, InputSource::Pencil, phase, 1, at, 1.);
     }
     let work = view.take_tool_work().unwrap();
@@ -4291,13 +4290,13 @@ fn sketch_point_drag_preview_cancel_and_final_lift_are_atomic() {
     assert_eq!(engine.session.undo.len(), history);
     assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
     for (phase, xy) in [(InputPhase::Began, [20., 15.]), (InputPhase::Moved, [35., 25.]), (InputPhase::Ended, [35., 25.])] {
-        let at = point(&view, plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1])));
+        let at = point(&view, plane.to_world(solidcore_record::Vec2::new(xy[0], xy[1])));
         feed(&mut view, InputSource::Pencil, phase, 2, at, 2.);
     }
     assert!(run_tool(&mut engine, &mut view));
     let sketch = engine.sketch_snapshot().unwrap().sketch;
     assert_eq!(sketch.points.len(), 2);
-    assert!(sketch.points.iter().any(|p| p.pos.dist(solidcraft_engine::geom::Vec2::new(35., 25.)) < 1e-7));
+    assert!(sketch.points.iter().any(|p| p.pos.dist(solidcore_record::Vec2::new(35., 25.)) < 1e-7));
     assert_eq!(engine.session.undo.len(), history + 1);
 }
 
@@ -4578,7 +4577,7 @@ fn sketch_line_finish_anchor_tracks_committed_endpoint_and_never_changes_geometr
             assert!(view.sketch_chain_end().is_none(), "hide while accepting geometry");
             assert!(run_tool(&mut engine, &mut view));
             let plane = view.model.as_ref().unwrap().sketch.as_ref().unwrap().plane;
-            let endpoint = plane.to_world(solidcraft_engine::geom::Vec2::new(xy[0], xy[1]));
+            let endpoint = plane.to_world(solidcore_record::Vec2::new(xy[0], xy[1]));
             let anchor = view.sketch_chain_end().unwrap();
             let expected = point(&view, endpoint);
             assert!((anchor[0] - expected[0]).abs() < 1e-6 && (anchor[1] - expected[1]).abs() < 1e-6);
@@ -5045,7 +5044,7 @@ fn sketch_edge_readouts_preserve_radial_and_endpoint_dimensions_and_reference_va
 
 #[test]
 fn sketch_dimension_labels_drag_directly_with_preview_handles_and_one_undo_step() {
-    use solidcraft_engine::geom::Vec2;
+    use solidcore_record::Vec2;
 
     for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
         let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
@@ -5316,8 +5315,8 @@ fn sketch_offset_drag_previews_a_chain_and_commits_one_undo_step_on_each_plane()
             let original = engine.sketch_snapshot().unwrap();
             let undo = engine.session.undo.len();
             assert!(engine.workspace(view.selection(), false, false)["tools"].as_array().unwrap().iter().any(|tool| tool["id"] == "sketch.offset"));
-            let start = point(&view, original.plane.to_world(solidcraft_engine::geom::Vec2::new(0., 0.)));
-            let end = point(&view, original.plane.to_world(solidcraft_engine::geom::Vec2::new(0., y)));
+            let start = point(&view, original.plane.to_world(solidcore_record::Vec2::new(0., 0.)));
+            let end = point(&view, original.plane.to_world(solidcore_record::Vec2::new(0., y)));
             feed(&mut view, InputSource::Pencil, InputPhase::Began, 1, start, 1.);
             feed(&mut view, InputSource::Pencil, InputPhase::Moved, 1, end, 2.);
             assert!(!run_tool(&mut engine, &mut view));
@@ -5433,7 +5432,7 @@ fn sketch_previous_tool_and_plane_preview_preserve_camera_and_modelling_history(
     let (mut engine, mut view) = proof();
     let camera = view.camera;
     let undo = engine.session.undo.len();
-    let plane = solidcraft_engine::geom::Plane { origin: Vec3::new(5., 6., 7.), ..solidcraft_engine::geom::Plane::YZ };
+    let plane = solidcore_record::Plane { origin: Vec3::new(5., 6., 7.), ..solidcore_record::Plane::YZ };
     view.command("view.sketch_plane", &json!({"plane":plane})).unwrap();
     assert!(view.camera.back().dot(plane.normal()) > 0.999);
     assert_eq!(engine.session.undo.len(), undo);
@@ -5640,7 +5639,7 @@ fn sketch_existing_construction_plane_stays_a_native_reference_when_reopened() {
 
 fn modelling_volume(adapter: &SessionAdapter) -> f64 {
     assert!(adapter.session.model.results.iter().all(|result| result.error.is_none() && !result.stale));
-    adapter.session.world_state().bodies.iter().map(|body| body.measure().unwrap().volume).sum()
+    adapter.session.world_state().unwrap().bodies.iter().map(|body| body.measure().unwrap().volume).sum()
 }
 
 fn modelling_commit(adapter: &mut SessionAdapter, edit: &ModelEdit, params: Value) -> Arc<SceneSnapshot> {
@@ -5696,7 +5695,7 @@ fn modelling_sketch_attachment_repairs_changed_cap_with_preview_undo_roundtrip_a
     let geometry = adapter.session.doc.sketch(sketch).unwrap().clone();
     let ids: Vec<_> = adapter.session.doc.features.iter().map(|f| f.id).collect();
     let undo = adapter.session.undo.len();
-    let plane = adapter.session.world_state().sketch(sketch).unwrap().plane;
+    let plane = adapter.session.world_state().unwrap().sketch(sketch).unwrap().plane;
     let edit = adapter.begin_model(890, Some("sketch.redefine"), Some(sketch), &[]).unwrap();
     assert!(edit.repair_source.is_some());
     assert!(edit.params["plane"].is_null(), "opening a repair must not silently choose a face");
@@ -5713,7 +5712,7 @@ fn modelling_sketch_attachment_repairs_changed_cap_with_preview_undo_roundtrip_a
     assert_eq!(adapter.session.doc.marker, original.marker);
     assert_eq!(adapter.session.doc.features.iter().map(|f| f.id).collect::<Vec<_>>(), ids);
     assert_eq!(*adapter.session.doc.sketch(sketch).unwrap(), geometry, "authored geometry and dimensions survive the repair");
-    assert_eq!(adapter.session.world_state().sketch(sketch).unwrap().plane, plane);
+    assert_eq!(adapter.session.world_state().unwrap().sketch(sketch).unwrap().plane, plane);
     assert!(adapter.session.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()));
     adapter.execute("edit.undo", json!({})).unwrap();
     assert_eq!(*adapter.session.doc, *original);
@@ -5861,7 +5860,7 @@ fn modelling_roundtrip(adapter: &SessionAdapter) -> SessionAdapter {
 }
 
 fn modelling_face(adapter: &SessionAdapter, body: &str, point: Vec3) -> Sel {
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     let index = solidcraft_engine::doc::appearance::face_index_at(world.body(body).unwrap(), point).unwrap();
     Sel::Face { body: body.into(), index, point }
 }
@@ -6215,7 +6214,7 @@ fn modelling_face_extrusion_offers_four_boolean_results_on_the_picked_body() {
         let workspace = adapter.workspace(&[], false, false);
         assert!(workspace["rows"].as_array().unwrap().iter().all(|row| row["kind"] != "sketch"), "face extrusion must not add a user sketch");
         assert_eq!(workspace["modelling"]["timeline"].as_array().unwrap().len(), 3, "only the two boxes and extrusion belong in the timeline");
-        let world = adapter.session.world_state();
+        let world = adapter.session.world_state().unwrap();
         assert_eq!(world.bodies.len(), body_count);
         let bounds = world.body("Stock").unwrap().mesh().bounds();
         assert!((bounds.min.z - min_z).abs() < 1e-8);
@@ -6329,7 +6328,7 @@ fn modelling_face_extrusion_reselection_updates_the_automatic_boolean_target() {
     assert_eq!(edit.params["operation"], "join");
     assert_eq!(edit.params["distance"], "2 mm");
     modelling_commit(&mut adapter, &edit, edit.params.clone());
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     assert!((world.body("First").unwrap().measure().unwrap().volume - 1000.).abs() < 1e-5);
     assert!((world.body("Second").unwrap().measure().unwrap().volume - 1200.).abs() < 1e-5);
 }
@@ -6583,7 +6582,7 @@ fn modelling_face_extrusion_keeps_translated_coincident_body_scope_and_side_norm
     assert!(handle.normal.dist(Vec3::X) < 1e-8);
     assert!((handle.point().x - 125.).abs() < 1e-8);
     modelling_commit(&mut adapter, &edit, params);
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     assert!((world.body("Stock").unwrap().measure().unwrap().volume - 13_500.).abs() < 1e-5);
     assert!((world.body("Neighbor").unwrap().measure().unwrap().volume - 12_000.).abs() < 1e-5);
 }
@@ -6715,7 +6714,7 @@ fn modelling_editable_extrusion_regenerates_same_feature_chain_and_native_contai
     assert_eq!(ids, [sketch, extrude]);
     assert_eq!(adapter.session.model.state().bodies.len(), 1);
     assert!((modelling_volume(&adapter) - 12_000.0).abs() < 1e-6);
-    let bounds = adapter.session.world_state().bodies[0].mesh().bounds();
+    let bounds = adapter.session.world_state().unwrap().bodies[0].mesh().bounds();
     assert!(bounds.min.dist(Vec3::ZERO) < 1e-7);
     assert!(bounds.max.dist(Vec3::new(40.0, 30.0, 10.0)) < 1e-7);
     adapter.execute("edit.undo", json!({})).unwrap();
@@ -6761,7 +6760,7 @@ fn modelling_editable_extrusion_regenerates_same_feature_chain_and_native_contai
 #[test]
 fn modelling_explicit_target_cut_keeps_editable_circle_and_extrusion_after_regeneration() {
     let (mut adapter, _, _, extrude) = modelling_plate(60.0, "15 mm");
-    let target = adapter.session.world_state().bodies[0].name.clone();
+    let target = adapter.session.world_state().unwrap().bodies[0].name.clone();
     let circle_sketch =
         adapter.execute("sketch.create", json!({"plane":"XY","offset":"15 mm","name":"Cut sketch"})).unwrap().value["sketch"].as_u64().unwrap();
     let circle =
@@ -7005,7 +7004,7 @@ fn modelling_blends_accept_sharp_borders_of_existing_treatments() {
             adapter.execute(first, json!({"body":"Block","edges":[[20,0,10]],first_field:2})).unwrap();
             let before = modelling_volume(&adapter);
             let near = if first == "solid.fillet" { Vec3::new(19.414213562, 0.585786438, 20.) } else { Vec3::new(19., 1., 20.) };
-            let world = adapter.session.world_state();
+            let world = adapter.session.world_state().unwrap();
             let mesh = world.body("Block").unwrap().mesh();
             let index = mesh
                 .edges
@@ -7361,7 +7360,7 @@ fn modelling_combine_history_picking_reveals_original_tools_and_cancel_restores_
 }
 
 #[test]
-fn modelling_boolean_retry_warns_without_blocking_preview_commit_or_later_features() {
+fn modelling_combine_is_exact_without_retry_and_preserves_preview_commit_or_later_features() {
     let mut adapter = SessionAdapter::new();
     let slope = 1_f64.to_radians().tan();
     for (command, params) in [
@@ -7383,7 +7382,7 @@ fn modelling_boolean_retry_warns_without_blocking_preview_commit_or_later_featur
     let mut edit = adapter.begin_model(790, Some("solid.combine"), None, &[]).unwrap();
     edit.params = json!({"target":"Floor","tools":["Ring"],"operation":"join","keep_tools":false});
     let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
-    assert!(preview.feedback.iter().any(|message| message.starts_with("Combine1: Boolean retry:")), "{:?}", preview.feedback);
+    assert!(preview.feedback.is_empty(), "solidcore builds this union without truck’s Boolean retry: {:?}", preview.feedback);
     assert_eq!(preview.model.body_count, 1);
     assert!(Arc::ptr_eq(&adapter.session.doc, &original));
     assert_eq!(adapter.session.undo.len(), history);
@@ -7393,7 +7392,7 @@ fn modelling_boolean_retry_warns_without_blocking_preview_commit_or_later_featur
     assert_eq!(adapter.session.undo.len(), history + 1);
     let feature = adapter.session.doc.features.last().unwrap().id;
     let warning = adapter.session.model.result(feature).unwrap().warning.clone();
-    assert!(warning.as_deref().is_some_and(|warning| warning.starts_with("Boolean retry:")));
+    assert!(warning.is_none(), "the exact solidcore union needs no retry warning: {warning:?}");
     let expected = (10. + slope * 50.) * (8000. - std::f64::consts::PI * 100.) + std::f64::consts::PI * 300. * 5.;
     assert!((modelling_volume(&adapter) - expected).abs() / expected < 2e-5);
     adapter.execute("edit.undo", json!({})).unwrap();
@@ -7407,7 +7406,7 @@ fn modelling_boolean_retry_warns_without_blocking_preview_commit_or_later_featur
     assert_eq!(adapter.session.model.result(feature).unwrap().warning, warning);
     let edit = adapter.begin_model(791, Some("solid.pattern.rectangular"), None, &[Sel::Body { name: "Floor".into() }]).unwrap();
     let prepared = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
-    assert!(prepared.feedback.iter().any(|message| message.contains("Boolean retry:")), "an earlier warning must remain visible");
+    assert!(prepared.feedback.is_empty(), "the exact union also needs no retry warning in later features: {:?}", prepared.feedback);
     modelling_commit(&mut adapter, &edit, edit.params.clone());
     assert!((modelling_volume(&adapter) - 2. * expected).abs() / expected < 4e-5);
 }
@@ -7470,8 +7469,8 @@ fn modelling_body_mirror_plane_edit_keeps_original_feature_and_native_history() 
     let edit = adapter.begin_model(733, Some("solid.mirror"), None, &[Sel::Body { name: "Mirror source".into() }]).unwrap();
     modelling_commit(&mut adapter, &edit, edit.params.clone());
     let feature = adapter.session.doc.features.last().unwrap().id;
-    let negative_x = |adapter: &SessionAdapter| adapter.session.world_state().bodies.iter().any(|body| body.mesh().bounds().max.x < 0.0);
-    let negative_y = |adapter: &SessionAdapter| adapter.session.world_state().bodies.iter().any(|body| body.mesh().bounds().max.y < 0.0);
+    let negative_x = |adapter: &SessionAdapter| adapter.session.world_state().unwrap().bodies.iter().any(|body| body.mesh().bounds().max.x < 0.0);
+    let negative_y = |adapter: &SessionAdapter| adapter.session.world_state().unwrap().bodies.iter().any(|body| body.mesh().bounds().max.y < 0.0);
     assert!(negative_x(&adapter));
     let edit = adapter.begin_model(734, None, Some(feature), &[]).unwrap();
     let mut params = edit.params.clone();
@@ -7697,7 +7696,7 @@ fn modelling_direct_handle_accepts_finger_and_pointer_and_preserves_legacy_prefe
 #[test]
 fn modelling_push_pull_uses_native_face_offset_signed_expression_history_and_cancel() {
     let (mut adapter, _, _, _) = modelling_plate(40., "10 mm");
-    let body = &adapter.session.world_state().bodies[0];
+    let body = &adapter.session.world_state().unwrap().bodies[0];
     let (index, spot) = solidcraft_engine::doc::naming::face_spots(body)
         .into_iter()
         .enumerate()
@@ -8106,7 +8105,7 @@ fn modelling_extrusion_uses_native_hole_classification_and_non_world_z_plane() {
     modelling_commit(&mut adapter, &edit, params);
     let expected = (1200.0 - 9.0 * std::f64::consts::PI) * 5.0;
     assert!((modelling_volume(&adapter) - expected).abs() < 0.05);
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     assert_eq!(world.bodies.len(), 1);
     let bounds = world.bodies[0].mesh().bounds();
     assert!(bounds.min.dist(Vec3::new(0.0, 0.0, -30.0)) < 1e-6, "{bounds:?}");
@@ -8243,7 +8242,7 @@ fn modelling_failed_downstream_profile_can_reselect_original_feature_and_cancel_
     assert!(!viewport.is_updating());
     assert_eq!(adapter.session.doc.features.last().unwrap().id, feature);
     assert!((modelling_volume(&adapter) - 1_000.0).abs() < 1e-6);
-    assert!((adapter.session.world_state().bodies[0].mesh().bounds().min.x - 20.0).abs() < 1e-6);
+    assert!((adapter.session.world_state().unwrap().bodies[0].mesh().bounds().min.x - 20.0).abs() < 1e-6);
     adapter.execute("edit.undo", json!({})).unwrap();
     assert!(adapter.session.model.result(feature).unwrap().error.is_some(), "undo retains the recoverable failed history");
     adapter.execute("edit.redo", json!({})).unwrap();
@@ -8316,7 +8315,7 @@ fn modelling_feature_and_path_patterns_preserve_native_sources_and_regenerate_af
 fn modelling_through_all_extrusion_and_hole_can_edit_original_to_blind_depth() {
     for operation in ["solid.extrude", "solid.hole"] {
         let (mut adapter, _, _, _) = modelling_plate(60.0, "15 mm");
-        let target = adapter.session.world_state().bodies[0].name.clone();
+        let target = adapter.session.world_state().unwrap().bodies[0].name.clone();
         let sketch = adapter.execute("sketch.create", json!({"plane":"XY","offset":"15 mm","name":"Through profile"})).unwrap().value["sketch"]
             .as_u64()
             .unwrap();
@@ -8373,7 +8372,7 @@ fn assembly_marker(adapter: &SessionAdapter, path: &[u64], local: Vec3) -> Vec3 
 
 fn assembly_volume(adapter: &SessionAdapter, path: &[u64]) -> f64 {
     let placement = adapter.session.occurrence_placement(path).unwrap();
-    let world = adapter.session.world_state();
+    let world = adapter.session.world_state().unwrap();
     placement.bodies.iter().map(|placed| world.body(&placed.world).unwrap().measure().unwrap().volume).sum()
 }
 
@@ -9937,7 +9936,14 @@ fn connected_edge_solid_groups_stay_in_the_picked_body_and_exclude_polyline_midd
         edges: vec![vec![p(0., 0.), p(5., 0.), p(10., 0.)], vec![p(10., 0.), p(10., 10.)], vec![p(5., 0.), p(5., 10.)]],
         ..Mesh::default()
     });
-    let scene_mesh = || SceneMesh { mesh: mesh.clone(), color: Rgb(100, 100, 100), face_colors: Vec::new(), opacity: 1. };
+    let scene_mesh = || SceneMesh {
+        mesh: mesh.clone(),
+        color: Rgb(100, 100, 100),
+        face_colors: Vec::new(),
+        opacity: 1.,
+        closed: true,
+        hatch: solidcraft_render::hatch::Hatch(0),
+    };
     let scene = Scene { meshes: vec![scene_mesh(), scene_mesh()], ..Scene::default() };
     let picks = crate::picking::PickScene::new(&scene, vec!["One".into(), "Two".into()], Aabb3::default()).unwrap();
     let picked = Sel::Edge { body: "One".into(), index: 0, point: p(2., 0.) };

@@ -1,12 +1,14 @@
 //! Native presentation and picking of existing engine reference selections.
 //! These guides own no document geometry and never create a sketch themselves.
+use solidcore_record::{Plane, Vec3};
+use solidcraft_engine::geom::prelude::*;
 use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::{Value, json};
 use solidcraft_engine::{
     Sel,
-    geom::{Aabb3, Mesh, Plane, Vec3},
+    geom::{Aabb3, Mesh},
     view::Palette,
 };
 use solidcraft_render::{Rgb, Scene, SceneLine, SceneMesh};
@@ -343,7 +345,14 @@ impl Viewport {
             let points = self.corners(&name, plane);
             let mesh =
                 Mesh { positions: points.to_vec(), normals: vec![plane.normal(); 4], triangles: vec![[0, 1, 2], [0, 2, 3]], ..Mesh::default() };
-            scene.meshes.push(SceneMesh { mesh: Arc::new(mesh), color, face_colors: Vec::new(), opacity: if color != base { 0.4 } else { 0.16 } });
+            scene.meshes.push(SceneMesh {
+                mesh: Arc::new(mesh),
+                color,
+                face_colors: Vec::new(),
+                opacity: if color != base { 0.4 } else { 0.16 },
+                closed: false,
+                hatch: solidcraft_render::hatch::Hatch(0),
+            });
             scene.lines.push(SceneLine {
                 points: points.into_iter().chain(points.first().copied()).collect(),
                 color,

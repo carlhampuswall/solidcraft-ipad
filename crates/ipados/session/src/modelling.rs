@@ -1,5 +1,6 @@
 //! Native forms over the shared command registry. Only provisional presentation
 //! state lives here; documents, topology, evaluation and history remain upstream.
+use solidcraft_engine::geom::prelude::*;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -96,18 +97,18 @@ impl ModelEdit {
 
 #[derive(Clone, PartialEq, Serialize)]
 pub struct ModelHandle {
-    pub origin: solidcraft_engine::geom::Vec3,
-    pub normal: solidcraft_engine::geom::Vec3,
+    pub origin: solidcore_record::Vec3,
+    pub normal: solidcore_record::Vec3,
     pub distance: f64,
     pub factor: f64,
     pub parameter: String,
     pub units: String,
     pub angular: bool,
-    pub arm: solidcraft_engine::geom::Vec3,
+    pub arm: solidcore_record::Vec3,
     pub size: f64,
 }
 impl ModelHandle {
-    pub(crate) fn point(&self) -> solidcraft_engine::geom::Vec3 {
+    pub(crate) fn point(&self) -> solidcore_record::Vec3 {
         if self.angular {
             let angle = self.distance.to_radians();
             self.origin + (self.arm * angle.cos() + self.normal.cross(self.arm) * angle.sin()) * self.size
@@ -115,14 +116,14 @@ impl ModelHandle {
             self.origin + self.normal * self.distance * self.factor
         }
     }
-    pub(crate) fn interaction_plane(&self, back: solidcraft_engine::geom::Vec3) -> Option<solidcraft_engine::geom::Plane> {
+    pub(crate) fn interaction_plane(&self, back: solidcore_record::Vec3) -> Option<solidcore_record::Plane> {
         Some(if self.angular {
-            solidcraft_engine::geom::Plane { origin: self.origin, x: self.arm, y: self.normal.cross(self.arm) }
+            solidcore_record::Plane { origin: self.origin, x: self.arm, y: self.normal.cross(self.arm) }
         } else {
-            solidcraft_engine::geom::Plane { origin: self.origin, x: self.normal, y: back.cross(self.normal).normalized()? }
+            solidcore_record::Plane { origin: self.origin, x: self.normal, y: back.cross(self.normal).normalized()? }
         })
     }
-    pub(crate) fn proposal(&self, anchor: solidcraft_engine::geom::Vec3, point: solidcraft_engine::geom::Vec3, value: f64) -> f64 {
+    pub(crate) fn proposal(&self, anchor: solidcore_record::Vec3, point: solidcore_record::Vec3, value: f64) -> f64 {
         if self.angular {
             let a = anchor - self.origin;
             let b = point - self.origin;
@@ -258,6 +259,24 @@ fn boolean_choices() -> Vec<Value> {
     vec![option("false", json!(false)), option("true", json!(true))]
 }
 
+/// A display handle's halfway point follows length, independent of how many
+/// samples the renderer put on each segment. This never selects CAD topology.
+fn display_polyline_midpoint(points: &[solidcore_record::Vec3]) -> Option<solidcore_record::Vec3> {
+    let total: f64 = points.windows(2).map(|pair| pair[0].dist(pair[1])).sum();
+    if !total.is_finite() {
+        return None;
+    }
+    let mut remaining = total * 0.5;
+    for pair in points.windows(2) {
+        let length = pair[0].dist(pair[1]);
+        if length > 0. && remaining <= length {
+            return Some(pair[0] + (pair[1] - pair[0]) * (remaining / length));
+        }
+        remaining -= length;
+    }
+    points.first().copied()
+}
+
 fn profile_reference(sketch: &solidcraft_engine::doc::SolvedSketch, indices: &[usize]) -> Result<Value, AdapterError> {
     let captured = capture_profile_selection(sketch, indices).map_err(|e| error("profile", e.to_string()))?;
     let profiles = match captured {
@@ -334,7 +353,7 @@ impl SessionAdapter {
             return;
         }
         let direction = handle.normal * (handle.distance * handle.factor).signum();
-        let world = self.session.world_state();
+        let Ok(world) = self.session.world_state() else { return };
         let mut origins = vec![handle.origin];
         let source = params.get("profile").unwrap_or(params);
         if let Some(sketch) = source["sketch"].as_u64().and_then(|id| world.sketch(id)) {
@@ -590,7 +609,7 @@ impl SessionAdapter {
                     _ => {}
                 }
             }
-            let bodies: Vec<_> = context.session.world_state().bodies.iter().map(|b| option(b.name.clone(), json!(b.name))).collect();
+            let bodies: Vec<_> = context.session.world_state()?.bodies.iter().map(|b| option(b.name.clone(), json!(b.name))).collect();
             for key in ["targets", "bodies", "tools"] {
                 if edit.params.get(key).is_some() {
                     edit.fields.push(field(key, key, "references", bodies.clone()));
@@ -601,7 +620,7 @@ impl SessionAdapter {
                     edit.fields.push(field(key, key, "reference", bodies.clone()));
                 }
             }
-            let before = context.session.world_state();
+            let before = context.session.world_state()?;
             if edit.params.get("profiles").is_some() && edit.params.get("sketch").is_some() {
                 let mut options = Vec::new();
                 for ss in before.sketches.iter().filter(|sketch| !context.internal_profile(sketch.feature)) {
@@ -745,16 +764,16 @@ impl SessionAdapter {
             "symmetric" => 0.5,
             _ => 1.,
         };
-        let world = self.session.world_state();
+        let world = self.session.world_state().ok()?;
         let source = edit.params.get("profile").unwrap_or(&edit.params);
         let face_point = source["faces"].as_array().and_then(|points| points.first()).or_else(|| source.get("face"));
         let (origin, normal, arm) = if let Some(point) = face_point {
-            let point = serde_json::from_value::<solidcraft_engine::geom::Vec3>(point.clone()).ok()?;
+            let point = serde_json::from_value::<solidcore_record::Vec3>(point.clone()).ok()?;
             let body = world.body(source["face_body"].as_str()?)?;
             let index = solidcraft_engine::doc::appearance::face_index_at(body, point)?;
             let spot = solidcraft_engine::doc::naming::face_spot(body, index)?;
             let solidcraft_engine::kernel::FaceSurface::Plane { normal, .. } = spot.surface? else { return None };
-            (spot.point, normal.vec(), solidcraft_engine::geom::Vec3::X)
+            (point, normal.vec(), solidcore_record::Vec3::X)
         } else {
             let sid = edit.params["profile"]["sketch"].as_u64().or_else(|| edit.params["sketch"].as_u64())?;
             let ss = world.sketch(sid)?;
@@ -787,7 +806,7 @@ impl SessionAdapter {
     /// Display geometry only: dimensions and evaluation remain engine commands.
     /// Anchor to the source, since a blend replaces the selected edge in preview.
     fn edge_treatment_handle(&self, edit: &ModelEdit) -> Option<ModelHandle> {
-        use solidcraft_engine::geom::Vec3;
+        use solidcore_record::Vec3;
         let native = edit.feature.and_then(|id| self.session.doc.feature(id));
         let shell = edit.operation == "solid.shell" || native.is_some_and(|f| matches!(f.kind, FeatureKind::Shell { .. }));
         let fillet = edit.operation == "solid.fillet" || native.is_some_and(|f| matches!(f.kind, FeatureKind::Fillet { .. }));
@@ -795,7 +814,10 @@ impl SessionAdapter {
         if !shell && !fillet && !chamfer {
             return None;
         }
-        let source = edit.feature.map_or_else(|| self.session.world_state(), |id| self.session.model.state_before(id));
+        let source = match edit.feature {
+            Some(id) => self.session.model.state_before(id),
+            None => self.session.world_state().ok()?,
+        };
         let reference = edit.params[if shell { "faces" } else { "edges" }].as_array()?.first()?;
         let name = edit.params["body"].as_str().or_else(|| reference["body"].as_str())?;
         let body = source.body(name)?;
@@ -825,7 +847,7 @@ impl SessionAdapter {
                 return None;
             }
             let edge = mesh.edges.get(index)?;
-            let origin = if edge.len() == 2 { (*edge.first()? + *edge.last()?) * 0.5 } else { *edge.get(edge.len() / 2)? };
+            let origin = display_polyline_midpoint(edge)?;
             // The exterior face-normal bisector keeps the knob off the solid.
             // Curved faces use their existing tessellation normal at the edge.
             let mut normal = Vec3::ZERO;
@@ -869,12 +891,15 @@ impl SessionAdapter {
 
     fn offset_handle(&self, edit: &ModelEdit) -> Option<ModelHandle> {
         // Resolve against the actual source state, never the offset preview.
-        let source = edit.feature.map_or_else(|| self.session.world_state(), |id| self.session.model.state_before(id));
+        let source = match edit.feature {
+            Some(id) => self.session.model.state_before(id),
+            None => self.session.world_state().ok()?,
+        };
         let points = edit.params["faces"].as_array()?;
         if points.len() != 1 {
             return None;
         }
-        let point = serde_json::from_value::<solidcraft_engine::geom::Vec3>(points.first()?.clone()).ok()?;
+        let point = serde_json::from_value::<solidcore_record::Vec3>(points.first()?.clone()).ok()?;
         let mut bodies = source.bodies.iter().filter(|body| {
             edit.params["body"].as_str().is_none_or(|name| body.name == name)
                 && solidcraft_engine::doc::appearance::face_index_at(body, point).is_some()
@@ -895,7 +920,7 @@ impl SessionAdapter {
             parameter: "distance".into(),
             units: "mm".into(),
             angular: false,
-            arm: solidcraft_engine::geom::Vec3::X,
+            arm: solidcore_record::Vec3::X,
             size: 20.,
         })
     }
@@ -1086,7 +1111,7 @@ impl SessionAdapter {
             let mut probe = edit.clone();
             probe.params = params.clone();
             let Some(handle) = self.extrusion_handle(&probe) else { return };
-            let world = self.session.world_state();
+            let Ok(world) = self.session.world_state() else { return };
             let targets = params["targets"].as_array();
             let enters = |sign: f64| {
                 world.bodies.iter().any(|body| {
@@ -1123,7 +1148,7 @@ impl SessionAdapter {
             }
         }
         let state = self.session.model.state();
-        let bodies: Vec<_> = self.session.world_state().bodies.iter().map(|b| option(b.name.clone(), json!(b.name))).collect();
+        let bodies: Vec<_> = self.session.world_state()?.bodies.iter().map(|b| option(b.name.clone(), json!(b.name))).collect();
         let sketches: Vec<_> = self
             .session
             .doc
@@ -1444,7 +1469,10 @@ impl SessionAdapter {
         }
         let target_feature = edit.feature.and_then(|id| self.session.doc.feature(id));
         if edit.operation == "solid.offset_face" || target_feature.is_some_and(|feature| matches!(feature.kind, FeatureKind::OffsetFace { .. })) {
-            let source = edit.feature.map_or_else(|| self.session.world_state(), |id| self.session.model.state_before(id));
+            let source = match edit.feature {
+                Some(id) => self.session.model.state_before(id),
+                None => self.session.world_state()?,
+            };
             let faces = p["faces"]
                 .as_array()
                 .filter(|faces| !faces.is_empty() && faces.len() <= 256)
@@ -1452,7 +1480,7 @@ impl SessionAdapter {
             let points = faces
                 .iter()
                 .map(|point| {
-                    serde_json::from_value::<solidcraft_engine::geom::Vec3>(point.clone())
+                    serde_json::from_value::<solidcore_record::Vec3>(point.clone())
                         .ok()
                         .filter(|point| point.is_finite())
                         .ok_or_else(|| error("selection", "ui.ipados.handles.choose_faces"))
@@ -1684,7 +1712,7 @@ impl SessionAdapter {
             Operation::Intersect => (palette.body_selected, "ui.ipados.face_extrude.preview_intersect"),
             Operation::Cut => (palette.axes[0], "ui.ipados.face_extrude.preview_subtract"),
         };
-        let result = after.session.world_state();
+        let result = after.session.world_state()?;
         let result_names = model.picks.body_names();
         let mut base = self.session.scratch();
         base.selection.clear();
@@ -1693,8 +1721,8 @@ impl SessionAdapter {
         {
             base.execute("timeline.roll_to", &json!({"position":position}))?;
         }
-        let before = base.world_state();
-        let before_scene = view::scene_with_guides(&base, &solidcraft_render::Camera::default(), None, view::Guides { grid: false, axes: false });
+        let before = base.world_state()?;
+        let before_scene = view::scene_with_guides(&base, &solidcraft_render::Camera::default(), None, view::Guides { grid: false, axes: false })?;
         let before_names: Vec<_> = before.bodies.iter().filter(|body| base.body_visible(&body.name)).map(|body| body.name.clone()).collect();
         let changed = |name: &str| match (before.body(name), result.body(name)) {
             (Some(old), Some(new)) => {
@@ -1704,7 +1732,14 @@ impl SessionAdapter {
             }
             _ => true,
         };
-        let mesh = |source: &SceneMesh, color, opacity| SceneMesh { mesh: source.mesh.clone(), color, opacity, face_colors: Vec::new() };
+        let mesh = |source: &SceneMesh, color, opacity| SceneMesh {
+            mesh: source.mesh.clone(),
+            color,
+            opacity,
+            face_colors: Vec::new(),
+            closed: source.closed,
+            hatch: source.hatch,
+        };
         let mut display = Scene { background: model.scene.background, ..Scene::default() };
         display.lines = model
             .scene
@@ -1728,6 +1763,8 @@ impl SessionAdapter {
                     color: source.color,
                     opacity: source.opacity,
                     face_colors: source.face_colors.clone(),
+                    closed: source.closed,
+                    hatch: source.hatch,
                 });
             } else {
                 display.meshes.push(mesh(source, palette.body, 0.16));
@@ -1766,6 +1803,8 @@ impl SessionAdapter {
                 let shape = body.mesh();
                 bounds = bounds.union(&shape.bounds());
                 display.meshes.push(SceneMesh {
+                    closed: !body.is_surface(),
+                    hatch: solidcraft_render::hatch::Hatch(0),
                     mesh: shape,
                     color,
                     face_colors: Vec::new(),

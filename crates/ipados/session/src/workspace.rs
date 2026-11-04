@@ -97,7 +97,11 @@ impl SessionAdapter {
             // World-state owners are authoritative, including occurrence placements;
             // never infer body ownership by parsing feature or body names.
             let paths = self.assembly_body_paths().unwrap_or_default();
-            for b in &self.session.world_state().bodies {
+            let world = match self.session.world_state() {
+                Ok(world) => world,
+                Err(failure) => return json!({"error":AdapterError::from(failure)}),
+            };
+            for b in &world.bodies {
                 rows.push(row(
                     format!("body:{}", b.name),
                     Some(paths.get(&b.name).map(|p| crate::assembly::path_id(p)).unwrap_or_else(|| format!("component:{}", b.component))),
@@ -354,7 +358,7 @@ impl SessionAdapter {
             for curve in c.kind.indices().1 {
                 if let Some(radius) = sketch.sketch.radius(curve) {
                     solidcraft_engine::sketch::Sketch::default()
-                        .add_circle(solidcraft_engine::geom::Vec2::ZERO, radius, None, None)
+                        .add_circle(solidcore_record::Vec2::ZERO, radius, None, None)
                         .map_err(|e| error("numeric_validation", e.to_string()))?;
                 }
             }

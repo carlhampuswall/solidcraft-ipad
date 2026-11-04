@@ -1,6 +1,8 @@
 //! A small native tool contract over upstream scratch evaluation and command history.
 //! Sketch, modelling and assembly handles share this preview contract; no document
 //! mutation or independent history lives in the input/viewport worker.
+use solidcore_record::{Plane, Vec3};
+use solidcraft_engine::geom::prelude::*;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -8,7 +10,6 @@ use serde_json::{Value, json};
 use solidcraft_engine::{
     ComputedCommands,
     doc::{FeatureKind, expr::Kind},
-    geom::{Plane, Vec3},
 };
 
 use crate::{AdapterError, SceneSnapshot, SessionAdapter, error};
@@ -93,7 +94,7 @@ impl SessionAdapter {
         let FeatureKind::Cylinder { base, axis, radius, height, .. } = &f.kind else { return None };
         if Vec3::from(*axis).dist(Vec3::Z) > 1e-9
             || !self.session.body_visible("Post")
-            || !self.session.world_state().bodies.iter().any(|b| b.name == "Post")
+            || !self.session.world_state().ok()?.bodies.iter().any(|b| b.name == "Post")
         {
             return None;
         }

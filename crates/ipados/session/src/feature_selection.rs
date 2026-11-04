@@ -1,10 +1,10 @@
 //! Selection feedback projected from existing evaluator states, without evaluating
 //! or mutating the document on the display lane.
+use solidcore_record::Vec3;
 use std::collections::{BTreeMap, BTreeSet};
 
 use solidcraft_engine::{
     doc::{ModelState, construct::ConstructGeom},
-    geom::Vec3,
     view,
 };
 

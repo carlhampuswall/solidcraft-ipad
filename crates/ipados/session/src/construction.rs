@@ -1,4 +1,5 @@
 //! Native construction strokes: keep picking paths whole and dash only display geometry.
+use solidcraft_engine::geom::prelude::*;
 use solidcraft_engine::view::Palette;
 use solidcraft_render::{Scene, SceneLine};
 

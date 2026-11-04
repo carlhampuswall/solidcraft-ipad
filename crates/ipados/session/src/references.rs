@@ -42,7 +42,7 @@ impl SessionAdapter {
                     }
                 }
             }
-            let faces = face_point_state(&self.session.doc, &before, &feature.kind, feature.component);
+            let faces = face_point_state(&self.session.doc, &before, &feature.kind, feature.component).map_err(|e| fail(e.to_string()))?;
             for (point, name) in feature.kind.face_points().into_iter().zip(&feature.face_names) {
                 // Empty native entries can mean an explicit spatial extent point;
                 // they are not a face reference and must retain that meaning.

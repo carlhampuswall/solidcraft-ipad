@@ -1,6 +1,7 @@
 //! UIKit surface integration. CAD scene creation, camera math and drawing pipelines
 //! stay in the shared Rust crates; this module owns only the surface and its lifetime.
 
+use solidcraft_geom::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -261,6 +262,7 @@ impl NativeRenderer {
             size_px: [self.size[0] as f32, self.size[1] as f32],
             clip: [0.0; 4],
             cap: [0.0; 4],
+            hatch: Default::default(),
             images: Vec::new(),
             clouds: Vec::new(),
             analysis: [0.0; 8],
@@ -306,7 +308,7 @@ fn finish_scopes(scopes: [wgpu::ErrorScopeGuard; 3]) -> Result<(), String> {
 /// instance placement. The public GPU renderer owns both draw paths.
 pub(crate) enum BodyGeometry {
     Block(BlockTris),
-    Instance { key: u64, tris: Arc<SharedTris>, rows: [[f32; 4]; 3] },
+    Instance { key: u64, tris: Arc<SharedTris>, rows: [[f32; 4]; 3], closed: bool },
 }
 pub(crate) type ModelBodies = Vec<(String, BodyGeometry)>;
 
@@ -407,7 +409,7 @@ pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: 
                 }
             };
             if let Some((mesh_key, tris)) = converted {
-                shared.push((body.clone(), mesh_key, tris, rows, [mesh.color.0, mesh.color.1, mesh.color.2, 255]));
+                shared.push((body.clone(), mesh_key, tris, rows, [mesh.color.0, mesh.color.1, mesh.color.2, 255], mesh.closed));
                 continue;
             }
         }
@@ -416,6 +418,8 @@ pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: 
             color: mesh.color,
             face_colors: mesh.face_colors.clone(),
             opacity: mesh.opacity,
+            closed: mesh.closed,
+            hatch: mesh.hatch,
         });
         fallback_names.push(body.clone());
     }
@@ -433,9 +437,9 @@ pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: 
     let mut scene = solidcraft_gpu::capture::scene_geometry(&fallback);
     let mut bodies = fallback_blocks(&mut scene, &fallback, &fallback_names, key)?;
     let mut groups = std::collections::BTreeMap::new();
-    for (body, mesh_key, tris, rows, rgba) in shared {
+    for (body, mesh_key, tris, rows, rgba, closed) in shared {
         let color = scene.color(rgba);
-        let index = *groups.entry(mesh_key).or_insert_with(|| {
+        let index = *groups.entry((mesh_key, closed)).or_insert_with(|| {
             let index = scene.instanced.len();
             scene.instanced.push(InstancedMesh {
                 key: mesh_key,
@@ -443,13 +447,14 @@ pub(crate) fn model_geometry_cached(snapshot: &RenderSnapshot, key: u64, cache: 
                 instances: Vec::new(),
                 look: InstanceLook::Opaque,
                 levels: Vec::new(),
+                closed,
             });
             index
         });
         if let Some(mesh) = scene.instanced.get_mut(index) {
             mesh.place(rows, color);
         }
-        bodies.push((body, BodyGeometry::Instance { key: mesh_key, tris, rows }));
+        bodies.push((body, BodyGeometry::Instance { key: mesh_key, tris, rows, closed }));
     }
     Ok((scene, bodies))
 }
@@ -515,9 +520,15 @@ pub(crate) fn highlight_geometry(snapshot: &RenderSnapshot, bodies: &ModelBodies
                         highlight.hover_blocks.push(block.clone());
                     }
                 }
-                BodyGeometry::Instance { key, tris, rows } => {
-                    let mut mesh =
-                        InstancedMesh { key: *key, tris: tris.clone(), instances: Vec::new(), look: InstanceLook::Opaque, levels: Vec::new() };
+                BodyGeometry::Instance { key, tris, rows, closed } => {
+                    let mut mesh = InstancedMesh {
+                        key: *key,
+                        tris: tris.clone(),
+                        instances: Vec::new(),
+                        look: InstanceLook::Opaque,
+                        levels: Vec::new(),
+                        closed: *closed,
+                    };
                     mesh.place(*rows, color);
                     if selected {
                         highlight.selected_instanced.push(mesh);

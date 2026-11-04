@@ -1,8 +1,9 @@
 //! Presentation of native sketch state. The upstream model/solver remain authoritative.
 use serde_json::{Value, json};
+use solidcore_record::{Plane, Vec2};
+use solidcraft_engine::geom::prelude::*;
 use solidcraft_engine::{
     Sel,
-    geom::{Plane, Vec2},
     sketch::{Analysis, ConstraintKind, CurveKind, Hold, Sketch, measure_dimension, solve_with},
 };
 
@@ -92,7 +93,7 @@ pub struct SketchSnapshot {
 impl SessionAdapter {
     pub(crate) fn sketch_snapshot(&self) -> Option<SketchSnapshot> {
         let id = self.session.active_sketch?;
-        let world = self.session.world_state();
+        let world = self.session.world_state().ok()?;
         let ss = world.sketch(id)?;
         // Analyse sizes on the engine worker, once per immutable publication. A
         // floating rigid shape still has positional freedom, so neither sketch
@@ -171,14 +172,15 @@ impl SessionAdapter {
             return Err(crate::error("disabled", "Finish the active sketch before selecting another plane."));
         }
         scratch.execute("sketch.create", &json!({"plane":plane}))?;
-        solidcraft_engine::view::open_sketch_plane(&scratch).ok_or_else(|| crate::error("plane", "The selected sketch plane could not be evaluated."))
+        solidcraft_engine::view::open_sketch_plane(&scratch)?
+            .ok_or_else(|| crate::error("plane", "The selected sketch plane could not be evaluated."))
     }
 
     /// Use the engine's existing inspection reply rather than a parallel entity schema.
     pub(crate) fn sketch_workspace(&mut self, selection: &[Sel]) -> Value {
         let Some(id) = self.session.active_sketch else { return Value::Null };
         let Ok(mut value) = self.session.execute("sketch.inspect", &json!({"sketch":id})) else { return Value::Null };
-        let state = self.session.world_state();
+        let Ok(state) = self.session.world_state() else { return value };
         let Some(ss) = state.sketch(id) else { return value };
         value["plane"] = json!(ss.plane);
         value["solved"] = json!(ss.report.keeps_orientation());
@@ -222,7 +224,7 @@ impl SessionAdapter {
                 if c.kind.is_dimension()
                     && let Some(frame) = solidcraft_engine::sketch::dim_frame(sk, &c.kind)
                 {
-                    row["at"] = json!(solidcraft_engine::sketch::dim_layout(&frame, c.text, 1.0, solidcraft_engine::geom::Vec2::ZERO).text);
+                    row["at"] = json!(solidcraft_engine::sketch::dim_layout(&frame, c.text, 1.0, solidcore_record::Vec2::ZERO).text);
                 }
             }
         }

@@ -1,11 +1,13 @@
 //! Display state independent of the engine worker. All navigation uses the shared
 //! stateless `view.navigate` implementation; CAD geometry is immutable here.
+use solidcore_record::{Plane, Vec3};
+use solidcraft_engine::geom::prelude::*;
 use std::{collections::BTreeSet, sync::Arc};
 
 use serde_json::{Value, json};
 use solidcraft_engine::{
     Sel,
-    geom::{Aabb3, Mesh, Plane, Vec3},
+    geom::{Aabb3, Mesh},
     view,
 };
 use solidcraft_render::{Camera, Mat4, Rgb, Scene, SceneLine, SceneMesh};
@@ -1182,7 +1184,14 @@ impl Viewport {
             }
             if let Sel::Profile { sketch, index } = sel {
                 if let Some(profile) = model.picks.profiles.iter().find(|p| p.sketch == *sketch && p.index == *index) {
-                    scene.meshes.push(SceneMesh { mesh: profile.fill.clone(), color, face_colors: Vec::new(), opacity: 0.3 });
+                    scene.meshes.push(SceneMesh {
+                        mesh: profile.fill.clone(),
+                        color,
+                        face_colors: Vec::new(),
+                        opacity: 0.3,
+                        closed: false,
+                        hatch: solidcraft_render::hatch::Hatch(0),
+                    });
                     for boundary in &profile.boundaries {
                         scene.lines.push(SceneLine { points: boundary.clone(), color, alpha: 1., width: 3. * self.metrics.scale, on_top: false });
                     }

@@ -12,7 +12,7 @@ impl SessionAdapter {
         if !feature.is_some_and(|feature| matches!(feature.kind, FeatureKind::Sketch { .. }) && !feature.suppressed) {
             return Err(error("selection", "ui.ipados.attachment.choose_sketch"));
         }
-        let world = self.session.world_state();
+        let world = self.session.world_state()?;
         let mut options = Vec::new();
         let frames = self.session.placed_document().body_frames_with_source(&self.session.model.state());
         for body in world.bodies.iter().filter(|body| self.session.body_visible(&body.name)) {
@@ -47,7 +47,7 @@ impl SessionAdapter {
         // Only the exact, upstream face payloads from this revision's form may
         // be accepted. Do not fall back to a nearest point or a later body.
         let picked = &params["plane"];
-        let point = serde_json::from_value::<solidcraft_engine::geom::Vec3>(picked["face"].clone()).ok().filter(|point| point.is_finite());
+        let point = serde_json::from_value::<solidcore_record::Vec3>(picked["face"].clone()).ok().filter(|point| point.is_finite());
         // Swift's JSON round trip can spell 10.0 as 10. Compare typed coordinates
         // and exact body/index/path identity, then send the canonical option to
         // the engine rather than the caller's re-encoded geometry payload.
@@ -57,7 +57,7 @@ impl SessionAdapter {
                 && plane["index"] == picked["index"]
                 && plane["path"] == picked["path"]
                 && point.is_some()
-                && serde_json::from_value::<solidcraft_engine::geom::Vec3>(plane["face"].clone()).ok() == point)
+                && serde_json::from_value::<solidcore_record::Vec3>(plane["face"].clone()).ok() == point)
                 .then_some(plane)
         });
         let plane = plane.ok_or_else(|| error("selection", "ui.ipados.attachment.choose_face"))?;

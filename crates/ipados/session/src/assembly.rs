@@ -1,9 +1,10 @@
 //! Assembly presentation over native component/occurrence and mechanism APIs.
 //! Every placement and solve belongs to the shared Session and native document.
+use solidcraft_engine::geom::prelude::*;
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use solidcraft_engine::geom::Vec3;
+use solidcore_record::Vec3;
 use solidcraft_engine::{Sel, occurrences::OccurrencePlacement};
 
 use crate::{AdapterError, ModelEdit, PreparedModel, SessionAdapter, error};
@@ -191,7 +192,7 @@ impl SessionAdapter {
             .collect();
         let mut components = vec![option(self.session.doc.name.clone(), json!({"component":0,"path":[]}))];
         components.extend(placements.iter().map(|p| option(format!("{} · {:?}", p.name, p.path), json!({"component":p.component,"path":p.path}))));
-        let bodies: Vec<_> = self.session.world_state().bodies.iter().map(|b| option(b.name.clone(), json!(b.name))).collect();
+        let bodies: Vec<_> = self.session.world_state()?.bodies.iter().map(|b| option(b.name.clone(), json!(b.name))).collect();
         let selected = selection.iter().find_map(|s| match s {
             Sel::Occurrence { path } => self.session.occurrence_placement(path).ok(),
             Sel::Body { name } | Sel::Face { body: name, .. } | Sel::Edge { body: name, .. } => {

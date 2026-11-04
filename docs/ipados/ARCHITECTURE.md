@@ -126,15 +126,13 @@ an internally failed handle must be destroyed and recreated.
 
 ## Upstream delta ledger
 
-`crates/kernel/src/blend.rs` extends the existing guarded straight plane/cylinder
-chamfer cutter to convex tangent joins, including a fillet's rail against a flat
-face. The section uses equal distances along the plane and the cylinder's arc;
-existing contact, clearance, Boolean and history checks remain in force. This
-belongs in the shared kernel because it changes geometry, rather than native
-selection or presentation. It adds no platform dependency, public API or saved
-format, and applies equally to desktop and web. Tangent joins still have no
-corner for a second constant-radius fillet. This small geometric extension is
-independently upstream-suitable when kernel contributions resume.
+The [2026-11-04 upstream integration](UPSTREAM-INTEGRATION-2026-11-04.md) adopts
+upstream's solidcore kernel and solidcore-record geometry data boundary. The
+earlier truck-only `blend.rs` tangent plane/cylinder rail chamfer extension is
+retired with that backend; solidcore rejects smooth tangent joins. Its analytic
+regression is preserved with the integration evidence. The exact upstream kernel
+pin has a vendored, one-line Rust 1.95 slice-coercion fix; geometry is unchanged.
+Current compatibility checks and limitations are in the integration record.
 
 `cmd/face.rs` and `cmd/features.rs` partition multi-face extrusions by oriented
 plane and capture all linked profiles before applying any extrusion. Each plane

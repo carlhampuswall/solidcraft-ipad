@@ -1,0 +1,1 @@
+| `vendor/solidcore/` | solidcore contributors / NVIDIA | [Pinned solidcore kernel](https://github.com/tangency-labs/solidcore/tree/8ddce901671f1cebd9214a31d21895d725e886c8/crates/solidcore); Rust 1.95 slice-coercion fix, see `vendor/README.md` | Apache-2.0 |

@@ -2,9 +2,10 @@
 //! proposals reach the engine worker; drawing samples never mutate a document.
 use serde::Serialize;
 use serde_json::{Value, json};
+use solidcore_record::{Vec2, Vec3};
+use solidcraft_engine::geom::prelude::*;
 use solidcraft_engine::{
     Sel,
-    geom::{Vec2, Vec3},
     sketch::{ConstraintKind, CurveKind, Shape, Sketch},
 };
 use std::collections::BTreeMap;

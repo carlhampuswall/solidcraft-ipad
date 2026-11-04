@@ -72,7 +72,7 @@ impl SessionAdapter {
             }
         }
         let mut folders: BTreeMap<(String, String), Scope> = BTreeMap::new();
-        let state = session.world_state();
+        let Ok(state) = session.world_state() else { return };
         let bodies: BTreeMap<_, _> = state.bodies.iter().map(|body| (body.name.as_str(), body)).collect();
         let features: BTreeMap<_, _> = session.doc.features.iter().map(|feature| (feature.id, feature)).collect();
         let mut feature_visibility = BTreeMap::new();

@@ -1,13 +1,15 @@
 //! Platform-sized coordinates and topology-aware picking on shared engine tessellation.
 //! The egui picker cannot be linked by the native host. Reuse its underlying MeshIndex,
 //! Camera and B-rep face/edge mappings, with only screen tolerance/occlusion policy here.
+use solidcore_record::{Plane, Region2, Vec3};
+use solidcraft_engine::geom::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use solidcraft_engine::{
     Sel,
-    geom::{Aabb3, Mesh, MeshIndex, Plane, Region2, Vec3},
+    geom::{Aabb3, Mesh, MeshIndex},
 };
 use solidcraft_render::{Camera, Mat4, Scene};
 

@@ -1,6 +1,7 @@
 //! Real command → revisioned scene → shared GPU, with before/after update evidence.
 //! macOS GPU evidence only: does not launch or emulate the iPad application.
 use serde_json::json;
+use solidcraft_geom::prelude::*;
 use solidcraft_ipados_session::{InputEvent, InputPhase, InputSource, SessionAdapter, Viewport, ViewportMetrics};
 use solidcraft_render::{Scene, SceneLine, SceneMesh};
 use std::sync::Arc;
@@ -37,7 +38,14 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
                 .scene
                 .meshes
                 .iter()
-                .map(|m| SceneMesh { mesh: m.mesh.clone(), color: m.color, face_colors: m.face_colors.clone(), opacity: m.opacity })
+                .map(|m| SceneMesh {
+                    mesh: m.mesh.clone(),
+                    color: m.color,
+                    face_colors: m.face_colors.clone(),
+                    opacity: m.opacity,
+                    closed: m.closed,
+                    hatch: m.hatch,
+                })
                 .collect(),
             lines: snapshot.model.scene.lines.iter().chain(&snapshot.guides.lines).map(line).collect(),
             grid: snapshot.guides.grid.iter().map(line).collect(),
@@ -199,6 +207,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             color: m.color,
             face_colors: m.face_colors.clone(),
             opacity: m.opacity,
+            closed: m.closed,
+            hatch: m.hatch,
         }));
         let (rgba, stats) = capturer.rgba_with_stats(&scene, &snapshot.camera, 960, 640)?;
         std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding failed")?)?;
@@ -789,7 +799,14 @@ fn grid_axes_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> 
         }
         let frame = view.snapshot().ok_or("missing grid-axis scene")?;
         let line = |l: &SceneLine| SceneLine { points: l.points.clone(), color: l.color, alpha: l.alpha, width: l.width, on_top: l.on_top };
-        let mesh = |m: &SceneMesh| SceneMesh { mesh: m.mesh.clone(), color: m.color, face_colors: m.face_colors.clone(), opacity: m.opacity };
+        let mesh = |m: &SceneMesh| SceneMesh {
+            mesh: m.mesh.clone(),
+            color: m.color,
+            face_colors: m.face_colors.clone(),
+            opacity: m.opacity,
+            closed: m.closed,
+            hatch: m.hatch,
+        };
         let scene = Scene {
             background: frame.background,
             radius: frame.camera.distance * 2.,
@@ -883,7 +900,14 @@ fn origin_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
         let frame = view.snapshot().ok_or("missing origin scene")?;
         let line = |l: &SceneLine| SceneLine { points: l.points.clone(), color: l.color, alpha: l.alpha, width: l.width, on_top: l.on_top };
-        let mesh = |m: &SceneMesh| SceneMesh { mesh: m.mesh.clone(), color: m.color, face_colors: m.face_colors.clone(), opacity: m.opacity };
+        let mesh = |m: &SceneMesh| SceneMesh {
+            mesh: m.mesh.clone(),
+            color: m.color,
+            face_colors: m.face_colors.clone(),
+            opacity: m.opacity,
+            closed: m.closed,
+            hatch: m.hatch,
+        };
         let scene = Scene {
             background: frame.model.scene.background,
             radius: frame.camera.distance * 2.,

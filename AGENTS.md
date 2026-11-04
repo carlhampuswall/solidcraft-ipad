@@ -1,22 +1,22 @@
 # SolidCraft: instructions for agents
 
-SolidCraft is a clean-room, pure-Rust parametric 3D CAD app (sketch solver, feature timeline, B-rep kernel, an egui UI that agents drive). This file is a router: the hard rules, then the skill to read for your task. Humans: CONTRIBUTING.md.
+SolidCraft is a clean-room Rust parametric CAD app. This router lists rules and skills; humans: CONTRIBUTING.md.
 
 ## iPadOS fork
-For iPadOS work and upstream integration in `carlhampuswall/solidcraft-ipad`, first read
-[`docs/ipados/UPSTREAM.md`](docs/ipados/UPSTREAM.md) (permanent engineering rules) and
-[`docs/ipados/SETUP.md`](docs/ipados/SETUP.md) (layout and prerequisites).
-Native Swift/FFI exceptions: see `docs/ipados/ARCHITECTURE.md` and scoped iPad AGENTS.md files.
+First read [UPSTREAM.md](docs/ipados/UPSTREAM.md) and [SETUP.md](docs/ipados/SETUP.md).
+Swift/FFI exceptions: `docs/ipados/ARCHITECTURE.md` and scoped AGENTS.md files.
 Shared `develop`, no build lock; batch checks: [TASK-COORDINATION.md](docs/ipados/TASK-COORDINATION.md).
 
 ## Start here
-Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelled `help wanted`, `good first issue`, `needs-triage`; architecture in `docs/architecture.md`. Act when the code, docs and rules settle a question; ask only when it changes what users see. Local `plan/` notes are optional.
+Work: ROADMAP.md, CONTRIBUTING.md and issues labelled `help wanted`, `good first issue`, `needs-triage`. Architecture: `docs/architecture.md`. Act when code and rules settle a question; ask when it changes what users see. Local `plan/` notes are optional.
 
 ## Hard rules (what enforces each)
 - Independent: never copy another product's code, icons, text or templates; never drive or take data from commercial CAD. `skills/solidcraft-ground-rules/SKILL.md`.
 - No GPL/LGPL/AGPL code, not even reading it (OpenCASCADE, FreeCAD, SolveSpace, CadQuery, LibreCAD, QCAD): `cargo xtask licences --check`.
 - Every asset is original or openly licensed with a row in ATTRIBUTION.md; read `assets/AGENTS.md` before icon work: `cargo xtask assets`, `cargo xtask icons`.
 - Never crash: no unwrap/expect/panic/unsafe in non-test code (unsafe allowlist in crash-safety), errors are `Result`, input is hostile: clippy `-D warnings`, `hostile_params_never_panic`.
+- Model decisions use exact geometry; meshes serve display, export, previews and mesh bodies (`xtask/mesh-decisions.txt` only shrinks): `cargo xtask mesh-decisions`.
+- New kernel cases go to solidcore: `cargo xtask lists`.
 - Everything is a command and programmatic calls never open dialogs: `skills/solidcraft-commands/SKILL.md`.
 - Layering (geom, sketch/kernel/render, doc, io, engine, ui-egui, apps); only `crates/kernel` uses truck: `cargo xtask layers`.
 - One outer UI container, one camera path (`navigation::handle`), colours from theme tokens: `cargo xtask ui-containers`.
@@ -29,6 +29,7 @@ Work: ROADMAP.md, "Where help is wanted most" in CONTRIBUTING.md, issues labelle
 - A changed default keeps the old behaviour behind a preference and fills the PR's `Changes a default:` line, and no second PR for an issue a lower-numbered one closes: `pr-checks.yml`.
 - A regression test goes in the area's existing test file, never a per-bug file (#3226).
 - Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR, never force-push `main`, no pushes just to catch up with `main`: `skills/solidcraft-contributing/SKILL.md`.
+- A PR's title and first sentence make sense to someone who never saw your chat or the issue: `skills/solidcraft-contributing/SKILL.md`.
 - Show observable changes with real screenshots or a recording, captured yourself.
 - Local checks: TASK-COORDINATION.md; upstream/main/releases need full CI. Never switch branches mid-check. `cargo xtask skills` checks routing.
 

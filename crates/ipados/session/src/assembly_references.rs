@@ -1,13 +1,13 @@
 //! Exact joint-reference checks over the shared native naming/resolution APIs.
 //! No stored snap is repaired or replaced while a proposal is being validated.
 
+use solidcore_record::Vec3;
 use solidcraft_engine::{
     doc::{
         Document, ModelBody, ModelState, apply_point,
         joints::{self, JointOrigin, Snap, XRef},
         mat_inverse, naming,
     },
-    geom::Vec3,
     kernel::{self, FaceSurface},
 };
 
@@ -34,7 +34,7 @@ fn face_on<'a>(doc: &Document, bodies: impl Iterator<Item = &'a ModelBody>, name
         let mut source = ModelState::default();
         source.bodies.push(body.clone());
         let Some(hit) = naming::locate_face(&source, name, point) else { continue };
-        if hit.note(name).is_some() || (hit.legacy && !hit.on_point) {
+        if hit.note(name).is_some() {
             continue;
         }
         if found.is_some() {
@@ -64,7 +64,7 @@ fn exact_edge<'a>(doc: &Document, state: &'a ModelState, component: u64, name: &
     for body in state.bodies.iter().filter(|body| doc.model_body_component(body) == component) {
         let point = body_pick(doc, body, point)?;
         let Ok(hit) = naming::locate_edge(body, name, point) else { continue };
-        if hit.note(name).is_some() || (hit.legacy && !hit.on_point) {
+        if hit.note(name).is_some() {
             continue;
         }
         if found.is_some() {
