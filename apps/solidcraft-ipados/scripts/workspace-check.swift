@@ -8,6 +8,16 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        try require(HistoryFeatureEmphasis.enabled(nil) && HistoryFeatureEmphasis.enabled(true) && !HistoryFeatureEmphasis.enabled(false),
+                    "history selection preference lost its default or saved value")
+        try require(HistoryFeatureEmphasis.resolve(selected: true, editing: false, enabled: true) == .selection &&
+                    HistoryFeatureEmphasis.resolve(selected: true, editing: true, enabled: true) == .editing &&
+                    HistoryFeatureEmphasis.resolve(selected: false, editing: true, enabled: true) == .editing &&
+                    HistoryFeatureEmphasis.resolve(selected: false, editing: false, enabled: true) == .none,
+                    "selection, deselection or input picking replaced the feature editor's history state")
+        try require(HistoryFeatureEmphasis.resolve(selected: true, editing: false, enabled: false) == .editing &&
+                    HistoryFeatureEmphasis.resolve(selected: false, editing: true, enabled: false) == .none,
+                    "disabling history selection did not restore the previous direct-feature state")
         try require(ModellingFormPresentation.rollbackEditing(nil) && ModellingFormPresentation.rollbackEditing(true) &&
                     !ModellingFormPresentation.rollbackEditing(false), "feature rollback lost its default or legacy preference")
         let sketchEdit = ModellingFormPresentation.sketchEditParameters(["sketch": UInt64(7)], rollback: true)

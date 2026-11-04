@@ -4,7 +4,8 @@ use solidcore_record::Vec3;
 use std::collections::{BTreeMap, BTreeSet};
 
 use solidcraft_engine::{
-    doc::{ModelState, construct::ConstructGeom},
+    Sel,
+    doc::{ModelState, construct::ConstructGeom, naming, persistent_name::FaceName},
     view,
 };
 
@@ -18,6 +19,78 @@ pub(crate) struct FeatureFeedback {
 }
 
 impl SessionAdapter {
+    /// History emphasis is presentation only: retain the viewport selection and
+    /// resolve ownership through evaluated bodies and persistent face names.
+    pub(crate) fn selection_features(&self, selection: &[Sel]) -> BTreeSet<u64> {
+        let mut selected = BTreeSet::new();
+        if selection.is_empty() {
+            return selected;
+        }
+        let world = self.session.world_state().ok();
+        for item in selection {
+            let body_name = match item {
+                Sel::Body { name } => Some(name),
+                Sel::Face { body, .. } | Sel::Edge { body, .. } | Sel::Vertex { body, .. } => Some(body),
+                _ => None,
+            };
+            if let Some(body) = body_name.and_then(|name| world.as_ref()?.bodies.iter().find(|body| &body.name == name)) {
+                let faces: Vec<usize> = match item {
+                    Sel::Face { index, .. } => vec![*index],
+                    Sel::Edge { index, .. } => {
+                        body.mesh().edge_faces.get(*index).map(|faces| faces.iter().map(|i| *i as usize).collect()).unwrap_or_default()
+                    }
+                    _ => Vec::new(),
+                };
+                let mut origins = BTreeSet::new();
+                if !faces.is_empty() {
+                    let names = naming::face_names(body);
+                    for index in faces {
+                        if names.get(index).is_some()
+                            && naming::face_name_exact(body, index)
+                            && let Some(origin) = names.get(index).and_then(|name| FaceName::parse(name).ok()).and_then(|name| name.made_by())
+                        {
+                            origins.insert(origin.0);
+                        }
+                    }
+                }
+                if origins.is_empty() {
+                    origins.insert(body.feature);
+                }
+                selected.extend(origins);
+            }
+            match item {
+                Sel::Feature { id } => {
+                    selected.insert(*id);
+                }
+                Sel::Profile { sketch, .. } | Sel::ExternalSketchCurve { sketch, .. } | Sel::ExternalSketchPoint { sketch, .. } => {
+                    selected.insert(*sketch);
+                }
+                Sel::SketchCurve { sketch, .. } => {
+                    selected.extend(sketch.or(self.session.active_sketch));
+                }
+                Sel::SketchPoint { .. } | Sel::SketchMidpoint { .. } | Sel::SketchConstraint { .. } => {
+                    selected.extend(self.session.active_sketch);
+                }
+                Sel::Plane { name } | Sel::Axis { name } | Sel::ConstructionPoint { name } => {
+                    selected.extend(self.session.doc.find_feature(name).map(|feature| feature.id));
+                }
+                Sel::Occurrence { path } => {
+                    if !path.is_empty()
+                        && let Ok(paths) = self.assembly_body_paths()
+                        && let Some(world) = &world
+                    {
+                        selected.extend(
+                            world.bodies.iter().filter(|body| paths.get(&body.name).is_some_and(|p| p.starts_with(path))).map(|body| body.feature),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        selected.retain(|id| self.session.doc.feature(*id).is_some_and(|feature| !self.hidden_internal_profile(feature)));
+        selected
+    }
+
     pub(crate) fn feature_feedback(&self, world: &ModelState) -> BTreeMap<u64, FeatureFeedback> {
         let mut feedback = BTreeMap::new();
         let mut previous = BTreeMap::new();

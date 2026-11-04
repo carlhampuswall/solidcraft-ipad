@@ -96,6 +96,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private enum AutomaticModellingSource { case extrude, edges }
     private var historyActivation: (feature: UInt64, document: String)?
     private var editSketchOnHistorySelection = SketchHeaderAction.immediateEditing(UserDefaults.standard.object(forKey: SketchHeaderAction.immediateEditingKey) as? Bool)
+    private var highlightHistorySelection = HistoryFeatureEmphasis.enabled(UserDefaults.standard.object(forKey: HistoryFeatureEmphasis.preferenceKey) as? Bool)
     private var rollbackFeatureEditing = ModellingFormPresentation.rollbackEditing(UserDefaults.standard.object(forKey: ModellingFormPresentation.rollbackEditingKey) as? Bool)
     private var issuingHistoryPlaybackCommand = false
     private var historyPlaybackGeneration: UInt64 = 0
@@ -3471,10 +3472,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let featureIcons = Dictionary(features.map { feature in
             (feature.id, rowByID["feature:" + String(feature.id)]?.browser?.icon ?? "component")
         }, uniquingKeysWith: { first, _ in first })
-        let selectedFeatures = Set((state?.selection ?? []).filter { $0.type == "feature" }.compactMap { entity in
+        let explicitFeatures = Set((state?.selection ?? []).filter { $0.type == "feature" }.compactMap { entity in
             entity.id.flatMap { UInt64($0.readout) }
         })
-        featureHistory.update(features: features, icons: featureIcons, selected: selectedFeatures,
+        let selectedFeatures = highlightHistorySelection ? Set(state?.selection_features ?? Array(explicitFeatures)) : explicitFeatures
+        let editingFeatures = highlightHistorySelection ? Set([modellingFeature, state?.sketch?.id, numericEditing ? state?.radius?.feature : nil].compactMap { $0 }) : []
+        featureHistory.update(features: features, icons: featureIcons, selected: selectedFeatures, editing: editingFeatures, highlightSelection: highlightHistorySelection,
             position: state?.modelling?.activeFeatureCount ?? 0, enabled: browserCanChange && state?.sketch == nil, navigationEnabled: historyCanNavigate,
             scrubbingEnabled: historyContextAllowsNavigation && (pending.isEmpty || featureHistory.scrubInFlight),
             playbackEnabled: active && historyContextAllowsNavigation && state?.active_tool == "select" && presentedViewController == nil &&
@@ -3654,6 +3657,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.editSketchOnHistorySelection, forKey: SketchHeaderAction.immediateEditingKey)
             self.rebuildMenus()
         }
+        let historySelection = UIAction(title: HistoryText.text("highlight_selection"), subtitle: HistoryText.text("highlight_selection_help"), state: highlightHistorySelection ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.highlightHistorySelection.toggle()
+            UserDefaults.standard.set(self.highlightHistorySelection, forKey: HistoryFeatureEmphasis.preferenceKey)
+            self.updateAvailability(); self.rebuildMenus()
+        }
         let rollbackEditing = UIAction(title: WorkspaceStyle.text("rollback_feature_editing"),
             subtitle: WorkspaceStyle.text("rollback_feature_editing_help"),
             attributes: numericEditing || modellingEditing || state?.sketch != nil ? .disabled : [],
@@ -3782,7 +3791,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -7598,20 +7607,26 @@ private extension FoundationController {
         let started = Date().timeIntervalSince1970
         let savedImmediateEditing = editSketchOnHistorySelection
         let savedPreference = UserDefaults.standard.object(forKey: SketchHeaderAction.immediateEditingKey)
+        let savedHighlight = highlightHistorySelection
+        let savedHighlightPreference = UserDefaults.standard.object(forKey: HistoryFeatureEmphasis.preferenceKey)
         editSketchOnHistorySelection = false
+        highlightHistorySelection = true
         var finished = false
         var screenshots: [String] = []
         func report(_ error: String? = nil) {
             finished = true; historyDeleteConfirmation = nil; historyMenuSuppress = nil
             editSketchOnHistorySelection = savedImmediateEditing
             UserDefaults.standard.set(savedPreference, forKey: SketchHeaderAction.immediateEditingKey)
+            highlightHistorySelection = savedHighlight
+            UserDefaults.standard.set(savedHighlightPreference, forKey: HistoryFeatureEmphasis.preferenceKey)
+            updateAvailability()
             rebuildMenus()
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let result: [String: Any] = ["passed": error == nil, "error": error ?? "", "started_at": started,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "",
                     "screenshots": screenshots,
-                    "coverage": "Real UIKit hold-menu suppression/restoration, Undo/Redo, deletion, history selection, explicit Edit/Finish sketch, deselection and legacy preference; physical contacts unverified"]
+                    "coverage": "Real UIKit selection/edit history fills, geometry selection, deselection, legacy highlighting preference, hold-menu actions, Undo/Redo and explicit Edit/Finish sketch; physical contacts unverified"]
                 try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("history-actions-check.json"), options: .atomic)
             } catch { print("History actions report FAIL: \(error)") }
@@ -7651,6 +7666,8 @@ private extension FoundationController {
                     guard self.state?.sketch == nil, !self.modellingEditing, !self.finishSketchButton.isHidden,
                           self.finishSketchButton.isEnabled, self.finishSketchButton.configuration?.title == SketchText.text("reopen"),
                           self.finishSketchButton.accessibilityIdentifier == "workspace-edit-sketch" else { fail("selection started editing or did not offer Edit sketch"); return }
+                    guard item(sketch)?.isSelected == true,
+                          item(sketch)?.configuration?.background.backgroundColor == WorkspaceStyle.accent.withAlphaComponent(0.10) else { fail("sketch selection history fill"); return }
                     capture("selected-sketch")
                     let frame = self.finishSketchButton.convert(self.finishSketchButton.bounds, to: self.top)
                     let point = self.finishSketchButton.convert(CGPoint(x: self.finishSketchButton.bounds.midX, y: self.finishSketchButton.bounds.midY), to: self.workspace)
@@ -7660,6 +7677,7 @@ private extension FoundationController {
                     wait("sketch editor", until: { self.state?.sketch?.id == sketch && self.pending.isEmpty }) {
                         guard self.finishSketchButton.configuration?.title == SketchText.text("finish"),
                               self.finishSketchButton.accessibilityIdentifier == "workspace-finish-sketch" else { fail("Edit sketch did not become Finish sketch"); return }
+                        guard item(sketch)?.configuration?.background.backgroundColor == WorkspaceStyle.selectionFill else { fail("sketch editing reused selection fill"); return }
                         capture("edit-sketch")
                         self.finishSketchButton.sendActions(for: .touchUpInside)
                         wait("finish sketch", until: { self.state?.sketch == nil && self.pending.isEmpty }) {
@@ -7789,17 +7807,40 @@ private extension FoundationController {
                   control.gestureRecognizers?.contains(where: { $0 is UILongPressGestureRecognizer && $0.cancelsTouchesInView }) == true else {
                 fail("history icon/menu gesture configuration"); return
             }
-            control.sendActions(for: .primaryActionTriggered)
-            wait("feature editor", until: { self.modellingFeature == base && self.modellingInspector != nil }) {
-                guard let form = self.modellingInspector, form.params["height"] != nil, let revision = self.state?.geometry_revision else { fail("original box inputs"); return }
-                capture("edit-box")
-                var params = form.params; params["height"] = .string("14 mm")
-                form.onApply?(params)
-                wait("apply feature", until: { self.state?.geometry_revision != revision && !self.modellingEditing && self.pending.isEmpty }) {
-                    guard self.state?.modelling?.timeline.map(\.id) == features.map(\.id) else { fail("editing replaced feature IDs"); return }
-                    capture("edited")
-                    editFuture()
+            func editBox() {
+                control.sendActions(for: .primaryActionTriggered)
+                wait("feature editor", until: { self.modellingFeature == base && self.modellingInspector != nil }) {
+                    guard let form = self.modellingInspector, form.params["height"] != nil, let revision = self.state?.geometry_revision else { fail("original box inputs"); return }
+                    guard control.configuration?.background.backgroundColor == WorkspaceStyle.selectionFill else { fail("feature editing reused selection fill"); return }
+                    capture("edit-box")
+                    var params = form.params; params["height"] = .string("14 mm")
+                    form.onApply?(params)
+                    wait("apply feature", until: { self.state?.geometry_revision != revision && !self.modellingEditing && self.pending.isEmpty }) {
+                        guard self.state?.modelling?.timeline.map(\.id) == features.map(\.id) else { fail("editing replaced feature IDs"); return }
+                        capture("edited")
+                        editFuture()
+                    }
                 }
+            }
+            guard let body = self.state?.rows.first(where: { $0.kind == "body" && $0.entity?.name == "Foundation" })?.entity,
+                  let preference = self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == HistoryText.text("highlight_selection") }),
+                  let original = self.state else { fail("body selection fixture or highlighting preference"); return }
+            self.session.selectEntity(body.dictionary, additive: false)
+            wait("body history selection", until: { self.state?.selection_features?.contains(base) == true && control.isSelected && self.pending.isEmpty }) {
+                guard !self.modellingEditing, self.state?.sketch == nil,
+                      self.state?.geometry_revision == original.geometry_revision,
+                      self.state?.modelling?.activeFeatureCount == original.modelling?.activeFeatureCount,
+                      self.state?.can_undo == original.can_undo, self.state?.can_redo == original.can_redo,
+                      control.configuration?.background.backgroundColor == WorkspaceStyle.accent.withAlphaComponent(0.10) else { fail("selection opened an editor, moved history or lost its subtle fill"); return }
+                capture("selected-body")
+                preference.performWithSender(self.moreButton, target: nil)
+                guard !self.highlightHistorySelection, !control.isSelected,
+                      !UserDefaults.standard.bool(forKey: HistoryFeatureEmphasis.preferenceKey) else { fail("legacy history highlighting preference"); return }
+                capture("legacy-body-selection")
+                preference.performWithSender(self.moreButton, target: nil)
+                guard self.highlightHistorySelection, control.isSelected else { fail("reenabling history highlighting"); return }
+                self.run("select.clear")
+                wait("body deselection", until: { self.state?.selection.isEmpty == true && !control.isSelected && self.pending.isEmpty }) { editBox() }
             }
         }
     }

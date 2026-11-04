@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.history.highlight_selection": "Highlight selection in History",
+    "ui.ipados.history.highlight_selection_help": "Subtly highlight the features of selected geometry, separately from the feature being edited."
+  },
+  "de": {
+    "ui.ipados.history.highlight_selection": "Auswahl im Verlauf hervorheben",
+    "ui.ipados.history.highlight_selection_help": "Die Elemente ausgewählter Geometrie dezent hervorheben, getrennt vom bearbeiteten Element."
+  },
+  "ja": {
+    "ui.ipados.history.highlight_selection": "履歴で選択を強調表示",
+    "ui.ipados.history.highlight_selection_help": "選択した形状のフィーチャーを、編集中のフィーチャーとは別に薄く強調表示します。"
+  },
+  "ko": {
+    "ui.ipados.history.highlight_selection": "기록에서 선택 항목 강조",
+    "ui.ipados.history.highlight_selection_help": "선택한 형상의 피처를 편집 중인 피처와 구분하여 은은하게 강조합니다."
+  },
+  "zh": {
+    "ui.ipados.history.highlight_selection": "在历史记录中突出显示选择",
+    "ui.ipados.history.highlight_selection_help": "轻微突出显示所选几何体的特征，与正在编辑的特征区分。"
+  }
+}

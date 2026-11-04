@@ -1256,6 +1256,68 @@ fn history_feature_selection_highlights_current_created_and_modified_bodies_with
 }
 
 #[test]
+fn history_geometry_selection_identifies_features_without_editing_the_document() {
+    use solidcraft_engine::doc::{naming, persistent_name::FaceName};
+    let (mut adapter, _) = proof();
+    let base = adapter.session.doc.features[0].id;
+    let fillet =
+        adapter.execute("solid.fillet", json!({"edges":[[40,0,5]],"radius":2,"body":"Foundation"})).unwrap().value["feature"].as_u64().unwrap();
+    let world = adapter.session.world_state().unwrap();
+    let body = world.bodies.iter().find(|body| body.name == "Foundation").unwrap();
+    let names = naming::face_names(body);
+    let doc = adapter.session.doc.clone();
+    let undo = adapter.session.undo.len();
+    let revision = adapter.geometry_revision;
+    for feature in [base, fillet] {
+        let index = names
+            .iter()
+            .enumerate()
+            .find(|(index, name)| {
+                naming::face_name_exact(body, *index) && FaceName::parse(name).ok().and_then(|name| name.made_by()).map(|id| id.0) == Some(feature)
+            })
+            .unwrap()
+            .0;
+        let selection = [Sel::Face { body: body.name.clone(), index, point: Vec3::ZERO }];
+        let workspace = adapter.workspace(&selection, false, false);
+        assert_eq!(workspace["selection_features"], json!([feature]), "face provenance must distinguish a fillet from its base");
+        assert_eq!(workspace["selection"], json!(selection), "history emphasis must retain the face selection");
+    }
+    let mesh = body.mesh();
+    let (index, expected) = mesh
+        .edge_faces
+        .iter()
+        .enumerate()
+        .find_map(|(index, faces)| {
+            let origins: std::collections::BTreeSet<_> = faces
+                .iter()
+                .filter_map(|face| {
+                    let index = *face as usize;
+                    naming::face_name_exact(body, index).then(|| FaceName::parse(names.get(index)?).ok()?.made_by().map(|id| id.0)).flatten()
+                })
+                .collect();
+            (origins.contains(&fillet) && origins.contains(&base)).then_some((index, origins))
+        })
+        .unwrap();
+    assert_eq!(
+        adapter.workspace(&[Sel::Edge { body: body.name.clone(), index, point: Vec3::ZERO }], false, false)["selection_features"],
+        json!(expected)
+    );
+    for pick in [Sel::Body { name: body.name.clone() }, Sel::Vertex { body: body.name.clone(), point: Vec3::ZERO }] {
+        assert_eq!(adapter.workspace(&[pick], false, false)["selection_features"], json!([base]));
+    }
+    let selection = [Sel::Body { name: body.name.clone() }, Sel::Feature { id: fillet }, Sel::Feature { id: base }];
+    assert_eq!(adapter.workspace(&selection, false, false)["selection_features"], json!([base, fillet]), "multiple picks are deduplicated");
+    assert_eq!(adapter.workspace(&[], false, false)["selection_features"], json!([]), "deselection removes all history cues");
+    assert_eq!(
+        adapter.workspace(&[Sel::Feature { id: u64::MAX }, Sel::Body { name: "missing".into() }], false, false)["selection_features"],
+        json!([])
+    );
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    assert_eq!(adapter.session.undo.len(), undo);
+    assert_eq!(adapter.geometry_revision, revision);
+}
+
+#[test]
 fn history_feature_selection_highlights_visible_sketches_construction_and_exact_occurrence_geometry() {
     let mut adapter = SessionAdapter::new();
     let model = adapter.fixture().unwrap();
@@ -1267,11 +1329,14 @@ fn history_feature_selection_highlights_visible_sketches_construction_and_exact_
     view.begin_update(1);
     assert!(view.install(1, adapter.snapshot().unwrap()));
     for feature in [sketch, plane] {
-        view.command("select.entity", &json!({"entity":{"type":"feature","id":feature}})).unwrap();
+        view.command("select.entity", &json!({"entity":{"type":"feature","id":feature},"additive":false})).unwrap();
         let snapshot = view.snapshot().unwrap();
         assert!(snapshot.selected_bodies.is_empty());
         assert!(!snapshot.highlight.lines.is_empty(), "non-solid feature must have visible feedback");
+        assert_eq!(adapter.workspace(view.selection(), false, false)["selection_features"], json!([feature]));
     }
+    assert_eq!(adapter.workspace(&[Sel::Profile { sketch, index: 0 }], false, false)["selection_features"], json!([sketch]));
+    assert_eq!(adapter.workspace(&[Sel::Plane { name: "Shelf".into() }], false, false)["selection_features"], json!([plane]));
     adapter.execute("browser.visibility", json!({"items":[sketch,plane],"visible":false})).unwrap();
     view.begin_update(2);
     assert!(view.install(2, adapter.snapshot().unwrap()));
@@ -1296,6 +1361,8 @@ fn history_feature_selection_highlights_visible_sketches_construction_and_exact_
     let body = world.bodies.iter().find(|b| placements.get(&b.name) == Some(&vec![arm])).unwrap();
     let feature = body.feature;
     let name = body.name.clone();
+    assert_eq!(adapter.workspace(&[Sel::Body { name: name.clone() }], false, false)["selection_features"], json!([feature]));
+    assert_eq!(adapter.workspace(&[Sel::Occurrence { path: vec![arm] }], false, false)["selection_features"], json!([feature]));
     view.begin_update(4);
     assert!(view.install(4, adapter.snapshot().unwrap()));
     view.command("select.entity", &json!({"entity":{"type":"feature","id":feature}})).unwrap();

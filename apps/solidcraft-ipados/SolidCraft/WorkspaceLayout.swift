@@ -31,6 +31,16 @@ struct ProjectionPickPresentation: Decodable, Equatable {
     }
 }
 
+enum HistoryFeatureEmphasis {
+    case none, selection, editing
+    static let preferenceKey = "SolidCraft.workspace.highlightHistorySelection"
+    static func enabled(_ value: Bool?) -> Bool { value ?? true }
+    static func resolve(selected: Bool, editing: Bool, enabled: Bool) -> HistoryFeatureEmphasis {
+        if !enabled { return selected ? .editing : .none }
+        return editing ? .editing : (selected ? .selection : .none)
+    }
+}
+
 enum EdgeLengthReadout {
     static let key = "SolidCraft.workspace.edgeLengthReadout"
     static func restored(_ value: Bool?) -> Bool { value ?? true }

@@ -153,6 +153,8 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private var features: [ModellingPresentation.Feature] = []
     private var icons: [UInt64: String] = [:]
     private var selected: Set<UInt64> = []
+    private var editing: Set<UInt64> = []
+    private var highlightSelection = true
     private var buttons: [UInt64: WorkspaceButton] = [:]
     private var needsRebuild = true
     private var needsReveal = false
@@ -274,7 +276,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         setNeedsLayout()
     }
 
-    func update(features: [ModellingPresentation.Feature], icons: [UInt64: String], selected: Set<UInt64>, position: Int,
+    func update(features: [ModellingPresentation.Feature], icons: [UInt64: String], selected: Set<UInt64>, editing: Set<UInt64> = [], highlightSelection: Bool = true, position: Int,
                 enabled: Bool, navigationEnabled: Bool, scrubbingEnabled: Bool, playbackEnabled: Bool, documentID: String?) {
         let documentChanged = self.documentID != documentID
         if documentChanged || self.features.map(\.id) != features.map(\.id) || !playbackEnabled { cancelPlayback() }
@@ -286,8 +288,9 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         if documentChanged || self.features != features || self.icons != icons {
             self.features = features; self.icons = icons; needsRebuild = true
         }
-        let changedSelection = self.selected != selected
+        let changedSelection = self.selected != selected || self.editing != editing
         self.position = position; self.selected = selected; self.enabled = enabled; self.navigationEnabled = navigationEnabled
+        self.editing = editing; self.highlightSelection = highlightSelection
         scrub.acknowledge(position)
         if playback.inFlight?.position == position && playbackTimer == nil {
             // Evaluation may take arbitrarily long. Only bound a missing frame
@@ -310,7 +313,6 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         forward.availability(enabled: navigationEnabled && !scrub.active && position < features.count, reason: HistoryText.text("forward"))
         for feature in features {
             guard let button = buttons[feature.id] else { continue }
-            button.active(selected.contains(feature.id))
             style(button, feature: feature)
         }
     }
@@ -343,7 +345,6 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
             button.artwork(icons[feature.id] ?? "component", compact: true)
             button.widthAnchor.constraint(equalToConstant: 44).isActive = true
             button.accessibilityIdentifier = "workspace-history-feature-" + String(feature.id)
-            button.active(selected.contains(feature.id))
             style(button, feature: feature)
             items.addArrangedSubview(button); buttons[feature.id] = button
         }
@@ -366,6 +367,15 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
 
     private func style(_ button: WorkspaceButton, feature: ModellingPresentation.Feature) {
+        let emphasis = HistoryFeatureEmphasis.resolve(selected: selected.contains(feature.id), editing: editing.contains(feature.id), enabled: highlightSelection)
+        button.active(emphasis != .none)
+        if emphasis == .selection {
+            var config = button.configuration
+            let fill = WorkspaceStyle.accent.withAlphaComponent(0.10)
+            config?.baseBackgroundColor = fill
+            config?.background.backgroundColor = fill
+            button.configuration = config
+        }
         let future = feature.order >= (scrub.target ?? position)
         button.availability(enabled: enabled && !scrub.active && (!future || navigationEnabled), reason: enabled ? HistoryText.text("edit_hint") : WorkspaceStyle.text("editing_lock"))
         let severity = future ? nil : feature.diagnosticSeverity
@@ -559,7 +569,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
             if revealMarker, marker.superview != nil {
                 revealMarker = false
                 scroll.scrollRectToVisible(marker.convert(marker.bounds, to: scroll).insetBy(dx: -44, dy: 0), animated: false)
-            } else if let id = features.first(where: { selected.contains($0.id) })?.id, let button = buttons[id] {
+            } else if let id = features.first(where: { editing.contains($0.id) })?.id ?? features.first(where: { selected.contains($0.id) })?.id, let button = buttons[id] {
                 scroll.scrollRectToVisible(button.convert(button.bounds, to: scroll).insetBy(dx: -4, dy: 0), animated: false)
             } else if let feature = features.first(where: { $0.order < position && $0.diagnosticSeverity != nil }), let button = buttons[feature.id] {
                 scroll.scrollRectToVisible(button.convert(button.bounds, to: scroll).insetBy(dx: -4, dy: 0), animated: false)

@@ -471,6 +471,18 @@ lands. The final exact allocation is recorded in PARALLEL-DEVELOPMENT.md.
 
 ## Feature selection feedback and history position
 
+Workspace `selection_features` contains the sorted, unique history feature IDs
+associated with the current viewport picks. The engine lane uses evaluated body
+owners for parts and vertices, exact persistent face provenance for faces and
+the faces adjoining an edge, and existing sketch/construction IDs for non-solid
+picks. Occurrence picks resolve through full placement paths. When exact face
+provenance is unavailable, the body creator supplies the fallback. This field is
+optional in Swift and never changes the selection, marker or document history.
+UIKit gives these IDs a faint blue fill; an open model, sketch or numeric editor
+retains the existing active fill, independently of its current input selection.
+`SolidCraft.workspace.highlightHistorySelection` defaults to true; false restores
+the previous direct-feature-only fill.
+
 `SceneSnapshot` privately retains immutable `FeatureFeedback` keyed by existing
 feature IDs. The engine lane projects created/changed body definitions from the
 evaluator's retained before/after states, then maps their component/definition

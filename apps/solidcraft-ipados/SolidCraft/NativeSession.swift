@@ -23,6 +23,7 @@ struct WorkspaceState: Decodable {
     let tools: [WorkspaceTool]
     let active_tool: String
     let selection: [WorkspaceEntity]
+    let selection_features: [UInt64]?
     let selection_edge_length_mm: Double?
     let selection_edge_radius_mm: Double?
     let radius: WorkspaceRadius?

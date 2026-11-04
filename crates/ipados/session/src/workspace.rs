@@ -202,7 +202,7 @@ impl SessionAdapter {
         json!({"title":self.session.doc.name,"dirty":self.session.is_dirty(),"document_id":self.session.document_id,"revision":self.session.revision,
             "geometry_revision":self.geometry_revision,"can_undo":!numeric && !self.session.undo.is_empty(),"can_redo":!numeric && !self.session.redo.is_empty(),
             "rows":rows,"tools":tools,"assembly":self.workspace_cache.as_ref().map(|c|c.assembly.clone()),
-            "sketch":sketch,"planes":planes,"modelling":self.modelling_workspace(),"active_tool":if radius_tool {"post_radius"} else {"select"},"selection":selection,"selection_edge_length_mm":selection_edge_length_mm,"selection_edge_radius_mm":selection_edge_radius_mm,"radius":radius})
+            "sketch":sketch,"planes":planes,"modelling":self.modelling_workspace(),"active_tool":if radius_tool {"post_radius"} else {"select"},"selection":selection,"selection_features":self.selection_features(selection),"selection_edge_length_mm":selection_edge_length_mm,"selection_edge_radius_mm":selection_edge_radius_mm,"radius":radius})
     }
 
     pub fn begin_numeric(&self, token: u64, selection: &[Sel]) -> Result<NumericEdit, AdapterError> {

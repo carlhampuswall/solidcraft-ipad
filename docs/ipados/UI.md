@@ -708,6 +708,15 @@ the left and feature icons fill the space between the arrows and toggle. Feature
 appear as canonical icons in
 engine order, with names retained only for tooltips and accessibility labels.
 Suppression and selection retain their visual and accessibility states.
+Selecting geometry in the viewport or Model browser gives its feature a faint
+blue fill in History. Faces follow their exact feature provenance where known;
+parts and vertices identify their creating feature, and edges identify the
+features of their adjoining faces. Sketch and construction selections also
+identify their history entry. Multiple selections can highlight multiple entries.
+Opening an editor retains the stronger active fill even while picking its inputs.
+Clearing selection removes the faint fill without starting an editor or moving
+the history position. **Highlight selection in History** in the More menu restores
+the previous direct-feature-only highlight when disabled.
 The strip keeps its current selection when collapsed and reopened. Empty designs
 show an empty-history message when expanded. Selection is disabled while an edit,
 plane choice or command owns the workspace.
