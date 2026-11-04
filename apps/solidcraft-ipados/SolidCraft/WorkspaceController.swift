@@ -130,6 +130,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var historyCheckWorkspace: ((WorkspaceState) -> Void)?
     private var historyDeleteConfirmation: (() -> Void)?
     private var historyMenuDelete: (() -> Void)?
+    private var historyMenuSuppress: (() -> Void)?
     private var assemblyCheckBegan: ((Result<ModellingState, BridgeError>) -> Void)?
     private var assemblyCheckEvaluated: ((Result<ModellingState, BridgeError>, Bool) -> Void)?
     private var assemblyCheckCancelled: ((Result<ModellingState, BridgeError>) -> Void)?
@@ -1194,6 +1195,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         historyActivation = nil
         canvas.cancelInput(); view.endEditing(true)
         let sheet = UIAlertController(title: feature.name, message: nil, preferredStyle: .actionSheet)
+        let suppress = { [weak self] in
+            guard let self, self.browserCanChange, self.state?.sketch == nil,
+                  self.state?.document_id == context.document_id,
+                  self.state?.geometry_revision == context.geometry_revision,
+                  let current = self.state?.modelling?.timeline.first(where: { $0.id == id }) else { return }
+            self.run("timeline.suppress", params: ["feature": current.id, "suppressed": !current.suppressed])
+        }
         let delete = { [weak self] in
             guard let self, self.browserCanChange, self.state?.document_id == context.document_id,
                   self.state?.geometry_revision == context.geometry_revision,
@@ -1202,7 +1210,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
 #if DEBUG
         historyMenuDelete = delete
+        historyMenuSuppress = suppress
 #endif
+        sheet.addAction(UIAlertAction(title: ModellingText.text(feature.suppressed ? "unsuppress" : "suppress"), style: .default) { _ in suppress() })
         sheet.addAction(UIAlertAction(title: ModellingText.text("delete_feature"), style: .destructive) { _ in delete() })
         sheet.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
         sheet.popoverPresentationController?.sourceView = source
@@ -7253,7 +7263,7 @@ private extension FoundationController {
     /// same revision-checked confirmation closure used by the destructive alert.
     func checkHistoryActionsOnDevice() {
         let expected = generation
-        let deadline = ProcessInfo.processInfo.systemUptime + 45
+        let deadline = ProcessInfo.processInfo.systemUptime + 60
         let started = Date().timeIntervalSince1970
         let savedImmediateEditing = editSketchOnHistorySelection
         let savedPreference = UserDefaults.standard.object(forKey: SketchHeaderAction.immediateEditingKey)
@@ -7261,7 +7271,7 @@ private extension FoundationController {
         var finished = false
         var screenshots: [String] = []
         func report(_ error: String? = nil) {
-            finished = true; historyDeleteConfirmation = nil
+            finished = true; historyDeleteConfirmation = nil; historyMenuSuppress = nil
             editSketchOnHistorySelection = savedImmediateEditing
             UserDefaults.standard.set(savedPreference, forKey: SketchHeaderAction.immediateEditingKey)
             rebuildMenus()
@@ -7270,7 +7280,7 @@ private extension FoundationController {
                 let result: [String: Any] = ["passed": error == nil, "error": error ?? "", "started_at": started,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "",
                     "screenshots": screenshots,
-                    "coverage": "Real UIKit history selection, explicit Edit/Finish sketch, deselection and legacy preference; physical contacts unverified"]
+                    "coverage": "Real UIKit hold-menu suppression/restoration, Undo/Redo, deletion, history selection, explicit Edit/Finish sketch, deselection and legacy preference; physical contacts unverified"]
                 try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("history-actions-check.json"), options: .atomic)
             } catch { print("History actions report FAIL: \(error)") }
@@ -7336,10 +7346,52 @@ private extension FoundationController {
                                     self.finishSketchButton.sendActions(for: .touchUpInside)
                                     wait("finish legacy sketch edit", until: { self.state?.sketch == nil && self.pending.isEmpty }) {
                                         report()
-                                        print("History actions PASS: feature editing, Delete/Undo, sketch selection, explicit Edit/Finish, deselection and legacy preference")
+                                        print("History actions PASS: feature editing, Suppress/Unsuppress, stale action rejection, Undo/Redo, Delete/Undo, sketch selection, explicit Edit/Finish, deselection and legacy preference")
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+            func setPostSuppressed(_ suppressed: Bool, then next: @escaping () -> Void) {
+                guard let control = item(post), self.featureHistory.showActions(for: post, source: control) else { fail("missing suppression actions"); return }
+                wait("suppression menu", until: {
+                    guard let sheet = self.presentedViewController as? UIAlertController else { return false }
+                    return sheet.preferredStyle == .actionSheet && !sheet.isBeingPresented && sheet.viewIfLoaded?.window != nil
+                }) {
+                    let label = ModellingText.text(suppressed ? "suppress" : "unsuppress")
+                    guard let sheet = self.presentedViewController as? UIAlertController, let action = self.historyMenuSuppress,
+                          sheet.actions.contains(where: { $0.style == .default && $0.title == label }),
+                          sheet.actions.contains(where: { $0.style == .destructive && $0.title == ModellingText.text("delete_feature") }),
+                          control.accessibilityCustomActions?.contains(where: { $0.name == label }) == true,
+                          !self.modellingEditing, self.historyActivation == nil, self.keyboardTop == nil,
+                          item(post) === control, control.configuration?.image != nil else { fail("suppression sheet, accessibility or focus"); return }
+                    capture(suppressed ? "suppress-menu" : "unsuppress-menu")
+                    self.historyMenuSuppress = nil
+                    sheet.dismiss(animated: false) { action() }
+                    wait("suppression result", until: {
+                        self.state?.modelling?.timeline.first(where: { $0.id == post })?.suppressed == suppressed && self.pending.isEmpty
+                    }) {
+                        guard self.state?.modelling?.timeline.map(\.id) == features.map(\.id),
+                              self.state?.rows.filter({ $0.kind == "body" }).count == (suppressed ? 1 : 2),
+                              item(post)?.alpha == (suppressed ? 0.55 : 1) else { fail("suppression changed IDs or retained incorrect geometry/style"); return }
+                        capture(suppressed ? "suppressed" : "unsuppressed")
+                        // Reusing the previous sheet must not toggle the new state.
+                        action()
+                        next()
+                    }
+                }
+            }
+            func suppressPost() {
+                setPostSuppressed(true) {
+                    self.run("edit.undo")
+                    wait("undo suppress", until: { self.state?.modelling?.timeline.first(where: { $0.id == post })?.suppressed == false && self.pending.isEmpty }) {
+                        guard self.state?.rows.filter({ $0.kind == "body" }).count == 2 else { fail("undo suppression geometry"); return }
+                        self.run("edit.redo")
+                        wait("redo suppress", until: { self.state?.modelling?.timeline.first(where: { $0.id == post })?.suppressed == true && self.pending.isEmpty }) {
+                            guard self.state?.rows.filter({ $0.kind == "body" }).count == 1 else { fail("redo suppression geometry"); return }
+                            setPostSuppressed(false) { deletePost() }
                         }
                     }
                 }
@@ -7389,7 +7441,7 @@ private extension FoundationController {
                         guard self.state?.modelling?.activeFeatureCount == 2 else { fail("future feature was not rolled forward"); return }
                         capture("edit-future")
                         self.closePanels()
-                        wait("cancel future edit", until: { !self.modellingEditing && self.pending.isEmpty }) { deletePost() }
+                        wait("cancel future edit", until: { !self.modellingEditing && self.pending.isEmpty }) { suppressPost() }
                     }
                 }
             }

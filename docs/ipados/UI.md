@@ -765,7 +765,8 @@ Local logs use `target/ipados-history-scrub-*.log`.
 
 `--history-actions-check` is an opt-in disposable device workflow for tapping an
 existing box, applying a height edit without replacing its ID, opening a future
-feature's editor, invoking the native Delete menu action and the same destructive
+feature's editor, suppressing/restoring it from the hold menu with Undo/Redo,
+invoking the native Delete menu action and the same destructive
 confirmation closure, undoing deletion, and reopening/finishing the original
 sketch. It writes local `Documents/history-actions-*.png` captures. It does not
 load, replace or autosave a library design, or synthesize a hardware long press.
@@ -775,11 +776,14 @@ canonical icon checks, pending locale lists and UI container checks pass. Local
 build/runtime logs are `target/ipados-history-actions-*.log`.
 
 History feature buttons use UIKit's semantic primary action for Edit and an
-explicit cancelling long-press recognizer for an anchored Delete/Cancel action
+explicit cancelling long-press recognizer for an anchored Suppress/Delete/Cancel action
 sheet. Native button context-menu previews were reproduced hiding the feature
 icon and raising the keyboard without displaying Delete on the physical iPad.
 History items do not install that preview or the competing large-content viewer.
-Their accessible name remains, with a custom Delete action for VoiceOver. The
+Suppressed features offer Unsuppress in the same sheet. The action uses the
+existing `timeline.suppress` command and rejects a changed document or geometry
+revision before running. Their accessible name remains, with custom Suppress
+(or Unsuppress) and Delete actions for VoiceOver that open the sheet. The
 history-actions diagnostic checks that the sheet retains the icon without opening
 the editor or keyboard, then exercises the existing dependency confirmation,
 deletion and Undo. Its calls alone do not verify a physical long press.

@@ -334,10 +334,12 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
             let hold = UILongPressGestureRecognizer(target: self, action: #selector(featureHeld(_:)))
             hold.cancelsTouchesInView = true
             button.addGestureRecognizer(hold)
-            button.accessibilityCustomActions = [UIAccessibilityCustomAction(name: ModellingText.text("delete_feature")) { [weak self, weak button] _ in
-                guard let self, let button else { return false }
-                return self.showActions(for: feature.id, source: button)
-            }]
+            button.accessibilityCustomActions = [feature.suppressed ? "unsuppress" : "suppress", "delete_feature"].map { action in
+                UIAccessibilityCustomAction(name: ModellingText.text(action)) { [weak self, weak button] _ in
+                    guard let self, let button else { return false }
+                    return self.showActions(for: feature.id, source: button)
+                }
+            }
             button.artwork(icons[feature.id] ?? "component", compact: true)
             button.widthAnchor.constraint(equalToConstant: 44).isActive = true
             button.accessibilityIdentifier = "workspace-history-feature-" + String(feature.id)
