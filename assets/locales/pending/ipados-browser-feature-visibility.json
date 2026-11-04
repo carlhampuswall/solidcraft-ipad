@@ -1,0 +1,22 @@
+{
+  "en": {
+    "ui.ipados.browser.show_features": "Show features in Model",
+    "ui.ipados.browser.show_features_help": "Also list modelling operations in the Model browser. All features remain available in history."
+  },
+  "de": {
+    "ui.ipados.browser.show_features": "Features im Modell anzeigen",
+    "ui.ipados.browser.show_features_help": "Modellierungsoperationen auch im Modellbrowser auflisten. Alle Features bleiben im Verlauf verfügbar."
+  },
+  "ja": {
+    "ui.ipados.browser.show_features": "モデルにフィーチャを表示",
+    "ui.ipados.browser.show_features_help": "モデリング操作をモデルブラウザーにも表示します。すべてのフィーチャは引き続き履歴で利用できます。"
+  },
+  "ko": {
+    "ui.ipados.browser.show_features": "모델에 피처 표시",
+    "ui.ipados.browser.show_features_help": "모델 브라우저에도 모델링 작업을 표시합니다. 모든 피처는 계속 기록에서 사용할 수 있습니다."
+  },
+  "zh": {
+    "ui.ipados.browser.show_features": "在模型中显示特征",
+    "ui.ipados.browser.show_features_help": "同时在模型浏览器中列出建模操作。所有特征仍可在历史记录中使用。"
+  }
+}

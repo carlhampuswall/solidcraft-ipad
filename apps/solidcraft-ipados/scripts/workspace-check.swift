@@ -1098,6 +1098,29 @@ struct WorkspaceChecks {
         do { _ = try ProjectLibrary.stageImport(oversized); throw ProjectLibrary.failure("accepted_oversized") }
         catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_oversized", "oversized import bypassed its limit") }
         try require(ProjectLibrary.importExtensions.contains("step") && ProjectLibrary.importExtensions.contains("stp") && !ProjectLibrary.importExtensions.contains("exe"), "import extension contract changed")
+        try require(!BrowserFeatureVisibility.restored(nil) && !BrowserFeatureVisibility.restored(false) &&
+                    BrowserFeatureVisibility.restored(true), "browser feature preference lost its default or saved value")
+        let objectRows: [(id: String, parent: String?, kind: String, folder: String?)] = [
+            ("root", nil, "component", nil), ("bodies", "root", "folder", "bodies"),
+            ("body", "bodies", "body", "bodies"), ("sketches", "root", "folder", "sketches"),
+            ("sketch", "sketches", "sketch", "sketches"), ("construction", "root", "folder", "construction"),
+            ("plane", "construction", "feature", "construction"), ("axis", "construction", "feature", "construction"),
+            ("point", "construction", "feature", "construction"), ("occurrence", "root", "occurrence", nil),
+            ("joint", "root", "joint", nil), ("extrude", "root", "feature", nil), ("fillet", "root", "feature", nil)
+        ]
+        for showFeatures in [false, true] {
+            let nodes = objectRows.filter {
+                BrowserFeatureVisibility.includes(kind: $0.kind, folder: $0.folder, showFeatures: showFeatures)
+            }.map { BrowserSearchNode(id: $0.id, parent: $0.parent, name: $0.id) }
+            let ids = BrowserSearchProjection.make(nodes: nodes, query: "", collapsed: []).ids
+            try require(ids == objectRows.map(\.id).filter { showFeatures || !["extrude", "fillet"].contains($0) },
+                        "browser hid model objects or failed to restore legacy feature rows")
+            let search = BrowserSearchProjection.make(nodes: nodes, query: "extrude", collapsed: ["root"])
+            try require(search.ids == (showFeatures ? ["root", "extrude"] : []) && search.matches.count == (showFeatures ? 1 : 0),
+                        "browser search exposed hidden operations or lost the legacy preference")
+            try require(BrowserSearchProjection.make(nodes: nodes, query: "plane", collapsed: ["root", "construction"]).ids == ["root", "construction", "plane"],
+                        "hiding history operations removed construction search or ancestor expansion")
+        }
         let browserNodes = [
             BrowserSearchNode(id: "root", parent: nil, name: "SolidCraft"),
             BrowserSearchNode(id: "bodies", parent: "root", name: "Bodies"),

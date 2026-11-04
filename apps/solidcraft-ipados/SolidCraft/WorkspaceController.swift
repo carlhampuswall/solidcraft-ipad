@@ -221,6 +221,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var useTopSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useTopSafeArea") as? Bool ?? true
     private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
     private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
+    private var featuresInBrowser = BrowserFeatureVisibility.restored(UserDefaults.standard.object(forKey: BrowserFeatureVisibility.key) as? Bool)
     private var leftBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.leftBrowser") as? Bool ?? true
     private var diagnostics = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.diagnostics")
     private var gridVisible = UserDefaults.standard.object(forKey: "SolidCraft.workspace.gridVisible") as? Bool ?? true
@@ -926,7 +927,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func updateRows() {
         guard let state else { return }
-        let nodes = state.rows.map { BrowserSearchNode(id: $0.id, parent: $0.parent_id, name: browserName($0)) }
+        let nodes = state.rows.filter {
+            BrowserFeatureVisibility.includes(kind: $0.kind, folder: $0.browser?.folder, showFeatures: featuresInBrowser)
+        }.map { BrowserSearchNode(id: $0.id, parent: $0.parent_id, name: browserName($0)) }
         var referenceNodes: [BrowserSearchNode] = []
         if originInBrowser {
             referenceNodes = [BrowserSearchNode(id: browserOriginPrefix + "all", parent: nil, name: SketchText.text("origin_references"))]
@@ -3680,6 +3683,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.pinnedBrowser, forKey: "SolidCraft.workspace.pinnedBrowser")
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
+        moreActions.append(UIAction(title: BrowserText.text("show_features"), subtitle: BrowserText.text("show_features_help"),
+                                    state: featuresInBrowser ? .on : .off) { [weak self] _ in
+            guard let self else { return }; self.featuresInBrowser.toggle()
+            UserDefaults.standard.set(self.featuresInBrowser, forKey: BrowserFeatureVisibility.key)
+            self.updateRows(); self.rebuildMenus()
+        })
         moreActions.append(UIAction(title: BrowserText.text("left_browser"), state: leftBrowser ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.canvas.cancelInput(); self.leftBrowser.toggle()
             UserDefaults.standard.set(self.leftBrowser, forKey: "SolidCraft.workspace.leftBrowser")
@@ -4589,6 +4598,9 @@ private extension FoundationController {
     /// Real evaluator warnings/errors on disposable documents, with native badges
     /// and diagnostic navigation. No library project is loaded or autosaved.
     private func checkFeatureDiagnosticsOnDevice() {
+        // This driver also verifies diagnostic decoration in the optional
+        // legacy feature listing. The ordinary browser driver covers hiding it.
+        featuresInBrowser = true
         let started = Date().timeIntervalSince1970, expected = generation
         let savedStyle = overrideUserInterfaceStyle
         var finished = false, stages: [[String: Any]] = []
@@ -6660,6 +6672,7 @@ private extension FoundationController {
 
     func checkBrowserOnDevice() {
         leftBrowser = true; appearance = 2
+        featuresInBrowser = false
         originExpanded = false
         configureChrome(); applyAppearance()
         func capture(_ name: String) {
@@ -6693,6 +6706,9 @@ private extension FoundationController {
                     return
                 }
                 var issues: [String] = []
+                if self.visibleRows.contains(where: { $0.kind == "feature" && $0.browser?.folder != "construction" }) {
+                    issues.append("history operations leaked into the default browser")
+                }
                 for cell in self.table.visibleCells where cell.accessibilityIdentifier?.hasPrefix("workspace-row-") == true {
                     guard let content = cell.contentConfiguration as? UIListContentConfiguration else { issues.append("missing content"); continue }
                     if content.image == nil || content.secondaryText != nil { issues.append("missing icon or extra subtitle") }
@@ -6921,7 +6937,7 @@ private extension FoundationController {
                     check(self.collapsed == savedCollapsed && !self.visibleRows.contains(where: { $0.id == "body:Base" }), "clear failed to restore collapse")
                     check(abs(self.table.contentOffset.y - savedOffset) < 1, "clear failed to restore scroll")
                     query("post")
-                    check(self.visibleRows.filter { self.browserName($0).localizedCaseInsensitiveContains("post") }.count == 2, "match count loses feature/body identities")
+                    check(self.visibleRows.filter { self.browserName($0).localizedCaseInsensitiveContains("post") }.count == (self.featuresInBrowser ? 2 : 1), "match count ignores the browser feature preference")
                     afterLayout {
                         columns(); capture("search-post")
                         guard let index = self.visibleRows.firstIndex(where: { $0.id == "body:Post" }) else { print("Browser search check FAIL: missing result"); return }

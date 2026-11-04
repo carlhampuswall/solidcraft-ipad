@@ -936,6 +936,16 @@ final class InputMailbox {
     }
 }
 
+/// Modelling operations live in history by default. Sketches and construction
+/// references remain browser objects, even though they also have timeline IDs.
+enum BrowserFeatureVisibility {
+    static let key = "SolidCraft.workspace.featuresInBrowser"
+    static func restored(_ stored: Bool?) -> Bool { stored ?? false }
+    static func includes(kind: String, folder: String?, showFeatures: Bool) -> Bool {
+        showFeatures || kind != "feature" || folder == "construction"
+    }
+}
+
 /// Pure presentation projection. IDs and parent links come from the read model;
 /// filtering never changes document visibility, selection or expansion choices.
 struct BrowserSearchNode {

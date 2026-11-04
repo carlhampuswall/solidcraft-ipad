@@ -457,6 +457,14 @@ Native presentation preferences use UserDefaults keys
 
 ## Presentation mapping and browser
 
+The Model browser shows bodies, sketches, construction geometry, components,
+joints and folders. Modelling operations such as Extrude and Fillet appear only
+in feature history by default, including while using Find in model. **Tools >
+Show features in Model** restores the previous browser listing and persists in
+`SolidCraft.workspace.featuresInBrowser`. This changes presentation only; feature
+history, selection, document contents and geometry visibility remain authoritative
+in the existing session.
+
 Holding a model row opens an anchored action popover built from ordinary table
 choices. Secondary pointer clicks and VoiceOver custom actions reach the same
 guarded Rename, visibility and folder operations. Native context-menu previews
