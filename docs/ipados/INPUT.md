@@ -7,6 +7,15 @@ The handle edits that fixture feature's `radius` with `timeline.edit` (0.5–50 
 Select remains the initial tool. Undo/Redo and Command-Z/Shift-Command-Z use engine
 history; Escape or Cancel interaction discards a provisional interaction.
 
+## Selecting a sketch
+
+Tapping a sketch in History selects it without starting an edit. **Edit sketch**
+appears below the document title, in the same place as **Finish sketch**. Tap
+**Edit sketch** to enter the sketch; the button then becomes **Finish sketch**.
+The same action is available for a single sketch selected in the browser.
+Clearing or changing the selection updates the action. Enable **Tools → Edit
+sketches on history selection** to restore immediate editing from History.
+
 ## Home and model framing
 
 The left navigation toolbar's **Home** button restores a fixed orthographic

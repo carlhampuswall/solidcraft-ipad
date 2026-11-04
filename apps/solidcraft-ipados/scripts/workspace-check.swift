@@ -8,6 +8,24 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        try require(!SketchHeaderAction.immediateEditing(nil) && !SketchHeaderAction.immediateEditing(false) &&
+                    SketchHeaderAction.immediateEditing(true), "sketch selection lost explicit editing or its legacy preference")
+        try require(SketchHeaderAction.resolve(inSketch: false, selection: [7], sketches: [7, 8], available: true) == .edit(7),
+                    "selecting a sketch did not offer Edit sketch")
+        try require(SketchHeaderAction.resolve(inSketch: false, selection: [8], sketches: [7, 8], available: true) == .edit(8),
+                    "Edit sketch retained the previously selected sketch")
+        for selection: [UInt64?] in [[], [nil], [9], [7, 8], [7, nil]] {
+            try require(SketchHeaderAction.resolve(inSketch: false, selection: selection, sketches: [7, 8], available: true) == nil,
+                        "an empty, mixed, multiple or non-sketch selection offered Edit sketch")
+        }
+        try require(SketchHeaderAction.resolve(inSketch: false, selection: [7], sketches: [], available: true) == nil,
+                    "a deleted sketch or replacement document left Edit sketch available")
+        try require(SketchHeaderAction.resolve(inSketch: true, selection: [nil], sketches: [], available: true) == .finish,
+                    "active sketch geometry selection replaced Finish sketch")
+        for inSketch in [false, true] {
+            try require(SketchHeaderAction.resolve(inSketch: inSketch, selection: [7], sketches: [7], available: false) == nil,
+                        "a competing edit or plane chooser exposed the sketch header action")
+        }
         let projection = try JSONDecoder().decode(ProjectionPickPresentation.self, from: Data(#"{"document_id":"document","geometry_revision":12,"sketch":8,"source":7,"name":"Source","selected":["c1","p2"],"filter":"auto","source_count":2}"#.utf8))
         let projectionParams = projection.parameters(construction: true, linked: false)
         try require(projectionParams?["source"] as? UInt64 == 7 && projectionParams?["sketch"] as? UInt64 == 8 &&

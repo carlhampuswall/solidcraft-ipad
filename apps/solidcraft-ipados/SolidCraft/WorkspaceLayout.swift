@@ -145,6 +145,22 @@ enum WorkspaceSelectionFilter: String, CaseIterable {
     }
 }
 
+/// The sketch header follows the current selection, never a cached history tap.
+enum SketchHeaderAction: Equatable {
+    case edit(UInt64)
+    case finish
+
+    static let immediateEditingKey = "SolidCraft.workspace.editSketchOnHistorySelection"
+    static func immediateEditing(_ stored: Bool?) -> Bool { stored ?? false }
+
+    static func resolve(inSketch: Bool, selection: [UInt64?], sketches: Set<UInt64>, available: Bool) -> Self? {
+        guard available else { return nil }
+        if inSketch { return .finish }
+        guard selection.count == 1, let id = selection.first.flatMap({ $0 }), sketches.contains(id) else { return nil }
+        return .edit(id)
+    }
+}
+
 /// Consume every selection report, including those received while another tool
 /// owns input. Only newly selected compatible sources in the same model open a tool.
 struct SelectionToolTrigger<Selection: Equatable> {

@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.workspace.edit_sketch_on_history_selection": "Skizzen beim Auswählen im Verlauf bearbeiten",
+    "ui.ipados.workspace.edit_sketch_on_history_selection_help": "Öffnet eine Skizze sofort zur Bearbeitung, wenn sie im Verlauf angetippt wird."
+  },
+  "en": {
+    "ui.ipados.workspace.edit_sketch_on_history_selection": "Edit sketches on history selection",
+    "ui.ipados.workspace.edit_sketch_on_history_selection_help": "Start editing a sketch immediately when it is tapped in History."
+  },
+  "ja": {
+    "ui.ipados.workspace.edit_sketch_on_history_selection": "履歴で選択したスケッチをすぐに編集",
+    "ui.ipados.workspace.edit_sketch_on_history_selection_help": "履歴でスケッチをタップすると、すぐに編集を開始します。"
+  },
+  "ko": {
+    "ui.ipados.workspace.edit_sketch_on_history_selection": "히스토리에서 선택한 스케치 바로 편집",
+    "ui.ipados.workspace.edit_sketch_on_history_selection_help": "히스토리에서 스케치를 탭하면 즉시 편집을 시작합니다."
+  },
+  "zh": {
+    "ui.ipados.workspace.edit_sketch_on_history_selection": "选中历史记录中的草图时立即编辑",
+    "ui.ipados.workspace.edit_sketch_on_history_selection_help": "在历史记录中轻点草图时立即开始编辑。"
+  }
+}

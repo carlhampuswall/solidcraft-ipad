@@ -57,7 +57,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
     private lazy var createSketchButton = WorkspaceButton(SketchText.text("create")) { [weak self] in self?.chooseSketchPlane() }
     private lazy var sketchToolsButton = WorkspaceButton(SketchText.text("draw"), action: {})
-    private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.run("sketch.finish") }
+    private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.performSketchHeaderAction() }
     private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.finishSketchChain() }
     private lazy var endpointFinishButton: WorkspaceButton = WorkspaceButton(SketchText.text("finish_chain"), prominent: true) { [weak self] in
         guard let self, !self.endpointFinishButton.isHidden, self.endpointFinishButton.isEnabled else { return }
@@ -94,6 +94,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var edgeSelectorContext: (document: String, revision: UInt64)?
     private enum AutomaticModellingSource { case extrude, edges }
     private var historyActivation: (feature: UInt64, document: String)?
+    private var editSketchOnHistorySelection = SketchHeaderAction.immediateEditing(UserDefaults.standard.object(forKey: SketchHeaderAction.immediateEditingKey) as? Bool)
     private var issuingHistoryPlaybackCommand = false
     private var historyPlaybackGeneration: UInt64 = 0
     private var historyPlaybackFrame: (document: String, position: Int, complete: (Bool) -> Void)?
@@ -763,7 +764,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         constructionButton.accessibilityIdentifier = "workspace-construction"
         finishSketchButton.accessibilityIdentifier = "workspace-finish-sketch"
         cancelToolButton.accessibilityIdentifier = "workspace-cancel-tool"
-        if state != nil { updateStatus() }
+        if state != nil { updateAvailability(); updateStatus() }
         view.setNeedsLayout()
     }
 
@@ -1241,8 +1242,34 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         historyActivation = nil
         if state.rows.first(where: { $0.id == "feature:" + String(feature.id) })?.kind == "sketch" {
             browserOpen = false; inspectorOpen = false
-            run("sketch.edit", params: ["sketch": feature.id]); relayoutPanels()
+            if editSketchOnHistorySelection { run("sketch.edit", params: ["sketch": feature.id]) }
+            relayoutPanels()
         } else { beginModelling(feature: feature.id) }
+    }
+
+    private var sketchHeaderAction: SketchHeaderAction? {
+        let inSketch = state?.sketch != nil
+        let selection = (state?.selection ?? []).map { entity -> UInt64? in
+            guard entity.type == "feature", case .number(let id)? = entity.id else { return nil }
+            return id
+        }
+        let sketches = Set((state?.rows ?? []).compactMap { row -> UInt64? in
+            guard row.kind == "sketch", case .number(let id)? = row.entity?.id else { return nil }
+            return id
+        })
+        return SketchHeaderAction.resolve(inSketch: inSketch, selection: selection, sketches: sketches,
+            available: !numericEditing && !modellingEditing && sketchInput?.projection == nil &&
+                !planeChoosing && planeDraft == nil && (inSketch || state?.active_tool == "select"))
+    }
+
+    private func performSketchHeaderAction() {
+        guard active, pending.isEmpty, presentedViewController == nil, let action = sketchHeaderAction else { return }
+        switch action {
+        case .finish: run("sketch.finish")
+        case .edit(let id):
+            browserOpen = false; inspectorOpen = false
+            run("sketch.edit", params: ["sketch": id]); relayoutPanels()
+        }
     }
 
     private func browserName(_ row: WorkspaceRow) -> String {
@@ -3331,6 +3358,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             button.active(state?.active_tool == id)
         }
         let inSketch = state?.sketch != nil
+        let headerAction = sketchHeaderAction
+        let finishing = headerAction == .finish
+        finishSketchButton.updateTitle(SketchText.text(finishing ? "finish" : "reopen"))
+        finishSketchButton.artwork(finishing ? "finish" : "sketch")
+        finishSketchButton.accessibilityIdentifier = finishing ? "workspace-finish-sketch" : "workspace-edit-sketch"
         modellingButton.isHidden = inSketch
         modellingButton.availability(enabled: !locked && state?.modelling?.tools.isEmpty == false)
         modellingButton.active(modellingEditing)
@@ -3340,7 +3372,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         createSketchButton.availability(enabled: !locked && planeDraft == nil && !planeChoosing)
         radiusButton.isHidden = inSketch || compactChrome && !diagnostics
         sketchToolsButton.isHidden = !inSketch
-        finishSketchButton.isHidden = !inSketch
+        finishSketchButton.isHidden = headerAction == nil
         finishChainButton.isHidden = !inSketch || !(state?.active_tool == "sketch.line" || state?.active_tool == "sketch.spline.fit_point")
         for button in [sketchToolsButton, finishSketchButton, finishChainButton] { button.availability(enabled: !locked) }
         cancelToolButton.isHidden = numericEditing || !(inSketch || state?.active_tool == "post_radius" || planeChoosing || planeDraft != nil)
@@ -3371,7 +3403,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             patternButton.isHidden = inSketch || editing
             for button in [modifyButton, patternButton] { button.availability(enabled: !locked && state?.modelling?.tools.isEmpty == false) }
             sketchToolsButton.isHidden = !inSketch || editing
-            finishSketchButton.isHidden = !inSketch || editing
+            finishSketchButton.isHidden = headerAction == nil
             finishChainButton.isHidden = finishChainButton.isHidden || editing
             projectionButton.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
             documentActionsButton.availability(enabled: !numericEditing && !modellingEditing && pending.isEmpty && !preparingExport && pendingExport == nil)
@@ -3474,6 +3506,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.canvas.cancelInput()
             self.canvas.historyGesturesEnabled.toggle()
             UserDefaults.standard.set(self.canvas.historyGesturesEnabled, forKey: "SolidCraft.workspace.historyGestures")
+            self.rebuildMenus()
+        }
+        let immediateSketchEdit = UIAction(title: WorkspaceStyle.text("edit_sketch_on_history_selection"),
+            subtitle: WorkspaceStyle.text("edit_sketch_on_history_selection_help"), state: editSketchOnHistorySelection ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.editSketchOnHistorySelection.toggle()
+            UserDefaults.standard.set(self.editSketchOnHistorySelection, forKey: SketchHeaderAction.immediateEditingKey)
             self.rebuildMenus()
         }
         let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
@@ -3595,7 +3634,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, immediateSketchEdit, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -7198,9 +7237,29 @@ private extension FoundationController {
     /// same revision-checked confirmation closure used by the destructive alert.
     func checkHistoryActionsOnDevice() {
         let expected = generation
-        let deadline = ProcessInfo.processInfo.systemUptime + 30
+        let deadline = ProcessInfo.processInfo.systemUptime + 45
+        let started = Date().timeIntervalSince1970
+        let savedImmediateEditing = editSketchOnHistorySelection
+        let savedPreference = UserDefaults.standard.object(forKey: SketchHeaderAction.immediateEditingKey)
+        editSketchOnHistorySelection = false
         var finished = false
-        func fail(_ message: String) { finished = true; historyDeleteConfirmation = nil; print("History actions FAIL: \(message)") }
+        var screenshots: [String] = []
+        func report(_ error: String? = nil) {
+            finished = true; historyDeleteConfirmation = nil
+            editSketchOnHistorySelection = savedImmediateEditing
+            UserDefaults.standard.set(savedPreference, forKey: SketchHeaderAction.immediateEditingKey)
+            rebuildMenus()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let result: [String: Any] = ["passed": error == nil, "error": error ?? "", "started_at": started,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "",
+                    "screenshots": screenshots,
+                    "coverage": "Real UIKit history selection, explicit Edit/Finish sketch, deselection and legacy preference; physical contacts unverified"]
+                try JSONSerialization.data(withJSONObject: result, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("history-actions-check.json"), options: .atomic)
+            } catch { print("History actions report FAIL: \(error)") }
+        }
+        func fail(_ message: String) { report(message); print("History actions FAIL: \(message)") }
         func wait(_ name: String, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
             guard !finished, active, generation == expected else { return }
             if ready() { next(); return }
@@ -7221,7 +7280,9 @@ private extension FoundationController {
                 let target: UIView = view.window ?? view
                 let image = UIGraphicsImageRenderer(bounds: target.bounds).image { _ in target.drawHierarchy(in: target.bounds, afterScreenUpdates: true) }
                 guard let data = image.pngData() else { fail("image encoding"); return }
-                try data.write(to: directory.appendingPathComponent("history-actions-" + stage + ".png"), options: .atomic)
+                let name = "history-actions-" + stage + ".png"
+                try data.write(to: directory.appendingPathComponent(name), options: .atomic)
+                screenshots.append(name)
             } catch { fail(String(describing: error)) }
         }
         wait("fixture", until: { self.state?.modelling?.timeline.count == 3 }) {
@@ -7229,12 +7290,41 @@ private extension FoundationController {
             let base = features[0].id, post = features[1].id, sketch = features[2].id
             func editSketch() {
                 item(sketch)?.sendActions(for: .primaryActionTriggered)
-                wait("sketch editor", until: { self.state?.sketch?.id == sketch }) {
-                    capture("edit-sketch")
-                    self.run("sketch.finish")
-                    wait("finish sketch", until: { self.state?.sketch == nil && self.pending.isEmpty }) {
-                        finished = true
-                        print("History actions PASS: tap edits original feature, Apply, future-feature edit, anchored Delete sheet retains icon without editor/keyboard, confirmation, undo and sketch editing")
+                wait("selected sketch", until: { self.sketchHeaderAction == .edit(sketch) && self.historyActivation == nil && self.pending.isEmpty }) {
+                    guard self.state?.sketch == nil, !self.modellingEditing, !self.finishSketchButton.isHidden,
+                          self.finishSketchButton.isEnabled, self.finishSketchButton.configuration?.title == SketchText.text("reopen"),
+                          self.finishSketchButton.accessibilityIdentifier == "workspace-edit-sketch" else { fail("selection started editing or did not offer Edit sketch"); return }
+                    capture("selected-sketch")
+                    let frame = self.finishSketchButton.convert(self.finishSketchButton.bounds, to: self.top)
+                    let point = self.finishSketchButton.convert(CGPoint(x: self.finishSketchButton.bounds.midX, y: self.finishSketchButton.bounds.midY), to: self.workspace)
+                    guard self.top.bounds.contains(frame), frame.height >= 44,
+                          self.workspace.hitTest(point, with: nil) === self.finishSketchButton else { fail("Edit sketch is outside the completion area or cannot be tapped"); return }
+                    self.finishSketchButton.sendActions(for: .touchUpInside)
+                    wait("sketch editor", until: { self.state?.sketch?.id == sketch && self.pending.isEmpty }) {
+                        guard self.finishSketchButton.configuration?.title == SketchText.text("finish"),
+                              self.finishSketchButton.accessibilityIdentifier == "workspace-finish-sketch" else { fail("Edit sketch did not become Finish sketch"); return }
+                        capture("edit-sketch")
+                        self.finishSketchButton.sendActions(for: .touchUpInside)
+                        wait("finish sketch", until: { self.state?.sketch == nil && self.pending.isEmpty }) {
+                            self.run("select.clear")
+                            wait("deselect sketch", until: { self.state?.selection.isEmpty == true && self.pending.isEmpty }) {
+                                guard self.finishSketchButton.isHidden else { fail("deselection retained Edit sketch"); return }
+                                guard let preference = self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: {
+                                    $0.title == WorkspaceStyle.text("edit_sketch_on_history_selection")
+                                }) else { fail("legacy preference missing"); return }
+                                preference.performWithSender(self.moreButton, target: nil)
+                                guard self.editSketchOnHistorySelection,
+                                      UserDefaults.standard.bool(forKey: SketchHeaderAction.immediateEditingKey) else { fail("legacy preference did not persist"); return }
+                                item(sketch)?.sendActions(for: .primaryActionTriggered)
+                                wait("legacy immediate sketch edit", until: { self.state?.sketch?.id == sketch && self.pending.isEmpty }) {
+                                    self.finishSketchButton.sendActions(for: .touchUpInside)
+                                    wait("finish legacy sketch edit", until: { self.state?.sketch == nil && self.pending.isEmpty }) {
+                                        report()
+                                        print("History actions PASS: feature editing, Delete/Undo, sketch selection, explicit Edit/Finish, deselection and legacy preference")
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
