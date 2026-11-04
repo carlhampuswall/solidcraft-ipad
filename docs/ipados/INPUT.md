@@ -35,7 +35,7 @@ button (`SolidCraft.workspace.homeToolbar`). This does not change a design.
 | Pencil drag on the Post radius handle | Actual plane intersection → provisional solid → one command on completion |
 | Pencil drag on an active modelling/assembly handle | Native parameter proposal and scratch geometry; lift leaves a preview for explicit Apply |
 | Touch, Pencil or primary pointer drag on a sketch dimension label in Select or Move | Reposition text, extension lines and arrows together; measured geometry stays fixed; one undo step for a saved dimension, session-only placement for a selected-edge measurement |
-| One finger | Turn the visible object in the drag direction in 3D; pan in an active sketch plane; an enabled direct handle captures its own drag |
+| One finger | Tap empty space in Select to clear selection on release; drag to turn the visible object in 3D or pan in an active sketch plane; an enabled direct handle captures its own drag |
 | Two fingers | Simultaneous centroid pan, distance-ratio zoom and twist rotation about the viewing direction |
 | Two-finger double-tap | Undo one engine history action |
 | Three-finger double-tap | Redo one engine history action |
@@ -101,6 +101,15 @@ previous single-selection behaviour. This choice persists in
 Shift still adds or removes picks while Multiple is off. Fillet and Chamfer
 receive every selected edge; face operations receive every selected face where
 the existing command supports it. Selection changes do not enter model history.
+
+A single finger can also clear selection by tapping empty viewport space in
+Select. Touch-down retains the feature and its highlights until release, so a
+camera drag keeps the selection. Taps on geometry retain the current selection,
+even when the active selection filter excludes that geometry. Two-finger gestures,
+overlapping Pencil contacts, cancelled/consumed input and stale displayed frames
+do not clear selection. Browser and history highlights follow the same selection;
+the document, camera and undo history stay unchanged. Active modelling drafts
+retain their existing empty-space cancellation and dismissal preference.
 
 Pencil selection uses the touch-down position and tolerates up to ten display
 points of contact motion, including the final lift sample. Moving toward the next

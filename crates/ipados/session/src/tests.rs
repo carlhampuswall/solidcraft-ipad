@@ -1539,6 +1539,145 @@ fn topology_taps_accumulate_by_default_toggle_individually_and_allow_single_sele
 }
 
 #[test]
+fn finger_empty_space_taps_clear_selection_on_release_without_editing_the_design() {
+    let (mut adapter, mut view) = proof();
+    let feature = adapter.session.doc.features[0].id;
+    let doc = adapter.session.doc.clone();
+    let history = (adapter.session.undo.len(), adapter.session.redo.len());
+    for scale in [1., 2.] {
+        view.set_metrics(metrics(800., 600., scale)).unwrap();
+        view.command("view.top", &json!({})).unwrap();
+        let face = view.pick(point(&view, Vec3::new(20., 15., 10.)), None).unwrap();
+        for selection in [vec![Sel::Feature { id: feature }], vec![face.clone()], vec![Sel::Feature { id: feature }, face.clone()]] {
+            view.selection = selection.clone();
+            let before = view.snapshot().unwrap();
+            feed(&mut view, InputSource::Finger, InputPhase::Began, 1, [5., 5.], 1.);
+            assert_eq!(view.selection(), selection, "touch-down may still become navigation");
+            feed(&mut view, InputSource::Finger, InputPhase::Ended, 1, [8., 7.], 1.1);
+            assert!(view.selection().is_empty(), "a finger tap on empty space must clear selection");
+            let after = view.snapshot().unwrap();
+            assert!(after.selected_bodies.is_empty());
+            assert!(after.highlight.meshes.is_empty() && after.highlight.lines.is_empty());
+            assert_eq!(after.camera, before.camera);
+            assert!(Arc::ptr_eq(&after.model, &before.model));
+            let workspace = adapter.workspace(view.selection(), false, false);
+            assert!(workspace["rows"].as_array().unwrap().iter().all(|row| row["selected"] != true));
+        }
+    }
+    assert!(Arc::ptr_eq(&doc, &adapter.session.doc));
+    assert_eq!(history, (adapter.session.undo.len(), adapter.session.redo.len()));
+}
+
+#[test]
+fn finger_empty_space_clearing_preserves_navigation_geometry_and_invalid_contacts() {
+    for case in [
+        "geometry",
+        "cancelled",
+        "drag_return",
+        "lift_motion",
+        "two_fingers",
+        "pencil_overlap",
+        "consumed_begin",
+        "consumed_end",
+        "stale_camera_begin",
+        "stale_camera_end",
+        "camera_changed",
+        "stale_geometry_begin",
+        "stale_geometry_end",
+        "updating",
+        "old_preview",
+    ] {
+        let (adapter, mut view) = proof();
+        view.command("view.top", &json!({})).unwrap();
+        view.filter = PickFilter::Edge;
+        let selected = Sel::Feature { id: adapter.session.doc.features[0].id };
+        view.selection = vec![selected.clone()];
+        let position = if case == "geometry" { point(&view, Vec3::new(20., 15., 10.)) } else { [5., 5.] };
+        if case == "geometry" {
+            assert!(view.pick(position, None).is_none(), "an Edge filter must miss the face interior");
+        }
+        let camera = view.camera;
+        let mut begin = sample(&view, InputSource::Finger, InputPhase::Began, 1, position, 1.);
+        begin.consumed = case == "consumed_begin";
+        begin.display_preview = case == "old_preview";
+        if case == "stale_camera_begin" {
+            begin.camera_epoch = Some(view.camera_epoch + 1);
+        }
+        if case == "stale_geometry_begin" {
+            begin.geometry_revision = Some(view.model.as_ref().unwrap().geometry_revision + 1);
+        }
+        view.input(begin).unwrap();
+        match case {
+            "drag_return" => {
+                feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [45., 25.], 1.1);
+                feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, position, 1.2);
+            }
+            "two_fingers" | "pencil_overlap" => {
+                let source = if case == "two_fingers" { InputSource::Finger } else { InputSource::Pencil };
+                feed(&mut view, source, InputPhase::Began, 2, [60., 60.], 1.1);
+                feed(&mut view, source, InputPhase::Cancelled, 2, [60., 60.], 1.2);
+            }
+            "camera_changed" => {
+                view.command("view.navigate", &json!({"motion":"pan","delta":[20,0],"viewport":[800,600]})).unwrap();
+            }
+            "updating" => view.begin_update(2),
+            _ => {}
+        }
+        let phase = if case == "cancelled" { InputPhase::Cancelled } else { InputPhase::Ended };
+        let end = if case == "lift_motion" { [position[0] + 8., position[1]] } else { position };
+        let mut ended = sample(&view, InputSource::Finger, phase, 1, end, 1.3);
+        ended.consumed = case == "consumed_end";
+        ended.display_preview = case == "old_preview";
+        if case == "stale_camera_end" {
+            ended.camera_epoch = Some(view.camera_epoch + 1);
+        }
+        if case == "stale_geometry_end" {
+            ended.geometry_revision = Some(view.model.as_ref().unwrap().geometry_revision + 1);
+        }
+        view.input(ended).unwrap();
+        assert_eq!(view.selection(), &[selected], "{case} must preserve selection");
+        if case != "drag_return" && case != "camera_changed" {
+            assert_eq!(view.camera, camera, "{case} unexpectedly navigated");
+        }
+    }
+}
+
+#[test]
+fn finger_taps_preserve_finished_profiles_and_active_sketch_geometry() {
+    let mut adapter = SessionAdapter::new();
+    adapter.fixture().unwrap();
+    let sketch = adapter.session.doc.features.last().unwrap().id;
+    adapter.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+    adapter.execute("sketch.line", json!({"points":[[-32,12],[-24,12]]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    for (generation, editing) in [(1, false), (2, true)] {
+        if editing {
+            adapter.execute("sketch.edit", json!({"sketch":sketch})).unwrap();
+        }
+        view.begin_update(generation);
+        assert!(view.install(generation, adapter.snapshot().unwrap()));
+        if !editing {
+            view.command("view.top", &json!({})).unwrap();
+        }
+        view.command("view.tool_handles", &json!({"enabled":false})).unwrap();
+        view.filter = PickFilter::Edge;
+        let selected = Sel::Feature { id: sketch };
+        view.selection = vec![selected.clone()];
+        for at in [Vec3::new(-28., -3., 0.), Vec3::new(-28., -12., 0.), Vec3::new(-28., 12., 0.)] {
+            let position = point(&view, at);
+            feed(&mut view, InputSource::Finger, InputPhase::Began, 1, position, 1.);
+            feed(&mut view, InputSource::Finger, InputPhase::Ended, 1, position, 1.1);
+            assert!(view.selection().contains(&selected), "visible sketch geometry must retain the feature: editing={editing}, at={at:?}");
+        }
+        feed(&mut view, InputSource::Finger, InputPhase::Began, 2, [5., 5.], 2.);
+        feed(&mut view, InputSource::Finger, InputPhase::Ended, 2, [5., 5.], 2.1);
+        assert!(view.selection().is_empty(), "empty space also clears sketch selection");
+    }
+}
+
+#[test]
 fn pencil_selection_taps_keep_the_touch_down_target_through_lift_motion() {
     for scale in [1., 2.] {
         let mut adapter = SessionAdapter::new();

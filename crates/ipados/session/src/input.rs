@@ -101,6 +101,7 @@ struct Contact {
     button: u8,
     revision: Option<u64>,
     model_token: Option<u64>,
+    empty_tap_camera: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -219,6 +220,34 @@ impl Contacts {
 }
 
 impl Viewport {
+    fn empty_selection_space(&self, point: [f64; 2]) -> bool {
+        let (Some(pixel), Some(model)) = (self.metrics.pixel(point), self.display_model()) else {
+            return false;
+        };
+        // A selection filter can miss visible geometry. Only actual empty space
+        // may clear selection when a finger releases its navigation contact.
+        let vp = self.vp();
+        let size = self.metrics.pixels();
+        let on_line = model.scene.lines.iter().filter(|line| line.alpha > 0.0 && line.width > 0.0).any(|line| {
+            line.points.windows(2).any(|segment| {
+                let [a, b] = segment else { return false };
+                let (Some(a), Some(b)) = (crate::picking::project(vp, *a, size), crate::picking::project(vp, *b, size)) else {
+                    return false;
+                };
+                let dx = b[0] - a[0];
+                let dy = b[1] - a[1];
+                let length = dx * dx + dy * dy;
+                let t = if length > 0.0 { (((pixel[0] - a[0]) * dx + (pixel[1] - a[1]) * dy) / length).clamp(0.0, 1.0) } else { 0.0 };
+                (pixel[0] - a[0] - t * dx).hypot(pixel[1] - a[1] - t * dy) <= 8.0 * self.metrics.scale
+            })
+        });
+        !on_line
+            && model.picks.pick(&self.camera, vp, self.metrics, pixel, crate::PickFilter::Auto).is_none()
+            && model.picks.pick_profile(&self.camera, vp, self.metrics, pixel).is_none()
+            && self.pick_sketch_unfiltered(point).is_none()
+            && self.pick_reference(point).is_none()
+    }
+
     fn snapped_twist(&mut self, angle: f64) -> f64 {
         let plane = self.plane_preview.or_else(|| self.model.as_ref().and_then(|model| model.sketch_plane));
         let Some(plane) = plane.filter(|_| self.planar && self.sketch_rotation_snap) else {
@@ -878,6 +907,22 @@ impl Viewport {
             {
                 owner = Owner::SketchTool;
             }
+            let empty_tap_camera = (valid
+                && owner == Owner::Navigation
+                && self.contacts.items.is_empty()
+                && !self.selection.is_empty()
+                && !self.contacts.radius_tool
+                && !self.contacts.sketch.active()
+                && !self.origin.choosing
+                && self.modelling.is_none()
+                && self.projection.is_none()
+                && self.empty_selection_space(point))
+            .then_some(self.camera_epoch);
+            // Any overlapping contact makes this a combined interaction, even
+            // if the second contact ends before this finger releases.
+            for contact in self.contacts.items.values_mut() {
+                contact.empty_tap_camera = None;
+            }
             self.contacts.items.insert(
                 e.id,
                 Contact {
@@ -891,6 +936,7 @@ impl Viewport {
                     button: e.button,
                     revision: e.geometry_revision,
                     model_token: if valid { self.modelling.as_ref().map(|edit| edit.token) } else { None },
+                    empty_tap_camera,
                 },
             );
             if owner == Owner::Navigation {
@@ -916,6 +962,7 @@ impl Viewport {
         let button = c.button;
         let revision = c.revision;
         let model_token = c.model_token;
+        let empty_tap_camera = c.empty_tap_camera;
         let distance = (point[0] - c.start[0]).hypot(point[1] - c.start[1]);
         // Selection has no drag action. Tolerate small Pencil lift motion and
         // retain the target touched down on, as sketch selection already does.
@@ -1019,7 +1066,12 @@ impl Viewport {
                             || self.constraint_tool().is_some()
                             || self.projection.is_some()
                             || self.modelling.as_ref().is_some_and(|edit| edit.selection_field.is_some())
-                            || self.pick_reference(point).is_some())))
+                            || self.pick_reference(point).is_some()
+                            || (empty_tap_camera == Some(self.camera_epoch)
+                                && !e.consumed
+                                && !e.display_preview
+                                && self.contacts.items.is_empty()
+                                && self.empty_selection_space(point)))))
                 && camera_current
                 && self.metrics.pixel(point).is_some()
                 && revision == e.geometry_revision

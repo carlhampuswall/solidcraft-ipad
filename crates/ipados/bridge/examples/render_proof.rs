@@ -584,7 +584,26 @@ fn history_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
         std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
         println!("history {name}: selected {:?}; {path}", snapshot.selected_bodies);
     }
-    view.command("select.clear", &json!({}))?;
+    for (phase, timestamp, label) in [(InputPhase::Began, 1., "finger-down"), (InputPhase::Ended, 1.1, "finger-cleared")] {
+        let diagnostic = view.diagnostic();
+        view.input(serde_json::from_value(json!({
+            "source":"finger","phase":phase,"id":1,"x_points":5.,"y_points":5.,
+            "x_pixels":5.,"y_pixels":5.,"scale":1.,"timestamp":timestamp,
+            "viewport_epoch":diagnostic["viewport_epoch"],"camera_epoch":diagnostic["camera_epoch"],
+            "document_id":diagnostic["document_id"],"geometry_revision":diagnostic["geometry_revision"]
+        }))?)?;
+        if (phase == InputPhase::Began) == view.selection().is_empty() {
+            return Err("finger touch-down must retain selection; release on empty space must clear it".into());
+        }
+        let snapshot = view.snapshot().ok_or("finger tap scene unavailable")?;
+        if !Arc::ptr_eq(&before.model, &snapshot.model) || before.camera != snapshot.camera {
+            return Err("finger tap changed model/camera".into());
+        }
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("history {label}: {} selected; {path}", view.selection().len());
+    }
     let snapshot = view.snapshot().ok_or("cleared history scene unavailable")?;
     if solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)? != plain {
         return Err("clearing history selection did not restore the original rendering".into());
