@@ -64,11 +64,17 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(drag(_:)))
         hold.minimumPressDuration = 0.4; hold.delegate = self
         hold.cancelsTouchesInView = true
+        // Primary-action menus can open on touch down. Let a hold claim the
+        // contact first; short taps are delivered when the hold fails.
+        hold.delaysTouchesBegan = true
         button.addGestureRecognizer(hold)
         configureHoldActions(id, button: button)
     }
 
     private func configureHoldActions(_ id: String, button: WorkspaceButton) {
+        for gesture in button.gestureRecognizers ?? [] where gesture.delegate === self {
+            gesture.isEnabled = customizationEnabled
+        }
         guard customizationEnabled else {
             button.accessibilityCustomActions = nil
             button.showsLargeContentViewer = true
