@@ -5050,7 +5050,7 @@ private extension FoundationController {
                 let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "measurements": measurements,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
                     "at": ISO8601DateFormatter().string(from: Date()),
-                    "coverage": "Compact controls for Extrude, Fillet, Chamfer, Shell, Offset Face and Box; More options preserves inputs; live text preview; pinned Apply/Cancel; previous presentation preference; synthetic actions"]
+                    "coverage": "Compact controls for Extrude, Fillet, Chamfer, Shell, Offset Face and Rectangular Pattern; More options preserves inputs; live text preview; pinned Apply/Cancel; previous presentation preference; synthetic actions"]
                 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("compact-tools-check.json"), options: .atomic)
             } catch { print("Compact controls report: \(error)") }
@@ -5070,7 +5070,8 @@ private extension FoundationController {
             ("solid.chamfer", ["body": .string("Compact stock"), "edges": .array([edge]), "distance": .string("2 mm")]),
             ("solid.shell", ["body": .string("Compact stock"), "faces": .array([face]), "thickness": .string("2 mm")]),
             ("solid.offset_face", ["body": .string("Compact stock"), "faces": .array([face]), "distance": .string("2 mm")]),
-            ("solid.box", ["length": .string("10 mm"), "width": .string("10 mm"), "height": .string("10 mm")])
+            ("solid.pattern.rectangular", ["source_mode": .string("bodies"), "bodies": .array([.string("Compact stock")]),
+                                           "features": .array([]), "count1": .string("2"), "spacing1": .string("40 mm")])
         ]
         func legacy() {
             compactToolControls = false
@@ -5129,7 +5130,7 @@ private extension FoundationController {
                 } else { cancelAndContinue() }
             }
         }
-        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("solid.box", ["name": "Compact stock", "length": "30 mm", "width": "25 mm", "height": "20 mm"]), ("view.fit", [:])]
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("solid.box", ["body_name": "Compact stock", "length": "30 mm", "width": "25 mm", "height": "20 mm"]), ("view.fit", [:])]
         func setup(_ index: Int) {
             guard index < fixture.count else { step(0); return }
             session.command(fixture[index].0, params: fixture[index].1) { result in
