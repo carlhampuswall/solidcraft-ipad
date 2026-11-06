@@ -1190,6 +1190,68 @@ struct WorkspaceChecks {
         let renamedRecovery = try Data(contentsOf: renamed.recoveryFile)
         try require(renamedRecovery == Data("last working design".utf8) && !FileManager.default.fileExists(atPath: projectA.recoveryFile.path), "rename lost the working recovery file")
         try require(!FileManager.default.fileExists(atPath: projectA.file.path), "rename left an old project file")
+        let referenceLibrary = ProjectLibrary(root: libraryRoot.appendingPathComponent("References"))
+        let referenceSource = try referenceLibrary.reserve(name: "Referenced design")
+        try Data("source version one".utf8).write(to: referenceSource.file)
+        let referencedBytes = try referenceLibrary.withProjectReference(referenceSource.file, remember: true) { readable -> Data in
+            try require(readable == referenceSource.file, "project insertion must read the real source, not a staging copy")
+            return try Data(contentsOf: readable)
+        }
+        try require(referencedBytes == Data("source version one".utf8), "reference did not read the original project")
+        let renamedReference = try referenceLibrary.rename(referenceSource, to: "Renamed referenced design")
+        let rebound = try referenceLibrary.referenceURL(referenceSource.file)
+        try require(rebound == renamedReference.file, "project reference lost UUID identity after rename")
+        let exactComponent: UInt64 = 9_007_199_254_740_993
+        var linkedPath = referenceSource.file.path
+        var cachedReference = referencedBytes
+        var updates = 0, relinks = 0
+        func referenceCommand(_ command: String, _ params: [String: Any]) throws -> Data {
+            let value: [String: Any]
+            switch command {
+            case "component.links":
+                let current = try? Data(contentsOf: URL(fileURLWithPath: linkedPath))
+                value = ["links": [["component": exactComponent, "file": linkedPath, "changed": current.map { $0 != cachedReference } ?? false]]]
+            case "component.relink", "component.update_links":
+                try require(params["component"] as? UInt64 == exactComponent, "reference update rounded its component identity")
+                if command == "component.relink" {
+                    guard let path = params["path"] as? String else { throw ProjectLibrary.failure("reference_test_path") }
+                    linkedPath = path; relinks += 1
+                } else { updates += 1 }
+                cachedReference = try Data(contentsOf: URL(fileURLWithPath: linkedPath))
+                value = ["warnings": []]
+            default: throw ProjectLibrary.failure("unexpected_reference_command")
+            }
+            return try JSONSerialization.data(withJSONObject: ["ok": true, "result": ["command": ["value": value]]])
+        }
+        var referenceReport = try referenceLibrary.refreshProjectReferences(command: referenceCommand)
+        try require(referenceReport.changed && !referenceReport.failed && relinks == 1 && linkedPath == renamedReference.file.path, "renamed source was not rebound through the existing engine command")
+        referenceReport = try referenceLibrary.refreshProjectReferences(command: referenceCommand)
+        try require(!referenceReport.changed && updates == 0 && relinks == 1, "unchanged references must not create undoable updates")
+        try Data("source version two".utf8).write(to: renamedReference.file)
+        referenceReport = try referenceLibrary.refreshProjectReferences(command: referenceCommand)
+        try require(referenceReport.changed && updates == 1 && cachedReference == Data("source version two".utf8), "saved source changes did not refresh the reference")
+        try FileManager.default.removeItem(at: renamedReference.file)
+        referenceReport = try referenceLibrary.refreshProjectReferences(command: referenceCommand)
+        try require(referenceReport.failed && !referenceReport.changed && !referenceReport.warnings.isEmpty && cachedReference == Data("source version two".utf8), "missing reference did not preserve its cached display and report a warning")
+        try Data("source version three".utf8).write(to: renamedReference.file)
+        referenceReport = try referenceLibrary.refreshProjectReferences(command: referenceCommand)
+        try require(referenceReport.changed && !referenceReport.failed && updates == 2, "restored source did not resume reference updates")
+        let externalReference = libraryRoot.appendingPathComponent("External source.sc")
+        try Data("external project".utf8).write(to: externalReference)
+        _ = try referenceLibrary.withProjectReference(externalReference, remember: true) { try Data(contentsOf: $0) }
+        let reopenedReferences = ProjectLibrary(root: referenceLibrary.root)
+        let externalURL = try reopenedReferences.referenceURL(externalReference)
+        try require(externalURL.resolvingSymlinksInPath() == externalReference.resolvingSymlinksInPath(), "Files source bookmark was not retained across library reopen")
+        let externalMoved = libraryRoot.appendingPathComponent("Moved external source.sc")
+        try FileManager.default.moveItem(at: externalReference, to: externalMoved)
+        let movedURL = try reopenedReferences.referenceURL(externalReference)
+        try require(movedURL.resolvingSymlinksInPath() == externalMoved.resolvingSymlinksInPath(), "Files bookmark did not follow its source rename")
+        let bookmarkFile = referenceLibrary.root.appendingPathComponent(".reference-bookmarks.json")
+        try Data("corrupt bookmark metadata".utf8).write(to: bookmarkFile)
+        do {
+            _ = try reopenedReferences.referenceURL(externalReference)
+            throw ProjectLibrary.failure("accepted_corrupt_references")
+        } catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_corrupt_references", "corrupt reference metadata was silently replaced") }
         let unchanged = try library.rename(renamed, to: renamed.name)
         try require(unchanged == renamed, "unchanged name did not preserve the project")
         do {

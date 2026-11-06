@@ -117,6 +117,42 @@ fn project_reference_warning_can_open_a_separate_repair_copy_without_weakening_m
 }
 
 #[test]
+fn project_reference_checks_preserve_contacts_plane_choosing_and_update_generation() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    assert_eq!(request(id, r#"{"kind":"fixture"}"#), 0);
+    let entry = lookup(id).unwrap();
+    view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
+    view_request(id, json!({"kind":"command","command":"view.choose_sketch_plane","params":{}}));
+    let generation = entry.generation.load(Ordering::Acquire);
+    let before = entry.viewport.lock().unwrap().diagnostic();
+    assert_eq!(request(id, r#"{"kind":"project_reference","command":"component.links","params":{}}"#), 0);
+    assert_eq!(entry.viewport.lock().unwrap().diagnostic(), before);
+    assert_eq!(entry.generation.load(Ordering::Acquire), generation);
+    assert_eq!(request(id, r#"{"kind":"project_reference","command":"component.update_links","params":{}}"#), -1);
+    assert_eq!(response(id)["error"]["code"], "disabled");
+    assert_eq!(entry.generation.load(Ordering::Acquire), generation);
+    assert_eq!(entry.viewport.lock().unwrap().diagnostic(), before);
+    view_request(id, json!({"kind":"command","command":"view.cancel_plane","params":{}}));
+    view_request(
+        id,
+        json!({"kind":"input","event":{"source":"finger","phase":"began","id":77,
+        "x_points":20,"y_points":20,"x_pixels":40,"y_pixels":40,"scale":2,"timestamp":1}}),
+    );
+    let before = entry.viewport.lock().unwrap().diagnostic();
+    assert_eq!(before["input"]["contacts"], 1);
+    assert_eq!(request(id, r#"{"kind":"workspace"}"#), 0);
+    assert_eq!(response(id)["result"]["reference_refresh_ready"], false);
+    assert_eq!(request(id, r#"{"kind":"project_reference","command":"component.links","params":{}}"#), 0);
+    assert_eq!(entry.viewport.lock().unwrap().diagnostic(), before, "polling must not end a gesture");
+    assert_eq!(request(id, r#"{"kind":"project_reference","command":"component.update_links","params":{}}"#), -1);
+    assert_eq!(entry.viewport.lock().unwrap().diagnostic(), before);
+    assert_eq!(request(id, r#"{"kind":"project_reference","command":"solid.box","params":{}}"#), -1);
+    assert_eq!(response(id)["error"]["code"], "bad_params");
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
 fn project_save_preserves_numeric_preview_and_replacement_publishes_only_complete_documents() {
     let _serial = isolated_registry();
     let directory = std::env::temp_dir().join(format!("solidcraft-project-abi-{}", std::process::id()));
@@ -133,6 +169,12 @@ fn project_save_preserves_numeric_preview_and_replacement_publishes_only_complet
     assert_eq!(request(id, &json!({"kind":"numeric","action":"preview","token":token,"expression":"10 mm"}).to_string()), 0);
     let preview = entry.viewport.lock().unwrap().snapshot().unwrap();
     let generation = entry.generation.load(Ordering::Acquire);
+    assert_eq!(request(id, r#"{"kind":"project_reference","command":"component.links","params":{}}"#), 0);
+    assert!(entry.viewport.lock().unwrap().numeric_active());
+    assert_eq!(entry.generation.load(Ordering::Acquire), generation);
+    assert_eq!(request(id, r#"{"kind":"project_reference","command":"component.update_links","params":{}}"#), -1);
+    assert_eq!(entry.generation.load(Ordering::Acquire), generation);
+    assert!(Arc::ptr_eq(&preview.model, &entry.viewport.lock().unwrap().snapshot().unwrap().model));
     assert_eq!(request(id, &json!({"kind":"save_document","path":saved}).to_string()), 0, "{}", response(id));
     assert_eq!(response(id)["result"]["value"]["name"], "Fixture", "Save keeps upstream's file-based naming");
     assert_eq!(response(id)["result"]["changed"], false, "a save's rename is metadata, not new geometry");

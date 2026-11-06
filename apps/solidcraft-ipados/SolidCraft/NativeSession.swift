@@ -18,6 +18,7 @@ struct WorkspaceState: Decodable {
     let geometry_revision: UInt64
     let can_undo: Bool
     let can_redo: Bool
+    let reference_refresh_ready: Bool?
     let dirty: Bool?
     let rows: [WorkspaceRow]
     let tools: [WorkspaceTool]
@@ -226,6 +227,9 @@ final class NativeSession {
     var onProjectChange: ((ProjectRecord) -> Void)?
     private(set) var currentProject: ProjectRecord?
     private var projectBusy = false
+    private var referenceTimer: DispatchSourceTimer?
+    private var referenceCheckPending = false
+    private var referenceWarning: String?
     private var autosave: DispatchWorkItem?
     private var autosaveFailure: (document: String, revision: UInt64)?
     private let fileExport = DispatchQueue(label: "SolidCraft.export", qos: .userInitiated, autoreleaseFrequency: .workItem)
@@ -428,7 +432,8 @@ final class NativeSession {
     private struct ModellingEnvelope: Decodable { let result: ModellingState }
 
     private static func fileCommand(_ state: BridgeState, _ command: String, params: [String: Any]) throws -> Data {
-        try state.request(JSONSerialization.data(withJSONObject: ["kind": "command", "command": command, "params": params]), lane: .engine)
+        let kind = ["component.links", "component.update_links", "component.relink"].contains(command) ? "project_reference" : "command"
+        return try state.request(JSONSerialization.data(withJSONObject: ["kind": kind, "command": command, "params": params]), lane: .engine)
     }
 
     private static func replaceProject(_ state: BridgeState, source: URL?, project: ProjectRecord, repair: Bool = false) throws -> Data {
@@ -441,12 +446,63 @@ final class NativeSession {
     private func selectProject(_ project: ProjectRecord) {
         currentProject = project
         autosaveFailure = nil
+        referenceWarning = nil
         #if DEBUG
         if projectLibraryOverride == nil { UserDefaults.standard.set(project.id.uuidString, forKey: Self.selectedProjectKey) }
         #else
         UserDefaults.standard.set(project.id.uuidString, forKey: Self.selectedProjectKey)
         #endif
         onProjectChange?(project)
+        monitorProjectReferences()
+    }
+
+    private func monitorProjectReferences() {
+        referenceTimer?.cancel(); referenceTimer = nil
+        guard alive, currentProject != nil, lifecycle.ticket != nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 0.5, repeating: 3, leeway: .milliseconds(500))
+        timer.setEventHandler { [weak self] in self?.refreshProjectReferences() }
+        referenceTimer = timer
+        timer.resume()
+    }
+
+    /// File polling runs on the existing serial engine queue. The bridge also
+    /// refuses commands during numeric/model edits; active sketches defer it.
+    private func refreshProjectReferences() {
+        guard alive, let project = currentProject, let ticket = lifecycle.ticket,
+              !projectBusy, !referenceCheckPending, commandActivities.isEmpty, toolActivityTicket == nil else { return }
+        referenceCheckPending = true
+        #if DEBUG
+        let libraryOverride = projectLibraryOverride
+        #else
+        let libraryOverride: ProjectLibrary? = nil
+        #endif
+        engine.async { [weak self, state, lifecycle] in
+            let result = Result { () throws -> ProjectReferenceUpdate in
+                guard lifecycle.accepts(ticket) else { return ProjectReferenceUpdate() }
+                let workspace = try JSONDecoder().decode(WorkspaceEnvelope.self, from: state.request(Data("{\"kind\":\"workspace\"}".utf8), lane: .engine)).result
+                guard workspace.reference_refresh_ready == true, workspace.sketch == nil, workspace.active_tool == "select", !workspace.can_redo else { return ProjectReferenceUpdate() }
+                let library = try libraryOverride ?? ProjectLibrary.applicationLibrary()
+                return try library.refreshProjectReferences { try Self.fileCommand(state, $0, params: $1) }
+            }.mapError(BridgeState.error)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.alive else { return }
+                self.referenceCheckPending = false
+                guard lifecycle.accepts(ticket), self.currentProject?.id == project.id else { return }
+                switch result {
+                case .success(let report):
+                    let warning = report.warnings.isEmpty ? nil : ProjectText.text(report.failed ? "reference_warning" : "reference_warnings") + "\n" + report.warnings.map { NativeText.value($0) }.joined(separator: "\n")
+                    if let warning, warning != self.referenceWarning { self.onFailure?(BridgeError(code: "project_reference", message: warning)) }
+                    self.referenceWarning = warning
+                    if report.changed { self.refreshWorkspace(); self.redraw() }
+                case .failure(let error):
+                    // A newly opened editor wins over background link refresh.
+                    if error.code != "disabled", self.referenceWarning != error.description {
+                        self.referenceWarning = error.description; self.onFailure?(error)
+                    }
+                }
+            }
+        }
     }
 
     private func projectTask<T>(_ operation: @escaping (BridgeState, ProjectLibrary, ProjectRecord?) throws -> T,
@@ -570,26 +626,25 @@ final class NativeSession {
     func importProject(from source: URL, insert: Bool, completion: @escaping (Result<[String], BridgeError>) -> Void) {
         projectTask({ state, library, current in
             try Self.saveProject(state, current)
-            let staged = try ProjectLibrary.stageImport(source)
-            defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
             let data: Data
             var created: ProjectRecord?
-            if insert {
-                let ext = source.pathExtension.lowercased()
-                if ProjectLibrary.nativeExtensions.contains(ext) {
-                    // Files access ends with this operation. Embed the snapshot
-                    // in the same undoable command before removing the staged file.
-                    data = try Self.fileCommand(state, "component.insert_design", params: ["path": staged.path, "link": false])
-                } else {
+            let ext = source.pathExtension.lowercased()
+            if insert && ProjectLibrary.nativeExtensions.contains(ext) {
+                data = try library.withProjectReference(source, remember: true) { readable in
+                    try Self.fileCommand(state, "component.insert_design", params: ["path": readable.path, "reuse": true])
+                }
+            } else {
+                let staged = try ProjectLibrary.stageImport(source)
+                defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
+                if insert {
                     let command = ["step", "stp"].contains(ext) ? "file.insert_step" : "file.insert_mesh"
                     data = try Self.fileCommand(state, command, params: ["path": staged.path])
+                    // An autosave failure leaves the undoable import visible.
+                } else {
+                    let project = try library.reserve(name: source.deletingPathExtension().lastPathComponent)
+                    do { data = try Self.replaceProject(state, source: staged, project: project); created = project }
+                    catch { try? library.remove(project); throw error }
                 }
-                // The import is already an undoable command. A later autosave
-                // failure leaves it dirty and visible; it never erases it.
-            } else {
-                let project = try library.reserve(name: source.deletingPathExtension().lastPathComponent)
-                do { data = try Self.replaceProject(state, source: staged, project: project); created = project }
-                catch { try? library.remove(project); throw error }
             }
             let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
             let result = json?["result"] as? [String: Any]
@@ -1034,9 +1089,10 @@ final class NativeSession {
         }
     }
 
-    func activate() { lifecycle.activate(); publishActivityStatus() }
+    func activate() { lifecycle.activate(); publishActivityStatus(); monitorProjectReferences() }
 
     func suspend() {
+        referenceTimer?.cancel(); referenceTimer = nil
         autosave?.cancel(); autosave = nil
         if let project = currentProject, !projectBusy {
             engine.async { [weak self, state] in

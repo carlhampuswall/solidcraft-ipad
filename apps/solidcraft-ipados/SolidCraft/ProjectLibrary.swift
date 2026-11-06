@@ -10,6 +10,143 @@ struct ProjectRecord: Equatable {
     var recoveryFile: URL { URL(fileURLWithPath: file.path + ".recovery") }
 }
 
+struct ProjectReferenceUpdate {
+    var changed = false
+    var failed = false
+    var warnings: [String] = []
+}
+
+/// Native file access only. CAD references and their cached display remain in
+/// the engine's DesignLink; bookmarks retain permission to read Files sources.
+extension ProjectLibrary {
+    private struct ReferenceBookmarks: Codable {
+        var version = 1
+        var files: [String: Data] = [:]
+    }
+    private var referenceBookmarksFile: URL { root.appendingPathComponent(".reference-bookmarks.json") }
+
+    private func referenceBookmarks() throws -> ReferenceBookmarks {
+        guard FileManager.default.fileExists(atPath: referenceBookmarksFile.path) else { return ReferenceBookmarks() }
+        let info = try referenceBookmarksFile.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard info.isRegularFile == true, info.isSymbolicLink != true, let size = info.fileSize, size <= 8 * 1024 * 1024 else {
+            throw Self.failure("reference_unavailable")
+        }
+        let bookmarks = try JSONDecoder().decode(ReferenceBookmarks.self, from: Data(contentsOf: referenceBookmarksFile))
+        guard bookmarks.version == 1, bookmarks.files.count <= 4096,
+              bookmarks.files.allSatisfy({ $0.key.hasPrefix("/") && $0.key.utf8.count < 4096 && $0.value.count <= 64 * 1024 }) else {
+            throw Self.failure("reference_unavailable")
+        }
+        return bookmarks
+    }
+
+    private func managedReferenceID(_ source: URL) -> UUID? {
+        let directory = source.standardizedFileURL.deletingLastPathComponent()
+        guard directory.deletingLastPathComponent() == root.resolvingSymlinksInPath().standardizedFileURL else { return nil }
+        return UUID(uuidString: directory.lastPathComponent)
+    }
+
+    /// UUID directories preserve library identity across rename, sort, archive
+    /// and folder moves. A removed source is never replaced by a same-name file.
+    func referenceURL(_ source: URL) throws -> URL {
+        try resolvedReference(source).url
+    }
+
+    private func resolvedReference(_ source: URL) throws -> (url: URL, stale: Bool) {
+        if let id = managedReferenceID(source) {
+            guard let project = try projects().first(where: { $0.id == id }) else { throw Self.failure("reference_unavailable") }
+            return (project.file, false)
+        }
+        guard let bookmark = try referenceBookmarks().files[source.path] else { return (source, false) }
+        var stale = false
+        let url = try URL(resolvingBookmarkData: bookmark, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+        return (url, stale)
+    }
+
+    /// Read the actual source under provider coordination, without staging a
+    /// copy. External source permission is durable; save destinations stay local.
+    func withProjectReference<T>(_ source: URL, remember: Bool = false, _ operation: (URL) throws -> T) throws -> T {
+        let reference = try resolvedReference(source)
+        let resolved = reference.url
+        guard resolved.isFileURL, resolved.path.utf8.count < 4096,
+              Self.nativeExtensions.contains(resolved.pathExtension.lowercased()) else { throw Self.failure("reference_unavailable") }
+        let access = resolved.startAccessingSecurityScopedResource()
+        defer { if access { resolved.stopAccessingSecurityScopedResource() } }
+        if managedReferenceID(resolved) == nil {
+            var bookmarks = try referenceBookmarks()
+            if remember || (bookmarks.files[source.path] != nil && (reference.stale || resolved.path != source.path)) {
+                let bookmark = try resolved.bookmarkData(options: [.minimalBookmark], includingResourceValuesForKeys: nil, relativeTo: nil)
+                guard bookmark.count <= 64 * 1024 else { throw Self.failure("reference_unavailable") }
+                if bookmarks.files[source.path] != bookmark || bookmarks.files[resolved.path] != bookmark {
+                    bookmarks.files[source.path] = bookmark
+                    bookmarks.files[resolved.path] = bookmark
+                    guard bookmarks.files.count <= 4096 else { throw Self.failure("reference_unavailable") }
+                    let data = try JSONEncoder().encode(bookmarks)
+                    guard data.count <= 8 * 1024 * 1024 else { throw Self.failure("reference_unavailable") }
+                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+                    try data.write(to: referenceBookmarksFile, options: .atomic)
+                }
+            }
+        }
+        var coordinationError: NSError?
+        var result: Result<T, Error> = .failure(Self.failure("reference_unavailable"))
+        NSFileCoordinator().coordinate(readingItemAt: resolved, options: [], error: &coordinationError) { readable in
+            result = Result {
+                let info = try readable.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                guard info.isRegularFile == true, info.isSymbolicLink != true,
+                      let size = info.fileSize, size > 0, Int64(size) <= Self.maximumImportBytes else { throw Self.failure("import_size") }
+                return try operation(readable)
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        return try result.get()
+    }
+
+    /// Decode the existing command envelope; no native document representation.
+    static func commandValue(_ data: Data) throws -> [String: Any] {
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let result = json?["result"] as? [String: Any]
+        let command = result?["command"] as? [String: Any]
+        guard let value = (command?["value"] as? [String: Any]) ?? command ?? result else { throw failure("reference_unavailable") }
+        return value
+    }
+
+    /// Issue only existing engine commands. Unchanged sources create no undo
+    /// entries; each changed link preserves its component/occurrence identity.
+    func refreshProjectReferences(command: (String, [String: Any]) throws -> Data) throws -> ProjectReferenceUpdate {
+        struct Link: Decodable { let component: UInt64; let file: String }
+        let value = try Self.commandValue(command("component.links", [:]))
+        let data = try JSONSerialization.data(withJSONObject: value["links"] ?? [])
+        let links = try JSONDecoder().decode([Link].self, from: data)
+        guard links.count <= 1024 else { throw Self.failure("reference_unavailable") }
+        var report = ProjectReferenceUpdate()
+        for link in links {
+            do {
+                try withProjectReference(URL(fileURLWithPath: link.file)) { readable in
+                    let reply: Data
+                    if readable.standardizedFileURL != URL(fileURLWithPath: link.file).standardizedFileURL {
+                        reply = try command("component.relink", ["component": link.component, "path": readable.path])
+                    } else {
+                        // Recheck while the source's security scope and provider
+                        // coordination are held. The engine caches file digests.
+                        let current = try Self.commandValue(command("component.links", [:]))["links"] as? [[String: Any]] ?? []
+                        guard current.first(where: { ($0["component"] as? UInt64) == link.component })?["changed"] as? Bool == true else { return }
+                        reply = try command("component.update_links", ["component": link.component])
+                    }
+                    report.changed = true
+                    report.warnings += try Self.commandValue(reply)["warnings"] as? [String] ?? []
+                }
+            } catch {
+                report.failed = true
+                let message = (error as NSError).localizedDescription
+                report.warnings.append(message.hasPrefix("ui.ipados.") ? message :
+                    URL(fileURLWithPath: link.file).lastPathComponent + ": " + String(describing: error).prefix(1024))
+            }
+        }
+        report.warnings = Array(report.warnings.prefix(32))
+        return report
+    }
+}
+
 enum ProjectSort: String, Codable, CaseIterable {
     case modified, nameAscending, nameDescending
 

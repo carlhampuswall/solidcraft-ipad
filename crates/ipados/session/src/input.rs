@@ -143,6 +143,10 @@ pub(crate) struct Contacts {
 }
 
 impl Contacts {
+    pub(crate) fn is_idle(&self) -> bool {
+        self.items.is_empty() && self.pending.is_none() && self.drag.is_none() && !self.navigating
+    }
+
     fn fingers(&self) -> Vec<(u64, [f64; 2])> {
         self.items.iter().filter(|(_, c)| c.owner == Owner::Navigation).map(|(id, c)| (*id, c.current)).collect()
     }

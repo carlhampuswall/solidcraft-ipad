@@ -399,7 +399,7 @@ debounces autosave and remembers the selected project. A launch preference can
 retain the former starter-model behaviour. Diagnostic `--*-check` launches use
 only their disposable fixture and never restore/autosave the library.
 
-Two engine-lane JSON requests extend ABI 3 without changing C signatures:
+Project file-service JSON requests extend ABI 3 without changing C signatures:
 
 - `{kind:"document", source?:path, name, destination:path, repair?:false}` prepares a separate
   candidate with `doc.open` or `file.new`, validates a scene and saves with
@@ -420,11 +420,26 @@ Two engine-lane JSON requests extend ABI 3 without changing C signatures:
 - `{kind:"save_document", path}` calls `file.save` without viewport publication,
   so autosave persists the committed document without cancelling numeric/Pencil
   work or publishing its provisional geometry.
+- `{kind:"project_reference", command, params}` accepts only `component.links`,
+  `component.update_links` and `component.relink`. Link inspection is read-only
+  and never starts a viewport update or clears contacts/editors. A mutating
+  refresh rechecks idle state under the viewport lock before starting an update;
+  gestures, numeric/model drafts, sketch tools and plane picking defer it. The
+  workspace's `reference_refresh_ready` flag supplies the same idle hint to the
+  native poller. All link semantics still run through the engine commands.
 
 The Files picker returns a URL whose security scope remains active during an
-`NSFileCoordinator` read and bounded local copy on the engine queue. New-project
-imports use the transaction above; insertion uses `file.insert_step` or
-`file.insert_mesh`, preserving upstream component and undo semantics. Native
+`NSFileCoordinator` read on the engine queue. New-project imports make a bounded
+local copy and use the transaction above. Native project insertion instead
+references the original URL through `component.insert_design` with `reuse:true`;
+external URLs retain bookmarks in private host access metadata. Library sources
+are resolved through their UUID directories so rename/archive/folder moves keep
+reference identity. Idle foreground polling uses `component.links` digests,
+`component.update_links` and `component.relink`, preserving component/occurrence
+identities and placements. Unchanged references add no history; missing/invalid
+sources retain cached display and report warnings. Refresh defers during active
+sketch/tool/numeric/model work and while a Redo choice remains pending.
+STEP/mesh insertion uses `file.insert_step` or `file.insert_mesh`. Native
 containers, STEP/STP, STL, OBJ and 3MF are accepted (up to 512 MiB); originals
 remain unchanged. Parse/evaluation errors and supported warnings reach the UI.
 Native containers with unavailable linked resources can be refused by the normal
@@ -436,8 +451,9 @@ A separate worker and disposable read-only bridge session run `file.export`;
 CAD evaluation/navigation on the live session need not wait for that export.
 Native-container export copies the saved file. The system export picker copies
 the resulting file to a user-selected destination; completion/cancellation
-cleans temporary output. No external save URL/bookmark or parallel design
-format is introduced. Native serialization, import/export semantics and safe
+cleans temporary output. No external save destination or parallel design
+format is introduced. Bookmarks are read permissions for referenced sources.
+Native serialization, import/export semantics and safe
 writes remain the upstream engine/I/O implementation.
 
 Rust failures use `AdapterError { code, message }`; the C status is 0 for success,

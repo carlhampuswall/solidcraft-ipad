@@ -6,31 +6,52 @@ Alternatively choose **Import file… → Insert into current project** and sele
 `.sc`, `.solidcraft`, STEP, STL, OBJ or 3MF file in Files. With no component
 active, insertion uses the design root.
 
-A native project is inserted as a new child component containing a snapshot of
-its evaluated solid bodies and their materials and appearances. The destination
-stays open, and its existing objects and history remain intact. The source
-project's sketches, parametric history and assembly hierarchy are not copied;
-mesh bodies are omitted with the existing engine import warning. A project with
-no solid bodies, corrupt contents or failed features is refused.
+A native project is inserted as a linked child component referencing the actual
+source project. Inserting the same source again reuses its linked definition
+with a separate occurrence and placement. Edit the source project to change its
+parametric history; those saved changes refresh in every reference. The
+containing project's own objects and history remain intact.
 
-Native insertion uses the existing `component.insert_design` command with
-`link: false`. This optional engine parameter defaults to `true`, retaining the
-desktop/web command's linked-design behavior. Snapshot insertion removes the
-link after the existing property inheritance within the same command. No new
-document fields, format or iPad-only engine dependency are introduced. A later
-source-file edit or deletion therefore cannot change the inserted object, and
-undo/redo never restores a link to the temporary Files copy. `link: false` is
-incompatible with `reuse: true`, and non-boolean `link` values are rejected.
+Insertion uses `component.insert_design` with `reuse: true`. The app checks
+references after opening a project or returning to the foreground, and every
+three seconds while idle. It uses the engine's file digest check and
+`component.update_links` only for changed sources. A library source that was
+renamed is found through its UUID directory and rebound with `component.relink`.
+Folder moves, sorting and archiving do not change that identity. Repeated
+instances keep their placements and share source updates.
+
+Files sources retain a native bookmark in the private library's
+`.reference-bookmarks.json`, and reads hold security scope and file-provider
+coordination. Native insertion never points to a temporary import copy. The
+source stays outside the containing project and is never rewritten by refresh.
+Bookmarks are host access metadata; CAD references use the existing upstream
+`DesignLink` format without new document fields or a format change.
+
+Refresh waits during sketches, tools and numeric/model edits, and while Undo
+has left a Redo choice pending. Unchanged sources create no undo entries. If a
+source is missing, unreadable or invalid, its last evaluated display remains
+and a warning is reported; refresh retries when it becomes available. The
+existing engine linked-design support carries evaluated solid bodies and their
+materials and appearances; it warns about omitted meshes and refuses projects
+without solids or with failed source features. Source sketch history stays in
+the source project.
+
+Earlier app versions inserted independent snapshots. Those existing imports
+remain independent because the temporary source path cannot establish which
+original project was intended. Remove and reinsert one to establish a reference.
+STEP and mesh imports continue to insert geometry.
 
 Check a translated, active component as well as root insertion: the new child's
 geometry must follow the destination placement. One Undo removes only the
-insertion; Redo restores it. Save and cold-open the destination after removing
-the source to verify the snapshot is self-contained. Invalid imports must leave
-the destination's objects, active component and undo/redo history intact.
+insertion; Redo restores it. Change a source parameter, save, and return to the
+containing project: the linked geometry and materials must update without
+changing reference identities or placements. Save and cold-open to verify the
+link persists. Rename a library source, then remove/restore it to check rebinding
+and cached-display warnings. Invalid imports preserve the destination.
 
 The focused adapter regressions are the `projects_` tests in
 `crates/ipados/session/src/tests.rs`. Real shared-renderer evidence, including
-before/insertion/cold-reopen PNGs, can be captured on a Mac with:
+before/insertion/source-update/cold-reopen PNGs, can be captured on a Mac with:
 
 ```sh
 cargo +1.95.0 run --locked --profile ci -p solidcraft-ipados-bridge \

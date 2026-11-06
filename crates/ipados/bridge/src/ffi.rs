@@ -86,6 +86,10 @@ enum Request {
         command: String,
         params: Value,
     },
+    ProjectReference {
+        command: String,
+        params: Value,
+    },
     Document {
         source: Option<String>,
         name: String,
@@ -200,18 +204,26 @@ impl Entry {
 
     fn workspace(&self) -> Result<Value, AdapterError> {
         let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
-        let (selection, radius, numeric, input, edit) = {
+        let (selection, radius, numeric, input, edit, reference_ready) = {
             let viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
             // Publication can briefly lag the engine worker; never apply old
             // selection identities to a document whose update is still pending.
             let selection = if viewport.is_updating() { Vec::new() } else { viewport.selection().to_vec() };
             let input = viewport.diagnostic();
             let edit = input["model_token"].as_u64().and_then(|token| viewport.model_edit(token).ok());
-            (selection, viewport.radius_tool_active(), viewport.numeric_active() || viewport.model_active(), input["input"].clone(), edit)
+            (
+                selection,
+                viewport.radius_tool_active(),
+                viewport.numeric_active() || viewport.model_active(),
+                input["input"].clone(),
+                edit,
+                viewport.project_reference_refresh_ready(),
+            )
         };
         let mut workspace = adapter.workspace_with_model(&selection, radius, numeric, edit.as_ref());
         workspace["active_tool"] = input["tool"].clone();
         workspace["input"] = input;
+        workspace["reference_refresh_ready"] = json!(reference_ready);
         Ok(workspace)
     }
 
@@ -421,6 +433,22 @@ impl Entry {
     }
 
     fn evaluate(&self, request: Request) -> Result<Value, AdapterError> {
+        let (request, reference_refresh) = match request {
+            Request::ProjectReference { command, params } => {
+                if command == "component.links" {
+                    // Poll the existing read-only engine command without a
+                    // viewport update generation or contact/editor reset.
+                    let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
+                    let reply = adapter.execute(&command, params)?;
+                    return Ok(json!({"command":reply}));
+                }
+                if !matches!(command.as_str(), "component.update_links" | "component.relink") {
+                    return Err(error("bad_params", "unsupported project reference command"));
+                }
+                (Request::Command { command, params }, true)
+            }
+            request => (request, false),
+        };
         if let Request::SaveDocument { path } = request {
             // Persist only the authoritative document. Autosave must not cancel
             // a Pencil contact, numeric draft or provisional modelling scene.
@@ -467,16 +495,19 @@ impl Entry {
         if editing {
             return Err(error("disabled", "ui.ipados.workspace.finish_edit"));
         }
-        let generation = self
-            .generation
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
-            .map_err(|_| error("revision_limit", "request generation exhausted"))?
-            + 1;
-        let selection = {
+        let (generation, selection) = {
             let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+            if reference_refresh && !viewport.project_reference_refresh_ready() {
+                return Err(error("disabled", "ui.ipados.workspace.finish_edit"));
+            }
+            let generation = self
+                .generation
+                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| v.checked_add(1))
+                .map_err(|_| error("revision_limit", "request generation exhausted"))?
+                + 1;
             let selection = viewport.selection().to_vec();
             viewport.begin_update(generation);
-            selection
+            (generation, selection)
         };
         let result = (|| {
             let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;

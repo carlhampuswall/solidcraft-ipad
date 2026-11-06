@@ -1,0 +1,7 @@
+{
+  "en": {
+    "ui.ipados.projects.reference_unavailable": "The referenced project is unavailable. Its last displayed version is kept until the source can be read again.",
+    "ui.ipados.projects.reference_warning": "Some project references could not be refreshed. Their last displayed version has been kept.",
+    "ui.ipados.projects.reference_warnings": "Project reference warnings"
+  }
+}

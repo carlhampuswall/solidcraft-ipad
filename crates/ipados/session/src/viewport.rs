@@ -171,6 +171,19 @@ impl Viewport {
         self.updating
     }
 
+    /// Automatic file refresh waits for a quiet viewport. Ordinary read-only
+    /// link checks must never clear contacts, numeric drafts or plane picking.
+    pub fn project_reference_refresh_ready(&self) -> bool {
+        !self.updating
+            && self.numeric.is_none()
+            && self.modelling.is_none()
+            && !self.origin.choosing
+            && self.plane_preview.is_none()
+            && self.contacts.is_idle()
+            && !self.contacts.sketch.active()
+            && !self.contacts.radius_tool
+    }
+
     pub fn selection(&self) -> &[Sel] {
         &self.selection
     }

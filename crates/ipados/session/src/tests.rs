@@ -526,6 +526,76 @@ fn projects_round_trip_native_step_and_failed_replacements_preserve_the_live_des
 }
 
 #[test]
+fn projects_linked_references_refresh_all_instances_and_keep_destination_identity() {
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-references-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("Source.sc");
+    let destination = directory.join("Assembly.solidcraft");
+    let mut source = SessionAdapter::new();
+    source.execute("parameters.add", json!({"name":"source_length","expression":"2 mm"})).unwrap();
+    source.execute("solid.box", json!({"length":"source_length","width":3,"height":4,"body_name":"Source part"})).unwrap();
+    source.execute("file.save_as", json!({"path":path})).unwrap();
+    let mut target = SessionAdapter::new();
+    target.execute("solid.box", json!({"length":1,"width":1,"height":1,"body_name":"Keep"})).unwrap();
+    let parent = target.execute("component.create", json!({"name":"Holder","activate":true,"grounded":false})).unwrap().value;
+    let parent_occurrence = parent["occurrence"].as_u64().unwrap();
+    target.execute("occurrence.move", json!({"occurrence":parent_occurrence,"translate":[50,0,0],"capture":true})).unwrap();
+    target.execute("file.save_as", json!({"path":destination})).unwrap();
+    let identity = target.session.document_id.clone();
+    let first = target.execute("component.insert_design", json!({"path":path,"reuse":true})).unwrap().value;
+    let second = target.execute("component.insert_design", json!({"path":path,"reuse":true,"translate":[0,20,0]})).unwrap().value;
+    let component = first["component"].as_u64().unwrap();
+    let first_occurrence = first["occurrence"].as_u64().unwrap();
+    let second_occurrence = second["occurrence"].as_u64().unwrap();
+    assert_eq!(second["component"], component, "inserting again creates a reference to the same definition");
+    assert_ne!(first_occurrence, second_occurrence);
+    assert_eq!(target.session.doc.links.len(), 1);
+    let features: Vec<_> = target.session.doc.features.iter().map(|f| f.id).collect();
+    let occurrences = target.session.doc.occurrences.clone();
+    let history = target.session.undo.len();
+    let links = target.execute("component.links", json!({})).unwrap().value;
+    assert_eq!(links["links"][0]["changed"], false);
+    assert_eq!(target.session.undo.len(), history, "checking an unchanged reference is read-only");
+
+    source.execute("parameters.change", json!({"name":"source_length","expression":"5 mm"})).unwrap();
+    source.execute("material.assign", json!({"bodies":["Source part"],"material":"Aluminum"})).unwrap();
+    source.execute("file.save", json!({})).unwrap();
+    assert_eq!(target.execute("component.links", json!({})).unwrap().value["links"][0]["changed"], true);
+    target.execute("component.update_links", json!({"component":component})).unwrap();
+    assert_eq!(target.session.document_id, identity);
+    assert_eq!(target.session.undo.len(), history + 1);
+    assert_eq!(target.session.doc.occurrences, occurrences);
+    assert_eq!(target.session.doc.features.iter().map(|f| f.id).collect::<Vec<_>>(), features);
+    assert_eq!(target.session.active_component, parent["component"].as_u64().unwrap());
+    for occurrence in [first_occurrence, second_occurrence] {
+        assert!((assembly_volume(&target, &[parent_occurrence, occurrence]) - 60.).abs() < 1e-6);
+    }
+    let body = target.session.model.state().bodies.iter().find(|b| b.component == component).unwrap().clone();
+    assert_eq!(target.session.doc.body_material(&body.name), "Aluminum");
+    assert!((assembly_marker(&target, &[parent_occurrence, second_occurrence], Vec3::ZERO) - Vec3::new(50., 20., 0.)).len() < 1e-9);
+    target.execute("edit.undo", json!({})).unwrap();
+    assert!((assembly_volume(&target, &[parent_occurrence, first_occurrence]) - 24.).abs() < 1e-6);
+    target.execute("edit.redo", json!({})).unwrap();
+    target.execute("file.save", json!({})).unwrap();
+    let mut reopened = SessionAdapter::new();
+    reopened.execute("doc.open", json!({"path":destination})).unwrap();
+    assert_eq!(reopened.session.doc.links.len(), 1);
+    assert!((assembly_volume(&reopened, &[parent_occurrence, second_occurrence]) - 60.).abs() < 1e-6);
+
+    let renamed = directory.join("Renamed source.sc");
+    std::fs::rename(&path, &renamed).unwrap();
+    let before = reopened.session.doc.clone();
+    let history = reopened.session.undo.len();
+    assert!(reopened.execute("component.update_links", json!({"component":component})).is_err());
+    assert_eq!(*reopened.session.doc, *before, "unavailable source retains its last evaluated reference");
+    assert_eq!(reopened.session.undo.len(), history);
+    reopened.execute("component.relink", json!({"component":component,"path":renamed})).unwrap();
+    assert_eq!(reopened.session.doc.occurrences, occurrences);
+    assert!((assembly_volume(&reopened, &[parent_occurrence, second_occurrence]) - 60.).abs() < 1e-6);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn projects_insert_native_snapshots_into_root_and_active_components_without_source_dependencies() {
     let directory = std::env::temp_dir().join(format!("solidcraft-project-insertion-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
