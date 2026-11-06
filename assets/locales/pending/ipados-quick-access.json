@@ -1,0 +1,82 @@
+{
+  "en": {
+    "ui.ipados.quick_access.add": "Add to quick access",
+    "ui.ipados.quick_access.enabled": "Customizable toolbars",
+    "ui.ipados.quick_access.help": "Hold an icon, then drag to reorder or drop it on Remove from quick access.",
+    "ui.ipados.quick_access.more": "More tools",
+    "ui.ipados.quick_access.move_down": "Move down",
+    "ui.ipados.quick_access.move_up": "Move up",
+    "ui.ipados.quick_access.remove": "Remove from quick access",
+    "ui.ipados.quick_access.reset": "Reset quick access"
+  },
+  "ar": {
+    "ui.ipados.quick_access.add": "إضافة إلى الوصول السريع",
+    "ui.ipados.quick_access.enabled": "أشرطة أدوات قابلة للتخصيص",
+    "ui.ipados.quick_access.help": "اضغط مطولاً على أيقونة، ثم اسحبها لإعادة ترتيبها أو أفلتها على إزالة من الوصول السريع.",
+    "ui.ipados.quick_access.more": "المزيد من الأدوات",
+    "ui.ipados.quick_access.move_down": "نقل لأسفل",
+    "ui.ipados.quick_access.move_up": "نقل لأعلى",
+    "ui.ipados.quick_access.remove": "إزالة من الوصول السريع",
+    "ui.ipados.quick_access.reset": "إعادة تعيين الوصول السريع"
+  },
+  "he": {
+    "ui.ipados.quick_access.add": "הוספה לגישה מהירה",
+    "ui.ipados.quick_access.enabled": "סרגלי כלים להתאמה אישית",
+    "ui.ipados.quick_access.help": "לחצו לחיצה ממושכת על סמל וגררו כדי לשנות את הסדר או שחררו על הסרה מגישה מהירה.",
+    "ui.ipados.quick_access.more": "כלים נוספים",
+    "ui.ipados.quick_access.move_down": "הזזה למטה",
+    "ui.ipados.quick_access.move_up": "הזזה למעלה",
+    "ui.ipados.quick_access.remove": "הסרה מגישה מהירה",
+    "ui.ipados.quick_access.reset": "איפוס גישה מהירה"
+  },
+  "ja": {
+    "ui.ipados.quick_access.add": "クイックアクセスに追加",
+    "ui.ipados.quick_access.enabled": "ツールバーのカスタマイズ",
+    "ui.ipados.quick_access.help": "アイコンを長押ししてドラッグすると並べ替えられます。「クイックアクセスから削除」にドロップすると削除できます。",
+    "ui.ipados.quick_access.more": "その他のツール",
+    "ui.ipados.quick_access.move_down": "下へ移動",
+    "ui.ipados.quick_access.move_up": "上へ移動",
+    "ui.ipados.quick_access.remove": "クイックアクセスから削除",
+    "ui.ipados.quick_access.reset": "クイックアクセスをリセット"
+  },
+  "vi": {
+    "ui.ipados.quick_access.add": "Thêm vào truy cập nhanh",
+    "ui.ipados.quick_access.enabled": "Thanh công cụ có thể tùy chỉnh",
+    "ui.ipados.quick_access.help": "Nhấn giữ biểu tượng, rồi kéo để sắp xếp hoặc thả vào Xóa khỏi truy cập nhanh.",
+    "ui.ipados.quick_access.more": "Công cụ khác",
+    "ui.ipados.quick_access.move_down": "Di chuyển xuống",
+    "ui.ipados.quick_access.move_up": "Di chuyển lên",
+    "ui.ipados.quick_access.remove": "Xóa khỏi truy cập nhanh",
+    "ui.ipados.quick_access.reset": "Đặt lại truy cập nhanh"
+  },
+  "zh": {
+    "ui.ipados.quick_access.add": "添加到快速访问",
+    "ui.ipados.quick_access.enabled": "自定义工具栏",
+    "ui.ipados.quick_access.help": "按住图标后拖动以调整顺序，或拖放到“从快速访问中移除”。",
+    "ui.ipados.quick_access.more": "更多工具",
+    "ui.ipados.quick_access.move_down": "下移",
+    "ui.ipados.quick_access.move_up": "上移",
+    "ui.ipados.quick_access.remove": "从快速访问中移除",
+    "ui.ipados.quick_access.reset": "重置快速访问"
+  },
+  "de": {
+    "ui.ipados.quick_access.add": "Zum Schnellzugriff hinzufügen",
+    "ui.ipados.quick_access.enabled": "Anpassbare Symbolleisten",
+    "ui.ipados.quick_access.help": "Ein Symbol gedrückt halten und zum Sortieren ziehen oder auf „Aus Schnellzugriff entfernen“ ablegen.",
+    "ui.ipados.quick_access.more": "Weitere Werkzeuge",
+    "ui.ipados.quick_access.move_down": "Nach unten",
+    "ui.ipados.quick_access.move_up": "Nach oben",
+    "ui.ipados.quick_access.remove": "Aus Schnellzugriff entfernen",
+    "ui.ipados.quick_access.reset": "Schnellzugriff zurücksetzen"
+  },
+  "ko": {
+    "ui.ipados.quick_access.add": "빠른 접근에 추가",
+    "ui.ipados.quick_access.enabled": "도구 모음 사용자화",
+    "ui.ipados.quick_access.help": "아이콘을 길게 누른 뒤 드래그하여 순서를 바꾸거나 빠른 접근에서 제거에 놓으세요.",
+    "ui.ipados.quick_access.more": "더 많은 도구",
+    "ui.ipados.quick_access.move_down": "아래로 이동",
+    "ui.ipados.quick_access.move_up": "위로 이동",
+    "ui.ipados.quick_access.remove": "빠른 접근에서 제거",
+    "ui.ipados.quick_access.reset": "빠른 접근 초기화"
+  }
+}

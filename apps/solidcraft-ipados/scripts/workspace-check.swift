@@ -8,6 +8,35 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        let quickDefaults = ["select", "line", "circle", "modify"]
+        var quick = QuickAccessLayout(defaults: quickDefaults)
+        try require(quick.order == quickDefaults, "quick access changed the initial tools")
+        quick.remove("line")
+        try require(quick.overflow(from: ["line", "circle", "extend", "line"]) == ["line", "extend"],
+                    "quick access and overflow contain duplicate tools or lose a removed tool")
+        quick.add("extend"); quick.add("extend")
+        quick.move("extend", beside: "select", after: false)
+        try require(quick.order == ["extend", "select", "circle", "modify"], "quick access cannot add/reorder a deeper tool")
+        quick.move("select", beside: "modify", after: true)
+        try require(quick.order == ["extend", "circle", "modify", "select"], "dragging down loses hidden mode tools")
+        let unchangedQuick = quick
+        quick.move("missing", beside: "select", after: false)
+        quick.move("select", beside: "missing", after: false)
+        quick.move("select", beside: "select", after: true)
+        try require(quick == unchangedQuick, "invalid drag changed quick access")
+        let restoredQuick = QuickAccessLayout(defaults: quickDefaults, saved: quick.saved)
+        try require(restoredQuick == quick && !restoredQuick.contains("line"), "relaunch lost order or restored a removed tool")
+        let upgradedQuick = QuickAccessLayout(defaults: quickDefaults + ["fillet"], saved: quick.saved)
+        try require(upgradedQuick.order == quick.order + ["fillet"] && !upgradedQuick.contains("line"),
+                    "new default tool erased a customization")
+        for id in quick.order { quick.remove(id) }
+        try require(QuickAccessLayout(defaults: quickDefaults, saved: quick.saved).order.isEmpty,
+                    "removing every quick tool did not persist")
+        try require(QuickAccessLayout(defaults: quickDefaults, saved: Data("bad".utf8)).order == quickDefaults,
+                    "malformed quick-access preferences did not recover defaults")
+        let duplicateQuick = Data(#"{"order":["select","select","","circle"],"knownDefaults":["select","line","circle","modify"]}"#.utf8)
+        try require(QuickAccessLayout(defaults: quickDefaults, saved: duplicateQuick).order == ["select", "circle"],
+                    "saved quick access accepted empty or duplicate identities")
         try require(HistoryFeatureEmphasis.enabled(nil) && HistoryFeatureEmphasis.enabled(true) && !HistoryFeatureEmphasis.enabled(false),
                     "history selection preference lost its default or saved value")
         try require(HistoryFeatureEmphasis.resolve(selected: true, editing: false, enabled: true) == .selection &&

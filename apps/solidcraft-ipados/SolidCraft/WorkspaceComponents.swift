@@ -2705,22 +2705,31 @@ final class WorkspaceViewPopover: UIViewController {
         if view.window != nil { UIAccessibility.post(notification: .layoutChanged, argument: visible ? individuals : main) }
     }
     func render(_ state: ViewControlsPresentation?, cameraEnabled: Bool, referencesEnabled: Bool,
-                inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool, axisLabels: Bool) {
+                inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool, axisLabels: Bool,
+                quickCommands: Set<String> = [], quickPerspective: Bool = false) {
         loadViewIfNeeded(); current = state
         fit.render(selected: false, enabled: cameraEnabled)
-        var arranged: [UIView] = [fit]
+        var arranged: [UIView] = quickCommands.contains("view.fit") ? [] : [fit]
         if !inSketch { arranged.append(views) }
         if !inSketch && state?.planar == true { arranged.append(exitPlanar) }
         arranged.append(separator)
-        if !inSketch { arranged.append(perspective) }
+        if !inSketch && !quickPerspective { arranged.append(perspective) }
         arranged += [grid, integratedAxes, origin, individualButton]
         if main.arrangedSubviews.count != arranged.count || !zip(main.arrangedSubviews, arranged).allSatisfy({ $0 === $1 }) {
             for child in main.arrangedSubviews { main.removeArrangedSubview(child); child.removeFromSuperview() }
             arranged.forEach(main.addArrangedSubview)
-            main.setCustomSpacing(12, after: fit); main.setCustomSpacing(8, after: separator)
+            if arranged.contains(fit) { main.setCustomSpacing(12, after: fit) }
+            main.setCustomSpacing(8, after: separator)
         }
         exitPlanar.render(selected: false, enabled: cameraEnabled)
-        for (name, button) in viewButtons { button.render(selected: state?.camera.standardView == name, enabled: cameraEnabled && state?.planar != true) }
+        for (name, button) in viewButtons {
+            button.isHidden = quickCommands.contains("view." + name)
+            button.render(selected: state?.camera.standardView == name, enabled: cameraEnabled && state?.planar != true)
+        }
+        for row in views.arrangedSubviews.compactMap({ $0 as? UIStackView }) {
+            row.isHidden = row.arrangedSubviews.allSatisfy(\.isHidden)
+        }
+        views.isHidden = viewButtons.values.allSatisfy(\.isHidden)
         perspective.render(on: (state?.camera.fov ?? 0) > 0, enabled: cameraEnabled)
         grid.render(on: state?.grid.visible == true, enabled: referencesEnabled)
         integratedAxes.render(on: state?.grid.integrated_axes == true, enabled: referencesEnabled)

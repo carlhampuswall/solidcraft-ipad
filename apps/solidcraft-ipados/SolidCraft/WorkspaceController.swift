@@ -20,6 +20,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let rail = UIStackView()
     private let navigationScroll = UIScrollView()
     private let navigationActions = UIStackView()
+    private var railQuickAccess: QuickAccessBar?
+    private var navigationQuickAccess: QuickAccessBar?
+    private var additionalQuickTools: [String: WorkspaceButton] = [:]
+    private var additionalNavigationTools: [String: WorkspaceButton] = [:]
+    private var customizeToolbars = UserDefaults.standard.object(forKey: "SolidCraft.workspace.quickAccess.enabled") as? Bool ?? true
+    private lazy var navigationMoreButton = WorkspaceButton(QuickAccessText.text("more"), action: {})
     private let historyActions = UIStackView()
     private let featureHistory = FeatureHistoryBar()
     private var historyExpanded = false
@@ -590,6 +596,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkReferenceDimensionsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-toolbar-check") {
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--quick-access-check") {
+                    self.developmentCheckStarted = true; self.checkQuickAccessOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-fillet-check") {
                     self.developmentCheckStarted = true; self.checkSketchFilletOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-projection-check") {
@@ -685,6 +693,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func configureChrome() {
+        railQuickAccess?.cancelDrag(); navigationQuickAccess?.cancelDrag()
         resetChromeOffsets = true
         for stack in [topActions, rail, navigationActions, historyActions] {
             stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -775,6 +784,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         constructionButton.accessibilityIdentifier = "workspace-construction"
         finishSketchButton.accessibilityIdentifier = "workspace-finish-sketch"
         cancelToolButton.accessibilityIdentifier = "workspace-cancel-tool"
+        configureQuickAccess()
         if state != nil { updateAvailability(); updateStatus() }
         view.setNeedsLayout()
     }
@@ -1716,10 +1726,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         // Only View uses this panel. The native tool/browser menus are untouched.
         viewButton.menu = nil; viewButton.showsMenuAsPrimaryAction = false
         homeButton.availability(enabled: !viewCameraLocked && (!homeToolbar || (state?.sketch == nil && viewPresentation?.planar != true)))
+        updateAdditionalQuickTools()
+        navigationMoreButton.menu = navigationQuickAccess?.overflowMenu()
+        navigationMoreButton.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
             automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes,
-            axisLabels: axisLabelsVisible)
+            axisLabels: axisLabelsVisible,
+            quickCommands: Set(additionalNavigationTools.keys.filter { navigationQuickAccess?.contains($0) == true })
+                .union(!homeToolbar && navigationQuickAccess?.contains("navigation.home") == true ? ["view.fit"] : []),
+            quickPerspective: navigationQuickAccess?.contains("navigation.projection") == true)
     }
 
     private func originCell(_ cell: UITableViewCell, row: Int) -> UITableViewCell {
@@ -2740,8 +2756,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             chooser.addAction(UIAlertAction(title: SketchText.text("selected_face"), style: .default) { [weak self] _ in self?.previewSketchPlane(plane, label: SketchText.text("selected_face")) })
         }
         chooser.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
-        chooser.popoverPresentationController?.sourceView = createSketchButton
-        chooser.popoverPresentationController?.sourceRect = createSketchButton.bounds
+        let source = createSketchButton.window == nil ? moreButton : createSketchButton
+        chooser.popoverPresentationController?.sourceView = source
+        chooser.popoverPresentationController?.sourceRect = source.bounds
         present(chooser, animated: true)
     }
 
@@ -3493,6 +3510,93 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         UIAccessibility.post(notification: .layoutChanged, argument: browserOpen ? browserPanel : (inspectorOpen ? inspectorPanel : browserButton))
     }
 
+    private func configureQuickAccess() {
+        let railItems: [(String, WorkspaceButton)] = [
+            ("select", selectButton), ("sketch.create", createSketchButton)
+        ] + sketchQuickTools + [
+            ("sketch.finish_chain", finishChainButton), ("modelling", modellingButton),
+            ("modify", modifyButton), ("pattern", patternButton), ("assembly", assemblyButton),
+            ("post_radius", radiusButton), ("tool.cancel", cancelToolButton)
+        ]
+        let navigationItems: [(String, WorkspaceButton)] = [
+            ("navigation.home", homeButton), ("navigation.projection", projectionButton),
+            ("navigation.inspector", inspectorButton), ("navigation.constraints", constraintsButton),
+            ("navigation.dimensions", dimensionsButton), ("navigation.construction", constructionButton)
+        ]
+        if railQuickAccess == nil {
+            railQuickAccess = QuickAccessBar(stack: rail, scroll: railScroll, container: workspace,
+                preferenceKey: "SolidCraft.workspace.quickAccess.tools", defaults: railItems.map(\.0))
+            navigationQuickAccess = QuickAccessBar(stack: navigationActions, scroll: navigationScroll, container: workspace,
+                preferenceKey: "SolidCraft.workspace.quickAccess.navigation", defaults: navigationItems.map(\.0))
+            for bar in [railQuickAccess, navigationQuickAccess].compactMap({ $0 }) {
+                bar.onBegin = { [weak self] in self?.canvas.cancelInput(); self?.view.endEditing(true) }
+                bar.onChange = { [weak self] in self?.rebuildMenus() }
+                bar.onLayout = { [weak self] in self?.view.setNeedsLayout(); self?.view.layoutIfNeeded() }
+            }
+        }
+        for (id, button) in railItems { railQuickAccess?.register(id, button: button) }
+        for (id, button) in navigationItems { navigationQuickAccess?.register(id, button: button) }
+        for bar in [railQuickAccess, navigationQuickAccess].compactMap({ $0 }) { bar.customizationEnabled = customizeToolbars }
+        navigationMoreButton.systemArtwork("ellipsis", compact: true)
+        navigationMoreButton.accessibilityIdentifier = "workspace-navigation-more"
+        navigationMoreButton.showsMenuAsPrimaryAction = true
+        navigationMoreButton.isHidden = !customizeToolbars
+        railQuickAccess?.arrange(fixed: [sketchToolsButton, moreButton])
+        navigationQuickAccess?.arrange(fixed: [navigationMoreButton])
+    }
+
+    private func registerAdditionalQuickTools() {
+        for (name, icon) in [("fit", "fit"), ("front", "view_front"), ("back", "view_back"),
+                             ("left", "view_left"), ("right", "view_right"), ("top", "view_top"),
+                             ("bottom", "view_bottom"), ("isometric", "view_isometric")] {
+            let id = "view." + name
+            guard additionalNavigationTools[id] == nil else { continue }
+            let title = name == "fit" ? WorkspaceStyle.text("fit") : NativeText.value("ui.ipados." + name)
+            let button = WorkspaceButton(title) { [weak self] in self?.runViewCommand(id) }
+            button.artwork(icon, compact: true); button.accessibilityIdentifier = "workspace-quick-" + id
+            additionalNavigationTools[id] = button; navigationQuickAccess?.register(id, button: button)
+        }
+        for (id, label) in [("sketch.move", "move"), ("sketch.extend", "extend"), ("sketch.project", "project")] where additionalQuickTools[id] == nil {
+            let title = id == "sketch.project" ? ProjectionText.text("title") : SketchText.text(label)
+            let button = WorkspaceButton(title) { [weak self] in
+                if id == "sketch.project" { self?.showSketchProjection() } else { self?.setTool(id) }
+            }
+            button.commandArtwork(id, compact: true); button.accessibilityIdentifier = "workspace-tool-" + id
+            additionalQuickTools[id] = button; railQuickAccess?.register(id, button: button)
+        }
+        for tool in (state?.modelling?.tools ?? []) + (state?.assembly?.tools ?? []) where additionalQuickTools[tool.id] == nil {
+            let button = WorkspaceButton(ModellingText.label(tool.label)) { [weak self] in self?.beginModelling(operation: tool.id) }
+            button.commandArtwork(tool.id, compact: true); button.accessibilityIdentifier = "workspace-tool-" + tool.id
+            additionalQuickTools[tool.id] = button; railQuickAccess?.register(tool.id, button: button)
+        }
+        updateAdditionalQuickTools()
+    }
+
+    private func updateAdditionalQuickTools() {
+        let editing = numericEditing || modellingEditing || sketchInput?.projection != nil
+        let locked = editing || !pending.isEmpty
+        let modelIDs = Set(((state?.modelling?.tools ?? []) + (state?.assembly?.tools ?? [])).map(\.id))
+        for (id, button) in additionalNavigationTools {
+            button.isHidden = id != "view.fit" && state?.sketch != nil ||
+                id == "view.fit" && !homeToolbar && navigationQuickAccess?.contains("navigation.home") == true
+            button.availability(enabled: !viewCameraLocked && (id == "view.fit" || viewPresentation?.planar != true))
+        }
+        for (id, button) in additionalQuickTools {
+            if id.hasPrefix("sketch.") {
+                button.isHidden = state?.sketch == nil || editing
+                let tool = state?.tools.first { $0.id == id }
+                let project = id == "sketch.project" && state?.sketch?.projection_sources?.isEmpty == false
+                button.availability(enabled: !locked && (project || tool?.enabled == true), reason: tool?.reason.map(NativeText.value))
+                button.active(state?.active_tool == id)
+            } else {
+                button.isHidden = state?.sketch != nil || editing || !modelIDs.contains(id)
+                button.availability(enabled: !locked && modelIDs.contains(id))
+            }
+        }
+        railQuickAccess?.arrange(fixed: [sketchToolsButton, moreButton])
+        navigationQuickAccess?.arrange(fixed: [navigationMoreButton])
+    }
+
     private func updateAvailability() {
         rebuildViewMenu()
         updateModelValueChoices()
@@ -3594,15 +3698,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             constructionButton.accessibilityHint = SketchText.text("construction_mode_help")
         }
         layoutModelValue()
+        updateAdditionalQuickTools()
     }
 
     private func rebuildMenus() {
+        registerAdditionalQuickTools()
         let constructionCurves = state?.selection.filter { $0.type == "sketch_curve" }.compactMap { $0.id?.readout } ?? []
         constructionButton.menu = UIMenu(children: [UIAction(title: SketchText.text("construction_selected"),
             attributes: constructionCurves.isEmpty ? .disabled : []) { [weak self] _ in
             self?.run("sketch.construction", params: ["curves": constructionCurves])
         }])
-        assemblyButton.menu = UIMenu(children: (state?.assembly?.tools ?? []).map { tool in
+        assemblyButton.menu = UIMenu(children: (state?.assembly?.tools ?? []).filter { railQuickAccess?.contains($0.id) != true }.map { tool in
             UIAction(title: ModellingText.label(tool.label), image: WorkspaceIcon.command(tool.id, traits: traitCollection)) { [weak self] _ in self?.beginModelling(operation: tool.id) }
         })
         if let assembly = state?.assembly {
@@ -3612,11 +3718,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             assemblyButton.menu = UIMenu(children: [UIMenu(options: .displayInline, children: assemblyButton.menu?.children ?? []), UIMenu(options: .displayInline, children: contextual)])
         }
         assemblyButton.showsMenuAsPrimaryAction = true
+        if let add = railQuickAccess?.addMenu(ids: (state?.assembly?.tools ?? []).map(\.id)) {
+            assemblyButton.menu = UIMenu(children: (assemblyButton.menu?.children ?? []) + [add])
+        }
         let tools = state?.modelling?.tools ?? []
         func modelActions(_ included: (String) -> Bool) -> [UIMenuElement] {
-            tools.filter { included($0.id) }.map { tool in
+            let matching = tools.filter { included($0.id) }
+            var actions: [UIMenuElement] = matching.filter { railQuickAccess?.contains($0.id) != true }.map { tool in
                 UIAction(title: ModellingText.label(tool.label), image: WorkspaceIcon.command(tool.id, traits: traitCollection)) { [weak self] _ in self?.beginModelling(operation: tool.id) }
             }
+            if let add = railQuickAccess?.addMenu(ids: matching.map(\.id)) { actions.append(add) }
+            return actions
         }
         // New native-supported operations remain reachable in this overflow
         // group and inherit their registry icon without another native mapping.
@@ -3962,20 +4074,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.updateCanvasAppearance(); self.rebuildMenus()
             })
         }
-        moreButton.menu = UIMenu(children: moreActions)
-        moreButton.showsMenuAsPrimaryAction = true
         let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
                      ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
                      ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
         var sketchActions: [UIMenuElement] = sketchTools.compactMap { id, label in
-            guard state?.tools.contains(where: { $0.id == id && $0.enabled }) == true else { return nil }
-            return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
+            guard railQuickAccess?.contains(id) != true else { return nil }
+            guard let tool = state?.tools.first(where: { $0.id == id }), customizeToolbars || tool.enabled else { return nil }
+            return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection),
+                            attributes: tool.enabled ? [] : .disabled, state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
         }
         if let sketch = state?.sketch {
-            sketchActions.append(UIAction(title: ProjectionText.text("title"), image: WorkspaceIcon.command("sketch.project", traits: traitCollection),
-                                          attributes: numericEditing || modellingEditing || sketch.projection_sources?.isEmpty != false ? .disabled : []) { [weak self] _ in
-                self?.showSketchProjection()
-            })
+            if railQuickAccess?.contains("sketch.project") != true {
+                sketchActions.append(UIAction(title: ProjectionText.text("title"), image: WorkspaceIcon.command("sketch.project", traits: traitCollection),
+                                              attributes: numericEditing || modellingEditing || sketch.projection_sources?.isEmpty != false ? .disabled : []) { [weak self] _ in
+                    self?.showSketchProjection()
+                })
+            }
             let links = sketch.projection_links ?? []
             if !links.isEmpty {
                 sketchActions.append(UIMenu(title: ProjectionText.text("break_link"), children: links.map { link in
@@ -3985,10 +4099,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }))
             }
         }
+        if let add = railQuickAccess?.addMenu(ids: sketchTools.map(\.0) + ["sketch.project"]) { sketchActions.append(add) }
         sketchToolsButton.menu = UIMenu(children: sketchActions)
         sketchToolsButton.showsMenuAsPrimaryAction = true
         sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true && state?.active_tool.hasPrefix("sketch.constraint.") != true)
         constraintsButton.active(state?.active_tool.hasPrefix("sketch.constraint.") == true)
+        moreActions.append(UIAction(title: QuickAccessText.text("enabled"), subtitle: QuickAccessText.text("help"), state: customizeToolbars ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.railQuickAccess?.cancelDrag(); self.navigationQuickAccess?.cancelDrag()
+            self.customizeToolbars.toggle()
+            UserDefaults.standard.set(self.customizeToolbars, forKey: "SolidCraft.workspace.quickAccess.enabled")
+            self.configureChrome(); self.rebuildMenus()
+        })
+        moreButton.menu = UIMenu(children: (customizeToolbars ? [railQuickAccess?.overflowMenu()].compactMap { $0 } : []) + moreActions)
+        moreButton.showsMenuAsPrimaryAction = true
+        navigationMoreButton.menu = navigationQuickAccess?.overflowMenu()
+        navigationMoreButton.availability(enabled: moreButton.isEnabled)
     }
 
     private func showDimensions() {
@@ -4004,10 +4130,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                   self.state?.geometry_revision == context.geometry_revision,
                   self.state?.sketch?.id == sketch.id, self.state?.selection == context.selection,
                   self.state?.sketch?.eligible_dimensions?.contains(type) == true else { return }
-            self.beginNumeric(dimension: type, source: self.dimensionsButton)
+            self.beginNumeric(dimension: type, source: self.dimensionsButton.window == nil ? self.navigationMoreButton : self.dimensionsButton)
         }
         if let popover = picker.popoverPresentationController {
-            popover.sourceView = dimensionsButton; popover.sourceRect = dimensionsButton.bounds
+            let source = dimensionsButton.window == nil ? navigationMoreButton : dimensionsButton
+            popover.sourceView = source; popover.sourceRect = source.bounds
             popover.permittedArrowDirections = [.up, .down]; popover.delegate = self
         }
         present(picker, animated: true)
@@ -4037,7 +4164,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         picker.onChoose = { key in actions[key]?() }
         if let popover = picker.popoverPresentationController {
-            popover.sourceView = constraintsButton; popover.sourceRect = constraintsButton.bounds
+            let source = constraintsButton.window == nil ? navigationMoreButton : constraintsButton
+            popover.sourceView = source; popover.sourceRect = source.bounds
             popover.permittedArrowDirections = [.up, .down]; popover.delegate = self
         }
         present(picker, animated: true)
@@ -4303,6 +4431,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     func activate() { loadViewIfNeeded(); active = true; session.activate(); updateSurface() }
     func suspend() {
         guard active else { return }
+        railQuickAccess?.cancelDrag(); navigationQuickAccess?.cancelDrag()
         viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
         historyActivation = nil
         featureHistory.cancelScrub()
@@ -5322,6 +5451,30 @@ private extension FoundationController {
             }
         }
         prepare(0)
+    }
+
+    func checkQuickAccessOnDevice() {
+        guard let railQuickAccess, let navigationQuickAccess,
+              let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        var issues: [String] = []
+        func capture(_ name: String) {
+            let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+            do {
+                try image.pngData()?.write(to: directory.appendingPathComponent("quick-access-" + name + ".png"), options: .atomic)
+            } catch { issues.append("Capture: \(error)") }
+        }
+        railQuickAccess.developmentCheck(capture: { capture("tools-" + $0) }) { left in
+            issues += left.map { "Tools: " + $0 }
+            navigationQuickAccess.developmentCheck(capture: { capture("navigation-" + $0) }) { right in
+                issues += right.map { "Navigation: " + $0 }
+                do {
+                    try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                        "coverage": "Synthetic production drag path on physical iPad; no physical contacts"])
+                        .write(to: directory.appendingPathComponent("quick-access-check.json"), options: .atomic)
+                } catch { print("Quick access report failed: \(error)") }
+                print("Quick access check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+            }
+        }
     }
 
     func checkSketchToolbarOnDevice() {
