@@ -952,6 +952,13 @@ final class WorkspacePanel: UIView {
         action.widthAnchor.constraint(equalToConstant: 44).isActive = true
     }
     func setTitle(_ title: String) { heading.text = title }
+    func fittingHeight(contentHeight: CGFloat, width: CGFloat) -> CGFloat {
+        let headerHeight = max(54, ceil(heading.font.lineHeight) + 20)
+        let footerHeight = footer.isHidden ? 0 : footer.systemLayoutSizeFitting(
+            CGSize(width: width, height: 0), withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel).height
+        return headerHeight + contentHeight + footerHeight
+    }
     func setFooter(_ view: UIView?) {
         footer.arrangedSubviews.forEach { footer.removeArrangedSubview($0); $0.removeFromSuperview() }
         if let view { footer.addArrangedSubview(view) }
@@ -1038,7 +1045,8 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
     var panelKeypadVisible: Bool { !readOnly && panelInput && !padArea.isHidden }
 
     init(expression: String, units: String, showsActions: Bool = true, numericKeyboard: Bool = false,
-         label: String? = nil, compact: Bool = false, primary: Bool = false, context: String? = nil, readOnly: Bool = false) {
+         label: String? = nil, compact: Bool = false, primary: Bool = false, context: String? = nil, readOnly: Bool = false,
+         inlineLabel: Bool = false) {
         self.readOnly = readOnly
         actionFooter = NumericEditorActions()
         self.showsActions = showsActions
@@ -1064,7 +1072,7 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
                 let subtitle = WorkspaceStyle.label(.subheadline, secondary: true)
                 subtitle.text = context; addArrangedSubview(subtitle)
             }
-        } else { addArrangedSubview(heading) }
+        } else if !inlineLabel { addArrangedSubview(heading) }
         if !numericKeyboard && !compact && !units.isEmpty {
             let unitLabel = WorkspaceStyle.label(.caption1, secondary: true)
             unitLabel.text = WorkspaceStyle.text("expression") + " · " + units
@@ -1107,7 +1115,14 @@ final class NumericExpressionEditor: UIStackView, UITextFieldDelegate {
             self.onChange?()
         }, for: .editingChanged)
         if !numericKeyboard { field.inputAccessoryView = makeAccessory() }
-        addArrangedSubview(field)
+        if inlineLabel {
+            heading.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            field.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            let minimumWidth = field.widthAnchor.constraint(greaterThanOrEqualToConstant: 100)
+            minimumWidth.priority = .defaultHigh; minimumWidth.isActive = true
+            let row = UIStackView(arrangedSubviews: [heading, field]); row.alignment = .center; row.spacing = 8
+            addArrangedSubview(row)
+        } else { addArrangedSubview(field) }
         if numericKeyboard && !readOnly { buildPanelKeypad(units: units) }
         if !compact && !readOnly {
             let help = InspectorDisclosure(title: NumericText.text("help"), framed: numericKeyboard, onToggle: { [weak self] _ in self?.onLayoutChange?() })
@@ -1716,6 +1731,8 @@ final class ModellingInspector: UIStackView {
     let footer = UIStackView()
     let title: String
     let compact: Bool
+    let minimal: Bool
+    private let operation: String?
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
     private(set) var selectionField: String?
@@ -1766,6 +1783,7 @@ final class ModellingInspector: UIStackView {
     var onChange: (() -> Void)?
     var onSelect: ((String?) -> Void)?
     var onEditValue: ((ModellingState.Field, String, UIView) -> Void)?
+    var onPreferredSizeChange: (() -> Void)?
     var focusedField: UITextField? { editors.first(where: { $0.field.isFirstResponder })?.field ?? textFields.first(where: { $0.isFirstResponder }) }
     var textEntryActive: Bool { focusedField != nil }
     var handleEntryEnabled: Bool { !busy && !contextRefreshing && !committing }
@@ -1789,8 +1807,10 @@ final class ModellingInspector: UIStackView {
         if !textEntryActive { rebuildFields() }
     }
 
-    init(state: ModellingState, compact: Bool = true) {
+    init(state: ModellingState, compact: Bool = true, minimal: Bool = false) {
         self.compact = compact
+        self.minimal = compact && minimal
+        operation = state.operation
         if state.operation == "sketch.redefine" {
             let name = state.workspace.modelling?.timeline.first(where: { $0.id == state.feature })?.name
             title = NativeText.value("ui.ipados.attachment.repair") + (name.map { ": " + $0 } ?? "")
@@ -1825,7 +1845,7 @@ final class ModellingInspector: UIStackView {
         additionalFields.axis = .vertical; additionalFields.spacing = 6
         addArrangedSubview(fieldsStack)
         if compact {
-            if state.operation != "sketch.redefine" {
+            if !self.minimal && state.operation != "sketch.redefine" {
                 let help = InspectorDisclosure(title: InspectorText.text("expression_help"))
                 let syntax = WorkspaceStyle.label(.footnote, secondary: true)
                 syntax.text = WorkspaceStyle.text("decimal_help") + "\n" + ModellingText.text("draft_hint")
@@ -1835,7 +1855,7 @@ final class ModellingInspector: UIStackView {
             addArrangedSubview(feedback)
         } else if !isAttachmentRepair && !hasBodyPicks { addArrangedSubview(select) }
         footer.axis = .vertical; footer.spacing = 8
-        if compact {
+        if compact && !self.minimal {
             let divider = UIView(); divider.backgroundColor = WorkspaceStyle.separator
             divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
             footer.addArrangedSubview(divider)
@@ -1862,7 +1882,7 @@ final class ModellingInspector: UIStackView {
         rebuildFields(); updateAvailability()
     }
     required init(coder: NSCoder) {
-        title = ModellingText.text("tools"); compact = false
+        title = ModellingText.text("tools"); compact = false; minimal = false; operation = nil
         params = [:]; fields = []
         apply = WorkspaceButton(WorkspaceStyle.text("apply"), action: {})
         cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
@@ -1895,14 +1915,15 @@ final class ModellingInspector: UIStackView {
         let status = validated == nil ? entryHint : WorkspaceStyle.text("preview_ready")
         let details = (state.feedback ?? []).filter { $0 != "ui.ipados.attachment.hint" }.map(ModellingText.label)
         let warning = !details.isEmpty && state.workspace.modelling?.attentionFeatures.contains(where: { $0.diagnosticSeverity == .warning }) == true
-        message.show(compact ? status : ([status] + details).joined(separator: "\n"), warning: !compact && warning)
+        message.show(minimal ? nil : (compact ? status : ([status] + details).joined(separator: "\n")), warning: !compact && warning)
         feedback.show(compact ? details.joined(separator: "\n") : nil, warning: warning)
+        onPreferredSizeChange?()
     }
     func beginContextRefresh() {
         contextRefreshing = true; validated = nil; busy = false; inputWhileBusy = false
         editors.forEach { $0.setBusy(false) }
         updateAvailability()
-        message.show(NativeText.value("ui.ipados.updating"), busy: true)
+        message.show(minimal ? nil : NativeText.value("ui.ipados.updating"), busy: !minimal)
     }
     func contextRefreshed(_ state: ModellingState) {
         if let params = state.params { self.params = params }
@@ -1911,27 +1932,27 @@ final class ModellingInspector: UIStackView {
         contextRefreshing = false; busy = false; inputWhileBusy = false
         locallyEdited = false; validated = nil
         if !textEntryActive { rebuildFields() }
-        updateAvailability(); message.show(entryHint)
+        updateAvailability(); message.show(minimal ? nil : entryHint); onPreferredSizeChange?()
     }
     func contextRefreshDiscarded() {
         contextRefreshing = false; validated = nil; busy = false; inputWhileBusy = false
         editors.forEach { $0.setBusy(false) }
         updateAvailability()
-        message.show(entryHint)
+        message.show(minimal ? nil : entryHint); onPreferredSizeChange?()
     }
     func failed(_ error: BridgeError) {
         busy = false; committing = false; inputWhileBusy = false; contextRefreshing = false; validated = nil
         editors.forEach { $0.setBusy(false) }
-        updateAvailability(); message.show(error.message, error: true)
+        updateAvailability(); message.show(error.message, error: true); onPreferredSizeChange?()
     }
     func setBusy(committing: Bool, allowInput: Bool = false) {
         busy = true; self.committing = committing; inputWhileBusy = allowInput && !committing
         editors.forEach { $0.setBusy(!inputWhileBusy, committing: committing) }
-        updateAvailability(); message.show(NativeText.value("ui.ipados.updating"), busy: true)
+        updateAvailability(); message.show(minimal ? nil : NativeText.value("ui.ipados.updating"), busy: !minimal); onPreferredSizeChange?()
     }
     func invalidatePreview() {
         validated = nil; updateAvailability()
-        if !busy { message.show(entryHint) }
+        if !busy { message.show(minimal ? nil : entryHint); onPreferredSizeChange?() }
     }
     private func updateAvailability() {
         apply.availability(enabled: !busy && !contextRefreshing && attachmentReady && !ModellingFormPresentation.needsExtrusionDistance(params)
@@ -1956,6 +1977,7 @@ final class ModellingInspector: UIStackView {
         return String(result.dropFirst().dropLast())
     }
     private func rebuildFields() {
+        defer { onPreferredSizeChange?() }
         fieldsStack.arrangedSubviews.forEach { fieldsStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         editors.removeAll(); textFields.removeAll(); fieldViews.removeAll(); sliders.removeAll()
         additionalFields.arrangedSubviews.forEach { additionalFields.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -1968,12 +1990,17 @@ final class ModellingInspector: UIStackView {
         if directSurfaceControls {
             orderedFields = orderedFields.filter { $0.key != "body" && ModellingFormPresentation.visibleSurfaceField($0.key, params: params) }
             orderedFields = orderedFields.filter { $0.kind == "expression" } + orderedFields.filter { $0.kind != "expression" }
-            let hint = WorkspaceStyle.label(.footnote, secondary: true)
-            hint.text = NativeText.value("ui.ipados.handles.surface_hint")
-            fieldsStack.addArrangedSubview(hint)
+            if !minimal {
+                let hint = WorkspaceStyle.label(.footnote, secondary: true)
+                hint.text = NativeText.value("ui.ipados.handles.surface_hint")
+                fieldsStack.addArrangedSubview(hint)
+            }
         }
         for field in orderedFields {
-            let stack = compactExtrude && !InspectorPresentation.isPrimary(field) ? additionalFields : fieldsStack
+            let placement = minimal ? ModellingFormPresentation.placement(field, operation: operation, params: params) : .primary
+            if placement == .hidden { continue }
+            let secondary = minimal ? placement == .additional : compactExtrude && !InspectorPresentation.isPrimary(field)
+            let stack = secondary ? additionalFields : fieldsStack
             let surfaceChoice = directSurfaceControls && ["type", "chamfer_mode", "direction"].contains(field.key)
             if field.kind == "choice" && !surfaceChoice {
                 let group: ModellingFormGroup
@@ -2012,7 +2039,8 @@ final class ModellingInspector: UIStackView {
                 let expression = parameter(field.key).map(display) ?? ""
                 let editor = NumericExpressionEditor(expression: expression, units: field.units ?? "", showsActions: false,
                                                      label: compact ? ModellingText.label(field.label) : nil, compact: compact,
-                                                     primary: directSurfaceControls || compactExtrude && InspectorPresentation.isDistance(field.key))
+                                                     primary: !minimal && (directSurfaceControls || compactExtrude && InspectorPresentation.isDistance(field.key)),
+                                                     inlineLabel: minimal)
                 editor.field.accessibilityIdentifier = "workspace-model-field-" + field.key
                 editor.onChange = { [weak self, weak editor] in
                     guard let self, let editor else { return }
@@ -2060,7 +2088,7 @@ final class ModellingInspector: UIStackView {
         if !additionalFields.arrangedSubviews.isEmpty {
             let options = InspectorDisclosure(title: InspectorText.text("more_options"), expanded: optionsExpanded,
                                               identifier: "workspace-model-more-options") { [weak self] expanded in
-                self?.optionsExpanded = expanded
+                self?.optionsExpanded = expanded; self?.onPreferredSizeChange?()
             }
             options.content.addArrangedSubview(additionalFields)
             fieldsStack.addArrangedSubview(options)
@@ -2073,7 +2101,7 @@ final class ModellingInspector: UIStackView {
             preview.accessibilityIdentifier = "workspace-model-preview"
             preview.availability(enabled: !ModellingFormPresentation.needsCombineBodies(params))
             fieldsStack.addArrangedSubview(preview); fieldViews.append(preview)
-        } else if compact && !directSurfaceControls && !isAttachmentRepair && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
+        } else if compact && !minimal && !directSurfaceControls && !isAttachmentRepair && !fields.contains(where: { $0.key == "profile" && $0.kind == "reference" }) {
             fieldsStack.addArrangedSubview(select)
         }
         updateAvailability()

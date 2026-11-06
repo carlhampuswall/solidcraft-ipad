@@ -1047,11 +1047,38 @@ struct WorkspaceChecks {
         try require(model.params?["distance"] == .string("height / 2") && model.fields?[1].units == "mm", "expression or units were changed")
         let operationJSON = Data(#"{"key":"operation","label":"Operation","kind":"inline_choice","options":[{"label":"New Body","value":"new"},{"label":"Union","value":"join"},{"label":"Intersect","value":"intersect"},{"label":"Subtract","value":"cut"}]}"#.utf8)
         let operation = try JSONDecoder().decode(ModellingResponse<ModelWorkspace>.Field.self, from: operationJSON)
+        try require(ModellingFormPresentation.compactToolControls(nil) && !ModellingFormPresentation.compactToolControls(false), "compact tool controls lost their default or previous presentation preference")
+        for field in model.fields ?? [] {
+            let placement = ModellingFormPresentation.placement(field, operation: model.operation, params: model.params ?? [:])
+            let expected: ModellingFormPresentation.ControlPlacement = ["profile", "direction"].contains(field.key) ? .additional : .primary
+            try require(placement == expected, "compact Extrude hid a value or an unfilled source, or expanded a populated source")
+        }
+        try require(ModellingFormPresentation.placement(operation, operation: model.operation, params: model.params ?? [:]) == .primary, "compact Extrude hid its operation choices")
+        for (key, kind, command, params, expected) in [
+            ("targets", "references", "solid.extrude", ["operation": PresentationJSON.string("new_body")], ModellingFormPresentation.ControlPlacement.additional),
+            ("targets", "references", "solid.extrude", ["operation": .string("cut")], .primary),
+            ("features", "references", "solid.pattern.circular", ["source_mode": .string("bodies")], .additional),
+            ("bodies", "references", "solid.pattern.circular", ["source_mode": .string("features")], .additional),
+            ("name", "text", "component.rename", [:], .primary),
+            ("name", "text", "parameters.add", [:], .primary),
+            ("name", "text", "solid.box", [:], .additional)
+        ] {
+            let field = try JSONDecoder().decode(ModellingResponse<ModelWorkspace>.Field.self,
+                from: Data("{\"key\":\"\(key)\",\"kind\":\"\(kind)\",\"label\":\"Input\"}".utf8))
+            try require(ModellingFormPresentation.placement(field, operation: command, params: params) == expected, "compact controls hid a required input or showed an inactive source: " + command + "/" + key)
+        }
         for (reference, dimension) in [("edges", "radius"), ("edges", "distance"), ("faces", "thickness"), ("faces", "distance")] {
             let data = Data("[{\"key\":\"\(reference)\",\"label\":\"Source\",\"kind\":\"references\"},{\"key\":\"\(dimension)\",\"label\":\"Size\",\"kind\":\"expression\",\"units\":\"mm\"}]".utf8)
             let fields = try JSONDecoder().decode([ModellingResponse<ModelWorkspace>.Field].self, from: data)
             try require(ModellingFormPresentation.usesDirectSurfaceControls(fields, compact: true), "surface tool fell back to text selectors")
             try require(!ModellingFormPresentation.usesDirectSurfaceControls(fields, compact: false), "expanded inspector lost the previous reference lists")
+            let populated: [String: PresentationJSON] = [reference: .array([.string("opaque-source")])]
+            let compactSource = ModellingFormPresentation.placement(fields[0], operation: "sketch.fillet", params: populated)
+            try require(compactSource == (reference == "edges" ? .hidden : .additional), "populated surface inputs occupy the primary tool controls")
+            for empty: PresentationJSON in [.null, .array([]), .string("")] {
+                try require(ModellingFormPresentation.placement(fields[0], operation: "solid.fillet", params: [reference: empty]) == .primary, "an unfilled surface source was hidden")
+            }
+            try require(ModellingFormPresentation.placement(fields[1], operation: "sketch.fillet", params: populated) == .primary, "compact surface tool hid its editable value")
         }
         try require(!ModellingFormPresentation.usesDirectSurfaceControls(model.fields ?? [], compact: true), "unrelated tools acquired surface controls")
         for field in ["target", "tools"] {

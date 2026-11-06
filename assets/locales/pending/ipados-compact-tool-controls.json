@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.inspector.compact_tool_controls": "Kompakte Werkzeugsteuerung",
+    "ui.ipados.inspector.compact_tool_controls_help": "Werkzeugwerte und Anwenden/Abbrechen in einer kleinen Karte anzeigen. Weitere Optionen bleiben verfügbar. Deaktivieren, um die bisherige Eigenschaftenansicht zu verwenden."
+  },
+  "en": {
+    "ui.ipados.inspector.compact_tool_controls": "Compact tool controls",
+    "ui.ipados.inspector.compact_tool_controls_help": "Show tool values and Apply/Cancel in a small card. More options remain available. Turn off to use the previous Properties presentation."
+  },
+  "ja": {
+    "ui.ipados.inspector.compact_tool_controls": "コンパクトなツール操作",
+    "ui.ipados.inspector.compact_tool_controls_help": "ツールの値と適用・キャンセルを小さなカードに表示します。その他のオプションも利用できます。オフにすると従来のプロパティ表示を使用します。"
+  },
+  "ko": {
+    "ui.ipados.inspector.compact_tool_controls": "간결한 도구 컨트롤",
+    "ui.ipados.inspector.compact_tool_controls_help": "도구 값과 적용/취소를 작은 카드에 표시합니다. 추가 옵션도 사용할 수 있습니다. 끄면 기존 속성 표시를 사용합니다."
+  },
+  "zh": {
+    "ui.ipados.inspector.compact_tool_controls": "紧凑工具控件",
+    "ui.ipados.inspector.compact_tool_controls_help": "在小卡片中显示工具数值及应用/取消。更多选项仍然可用。关闭后使用原有的属性面板。"
+  }
+}

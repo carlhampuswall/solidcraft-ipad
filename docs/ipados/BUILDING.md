@@ -8,6 +8,26 @@ No simulator launch or device signing is part of the unsigned check. The
 consolidation request excludes the engine suite and complete `cargo xtask ci`;
 the full-gate examples below are for a later explicit full-test request.
 
+## Compact tool controls
+
+**Tools > Compact tool controls** is on by default. Fillet uses a small radius
+input with pinned Apply and Cancel actions; selecting edges and dragging the
+viewport handle remain available during the preview. Numeric edits preview
+automatically in the same input.
+
+The same presentation applies to modelling tools: primary values stay visible,
+unfilled sources remain available, and populated sources and secondary settings
+live under **More options** in the tool card. Extrude keeps its operation choices;
+Chamfer keeps its mode and active distances or angle. Sketch Move, Copy, Rotate
+and Offset use compact value rows and pinned actions too. Cards and manually
+opened Properties fit their content instead of reserving a fixed tall panel.
+Finishing a compact tool closes its card; selecting a browser item does not open
+Properties automatically. Properties remains available from its toolbar button.
+
+Turn **Compact tool controls** off to restore the previous panel sizing,
+source lists and automatic Properties presentation. **Compact operation
+inspector** still controls the older compact versus expanded form style.
+
 ## Sketch corner radius
 
 Selecting sketch edges keeps the Select tool active. With **Tools > Edge tools

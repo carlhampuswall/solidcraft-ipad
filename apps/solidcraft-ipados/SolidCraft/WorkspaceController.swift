@@ -231,6 +231,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let compactChrome = true
     private var homeToolbar = UserDefaults.standard.object(forKey: "SolidCraft.workspace.homeToolbar") as? Bool ?? true
     private var compactInspector = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactInspector") as? Bool ?? true
+    private var compactToolControls = ModellingFormPresentation.compactToolControls(UserDefaults.standard.object(forKey: ModellingFormPresentation.compactToolControlsKey) as? Bool)
     private var useTopSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useTopSafeArea") as? Bool ?? true
     private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
     private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
@@ -598,6 +599,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkQuickAccessOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-fillet-check") {
                     self.developmentCheckStarted = true; self.checkSketchFilletOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--compact-tool-controls-check") {
+                    self.developmentCheckStarted = true; self.checkCompactToolControlsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-projection-check") {
                     self.developmentCheckStarted = true; self.checkSketchProjectionOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-attachment-check") {
@@ -1143,11 +1146,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 guard case .success = result, (row.kind == "sketch" || row.kind == "feature" || row.assembly != nil),
                       let self, self.state?.document_id == document, self.rowByID[row.id] != nil, !self.multiple else { return }
                 if self.modellingEditing { return }
-                self.inspectorOpen = true; self.browserOpen = false
+                if !self.compactToolControls { self.inspectorOpen = true; self.browserOpen = false }
                 self.rebuildInspector(); self.relayoutPanels()
             }
         } else if row.assembly != nil {
-            inspectorOpen = true; browserOpen = false; rebuildInspector(); relayoutPanels(); table.reloadData()
+            if !compactToolControls { inspectorOpen = true; browserOpen = false }
+            rebuildInspector(); relayoutPanels(); table.reloadData()
         } else if parents.contains(row.id) { toggleGroup(row.id) }
     }
     private func browserEmptyControl() -> UIView {
@@ -2073,8 +2077,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.modellingToken = token
                 self.modellingFeature = model.feature; self.table.reloadData()
-                let form = ModellingInspector(state: model, compact: self.compactInspector)
+                let form = ModellingInspector(state: model, compact: self.compactInspector, minimal: self.compactToolControls)
                 self.modellingInspector = form
+                form.onPreferredSizeChange = { [weak self] in self?.view.setNeedsLayout() }
                 self.inspectorPanel.setTitle(form.compact ? form.title : WorkspaceStyle.text("inspector"))
                 self.inspectorPanel.setFooter(form.compact ? form.footer : nil)
                 self.inspectorScroll.setContentOffset(.zero, animated: false)
@@ -2087,14 +2092,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 form.onApply = { [weak self] params in self?.evaluateModelling(params, commit: true) }
                 form.onCancel = { [weak self] in self?.cancelModelling() }
                 form.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.revealField(); self?.updateAvailability() }
-                form.onEditValue = form.compact ? { [weak self] field, expression, source in
+                form.onEditValue = form.compact && !form.minimal ? { [weak self] field, expression, source in
                     self?.presentModelValue(parameter: field.key, expression: expression, units: field.units ?? "",
                         name: ModellingText.label(field.label), source: source)
                 } : nil
-                form.onChange = { [weak self] in
+                form.onChange = { [weak self, weak form] in
                     self?.failure = nil; self?.updateStatus(); self?.layoutModelValue()
                     self?.modellingAutomaticPreview.cancel()
                     self?.modellingPreviewQueue.discardPending()
+                    if form?.minimal == true { self?.scheduleModellingPreview() }
                 }
                 form.onSelect = { [weak self, weak form] field in
                     guard let self, let form else { return }
@@ -2124,7 +2130,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                     self.showFailure(error); return
                                 }
                                 if case .success(let model) = result { form?.contextRefreshed(model) }
-                                self.inspectorOpen = form?.hasBodyPicks == true || form?.compact == true && (field == "edges" || field == "faces")
+                                self.inspectorOpen = form?.minimal == true || form?.hasBodyPicks == true || form?.compact == true && (field == "edges" || field == "faces")
                                 self.browserOpen = false; self.relayoutPanels()
                             }
                         }
@@ -2363,6 +2369,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func clearModelling() {
+        if modellingInspector?.minimal == true { inspectorOpen = false; view.setNeedsLayout() }
         modellingAutomaticPreview.cancel()
         modellingSelectionSource = nil
         modellingGeneration &+= 1
@@ -3126,20 +3133,24 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         properties.arrangedSubviews.forEach { properties.removeArrangedSubview($0); $0.removeFromSuperview() }
         let title = WorkspaceStyle.label(.headline)
         title.text = SketchText.text(fillet != nil ? "fillet" : (offset ? "offset" : (rotate ? (copy ? "rotate_copy" : "rotate") : (copy ? "copy" : "translate"))))
-        properties.addArrangedSubview(title)
+        if compactToolControls { inspectorPanel.setTitle(title.text ?? "") }
+        else { properties.addArrangedSubview(title) }
         let fields = fillet != nil ? [("radius", "length", "mm", "")] : offset ? [("offset_distance", "length", "mm", "")] : rotate ? [("center_x", "length", "mm", "0 mm"), ("center_y", "length", "mm", "0 mm"), ("angle", "angle", "deg", "90 deg")] : [("delta_x", "length", "mm", "0 mm"), ("delta_y", "length", "mm", "0 mm")]
         transformEditors = fields.map { name, kind, units, expression in
-            if fillet == nil {
+            if fillet == nil && !compactToolControls {
                 let heading = WorkspaceStyle.label(.body); heading.text = SketchText.text(name); properties.addArrangedSubview(heading)
             }
             let field = NumericExpressionEditor(expression: expression, units: units, showsActions: false,
-                                                label: fillet != nil ? SketchText.text(name) : nil, compact: fillet != nil)
+                                                label: fillet != nil || compactToolControls ? SketchText.text(name) : nil,
+                                                compact: fillet != nil || compactToolControls, inlineLabel: compactToolControls)
             field.onFocus = { [weak self] in self?.updateAvailability(); DispatchQueue.main.async { [weak self] in self?.revealField() } }
             properties.addArrangedSubview(field)
             return (name, kind, field)
         }
         if offset {
-            let hint = WorkspaceStyle.label(.footnote, secondary: true); hint.text = SketchText.text("offset_exact_hint"); properties.addArrangedSubview(hint)
+            if !compactToolControls {
+                let hint = WorkspaceStyle.label(.footnote, secondary: true); hint.text = SketchText.text("offset_exact_hint"); properties.addArrangedSubview(hint)
+            }
             let chain = WorkspaceButton(SketchText.text("offset_chain"), action: {})
             chain.active(true)
             chain.addAction(UIAction { [weak self, weak chain] _ in
@@ -3157,9 +3168,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if offset || fillet != nil {
             properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("preview")) { [weak self] in self?.evaluateTransform(commit: false) })
         }
-        let message = WorkspaceMessage(); transformMessage = message; properties.addArrangedSubview(message)
-        properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true) { [weak self] in self?.evaluateTransform(commit: true) })
-        properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("cancel")) { [weak self] in self?.cancelTransform() })
+        let message = WorkspaceMessage(); transformMessage = message
+        let apply = WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true) { [weak self] in self?.evaluateTransform(commit: true) }
+        let cancel = WorkspaceButton(WorkspaceStyle.text("cancel")) { [weak self] in self?.cancelTransform() }
+        if compactToolControls {
+            let actions = UIStackView(arrangedSubviews: [cancel, apply]); actions.distribution = .fillEqually; actions.spacing = 8
+            let footer = UIStackView(arrangedSubviews: [message, actions]); footer.axis = .vertical; footer.spacing = 8
+            inspectorPanel.setFooter(footer)
+        } else {
+            properties.addArrangedSubview(message); properties.addArrangedSubview(apply); properties.addArrangedSubview(cancel)
+        }
         inspectorOpen = true; browserOpen = false; updateAvailability(); view.setNeedsLayout()
     }
 
@@ -3211,10 +3229,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func finishTransformEvaluation(error: BridgeError?) {
         transformBusy = false; transformEditors.forEach { $0.editor.field.isEnabled = true }
-        transformMessage?.show(error?.message ?? WorkspaceStyle.text("preview_ready"), error: error != nil)
+        transformMessage?.show(error?.message ?? (compactToolControls ? nil : WorkspaceStyle.text("preview_ready")), error: error != nil)
+        view.setNeedsLayout()
         if transformCommitPending { evaluateTransform(commit: true) }
     }
     private func clearTransform() {
+        if compactToolControls && transformDraft != nil { inspectorOpen = false; view.setNeedsLayout() }
         transformCommitPending = false
         transformGeneration &+= 1; transformDraft = nil; numericContext = nil; transformBusy = false
         transformEditors.forEach { $0.editor.field.resignFirstResponder() }; transformEditors.removeAll(); transformMessage = nil
@@ -3360,6 +3380,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func clearNumericEditor() {
+        if compactToolControls && editor != nil { inspectorOpen = false; view.setNeedsLayout() }
         referenceDimensionID = nil
         editor?.field.resignFirstResponder(); editor = nil
         let controller = inlineNumericEditor
@@ -4003,6 +4024,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.compactInspector, forKey: "SolidCraft.workspace.compactInspector")
             self.rebuildMenus()
         })
+        moreActions.append(UIAction(title: InspectorText.text("compact_tool_controls"), subtitle: InspectorText.text("compact_tool_controls_help"),
+                                    attributes: numericEditing || modellingEditing ? .disabled : [], state: compactToolControls ? .on : .off) { [weak self] _ in
+            guard let self, !self.numericEditing, !self.modellingEditing else { return }
+            self.compactToolControls.toggle()
+            UserDefaults.standard.set(self.compactToolControls, forKey: ModellingFormPresentation.compactToolControlsKey)
+            self.view.setNeedsLayout(); self.rebuildMenus()
+        })
         moreActions.append(UIAction(title: WorkspaceStyle.text("use_top_safe_area"),
                                     subtitle: WorkspaceStyle.text("use_top_safe_area_help"),
                                     state: useTopSafeArea ? .on : .off) { [weak self] _ in
@@ -4376,7 +4404,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let completionHeight = finishSketchButton.isHidden ? 0 : actionsHeight + 8
         let headingHeight = compactChrome ? compactHeadingHeight + completionHeight :
             (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
-        let inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
+        var inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
             (modellingEditing ? (modellingInspector?.compact == true ? 620 : min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84)) : 640))
         func resolve(railHeight: CGFloat, navHeight: CGFloat) -> WorkspaceLayout {
             WorkspaceLayout.resolve(size: chrome.size, browser: browserOpen, inspector: inspectorOpen,
@@ -4385,12 +4413,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                                compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railHeight,
                                                inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight, leftBrowser: leftBrowser,
                                                historyExpanded: historyExpanded,
-                                               inspectorPreferredWidth: modellingInspector?.compact == true ? 380 : 320,
+                                               inspectorPreferredWidth: modellingInspector?.compact == true && modellingInspector?.minimal != true ? 380 : 320,
                                                historyToggleWidth: featureHistory.preferredToggleWidth,
                                                viewButtonSize: viewButton.intrinsicContentSize)
                 .placed(in: chrome, viewport: viewport, useTopSafeArea: topStripHeaderEnabled)
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
+        if compactToolControls, let frame = available.inspector {
+            let visible = properties.arrangedSubviews.filter { !$0.isHidden }
+            let width = max(0, frame.width - 32)
+            let measured = visible.reduce(CGFloat(0)) { height, child in
+                height + child.systemLayoutSizeFitting(CGSize(width: width, height: 0),
+                    withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+            } + CGFloat(max(0, visible.count - 1)) * properties.spacing + 32
+            inspectorHeight = inspectorPanel.fittingHeight(contentHeight: measured, width: frame.width)
+        }
         func contentHeight(_ stack: UIStackView, width: CGFloat) -> CGFloat {
             // The stack is constrained to the scroll view's previous frame.
             // Measure visible controls independently to avoid feeding that old
@@ -4986,6 +5023,122 @@ private extension FoundationController {
         step(0)
     }
 
+    func checkCompactToolControlsOnDevice() {
+        let expected = generation
+        let savedControls = compactToolControls, savedCompact = compactInspector
+        compactToolControls = true; compactInspector = true
+        var issues: [String] = [], measurements: [[String: Any]] = []
+        var finished = false
+        func find(_ id: String, in root: UIView) -> UIView? {
+            if root.accessibilityIdentifier == id { return root }
+            return root.subviews.lazy.compactMap { find(id, in: $0) }.first
+        }
+        func capture(_ name: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+                if let png = image.pngData() { try png.write(to: directory.appendingPathComponent("compact-tools-" + name + ".png"), options: .atomic) }
+            } catch { issues.append("capture: \(error)") }
+        }
+        func finish(_ issue: String? = nil) {
+            guard !finished else { return }; finished = true
+            if let issue { issues.append(issue); capture("failed") }
+            compactToolControls = savedControls; compactInspector = savedCompact
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "measurements": measurements,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "at": ISO8601DateFormatter().string(from: Date()),
+                    "coverage": "Compact controls for Extrude, Fillet, Chamfer, Shell, Offset Face and Box; More options preserves inputs; live text preview; pinned Apply/Cancel; previous presentation preference; synthetic actions"]
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("compact-tools-check.json"), options: .atomic)
+            } catch { print("Compact controls report: \(error)") }
+        }
+        func wait(_ stage: String, remaining: Int = 200, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if ready() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: next); return }
+            guard remaining > 0 else { finish("timed out: " + stage + "; " + (modellingInspector?.message.accessibilityLabel ?? "")); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(stage, remaining: remaining - 1, until: ready, then: next) }
+        }
+        let face: PresentationJSON = .array([.number(10), .number(10), .number(20)])
+        let edge: PresentationJSON = .array([.number(0), .number(0), .number(10)])
+        let extrusion: [String: PresentationJSON] = ["profile": .object(["faces": .array([face]), "face_body": .string("Compact stock")]), "distance": .string("5 mm")]
+        let tools: [(String, [String: PresentationJSON])] = [
+            ("solid.extrude", extrusion),
+            ("solid.fillet", ["body": .string("Compact stock"), "edges": .array([edge]), "radius": .string("2 mm")]),
+            ("solid.chamfer", ["body": .string("Compact stock"), "edges": .array([edge]), "distance": .string("2 mm")]),
+            ("solid.shell", ["body": .string("Compact stock"), "faces": .array([face]), "thickness": .string("2 mm")]),
+            ("solid.offset_face", ["body": .string("Compact stock"), "faces": .array([face]), "distance": .string("2 mm")]),
+            ("solid.box", ["width": .string("10 mm"), "depth": .string("10 mm"), "height": .string("10 mm")])
+        ]
+        func legacy() {
+            compactToolControls = false
+            beginModelling(operation: "solid.extrude", initialParams: extrusion)
+            wait("previous presentation", until: { self.modellingInspector?.handleEntryEnabled == true && self.canvas.displayingPreview }) {
+                self.view.layoutIfNeeded()
+                guard self.modellingInspector?.minimal == false, self.inspectorPanel.frame.height > 500 else { finish("previous Properties presentation unavailable"); return }
+                capture("legacy")
+                self.cancelModelling()
+                wait("previous presentation cancel", until: { !self.modellingEditing && self.pending.isEmpty }) { finish() }
+            }
+        }
+        func step(_ index: Int) {
+            guard index < tools.count else { legacy(); return }
+            let (operation, params) = tools[index]
+            beginModelling(operation: operation, initialParams: params)
+            wait(operation, until: { self.modellingInspector?.handleEntryEnabled == true && self.canvas.displayingPreview && self.modellingPreviewQueue.active == nil }) {
+                self.view.layoutIfNeeded()
+                guard let form = self.modellingInspector, form.minimal, self.inspectorPanel.frame.height < 400,
+                      self.inspectorPanel.frame.width <= 320.5 else { finish(operation + " controls occupy too much of the viewport"); return }
+                for id in ["workspace-model-cancel", "workspace-model-apply"] {
+                    guard let action = find(id, in: self.inspectorPanel) as? UIButton else { finish(operation + " missing " + id); return }
+                    let frame = action.convert(action.bounds, to: self.workspace)
+                    guard action.isEnabled, frame.width >= 44, frame.height >= 44, self.inspectorPanel.frame.contains(frame),
+                          !action.isDescendant(of: self.inspectorScroll) else { finish(operation + " action is clipped or scrolls"); return }
+                }
+                let height = self.inspectorPanel.frame.height
+                measurements.append(["operation": operation, "width": self.inspectorPanel.frame.width, "height": height])
+                capture(operation.replacingOccurrences(of: ".", with: "-"))
+                if let options = find("workspace-model-more-options", in: form) as? UIButton {
+                    let before = form.params
+                    options.sendActions(for: .touchUpInside); self.view.layoutIfNeeded()
+                    guard form.params == before, self.inspectorPanel.frame.height > height else { finish(operation + " options lost inputs or failed to expand"); return }
+                    options.sendActions(for: .touchUpInside); self.view.layoutIfNeeded()
+                    guard form.params == before, abs(self.inspectorPanel.frame.height - height) < 1 else { finish(operation + " options failed to collapse"); return }
+                }
+                func cancelAndContinue() {
+                    guard let cancel = find("workspace-model-cancel", in: self.inspectorPanel) as? UIButton else { finish("Cancel missing"); return }
+                    cancel.sendActions(for: .touchUpInside)
+                    wait("cancel " + operation, until: { !self.modellingEditing && self.pending.isEmpty && !self.canvas.displayingPreview }) {
+                        guard !self.inspectorOpen else { finish(operation + " reopened Properties after Cancel"); return }
+                        step(index + 1)
+                    }
+                }
+                if index == 0, let input = find("workspace-model-field-distance", in: form) as? UITextField {
+                    input.becomeFirstResponder()
+                    input.text = "7 mm"; input.sendActions(for: .editingChanged)
+                    wait("live numeric input", until: { self.modelValue?.valid == true && abs((self.modelValue?.value ?? 0) - 7) < 0.001 && self.modellingPreviewQueue.active == nil }) {
+                        guard input.isFirstResponder, input.isEnabled else { finish("live preview interrupted text entry"); return }
+                        self.view.layoutIfNeeded(); capture("numeric-entry")
+                        let keyboardY = self.keyboardTop.map { self.workspace.convert(CGPoint(x: 0, y: $0), from: self.view).y } ?? self.workspace.bounds.maxY
+                        guard let apply = find("workspace-model-apply", in: self.inspectorPanel),
+                              apply.convert(apply.bounds, to: self.workspace).maxY <= keyboardY else { finish("Apply hidden by keyboard"); return }
+                        input.resignFirstResponder(); cancelAndContinue()
+                    }
+                } else { cancelAndContinue() }
+            }
+        }
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("solid.box", ["name": "Compact stock", "width": "30 mm", "depth": "25 mm", "height": "20 mm"]), ("view.fit", [:])]
+        func setup(_ index: Int) {
+            guard index < fixture.count else { step(0); return }
+            session.command(fixture[index].0, params: fixture[index].1) { result in
+                guard case .success = result else { finish("fixture failed"); return }; setup(index + 1)
+            }
+        }
+        browserOpen = false; inspectorOpen = false; setup(0)
+    }
+
     func startGroupedInspectorCheckIfReady() {
         guard active, groupedInspectorFrameReady, state != nil, !developmentCheckStarted,
               ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") else { return }
@@ -5393,7 +5546,8 @@ private extension FoundationController {
     private func checkSketchFilletOnDevice() {
         let expected = generation
         let savedEdges = edgeToolsOnSelection, savedCompact = compactInspector, savedHandles = directHandles
-        edgeToolsOnSelection = true; compactInspector = true; directHandles = true
+        let savedControls = compactToolControls
+        edgeToolsOnSelection = true; compactInspector = true; directHandles = true; compactToolControls = true
         var issues: [String] = []
         var finished = false
         func buttons(_ view: UIView) -> [WorkspaceButton] {
@@ -5412,6 +5566,10 @@ private extension FoundationController {
         }
         func capture(_ name: String) {
             view.layoutIfNeeded()
+            if ["two-edges", "three-edges", "dragged", "preview"].contains(name),
+               modellingInspector?.minimal != true || inspectorPanel.frame.height > 260 || inspectorPanel.frame.width > 320.5 {
+                issues.append("Fillet controls cover too much of the sketch: \(inspectorPanel.frame)")
+            }
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let surface: UIView = view.window ?? view
@@ -5421,7 +5579,7 @@ private extension FoundationController {
         }
         func finish() {
             guard !finished else { return }; finished = true
-            edgeToolsOnSelection = savedEdges; compactInspector = savedCompact; directHandles = savedHandles
+            edgeToolsOnSelection = savedEdges; compactInspector = savedCompact; directHandles = savedHandles; compactToolControls = savedControls
             session.command("view.tool_handles", params: ["enabled": savedHandles])
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -5458,6 +5616,7 @@ private extension FoundationController {
             guard let apply = button("apply") else { issues.append("Apply missing"); finish(); return }
             apply.sendActions(for: .touchUpInside)
             wait("Apply two corners", until: { self.modellingToken == nil && self.state?.sketch?.curves.count == 6 && !self.canvas.displayingPreview }) {
+                if self.inspectorOpen { issues.append("Apply reopened Properties") }
                 capture("applied")
                 self.run("edit.undo")
                 wait("Undo", until: { self.state?.sketch?.curves.count == 4 && self.pending.isEmpty }) {
@@ -5533,6 +5692,7 @@ private extension FoundationController {
                                                 guard let cancel = button("cancel") else { issues.append("Cancel missing"); finish(); return }
                                                 cancel.sendActions(for: .touchUpInside)
                                                 wait("Cancel", until: { self.modellingToken == nil && !self.canvas.displayingPreview }) {
+                                                    if self.inspectorOpen { issues.append("Cancel reopened Properties") }
                                                     if self.state?.sketch?.curves.count != 4 { issues.append("Cancel authored geometry") }
                                                     guard verifySelectionOnly() else { return }
                                                     self.setTool("sketch.fillet")
@@ -8962,6 +9122,8 @@ private extension FoundationController {
     /// No project-library design or saved preference is changed by this driver.
     func checkCompactInspectorOnDevice() {
         let savedCompact = compactInspector, savedAppearance = appearance
+        let savedControls = compactToolControls
+        compactToolControls = false
         let fixture: [String: Any] = ["profile": ["faces": [[10, 10, 20]], "face_body": "Inspector stock"], "distance": "5 mm"]
         func find(_ id: String, in root: UIView) -> UIView? {
             if root.accessibilityIdentifier == id { return root }
@@ -9031,7 +9193,7 @@ private extension FoundationController {
                     self.view.layoutIfNeeded(); capture("legacy")
                     self.assemblyCheckWrite("PASS previous inspector: scrolling footer and original field order retained")
                     self.assemblyCheckCancelled = { _ in
-                        self.compactInspector = savedCompact; self.appearance = savedAppearance; self.applyAppearance()
+                        self.compactInspector = savedCompact; self.compactToolControls = savedControls; self.appearance = savedAppearance; self.applyAppearance()
                         self.assemblyCheckWrite("PASS complete; no library project changed; hardware Pencil/VoiceOver unverified")
                         self.assemblyCheckRunning = false; self.assemblyCheckTicket &+= 1
                         self.assemblyCheckSignal?.cancel(); self.assemblyCheckSignal = nil

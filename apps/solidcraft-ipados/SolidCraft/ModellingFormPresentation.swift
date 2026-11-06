@@ -4,7 +4,32 @@ import Foundation
 /// These helpers choose controls and edit lists; they do not interpret CAD semantics.
 enum ModellingFormPresentation {
     static let automaticExtrudeDepthKey = "SolidCraft.workspace.automaticExtrudeDepth"
+    static let compactToolControlsKey = "SolidCraft.workspace.compactToolControls"
     static let rollbackEditingKey = "SolidCraft.workspace.rollbackFeatureEditing"
+
+    static func compactToolControls(_ stored: Bool?) -> Bool { stored ?? true }
+
+    enum ControlPlacement: Equatable { case primary, additional, hidden }
+
+    /// Keep the editable values and unfilled inputs in the small tool card.
+    /// References remain opaque; populated sources and secondary choices are
+    /// still available under More options without opening Properties.
+    static func placement<Workspace>(_ field: ModellingResponse<Workspace>.Field, operation: String?,
+                                     params: [String: PresentationJSON]) -> ControlPlacement {
+        if field.key == "targets", params["operation"] == .string("new") || params["operation"] == .string("new_body") { return .additional }
+        if field.key == "features", params["source_mode"] == .string("bodies") { return .additional }
+        if field.key == "bodies", params["source_mode"] == .string("features") { return .additional }
+        if ["reference", "references", "face_pick", "body_pick", "bodies_pick"].contains(field.kind) {
+            let value = PresentationJSON.parameter(field.key, in: params)
+            let empty = value == nil || value == .null || value == .string("") || value == .array([])
+            if empty { return .primary }
+            return operation == "sketch.fillet" && field.key == "edges" ? .hidden : .additional
+        }
+        if field.kind == "inline_choice" || ["operation", "chamfer_mode", "source_mode"].contains(field.key) { return .primary }
+        if field.kind == "choice" || field.key == "name" && operation?.hasPrefix("solid.") == true { return .additional }
+        if operation == "solid.extrude", !["distance", "height"].contains(field.key) { return .additional }
+        return .primary
+    }
 
     static func rollbackEditing(_ stored: Bool?) -> Bool { stored ?? true }
 
