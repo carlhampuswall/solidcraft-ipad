@@ -6486,14 +6486,14 @@ private extension FoundationController {
             ("sketch-planes-revealed", {
                 self.viewControlsPopover?.dismiss(animated: false); self.viewControlsPopover = nil
                 self.visualPlaneSelection = true; self.revealSketchPlanes = true
-                self.createSketchButton.sendActions(for: .primaryActionTriggered)
+                self.createSketchButton.sendActions(for: .touchUpInside)
             }, { self.planeChoosing && self.viewPresentation?.origin.choosing == true && axes(["XY", "XZ", "YZ"]) }, {
                 check(Self.originItems.allSatisfy { self.originVisibility[$0] == false }, "plane picker changed saved Hide all")
             }),
             ("sketch-planes-cancelled", { self.cancelSketchPlane() }, { self.viewPresentation?.origin.choosing == false && axes([]) }, {}),
             ("sketch-planes-legacy", {
                 self.revealSketchPlanes = false
-                self.createSketchButton.sendActions(for: .primaryActionTriggered)
+                self.createSketchButton.sendActions(for: .touchUpInside)
             }, { self.planeChoosing && self.viewPresentation?.origin.choosing == true && axes([]) }, {}),
             ("sketch-planes-legacy-cancelled", { self.cancelSketchPlane() }, { self.viewPresentation?.origin.choosing == false && axes([]) }, {})
         ]
