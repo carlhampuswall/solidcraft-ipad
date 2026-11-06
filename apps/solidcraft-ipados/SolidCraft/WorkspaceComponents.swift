@@ -654,7 +654,11 @@ final class WorkspaceButton: UIButton {
         configuration = config
         titleLabel?.adjustsFontForContentSizeCategory = true
         titleLabel?.numberOfLines = 2
-        heightAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch).isActive = true
+        let minimumHeight = heightAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch)
+        // Hidden arranged tools collapse to zero height. Let the stack's
+        // required hiding constraint win while retaining visible touch targets.
+        minimumHeight.priority = UILayoutPriority(999)
+        minimumHeight.isActive = true
         widthAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch).isActive = true
         accessibilityLabel = title
         toolTip = title

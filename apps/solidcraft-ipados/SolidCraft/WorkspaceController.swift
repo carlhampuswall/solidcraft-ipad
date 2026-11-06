@@ -326,9 +326,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         railScroll.showsVerticalScrollIndicator = false
         railScroll.backgroundColor = WorkspaceStyle.surface
         railScroll.layer.cornerRadius = WorkspaceStyle.radius
-        for button in [selectButton, radiusButton, moreButton] {
-            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
-        }
         canvas.accessibilityIdentifier = "native-cad-surface"
         canvas.isAccessibilityElement = true
         canvas.accessibilityLabel = WorkspaceStyle.text("viewport")
@@ -618,6 +615,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkEdgeLengthOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--selection-taps-check") {
                     self.developmentCheckStarted = true; self.checkSelectionTapsOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--toolbar-selection-check") {
+                    self.developmentCheckStarted = true; self.checkToolbarSelectionOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--feature-diagnostics-check") {
                     self.developmentCheckStarted = true; self.checkFeatureDiagnosticsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
@@ -3586,13 +3585,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         for (id, button) in additionalQuickTools {
             if id.hasPrefix("sketch.") {
-                button.isHidden = state?.sketch == nil || editing
+                button.isHidden = state?.sketch == nil
                 let tool = state?.tools.first { $0.id == id }
                 let project = id == "sketch.project" && state?.sketch?.projection_sources?.isEmpty == false
                 button.availability(enabled: !locked && (project || tool?.enabled == true), reason: tool?.reason.map(NativeText.value))
                 button.active(state?.active_tool == id)
             } else {
-                button.isHidden = state?.sketch != nil || editing || !modelIDs.contains(id)
+                button.isHidden = state?.sketch != nil || !modelIDs.contains(id)
                 button.availability(enabled: !locked && modelIDs.contains(id))
             }
         }
@@ -3670,29 +3669,30 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             button.isUserInteractionEnabled = !modal && !numericEditing && !modellingEditing && sketchInput?.projection == nil
         }
         if compactChrome {
-            let editing = numericEditing || modellingEditing || sketchInput?.projection != nil
             for (id, button) in sketchQuickTools {
                 let tool = state?.tools.first { $0.id == id }
-                button.isHidden = !inSketch || editing
+                button.isHidden = !inSketch
                 button.active(state?.active_tool == id)
                 button.availability(enabled: !locked && tool?.enabled == true, reason: tool?.reason.map(NativeText.value))
             }
-            createSketchButton.isHidden = inSketch || editing
-            modellingButton.isHidden = inSketch || editing
-            assemblyButton.isHidden = inSketch || editing
-            modifyButton.isHidden = inSketch || editing
-            patternButton.isHidden = inSketch || editing
+            // A draft locks commands without removing the user's toolbar.
+            // Visibility follows sketch/model context, so selection and Cancel
+            // cannot collapse and regrow the floating rail.
+            createSketchButton.isHidden = inSketch
+            modellingButton.isHidden = inSketch
+            assemblyButton.isHidden = inSketch
+            modifyButton.isHidden = inSketch
+            patternButton.isHidden = inSketch
             for button in [modifyButton, patternButton] { button.availability(enabled: !locked && state?.modelling?.tools.isEmpty == false) }
-            sketchToolsButton.isHidden = !inSketch || editing
+            sketchToolsButton.isHidden = !inSketch
             finishSketchButton.isHidden = headerAction == nil
-            finishChainButton.isHidden = finishChainButton.isHidden || editing
             projectionButton.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
             documentActionsButton.availability(enabled: !numericEditing && !modellingEditing && pending.isEmpty && !preparingExport && pendingExport == nil)
             projectionButton.active(perspective)
             projectionButton.isHidden = inSketch
-            constraintsButton.isHidden = !inSketch || editing
-            dimensionsButton.isHidden = !inSketch || editing
-            constructionButton.isHidden = !inSketch || editing
+            constraintsButton.isHidden = !inSketch
+            dimensionsButton.isHidden = !inSketch
+            constructionButton.isHidden = !inSketch
             constraintsButton.availability(enabled: !locked, reason: WorkspaceStyle.text("constraint_selection_hint"))
             dimensionsButton.availability(enabled: !locked && state?.sketch?.eligible_dimensions?.isEmpty == false,
                                            reason: WorkspaceStyle.text("dimension_selection_hint"))
@@ -4369,8 +4369,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
         func contentHeight(_ stack: UIStackView, width: CGFloat) -> CGFloat {
-            stack.systemLayoutSizeFitting(CGSize(width: width, height: 0),
-                withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
+            // The stack is constrained to the scroll view's previous frame.
+            // Measure visible controls independently to avoid feeding that old
+            // height (or pending hidden constraints) into the next rail frame.
+            let visible = stack.arrangedSubviews.filter { !$0.isHidden }
+            return visible.reduce(CGFloat(0)) {
+                $0 + max(WorkspaceStyle.touch, $1.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+            } + CGFloat(max(0, visible.count - 1)) * stack.spacing
         }
         let resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
                                navHeight: contentHeight(navigationActions, width: available.navigation.width))
@@ -6230,6 +6235,139 @@ private extension FoundationController {
         extrudeOnFaceSelection = false
         browserOpen = false; inspectorOpen = false; relayoutPanels()
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if !finished { finish("Diagnostic timed out waiting for a matching presented frame") } }
+        prepare(0)
+    }
+
+    /// Real UIKit layout through automatic face extrusion, Cancel and an empty
+    /// viewport tap. Uses the disposable launch fixture and synthetic contacts.
+    private func checkToolbarSelectionOnDevice() {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
+              session.currentProject == nil else { return }
+        let expected = generation
+        let savedCustomization = customizeToolbars, savedSide = railRight
+        let savedExtrude = extrudeOnFaceSelection
+        let savedTools = UserDefaults.standard.data(forKey: "SolidCraft.workspace.quickAccess.tools")
+        let variants = [(false, false), (false, true), (true, false), (true, true)]
+        var issues: [String] = []
+        var stages: [[String: Any]] = []
+        var finished = false
+        func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
+        func finish() {
+            guard !finished else { return }; finished = true
+            session.endDevelopmentSelectionTapsCheck()
+            customizeToolbars = savedCustomization; railRight = savedSide; extrudeOnFaceSelection = savedExtrude
+            UserDefaults.standard.set(savedTools, forKey: "SolidCraft.workspace.quickAccess.tools")
+            do {
+                let report: [String: Any] = [
+                    "passed": issues.isEmpty, "issues": issues, "stages": stages,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "coverage": "Physical iPad UIKit; synthetic face/empty taps, production Cancel, repeated layouts, customization and handedness. Physical Pencil unverified."
+                ]
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("toolbar-selection-check.json"), options: .atomic)
+            } catch { print("Toolbar selection report failed: \(error)") }
+            print("Toolbar selection check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+        }
+        func wait(_ stage: String, _ remaining: Int = 100, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if ready() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: next)
+                return
+            }
+            guard remaining > 0 else { issues.append("Timed out: " + stage); finish(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(stage, remaining - 1, until: ready, then: next) }
+        }
+        func visible() -> [UIView] { rail.arrangedSubviews.filter { !$0.isHidden } }
+        func inspect(_ name: String, baseline: [UIView], frame: CGRect, locked: Bool) {
+            for _ in 0..<12 {
+                updateAvailability(); view.setNeedsLayout(); view.layoutIfNeeded()
+                railScroll.layoutIfNeeded()
+                check(visible() == baseline, name + ": toolbar tools disappeared or changed order")
+                check(railScroll.frame == frame, name + ": toolbar frame changed")
+                for button in baseline.compactMap({ $0 as? WorkspaceButton }) {
+                    check(button.bounds.height >= 44 && button.bounds.height <= 52 && button.bounds.width >= 44,
+                          name + ": incorrect button size: " + (button.accessibilityLabel ?? ""))
+                    check(button.configuration?.image != nil && button.configuration?.title == nil,
+                          name + ": missing toolbar artwork")
+                    if locked && button !== moreButton {
+                        check(!button.isEnabled, name + ": command enabled during extrusion")
+                    }
+                }
+                let content = baseline.reduce(CGFloat(0)) { $0 + $1.bounds.height } + CGFloat(max(0, baseline.count - 1)) * rail.spacing
+                check(abs(railScroll.contentSize.height - content) < 1, name + ": stale toolbar content height")
+            }
+            let surface: UIView = view.window ?? view
+            let capture = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+            do {
+                guard let png = capture.pngData() else { issues.append(name + ": screenshot encoding failed"); return }
+                try png.write(to: directory.appendingPathComponent("toolbar-" + name + ".png"), options: .atomic)
+                stages.append(["name": name, "icons": baseline.count,
+                               "rail": [frame.minX, frame.minY, frame.width, frame.height]])
+            } catch { issues.append(name + ": capture failed: \(error)") }
+        }
+        func tap(_ world: [Double]?, then next: @escaping () -> Void) {
+            session.developmentSelectionTap(world) { result in
+                guard !finished else { return }
+                guard case .success = result else { issues.append("Viewport tap failed: \(result)"); finish(); return }
+                next()
+            }
+        }
+        func variant(_ index: Int) {
+            guard index < variants.count else { finish(); return }
+            (customizeToolbars, railRight) = variants[index]
+            configureChrome(); rebuildMenus()
+            if customizeToolbars { railQuickAccess?.add("solid.extrude") }
+            view.setNeedsLayout(); view.layoutIfNeeded(); railScroll.layoutIfNeeded()
+            let baseline = visible(), frame = railScroll.frame
+            check(baseline.count >= 7, "Baseline toolbar is missing tools")
+            inspect("\(index)-idle", baseline: baseline, frame: frame, locked: false)
+            let revision = state?.geometry_revision
+            tap([-8, 0, 10]) {
+                wait("automatic Extrude", until: { self.modellingInspector != nil && self.pending.isEmpty }) {
+                    inspect("\(index)-extrude", baseline: baseline, frame: frame, locked: true)
+                    self.modellingInspector?.onCancel?()
+                    wait("Cancel", until: { !self.modellingEditing && self.pending.isEmpty }) {
+                        inspect("\(index)-cancel", baseline: baseline, frame: frame, locked: false)
+                        self.session.command("select.clear") { result in
+                            guard case .success = result else { issues.append("Clear selection failed"); finish(); return }
+                            wait("cleared selection", until: { self.state?.selection.isEmpty == true }) {
+                                tap([-8, 0, 10]) {
+                                    wait("second Extrude", until: { self.modellingInspector != nil && self.pending.isEmpty }) {
+                                        tap(nil) {
+                                            wait("empty-space deselection", until: {
+                                                !self.modellingEditing && self.state?.selection.isEmpty == true && self.pending.isEmpty
+                                            }) {
+                                                inspect("\(index)-deselect", baseline: baseline, frame: frame, locked: false)
+                                                check(self.state?.geometry_revision == revision, "Cancelled extrusion changed geometry")
+                                                variant(index + 1)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        extrudeOnFaceSelection = true
+        browserOpen = false; inspectorOpen = false; relayoutPanels()
+        let setup: [(String, [String: Any])] = [
+            ("tool.set", ["tool": "select"]), ("select.filter", ["filter": "face"]),
+            ("select.multiple", ["enabled": true]), ("view.perspective", ["enabled": false]),
+            ("view.top", [:]), ("view.fit", [:]), ("select.clear", [:])
+        ]
+        func prepare(_ index: Int) {
+            guard index < setup.count else {
+                wait("fixture", until: { self.state?.selection.isEmpty == true && self.pending.isEmpty }) { variant(0) }
+                return
+            }
+            session.command(setup[index].0, params: setup[index].1) { result in
+                guard case .success = result else { issues.append("Fixture failed"); finish(); return }
+                prepare(index + 1)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 45) { if !finished { issues.append("Diagnostic timed out"); finish() } }
         prepare(0)
     }
 
