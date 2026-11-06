@@ -46,6 +46,11 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         navigationItem.rightBarButtonItems?.first?.accessibilityIdentifier = "project-new"
         navigationItem.rightBarButtonItems?[1].accessibilityIdentifier = "project-import"
         navigationItem.rightBarButtonItems?.last?.accessibilityIdentifier = "project-organise"
+        updateActionImages()
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (browser: ProjectBrowserController, _: UITraitCollection) in
+            browser.updateActionImages()
+            browser.tableView.reloadData()
+        }
         let export = UIBarButtonItem(title: ProjectText.text("export"), menu: UIMenu(children: ["step", "solidcraft", "stl", "obj", "3mf"].map { format in
             UIAction(title: ProjectText.text("export_" + (format == "solidcraft" ? "native" : format))) { [weak self] _ in
                 guard let self, !self.busy, self.current != nil else { return }
@@ -243,9 +248,24 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         onOrganise?(change)
     }
 
+    private func updateActionImages() {
+        for (index, key) in ["new", "import"].enumerated() {
+            guard let button = navigationItem.rightBarButtonItems?[index] else { continue }
+            let image = WorkspaceIcon.image(key, traits: traitCollection)
+            button.image = image
+            button.title = image == nil ? ProjectText.text(key) : nil
+            button.accessibilityLabel = ProjectText.text(key)
+        }
+    }
+
     private func updateNavigation() {
-        title = organisation.folder(folder)?.name ?? ProjectText.text(showingArchive ? "archive_title" : "title")
-        navigationItem.prompt = folder == nil ? nil : (showingArchive ? ProjectText.text("archive_title") + " / " : "") + location(folder)
+        if let currentFolder = organisation.folder(folder) {
+            title = (showingArchive ? ProjectText.text("archive_title") + " / " : "") + currentFolder.name
+            navigationItem.prompt = currentFolder.parent == nil ? nil : location(currentFolder.parent)
+        } else {
+            title = ProjectText.text(showingArchive ? "archive_title" : "title")
+            navigationItem.prompt = nil
+        }
         let close = UIBarButtonItem(title: WorkspaceStyle.text("close"), style: .plain, target: self, action: #selector(close))
         if folder != nil || showingArchive {
             let back = UIBarButtonItem(title: ProjectText.text("folder_back"), style: .plain, target: self, action: #selector(back))
