@@ -16,6 +16,7 @@ enum ModellingFormPresentation {
     /// still available under More options without opening Properties.
     static func placement<Workspace>(_ field: ModellingResponse<Workspace>.Field, operation: String?,
                                      params: [String: PresentationJSON]) -> ControlPlacement {
+        if field.key == "name", operation?.hasPrefix("solid.") != true { return .primary }
         if field.key == "targets", params["operation"] == .string("new") || params["operation"] == .string("new_body") { return .additional }
         if field.key == "features", params["source_mode"] == .string("bodies") { return .additional }
         if field.key == "bodies", params["source_mode"] == .string("features") { return .additional }

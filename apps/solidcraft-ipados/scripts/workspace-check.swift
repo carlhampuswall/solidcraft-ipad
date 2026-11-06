@@ -1061,6 +1061,7 @@ struct WorkspaceChecks {
             ("bodies", "references", "solid.pattern.circular", ["source_mode": .string("features")], .additional),
             ("name", "text", "component.rename", [:], .primary),
             ("name", "text", "parameters.add", [:], .primary),
+            ("name", "reference", "parameters.change", ["name": .string("length")], .primary),
             ("name", "text", "solid.box", [:], .additional)
         ] {
             let field = try JSONDecoder().decode(ModellingResponse<ModelWorkspace>.Field.self,
