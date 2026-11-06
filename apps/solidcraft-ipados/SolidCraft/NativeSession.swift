@@ -574,9 +574,15 @@ final class NativeSession {
             let data: Data
             var created: ProjectRecord?
             if insert {
-                guard !ProjectLibrary.nativeExtensions.contains(source.pathExtension.lowercased()) else { throw ProjectLibrary.failure("insert_native") }
-                let command = ["step", "stp"].contains(source.pathExtension.lowercased()) ? "file.insert_step" : "file.insert_mesh"
-                data = try Self.fileCommand(state, command, params: ["path": staged.path])
+                let ext = source.pathExtension.lowercased()
+                if ProjectLibrary.nativeExtensions.contains(ext) {
+                    // Files access ends with this operation. Embed the snapshot
+                    // in the same undoable command before removing the staged file.
+                    data = try Self.fileCommand(state, "component.insert_design", params: ["path": staged.path, "link": false])
+                } else {
+                    let command = ["step", "stp"].contains(ext) ? "file.insert_step" : "file.insert_mesh"
+                    data = try Self.fileCommand(state, command, params: ["path": staged.path])
+                }
                 // The import is already an undoable command. A later autosave
                 // failure leaves it dirty and visible; it never erases it.
             } else {

@@ -2546,6 +2546,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         browser.onImport = { [weak self, weak browser] in
             browser?.dismiss(animated: true) { [weak self] in self?.chooseProjectImport() }
         }
+        browser.onInsert = { [weak self, weak browser] project in
+            browser?.dismiss(animated: true) { [weak self] in self?.performProjectImport(project.file, insert: true) }
+        }
         browser.onExport = { [weak self, weak browser] format in
             browser?.dismiss(animated: true) { [weak self] in self?.exportProject(format: format) }
         }
@@ -2600,7 +2603,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func chooseProjectImport() {
         guard !numericEditing, !modellingEditing, presentedViewController == nil, pending.isEmpty else { return }
         canvas.cancelInput(); session.command("tool.cancel")
-        let alert = UIAlertController(title: ProjectText.text("import"), message: ProjectText.text("import_choice"), preferredStyle: .alert)
+        let alert = UIAlertController(title: ProjectText.text("import"), message: ProjectText.text("import_component_choice"), preferredStyle: .alert)
         for insert in [false, true] {
             alert.addAction(UIAlertAction(title: ProjectText.text(insert ? "insert" : "import_new"), style: .default) { [weak self] _ in self?.presentImportPicker(insert: insert) })
         }
@@ -2610,7 +2613,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func presentImportPicker(insert: Bool) {
         importingIntoProject = insert
-        let extensions = ProjectLibrary.importExtensions.filter { !insert || !ProjectLibrary.nativeExtensions.contains($0) }.sorted()
+        let extensions = ProjectLibrary.importExtensions.sorted()
         let types = extensions.compactMap { UTType(filenameExtension: $0) }
         let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: false)
         picker.delegate = self; picker.allowsMultipleSelection = false; picker.shouldShowFileExtensions = true
@@ -2674,11 +2677,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             clearPendingExport(); documentStatus = ProjectText.text("exported"); updateSubtitle(); return
         }
         guard let source = urls.first else { return }
-        controller.dismiss(animated: true) { [weak self] in self?.performProjectImport(source) }
+        let insert = importingIntoProject
+        controller.dismiss(animated: true) { [weak self] in self?.performProjectImport(source, insert: insert) }
     }
 
-    private func performProjectImport(_ source: URL) {
-        session.importProject(from: source, insert: importingIntoProject) { [weak self] result in
+    private func performProjectImport(_ source: URL, insert: Bool) {
+        session.importProject(from: source, insert: insert) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error): self.showProjectFailure(error)

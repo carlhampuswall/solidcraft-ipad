@@ -34,6 +34,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         "path: a .sc design → a new component linked to it, holding its solid bodies as placed in that design and a copy of its design properties; \
          name? (default: the design's name); parent?: component id or name (default: the active one); \
          translate?: [x,y,z] in mm from the destination parent's origin (default [0,0,0], also with reuse); \
+         link?: bool (default true; false: embed a snapshot with no source-file dependency, incompatible with reuse); \
          reuse?: bool (default false): insert a free occurrence, reusing an existing link to the same file when available",
     ),
     CommandSpec::new("component.update_links", "Update Links", update_links).icon("update").params(
@@ -496,6 +497,14 @@ fn component_key(s: &Session, p: &Value, key: &str, cmd: &str) -> Result<u64> {
 fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "component.insert_design";
     let given = str_(p, "path").filter(|x| !x.trim().is_empty() && x.len() < 4096).ok_or_else(|| bad(cmd, "`path` is required"))?;
+    let linked = match p.get("link") {
+        None => true,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(bad(cmd, "`link` must be a boolean")),
+    };
+    if !linked && p.get("reuse").and_then(Value::as_bool) == Some(true) {
+        return Err(bad(cmd, "an embedded snapshot cannot reuse a linked component"));
+    }
     let translate = match p.get("translate") {
         None => solidcore_record::Vec3::ZERO,
         Some(v) => vec3(v).filter(|t| t.is_finite() && t.len() < 1e9).ok_or_else(|| bad(cmd, "`translate` must be [x, y, z] in mm"))?,
@@ -553,6 +562,11 @@ fn insert_design(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(EngineError::Other(e));
     }
     inherit_properties(s, comp, &properties)?;
+    // Keep the existing import/property path, then detach within this command:
+    // one undo step must never retain a link to a temporary Files import.
+    if !linked {
+        s.doc_mut().links.remove(&comp);
+    }
     s.refresh();
     let st = s.model.state();
     let bodies: Vec<&str> = st.bodies.iter().filter(|b| b.feature == id).map(|b| b.name.as_str()).collect();

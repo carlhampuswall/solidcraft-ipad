@@ -178,6 +178,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--assemblies") {
         return assembly_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--project-insertion") {
+        return project_insertion_proof(&destination);
+    }
     let mut engine = SessionAdapter::new();
     let model = engine.fixture()?;
     let mut view = Viewport::default();
@@ -1140,6 +1143,46 @@ fn assembly_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "PASS: four parametric box components, hinge/rigid/slider native joints, 120→90 deg and 75→50 mm limits, speculative previews/cancel, analytic centroids, 5056 mm³, native save/reopen; {path}"
     );
+    Ok(())
+}
+
+fn project_insertion_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let source_path = std::env::temp_dir().join(format!("solidcraft-insertion-proof-{}.solidcraft", std::process::id()));
+    let mut source = SessionAdapter::new();
+    source.execute("solid.box", json!({"length":12,"width":8,"height":16,"body_name":"Imported part"}))?;
+    source.execute("material.assign", json!({"bodies":["Imported part"],"material":"Aluminum"}))?;
+    source.execute("file.save_as", json!({"path":source_path}))?;
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.box", json!({"length":24,"width":24,"height":4,"body_name":"Existing object"}))?;
+    let created = engine.execute("component.create", json!({"name":"Destination object","activate":true,"grounded":false}))?.value;
+    engine.execute("occurrence.move", json!({"occurrence":created["occurrence"],"translate":[35,0,0],"capture":true}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    assembly_capture(&mut view, &capturer, destination, "before")?;
+    engine.execute("component.insert_design", json!({"path":source_path,"link":false}))?;
+    std::fs::remove_file(&source_path)?;
+    view.begin_update(2);
+    view.install(2, engine.snapshot()?);
+    assembly_capture(&mut view, &capturer, destination, "inserted")?;
+    let saved = destination.replace(".png", ".solidcraft");
+    engine.execute("file.save_as", json!({"path":saved}))?;
+    let mut reopened = SessionAdapter::new();
+    reopened.execute("doc.open", json!({"path":saved,"read_only":true}))?;
+    let snapshot = reopened.snapshot()?;
+    let links = reopened.execute("component.links", json!({}))?.value;
+    if snapshot.body_count != 2
+        || (snapshot.volume_mm3 - (24. * 24. * 4. + 12. * 8. * 16.)).abs() > 1e-6
+        || links["links"].as_array().map(Vec::len) != Some(0)
+    {
+        return Err("inserted project did not survive source removal and cold reopen".into());
+    }
+    view.begin_update(3);
+    view.install(3, snapshot);
+    assembly_capture(&mut view, &capturer, destination, "reopened")?;
+    println!("PASS: nested project snapshot, retained destination geometry, source deletion and native cold reopen; macOS GPU, not UIKit.");
     Ok(())
 }
 

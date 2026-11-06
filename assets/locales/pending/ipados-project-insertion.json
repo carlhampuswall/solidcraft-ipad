@@ -1,0 +1,5 @@
+{
+  "en": {
+    "ui.ipados.projects.import_component_choice": "Open the file as a separate project, or insert its geometry as a new component inside the active component. SolidCraft projects are inserted as independent snapshots of their solid bodies."
+  }
+}

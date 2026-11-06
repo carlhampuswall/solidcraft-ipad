@@ -106,7 +106,9 @@ from that draft. Reassess shared frontend viability when integrating its outcome
   session; a save-only request preserves provisional viewport work. Exports use a
   frozen native container and a separate disposable worker session. See
   INTERFACES.md for ownership, supported formats and limits. No new CAD format
-  or shared engine/kernel change is introduced.
+  or kernel change is introduced. [Project insertion](PROJECT-INSERTION.md) uses
+  the existing shared Insert Design command's optional `link: false` snapshot
+  mode, retaining its default linked behavior for desktop and web callers.
 
 ## Approved platform exceptions
 
@@ -174,6 +176,7 @@ upstream; it adds no platform dependency or kernel behavior.
 | --- | --- | --- |
 | `Cargo.toml` | Register two actual nested packages; retain native host/namespace exclusions. | Adds members only; no changed shared dependencies. Fork-specific registration. |
 | `Cargo.lock` | Cargo records the two local packages. | No external version changes. Fork-specific. |
+| `crates/engine/src/cmd/component_link.rs` | Temporary native Files imports need an embedded snapshot in one undo step; `component.insert_design` accepts `link: false` and detaches after property inheritance. | Default `link: true` preserves existing callers. No Apple dependency or format change; suitable for upstream snapshot insertion. |
 | `xtask/src/layers.rs` | The architecture gate rejects unregistered packages; classify adapter L5 and bridge L6. | Existing layer restrictions remain; bridge also participates in wasm checks. Fork-specific registrations. |
 | `crates/doc/src/walk.rs` | Rust 1.95 warns about the generic container macro iterating Option, blocking `-D warnings`; an adapter cannot repair a dependency lint. Use six explicit `iter`/`iter_mut` calls. | Same elements, lifetimes and traversal order on Option/Vec/arrays; no CAD behavior change. Suitable as a separate upstream lint cleanup. |
 | `AGENTS.md`, `skills/solidcraft-crash-safety/SKILL.md` | Explicitly locate the approved native language/unsafe exception. | Shared rules retained. Fork policy, not an upstream safety relaxation. |

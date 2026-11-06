@@ -448,6 +448,109 @@ fn projects_round_trip_native_step_and_failed_replacements_preserve_the_live_des
 }
 
 #[test]
+fn projects_insert_native_snapshots_into_root_and_active_components_without_source_dependencies() {
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-insertion-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    for (ext, nested) in [("sc", false), ("solidcraft", true)] {
+        let path = directory.join(format!("Source.{ext}"));
+        let destination = directory.join(format!("Destination-{ext}.solidcraft"));
+        let mut source = SessionAdapter::new();
+        source.execute("solid.box", json!({"length":2,"width":3,"height":4,"body_name":"Source body"})).unwrap();
+        source.execute("material.assign", json!({"bodies":["Source body"],"material":"Aluminum"})).unwrap();
+        source.session.doc_mut().appearances.bodies.insert("Source body".into(), solidcraft_engine::doc::appearance::Look::custom([12, 34, 56], 0.4));
+        source.execute("file.save_as", json!({"path":path})).unwrap();
+        // Existing callers still get a live link when they omit the option.
+        let mut linked = SessionAdapter::new();
+        linked.execute("component.insert_design", json!({"path":path})).unwrap();
+        assert_eq!(linked.session.doc.links.len(), 1);
+
+        let mut adapter = SessionAdapter::new();
+        let keep =
+            adapter.execute("solid.box", json!({"length":1,"width":1,"height":1,"corner":[-20,0,0],"body_name":"Keep"})).unwrap().value["feature"]
+                .as_u64()
+                .unwrap();
+        let (parent, parent_path) = if nested {
+            let created = adapter.execute("component.create", json!({"name":"Destination object","activate":true,"grounded":false})).unwrap().value;
+            let occurrence = created["occurrence"].as_u64().unwrap();
+            adapter.execute("occurrence.move", json!({"occurrence":occurrence,"translate":[50,0,0],"capture":true})).unwrap();
+            (created["component"].as_u64().unwrap(), vec![occurrence])
+        } else {
+            (0, vec![])
+        };
+        let identity = adapter.session.document_id.clone();
+        let active_path = adapter.session.active_occurrence_path.clone();
+        let history = adapter.session.undo.len();
+        let inserted = adapter.execute("component.insert_design", json!({"path":path,"link":false})).unwrap().value;
+        let component = inserted["component"].as_u64().unwrap();
+        let occurrence = inserted["occurrence"].as_u64().unwrap();
+        assert_eq!(adapter.session.undo.len(), history + 1);
+        assert_eq!(adapter.session.document_id, identity);
+        assert_eq!(adapter.session.active_component, parent);
+        assert_eq!(adapter.session.active_occurrence_path, active_path);
+        assert!(adapter.session.doc.feature(keep).is_some());
+        assert!(adapter.session.doc.links.is_empty());
+        assert_eq!(adapter.session.doc.occurrences.iter().find(|o| o.id == occurrence).unwrap().parent, parent);
+        let body = adapter.session.model.state().bodies.iter().find(|b| b.component == component).unwrap().clone();
+        assert_eq!(adapter.session.doc.body_material(&body.name), "Aluminum");
+        assert_eq!(adapter.session.doc.model_body_look(&body).unwrap().color, [12, 34, 56]);
+        assert!((adapter.session.doc.model_body_opacity(&body) - 0.4).abs() < 1e-9);
+        let mut inserted_path = parent_path;
+        inserted_path.push(occurrence);
+        let marker = assembly_marker(&adapter, &inserted_path, Vec3::new(1., 1.5, 2.));
+        assert!((marker - Vec3::new(if nested { 51. } else { 1. }, 1.5, 2.)).len() < 1e-9);
+        assert!((assembly_volume(&adapter, &inserted_path) - 24.).abs() < 1e-6);
+
+        std::fs::remove_file(&path).unwrap();
+        adapter.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(adapter.snapshot().unwrap().body_count, 1);
+        assert!(adapter.session.doc.links.is_empty());
+        adapter.execute("edit.redo", json!({})).unwrap();
+        assert_eq!(adapter.snapshot().unwrap().body_count, 2);
+        assert!(adapter.session.doc.links.is_empty());
+        adapter.execute("file.save_as", json!({"path":destination})).unwrap();
+        let mut reopened = SessionAdapter::new();
+        reopened.execute("doc.open", json!({"path":destination})).unwrap();
+        assert!(reopened.session.doc.links.is_empty());
+        assert_eq!(reopened.snapshot().unwrap().body_count, 2);
+        assert!((assembly_volume(&reopened, &inserted_path) - 24.).abs() < 1e-6);
+        assert_eq!(reopened.session.doc.body_material(&body.name), "Aluminum");
+    }
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn projects_failed_native_insertions_preserve_objects_active_component_and_history() {
+    let directory = std::env::temp_dir().join(format!("solidcraft-project-insertion-invalid-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let empty = directory.join("Empty.solidcraft");
+    SessionAdapter::new().execute("file.save_as", json!({"path":empty})).unwrap();
+    let corrupt = directory.join("Corrupt.sc");
+    std::fs::write(&corrupt, b"not a design").unwrap();
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("component.create", json!({"name":"Keep active","activate":true})).unwrap();
+    adapter.execute("solid.box", json!({"length":2,"width":3,"height":4})).unwrap();
+    adapter.execute("edit.undo", json!({})).unwrap();
+    let document = adapter.session.doc.clone();
+    let history = (adapter.session.undo.len(), adapter.session.redo.len());
+    let active = (adapter.session.active_component, adapter.session.active_occurrence_path.clone());
+    for params in [
+        json!({"path":corrupt,"link":false}),
+        json!({"path":empty,"link":false}),
+        json!({"path":empty,"link":"false"}),
+        json!({"path":empty,"link":false,"reuse":true}),
+        json!({"path":directory.join("Missing.sc"),"link":false}),
+    ] {
+        assert!(adapter.execute("component.insert_design", params).is_err());
+        assert_eq!(*adapter.session.doc, *document);
+        assert_eq!((adapter.session.undo.len(), adapter.session.redo.len()), history);
+        assert_eq!((adapter.session.active_component, adapter.session.active_occurrence_path.clone()), active);
+    }
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((adapter.snapshot().unwrap().volume_mm3 - 24.).abs() < 1e-6);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn projects_recovery_keeps_the_last_cold_reopenable_save_during_sketch_edits() {
     let directory = std::env::temp_dir().join(format!("solidcraft-project-recovery-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();

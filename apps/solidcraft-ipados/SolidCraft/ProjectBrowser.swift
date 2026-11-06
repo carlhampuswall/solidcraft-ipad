@@ -12,6 +12,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     var onCreate: ((String, ProjectRecord?) -> Void)?
     var onOrganise: ((ProjectLibraryChange) -> Void)?
     var onImport: (() -> Void)?
+    var onInsert: ((ProjectRecord) -> Void)?
     var onExport: ((String) -> Void)?
     var onShare: (() -> Void)?
     var onRename: ((ProjectRecord, String) -> Void)?
@@ -181,6 +182,10 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             guard let self else { return nil }
             let rename = UIAction(title: ProjectText.text("rename")) { [weak self] _ in self?.askName(renaming: project) }
+            let insert = UIAction(title: ProjectText.text("insert"), attributes: self.current == nil || project.id == self.current ? .disabled : []) { [weak self] _ in
+                guard let self, !self.busy else { return }
+                self.onInsert?(project)
+            }
             let duplicate = UIAction(title: ProjectText.text("duplicate"), attributes: self.showingArchive ? .disabled : []) { [weak self] _ in self?.askName(copying: project) }
             let archive = self.archiveAction(project: project.id)
             let delete = UIAction(title: ProjectText.text("delete"), attributes: project.id == self.current ? [.destructive, .disabled] : [.destructive]) { [weak self] _ in
@@ -190,7 +195,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
                 alert.addAction(UIAlertAction(title: ProjectText.text("delete"), style: .destructive) { [weak self] _ in self?.onDelete?(project) })
                 self.present(alert, animated: true)
             }
-            return UIMenu(children: [rename, duplicate, self.moveMenu(project: project.id), archive, delete])
+            return UIMenu(children: [insert, rename, duplicate, self.moveMenu(project: project.id), archive, delete])
         }
     }
 
