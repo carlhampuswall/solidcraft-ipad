@@ -374,7 +374,7 @@ impl Viewport {
                 self.projection = None;
             }
             self.cancel_interactions();
-            if id == "tool.cancel" && self.constraint_tool().is_some() {
+            if id == "tool.cancel" && (self.constraint_tool().is_some() || self.contacts.sketch.tool == "sketch.fillet") {
                 self.contacts.sketch.tool = "select".into();
                 self.selection.clear();
                 self.changed();
@@ -455,6 +455,7 @@ impl Viewport {
                         | "sketch.trim"
                         | "sketch.extend"
                         | "sketch.offset"
+                        | "sketch.fillet"
                 ) {
                     return Err(error("bad_params", "unsupported native sketch tool"));
                 }

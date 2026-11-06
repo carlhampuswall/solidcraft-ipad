@@ -8,6 +8,23 @@ No simulator launch or device signing is part of the unsigned check. The
 consolidation request excludes the engine suite and complete `cargo xtask ci`;
 the full-gate examples below are for a later explicit full-test request.
 
+## Sketch corner radius
+
+In an active sketch, choose **Fillet** in the sketch toolbar or menu, tap a
+corner (or two curves), and enter a radius in millimetres or as an expression.
+**Preview** evaluates a disposable engine draft; **Apply** creates the tangent
+arc in one undo step, and **Cancel** preserves the sketch. Selected corners or
+two selected curves also expose **Fillet** in Properties. Select several corners
+before starting Fillet to round them together with one radius. The resulting
+radius remains an editable sketch dimension.
+
+Focused adapter coverage is `sketch_fillet`; the GPU evidence example accepts
+`--sketch-fillet`. The opt-in Debug device argument `--sketch-fillet-check`
+exercises the real UIKit radius form, preview/cancel, invalid input and
+Apply/Undo/Redo on a disposable rectangle. It writes `sketch-fillet-check.json`
+and screenshots to the app's Documents folder. It injects software contacts;
+physical Pencil and finger input require separate observation.
+
 ## Prerequisites
 
 - macOS with full Xcode, an iPhoneOS SDK and Swift 5 language mode support.

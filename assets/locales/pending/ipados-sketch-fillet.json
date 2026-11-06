@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.sketch.fillet": "Abrunden",
+    "ui.ipados.sketch.fillet_hint": "Eine Ecke antippen oder zwei Kurven auswählen, dann den Radius eingeben."
+  },
+  "en": {
+    "ui.ipados.sketch.fillet": "Fillet",
+    "ui.ipados.sketch.fillet_hint": "Tap a corner, or select two curves, then enter a radius."
+  },
+  "ja": {
+    "ui.ipados.sketch.fillet": "フィレット",
+    "ui.ipados.sketch.fillet_hint": "角をタップするか、2つの曲線を選択して、半径を入力します。"
+  },
+  "ko": {
+    "ui.ipados.sketch.fillet": "필렛",
+    "ui.ipados.sketch.fillet_hint": "모서리를 탭하거나 곡선 두 개를 선택한 다음 반지름을 입력하세요."
+  },
+  "zh": {
+    "ui.ipados.sketch.fillet": "圆角",
+    "ui.ipados.sketch.fillet_hint": "轻点一个角，或选择两条曲线，然后输入半径。"
+  }
+}

@@ -88,6 +88,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--sketch-offset") {
         return sketch_offset_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--sketch-fillet") {
+        return sketch_fillet_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--sketch-rotation-snap") {
         return sketch_rotation_snap_proof(&destination);
     }
@@ -2363,6 +2366,61 @@ fn sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Actual native viewport input and shared GPU evidence, without a simulator.
+fn sketch_fillet_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-30,-20],"p1":[30,20],"connect":false}))?;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("view.navigate", &json!({"motion":"zoom","factor":1.5}))?;
+    view.command("tool.set", &json!({"tool":"sketch.fillet"}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, label: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("missing fillet frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{label}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{label}: {path}");
+        Ok(())
+    };
+    capture(&view, "before")?;
+    let p = view.command("view.project", &json!({"point":[30,20,0]}))?;
+    for phase in ["began", "ended"] {
+        view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":1,
+            "x_points":p["points"][0],"y_points":p["points"][1],"x_pixels":p["pixels"][0],"y_pixels":p["pixels"][1],
+            "scale":1,"timestamp":1.,"geometry_revision":p["geometry_revision"]}))?)?;
+    }
+    let mut params = engine.workspace(view.selection(), false, false)["sketch"]["fillet"]["params"].clone();
+    if !params.is_object() || view.take_tool_work().is_some() {
+        return Err("fillet did not select a corner without authoring geometry".into());
+    }
+    params["radius"] = json!("10 mm");
+    for (commit, label) in [(false, "preview"), (true, "committed")] {
+        view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":commit}))?;
+        let work = view.take_tool_work().ok_or("missing fillet proposal")?;
+        let prepared = engine.prepare_tool(work.clone())?;
+        let accepted = if commit { view.complete_tool(&work, engine.accept_tool(prepared)?) } else { view.publish_tool_preview(prepared) };
+        if !accepted {
+            return Err("fillet proposal rejected".into());
+        }
+        capture(&view, label)?;
+    }
+    for (revision, command, label, curves) in [(2, "edit.undo", "undo", 4), (3, "edit.redo", "redo", 5)] {
+        engine.execute(command, json!({}))?;
+        view.begin_update(revision);
+        view.install(revision, engine.snapshot()?);
+        if engine.snapshot()?.sketch.as_ref().is_none_or(|s| s.sketch.curves.len() != curves) {
+            return Err(format!("fillet {label} failed").into());
+        }
+        capture(&view, label)?;
+    }
+    println!("PASS: corner picked with synthetic Pencil, 10 mm fillet preview/commit and one-step undo/redo; macOS GPU, physical iPad unverified.");
+    Ok(())
+}
+
 fn sketch_offset_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = SessionAdapter::new();
     engine.execute("sketch.create", json!({"plane":"XY"}))?;

@@ -1064,6 +1064,7 @@ impl Viewport {
                     || (owner == Owner::Navigation
                         && (self.origin.choosing
                             || self.constraint_tool().is_some()
+                            || self.contacts.sketch.tool == "sketch.fillet"
                             || self.projection.is_some()
                             || self.modelling.as_ref().is_some_and(|edit| edit.selection_field.is_some())
                             || self.pick_reference(point).is_some()
@@ -1099,7 +1100,10 @@ impl Viewport {
                 // Accumulate real picks, while an ordinary empty-space tap
                 // clears the set without requiring a trip through Tools.
                 let reattaching = self.modelling.as_ref().is_some_and(|edit| edit.operation == "sketch.redefine");
-                let add = !reattaching && (e.shift || self.multiple && hit.is_some());
+                let fillet_pair = self.contacts.sketch.tool == "sketch.fillet"
+                    && matches!(hit, Some(Sel::SketchCurve { .. }))
+                    && matches!(self.selection.as_slice(), [Sel::SketchCurve { .. }]);
+                let add = !reattaching && (e.shift || self.multiple && hit.is_some() || fillet_pair);
                 if self.constraint_tool().is_some() {
                     // Ineligible geometry is still occupied space. Only a true
                     // miss dismisses the constraint tool.

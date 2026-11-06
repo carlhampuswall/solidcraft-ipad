@@ -191,6 +191,7 @@ impl SessionAdapter {
                     "sketch.trim",
                     "sketch.extend",
                     "sketch.offset",
+                    "sketch.fillet",
                 ]
                 .into_iter()
                 .map(|id| json!({"id":id,"enabled":!numeric,"reason":if numeric {Some("ui.ipados.workspace.finish_edit")} else {None}})),

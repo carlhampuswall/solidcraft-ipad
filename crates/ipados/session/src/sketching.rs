@@ -229,6 +229,22 @@ impl SessionAdapter {
             }
         }
         value["eligible_constraints"] = json!(constraint_actions(sk, selection));
+        // Translate native picks into the existing command's references. The
+        // engine validates the corner and constructs its exact tangent arc.
+        let fillet = if !selection.is_empty()
+            && selection.len() <= 500
+            && selection.iter().all(|s| matches!(s, Sel::SketchPoint { id } if sk.resolve_point(id).is_some()))
+        {
+            Some(json!({"points":selection.iter().filter_map(|s| match s { Sel::SketchPoint { id } => Some(id), _ => None }).collect::<Vec<_>>()}))
+        } else if let [Sel::SketchCurve { id: a, sketch: sa }, Sel::SketchCurve { id: b, sketch: sb }] = selection {
+            (sa.is_none_or(|s| s == id)
+                && sb.is_none_or(|s| s == id)
+                && [a, b].iter().all(|c| sk.curve_index(c).and_then(|i| sk.curves.get(i)).is_some_and(|c| c.kind.ends().is_some())))
+            .then(|| json!({"a":a,"b":b}))
+        } else {
+            None
+        };
+        value["fillet"] = json!(fillet.map(|params| json!({"command":"sketch.fillet","params":params})));
         let refs: Vec<_> = selection
             .iter()
             .filter_map(|s| match s {

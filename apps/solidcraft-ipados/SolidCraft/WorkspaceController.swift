@@ -85,7 +85,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         ("sketch.point", "draw_point"),
         ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"),
         ("sketch.circle.center", "circle"), ("sketch.arc.three_point", "arc"),
-        ("sketch.spline.fit_point", "spline"), ("sketch.offset", "offset"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
+        ("sketch.spline.fit_point", "spline"), ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
     ].map { id, label in
         (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
     }
@@ -177,6 +177,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let rotate: Bool
         let copy: Bool
         var offset = false
+        var fillet: WorkspaceConstraintAction?
         var chain = true
         var flip = false
     }
@@ -589,6 +590,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkReferenceDimensionsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-toolbar-check") {
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--sketch-fillet-check") {
+                    self.developmentCheckStarted = true; self.checkSketchFilletOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-projection-check") {
                     self.developmentCheckStarted = true; self.checkSketchProjectionOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-attachment-check") {
@@ -893,6 +896,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             edgeSelectorContext = (value.document_id, value.geometry_revision)
             inspectorOpen = true; browserOpen = false
             rebuildInspector(); relayoutPanels()
+        }
+        if active, pending.isEmpty, !numericEditing, !modellingEditing, presentedViewController == nil,
+           value.active_tool == "sketch.fillet", let fillet = value.sketch?.fillet {
+            beginTransform(entities: [], rotate: false, copy: false, fillet: fillet)
         }
     }
 
@@ -2974,6 +2981,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             button.accessibilityIdentifier = "workspace-constraint-" + key
             properties.addArrangedSubview(button)
         }
+        if let fillet = sketch.fillet {
+            let button = WorkspaceButton(SketchText.text("fillet")) { [weak self] in
+                self?.beginTransform(entities: [], rotate: false, copy: false, fillet: fillet)
+            }
+            button.commandArtwork("sketch.fillet")
+            button.accessibilityIdentifier = "workspace-sketch-fillet"
+            properties.addArrangedSubview(button)
+        }
         if !selection.isEmpty {
             properties.addArrangedSubview(WorkspaceButton(SketchText.text("delete_selected")) { [weak self] in
                 self?.run("sketch.delete", params: ["entities": selection.compactMap { entity -> String? in
@@ -3066,16 +3081,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func beginTransform(entities: [String], rotate: Bool, copy: Bool, offset: Bool = false) {
+    private func beginTransform(entities: [String], rotate: Bool, copy: Bool, offset: Bool = false, fillet: WorkspaceConstraintAction? = nil) {
         guard !numericEditing, let state else { return }
         canvas.cancelInput(); transformGeneration &+= 1
-        transformDraft = TransformDraft(entities: entities, rotate: rotate, copy: copy, offset: offset)
+        transformDraft = TransformDraft(entities: entities, rotate: rotate, copy: copy, offset: offset, fillet: fillet)
         numericContext = (state.document_id, state.geometry_revision)
         properties.arrangedSubviews.forEach { properties.removeArrangedSubview($0); $0.removeFromSuperview() }
         let title = WorkspaceStyle.label(.headline)
-        title.text = SketchText.text(offset ? "offset" : (rotate ? (copy ? "rotate_copy" : "rotate") : (copy ? "copy" : "translate")))
+        title.text = SketchText.text(fillet != nil ? "fillet" : (offset ? "offset" : (rotate ? (copy ? "rotate_copy" : "rotate") : (copy ? "copy" : "translate"))))
         properties.addArrangedSubview(title)
-        let fields = offset ? [("offset_distance", "length", "mm", "")] : rotate ? [("center_x", "length", "mm", "0 mm"), ("center_y", "length", "mm", "0 mm"), ("angle", "angle", "deg", "90 deg")] : [("delta_x", "length", "mm", "0 mm"), ("delta_y", "length", "mm", "0 mm")]
+        let fields = fillet != nil ? [("radius", "length", "mm", "")] : offset ? [("offset_distance", "length", "mm", "")] : rotate ? [("center_x", "length", "mm", "0 mm"), ("center_y", "length", "mm", "0 mm"), ("angle", "angle", "deg", "90 deg")] : [("delta_x", "length", "mm", "0 mm"), ("delta_y", "length", "mm", "0 mm")]
         transformEditors = fields.map { name, kind, units, expression in
             let heading = WorkspaceStyle.label(.body); heading.text = SketchText.text(name); properties.addArrangedSubview(heading)
             let field = NumericExpressionEditor(expression: expression, units: units, showsActions: false)
@@ -3098,6 +3113,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 draft.flip.toggle(); self.transformDraft = draft; flip?.active(draft.flip)
             }, for: .touchUpInside)
             properties.addArrangedSubview(flip)
+        }
+        if offset || fillet != nil {
             properties.addArrangedSubview(WorkspaceButton(WorkspaceStyle.text("preview")) { [weak self] in self?.evaluateTransform(commit: false) })
         }
         let message = WorkspaceMessage(); transformMessage = message; properties.addArrangedSubview(message)
@@ -3124,7 +3141,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .failure(let error): self.finishTransformEvaluation(error: error)
             case .success(let values):
                 var params: [String: Any] = ["entities": draft.entities, "copy": draft.copy]
-                if draft.offset {
+                if let fillet = draft.fillet {
+                    guard let expression = fields.first(where: { $0.name == "radius" })?.expression else { self.finishTransformEvaluation(error: BridgeError(code: "numeric_validation", message: WorkspaceStyle.text("numeric_required"))); return }
+                    params = fillet.dictionary
+                    params["radius"] = expression
+                } else if draft.offset {
                     guard let expression = fields.first(where: { $0.name == "offset_distance" })?.expression else { self.finishTransformEvaluation(error: BridgeError(code: "numeric_validation", message: WorkspaceStyle.text("numeric_required"))); return }
                     // Preserve the expression so the engine owns the driving parameter.
                     params = ["curves": draft.entities, "distance": expression, "chain": draft.chain, "flip": draft.flip]
@@ -3135,7 +3156,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     guard let x = values["delta_x"], let y = values["delta_y"] else { self.finishTransformEvaluation(error: BridgeError(code: "numeric_validation", message: WorkspaceStyle.text("numeric_required"))); return }
                     params["translate"] = [x, y]
                 }
-                self.session.proposeSketchTransform(command: draft.offset ? "sketch.offset" : "sketch.move", params: params, commit: commit) { [weak self] result in
+                self.session.proposeSketchTransform(command: draft.fillet?.command ?? (draft.offset ? "sketch.offset" : "sketch.move"), params: params, commit: commit) { [weak self] result in
                     guard let self, self.transformGeneration == expected else { return }
                     switch result {
                     case .failure(let error): self.finishTransformEvaluation(error: error)
@@ -3389,6 +3410,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         guard !numericEditing, state?.tools.first(where: { $0.id == tool })?.enabled == true else { return }
         if tool == "sketch.offset", let curves = state?.selection.filter({ $0.type == "sketch_curve" }).compactMap({ $0.id?.readout }), !curves.isEmpty {
             beginTransform(entities: curves, rotate: false, copy: false, offset: true); return
+        }
+        if tool == "sketch.fillet", let fillet = state?.sketch?.fillet {
+            beginTransform(entities: [], rotate: false, copy: false, fillet: fillet); return
         }
         run("tool.set", params: ["tool": tool])
         if tool == "post_radius" { inspectorOpen = true; browserOpen = false; view.setNeedsLayout() }
@@ -3942,7 +3966,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         moreButton.showsMenuAsPrimaryAction = true
         let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
                      ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
-                     ("sketch.offset", "offset"), ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
+                     ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
         var sketchActions: [UIMenuElement] = sketchTools.compactMap { id, label in
             guard state?.tools.contains(where: { $0.id == id && $0.enabled }) == true else { return nil }
             return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
@@ -5199,6 +5223,102 @@ private extension FoundationController {
             session.command(fixture[index].0, params: fixture[index].1) { result in
                 guard case .success = result else { issues.append("Fixture failed"); report(); return }
                 prepare(index + 1)
+            }
+        }
+        prepare(0)
+    }
+
+    /// Real UIKit form and engine workflow over a disposable sketch. Contacts
+    /// are software injected; this does not claim physical Pencil coverage.
+    private func checkSketchFilletOnDevice() {
+        let expected = generation
+        var issues: [String] = []
+        var finished = false
+        func capture(_ name: String) {
+            view.layoutIfNeeded()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                if let png = image.pngData() { try png.write(to: directory.appendingPathComponent("sketch-fillet-" + name + ".png"), options: .atomic) }
+            } catch { issues.append("capture: \(error)") }
+        }
+        func finish() {
+            guard !finished else { return }; finished = true
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                    "at": ISO8601DateFormatter().string(from: Date()),
+                    "coverage": "UIKit tool action, synthetic corner tap, radius preview, Cancel, invalid radius, Apply, Undo/Redo; physical contacts unverified"]
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("sketch-fillet-check.json"), options: .atomic)
+            } catch { print("Sketch fillet report failed: \(error)") }
+            print("Sketch fillet check " + (issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")))
+        }
+        func wait(_ stage: String, remaining: Int = 100, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+            guard active, generation == expected, !finished else { return }
+            if ready() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: next); return }
+            guard remaining > 0 else { issues.append("timed out: " + stage); finish(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(stage, remaining: remaining - 1, until: ready, then: next) }
+        }
+        func open(_ next: @escaping () -> Void) {
+            guard let button = sketchQuickTools.first(where: { $0.0 == "sketch.fillet" })?.1,
+                  button.configuration?.image != nil else { issues.append("Fillet toolbar artwork missing"); finish(); return }
+            button.sendActions(for: .touchUpInside)
+            wait("Fillet tool", until: { self.state?.active_tool == "sketch.fillet" && self.pending.isEmpty }) {
+                self.session.developmentSketchTap([30, 20, 0]) { result in
+                    guard case .success = result else { issues.append("corner tap failed"); finish(); return }
+                    self.session.refreshWorkspace()
+                    wait("radius form", until: { self.transformDraft?.fillet != nil && self.transformEditors.first?.name == "radius" }) { next() }
+                }
+            }
+        }
+        func apply() {
+            guard let radius = transformEditors.first?.editor else { issues.append("radius missing"); finish(); return }
+            radius.field.text = "100 mm"; evaluateTransform(commit: true)
+            wait("invalid radius", until: { !self.transformBusy }) {
+                guard self.transformDraft != nil, self.state?.sketch?.curves.count == 4 else {
+                    issues.append("invalid radius changed the sketch"); finish(); return
+                }
+                radius.field.text = "10 mm"; self.evaluateTransform(commit: true)
+                wait("Apply", until: { self.transformDraft == nil && self.state?.sketch?.curves.count == 5 && !self.canvas.displayingPreview }) {
+                    capture("applied")
+                    let dimensions = self.state?.sketch?.constraints.filter(\.dimension) ?? []
+                    if !dimensions.contains(where: { $0.expression == "10 mm" }) { issues.append("driving radius expression missing") }
+                    self.run("edit.undo")
+                    wait("Undo", until: { self.state?.sketch?.curves.count == 4 && self.pending.isEmpty }) {
+                        self.run("edit.redo")
+                        wait("Redo", until: { self.state?.sketch?.curves.count == 5 && self.pending.isEmpty }) { capture("redo"); finish() }
+                    }
+                }
+            }
+        }
+        func exercise() {
+            browserOpen = false; inspectorOpen = false; relayoutPanels()
+            capture("before")
+            open {
+                self.transformEditors.first?.editor.field.text = "10 mm"
+                self.evaluateTransform(commit: false)
+                wait("preview", until: { !self.transformBusy && self.canvas.displayingPreview }) {
+                    capture("preview")
+                    if self.state?.sketch?.curves.count != 4 { issues.append("preview authored geometry") }
+                    self.cancelTransform()
+                    wait("Cancel", until: { self.transformDraft == nil && self.state?.active_tool == "select" && !self.canvas.displayingPreview }) {
+                        if self.state?.sketch?.curves.count != 4 { issues.append("Cancel changed the sketch") }
+                        open(apply)
+                    }
+                }
+            }
+        }
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane":"XY"]),
+            ("sketch.rectangle.two_point", ["p0":[-30,-20], "p1":[30,20], "connect":false]), ("view.fit", [:])]
+        func prepare(_ index: Int) {
+            guard index < fixture.count else {
+                wait("fixture", until: { self.state?.sketch?.curves.count == 4 && self.pending.isEmpty }, then: exercise); return
+            }
+            session.command(fixture[index].0, params: fixture[index].1) { result in
+                guard case .success = result else { issues.append("fixture failed"); finish(); return }; prepare(index + 1)
             }
         }
         prepare(0)

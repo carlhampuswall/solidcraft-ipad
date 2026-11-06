@@ -47,6 +47,7 @@ struct WorkspaceSketch: Decodable {
     let constraints: [WorkspaceConstraint]
     let eligible_constraints: [WorkspaceConstraintAction]?
     let eligible_dimensions: [String]?
+    let fillet: WorkspaceConstraintAction?
     let profiles: [WorkspaceProfile]
     let curves: [WorkspaceSketchCurve]
     let report: Report?

@@ -5692,6 +5692,132 @@ fn sketch_trim_extend_and_transform_proposals_use_native_commands_once() {
 }
 
 #[test]
+fn sketch_fillet_corner_picking_previews_cancels_and_commits_one_undo_step() {
+    for plane in ["XY", "XZ", "YZ"] {
+        for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+            let (mut engine, mut view) = sketch_input_fixture(json!(plane), "sketch.fillet");
+            engine.execute("parameters.add", json!({"name":"corner_radius","expression":"4 mm"})).unwrap();
+            engine.execute("sketch.rectangle.two_point", json!({"p0":[-20,-15],"p1":[20,15],"connect":false})).unwrap();
+            view.begin_update(2);
+            view.install(2, engine.snapshot().unwrap());
+            let original = engine.sketch_snapshot().unwrap();
+            let undo = engine.session.undo.len();
+            let screen = point(&view, original.plane.to_world(solidcore_record::Vec2::new(20., 15.)));
+            feed(&mut view, source, InputPhase::Began, 1, screen, 1.);
+            feed(&mut view, source, InputPhase::Ended, 1, screen, 1.1);
+            assert!(matches!(view.selection(), [Sel::SketchPoint { .. }]), "{plane} {source:?}");
+            assert!(view.take_tool_work().is_none(), "picking must not author geometry");
+            let workspace = engine.workspace(view.selection(), false, false);
+            assert!(workspace["tools"].as_array().unwrap().iter().any(|t| t["id"] == "sketch.fillet" && t["enabled"] == true));
+            let mut params = workspace["sketch"]["fillet"]["params"].clone();
+            assert_eq!(params["points"].as_array().unwrap().len(), 1);
+            params["radius"] = json!("corner_radius");
+            view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":false})).unwrap();
+            assert!(!run_tool(&mut engine, &mut view));
+            assert_eq!(view.display_model().unwrap().sketch.as_ref().unwrap().sketch.curves.len(), 5);
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, original.sketch);
+            assert_eq!(engine.session.undo.len(), undo);
+            view.command("tool.cancel", &json!({})).unwrap();
+            assert_eq!(view.diagnostic()["input"]["tool"], "select");
+            assert_eq!(view.display_model().unwrap().sketch.as_ref().unwrap().sketch, original.sketch);
+            view.command("tool.set", &json!({"tool":"sketch.fillet"})).unwrap();
+            view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":true})).unwrap();
+            assert!(run_tool(&mut engine, &mut view));
+            assert_eq!(view.diagnostic()["input"]["tool"], "select");
+            let filleted = engine.sketch_snapshot().unwrap().sketch;
+            assert_eq!(filleted.curves.len(), 5);
+            assert!(filleted.curves.iter().any(|curve| match curve.kind {
+                solidcraft_engine::sketch::CurveKind::Arc { c, a, .. } =>
+                    (filleted.point(c).unwrap().dist(filleted.point(a).unwrap()) - 4.).abs() < 1e-8,
+                _ => false,
+            }));
+            let workspace = engine.workspace(&[], false, false);
+            let area = workspace["sketch"]["profiles"][0]["area_mm2"].as_f64().unwrap();
+            let expected = 1200. - (1. - std::f64::consts::FRAC_PI_4) * 16.;
+            assert!((area - expected).abs() < 1e-6, "{area} versus {expected}");
+            assert_eq!(engine.session.undo.len(), undo + 1);
+            engine.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, original.sketch);
+            engine.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, filleted);
+            engine.execute("parameters.change", json!({"name":"corner_radius","expression":"5 mm"})).unwrap();
+            let changed = engine.sketch_snapshot().unwrap().sketch;
+            assert!(changed.curves.iter().any(|curve| match curve.kind {
+                solidcraft_engine::sketch::CurveKind::Arc { c, a, .. } =>
+                    (changed.point(c).unwrap().dist(changed.point(a).unwrap()) - 5.).abs() < 1e-8,
+                _ => false,
+            }));
+            let reopened = modelling_roundtrip(&engine);
+            assert_eq!(reopened.session.doc, engine.session.doc);
+        }
+    }
+}
+
+#[test]
+fn sketch_fillet_curve_pair_and_multiple_corners_use_engine_references() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.fillet");
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-20,-15],"p1":[20,15],"connect":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    sketch_tap(&mut view, 1, [0., -15.]);
+    assert!(engine.workspace(view.selection(), false, false)["sketch"]["fillet"].is_null());
+    sketch_tap(&mut view, 2, [20., 0.]);
+    assert!(matches!(view.selection(), [Sel::SketchCurve { .. }, Sel::SketchCurve { .. }]));
+    assert!(view.take_tool_work().is_none());
+    let mut params = engine.workspace(view.selection(), false, false)["sketch"]["fillet"]["params"].clone();
+    assert!(params["a"].is_string() && params["b"].is_string());
+    params["radius"] = json!("3 mm");
+    view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":true})).unwrap();
+    assert!(run_tool(&mut engine, &mut view));
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 5);
+    engine.execute("edit.undo", json!({})).unwrap();
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    view.select(None, false);
+    view.command("tool.set", &json!({"tool":"sketch.fillet"})).unwrap();
+    view.command("select.multiple", &json!({"enabled":true})).unwrap();
+    sketch_tap(&mut view, 3, [-20., -15.]);
+    sketch_tap(&mut view, 4, [20., 15.]);
+    let mut params = engine.workspace(view.selection(), false, false)["sketch"]["fillet"]["params"].clone();
+    assert_eq!(params["points"].as_array().unwrap().len(), 2);
+    params["radius"] = json!("3 mm");
+    view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":true})).unwrap();
+    assert!(run_tool(&mut engine, &mut view));
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 6);
+}
+
+#[test]
+fn sketch_fillet_invalid_radius_and_stale_proposals_leave_the_document_unchanged() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.fillet");
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-20,-15],"p1":[20,15],"connect":false})).unwrap();
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    sketch_tap(&mut view, 1, [20., 15.]);
+    let mut params = engine.workspace(view.selection(), false, false)["sketch"]["fillet"]["params"].clone();
+    let before = engine.session.doc.clone();
+    let undo = engine.session.undo.len();
+    for radius in ["0 mm", "-1 mm", "100 mm", "missing_parameter"] {
+        params["radius"] = json!(radius);
+        view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":true})).unwrap();
+        let work = view.take_tool_work().unwrap();
+        assert!(engine.prepare_tool(work).is_err(), "{radius}");
+        assert!(Arc::ptr_eq(&before, &engine.session.doc));
+        assert_eq!(engine.session.undo.len(), undo);
+        view.command("tool.cancel", &json!({})).unwrap();
+    }
+    params["radius"] = json!("2 mm");
+    view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":true})).unwrap();
+    let work = view.take_tool_work().unwrap();
+    let prepared = engine.prepare_tool(work.clone()).unwrap();
+    engine.execute("sketch.point", json!({"point":[50,50]})).unwrap();
+    view.begin_update(3);
+    view.install(3, engine.snapshot().unwrap());
+    assert!(!view.tool_is_current(&work));
+    assert!(engine.accept_tool(prepared).is_err());
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 4);
+}
+
+#[test]
 fn sketch_offset_drag_previews_a_chain_and_commits_one_undo_step_on_each_plane() {
     for plane in ["XY", "XZ", "YZ"] {
         for y in [-5., 5.] {

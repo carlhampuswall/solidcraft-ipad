@@ -143,6 +143,7 @@ impl SketchInput {
             "sketch.trim" => "trim",
             "sketch.extend" => "extend",
             "sketch.offset" => "offset_hint",
+            "sketch.fillet" => "fillet_hint",
             "sketch.dimension" => "dimension_place",
             "sketch.point" => "point_place",
             "sketch.arc.three_point" if self.points.len() == 2 => "arc_through",
@@ -165,6 +166,11 @@ impl SketchInput {
             return;
         }
         self.points.clear();
+        if self.tool == "sketch.fillet"
+            && matches!(&work.operation, ToolOperation::Sketch { commands, .. } if commands.iter().any(|(id, _)| id == "sketch.fillet"))
+        {
+            self.tool = "select".into();
+        }
         if self.tool == "sketch.rectangle.two_point"
             && !self.repeat_rectangles
             && matches!(&work.operation, ToolOperation::Sketch { commands, .. } if commands.iter().any(|(id, _)| id == "sketch.rectangle.two_point"))
@@ -372,7 +378,7 @@ impl Viewport {
     }
 
     pub(crate) fn begin_sketch_input(&mut self, event: &InputEvent, screen: [f64; 2]) -> bool {
-        if self.constraint_tool().is_some() || self.projection.is_some() {
+        if self.constraint_tool().is_some() || self.projection.is_some() || self.contacts.sketch.tool == "sketch.fillet" {
             return false;
         }
         let direct = self.contacts.sketch.tool == "select" && self.direct_handles;
@@ -799,7 +805,9 @@ impl Viewport {
         let point = snapshot.plane.to_local(self.plane_point(screen, snapshot.plane)?);
         let tolerance = 10.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
         let curves_only = matches!(self.contacts.sketch.tool.as_str(), "sketch.delete" | "sketch.offset");
+        let fillet = self.contacts.sketch.tool == "sketch.fillet";
         if !curves_only
+            && !fillet
             && (!constraint_filter || self.constraint_tool().is_none())
             && let Some((id, _, _)) = self.visible_glyphs().into_iter().find(|(_, _, at)| at.dist(point) <= tolerance)
         {
@@ -807,6 +815,7 @@ impl Viewport {
         }
         let unit = 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
         if !curves_only
+            && !fillet
             && (!constraint_filter || self.constraint_tool().is_none())
             && let Some(c) = snapshot
                 .sketch
@@ -827,7 +836,12 @@ impl Viewport {
             .points
             .iter()
             .filter(|p| {
-                self.contacts.sketch.tool != "sketch.offset"
+                (!fillet
+                    || snapshot
+                        .sketch
+                        .resolve_point(&p.id)
+                        .is_some_and(|i| snapshot.sketch.curves.iter().any(|c| c.kind.ends().is_some_and(|(a, b)| a == i || b == i))))
+                    && self.contacts.sketch.tool != "sketch.offset"
                     && (!curves_only
                         || p.id != "origin"
                             && snapshot.sketch.resolve_point(&p.id).is_some_and(|i| !snapshot.sketch.curves.iter().any(|c| c.kind.uses(i))))
@@ -846,6 +860,9 @@ impl Viewport {
             .iter()
             .enumerate()
             .filter_map(|(i, c)| {
+                if fillet && c.kind.ends().is_none() {
+                    return None;
+                }
                 let distance = curve_distance(&snapshot.sketch, i, point);
                 distance.map(|d| (d, c))
             })
