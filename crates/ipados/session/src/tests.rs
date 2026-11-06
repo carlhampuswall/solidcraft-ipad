@@ -114,6 +114,83 @@ fn viewport_grid_toggle_preserves_references_camera_model_and_history_in_3d_and_
 }
 
 #[test]
+fn viewport_horizontal_grid_remains_on_the_ground_at_every_orbit_angle() {
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    assert_eq!(view.diagnostic()["grid"]["vertical"], false);
+    for up in [solidcraft_render::UpAxis::Z, solidcraft_render::UpAxis::Y] {
+        view.camera.up = up;
+        let normal = view.camera.from_frame(Vec3::Z);
+        for fov in [0., std::f64::consts::FRAC_PI_4] {
+            for yaw in [-2.4, -1.57, -0.8, 0., 0.9, 1.57, 2.8] {
+                for pitch in [-1.5, -0.3, -0.19, -0.01, 0., 0.01, 0.19, 0.3, 1.5] {
+                    view.camera.fov = fov;
+                    view.camera.yaw = yaw;
+                    view.camera.pitch = pitch;
+                    view.camera.roll = 0.4;
+                    view.changed();
+                    let frame = view.snapshot().unwrap();
+                    assert!(!frame.guides.grid.is_empty(), "ground remains generated even edge-on");
+                    assert!(frame.guides.grid.iter().flat_map(|line| &line.points).all(|point| point.dot(normal).abs() < 1e-8));
+                }
+            }
+        }
+    }
+    assert!(engine.session.undo.is_empty());
+}
+
+#[test]
+fn viewport_vertical_grid_is_additive_optional_and_validated_atomically() {
+    use solidcore_record::Plane;
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    view.command("view.front", &json!({})).unwrap();
+    let before = view.snapshot().unwrap();
+    let camera = view.diagnostic()["camera"].clone();
+    for invalid in [json!(null), json!("true"), json!(0), json!([])] {
+        let diagnostic = view.diagnostic();
+        assert!(view.command("view.grid", &json!({"visible":false,"integrated_axes":false,"vertical":invalid})).is_err());
+        assert_eq!(view.diagnostic(), diagnostic);
+    }
+    view.command("view.grid", &json!({"visible":true,"vertical":true})).unwrap();
+    let enabled = view.snapshot().unwrap();
+    assert_eq!(view.diagnostic()["grid"]["vertical"], true);
+    assert_eq!(view.diagnostic()["camera"], camera);
+    assert!(Arc::ptr_eq(&before.model, &enabled.model));
+    let line_key = |line: &solidcraft_render::SceneLine| (line.points.clone(), line.color, line.alpha, line.width, line.on_top);
+    let enabled_lines: Vec<_> = enabled.guides.grid.iter().map(&line_key).collect();
+    for ground_line in &before.guides.grid {
+        assert!(enabled_lines.contains(&line_key(ground_line)), "enabling vertical must preserve every horizontal grid line");
+    }
+    assert!(enabled.guides.grid.iter().any(|line| line.points.iter().any(|point| point.z.abs() > 1.)));
+    assert!(enabled.guides.grid.iter().all(|line| line.points.iter().all(|point| point.z.abs() < 1e-8 || point.y.abs() < 1e-8)));
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, true, true, true, false, false, false]));
+    view.command("view.grid", &json!({"visible":false})).unwrap();
+    assert!(view.snapshot().unwrap().guides.grid.is_empty());
+    assert_eq!(view.diagnostic()["grid"]["vertical"], true, "grid visibility preserves the vertical preference");
+    view.command("view.grid", &json!({"visible":true,"vertical":false})).unwrap();
+    assert_eq!(
+        view.snapshot().unwrap().guides.grid.iter().map(&line_key).collect::<Vec<_>>(),
+        before.guides.grid.iter().map(&line_key).collect::<Vec<_>>()
+    );
+    // Editing a sketch still uses that sketch's own plane, with either preference.
+    for vertical in [false, true] {
+        view.command("view.grid", &json!({"visible":true,"vertical":vertical})).unwrap();
+        view.command("view.sketch_plane", &json!({"plane":Plane::YZ})).unwrap();
+        let frame = view.snapshot().unwrap();
+        assert!(!frame.guides.grid.is_empty());
+        assert!(frame.guides.grid.iter().flat_map(|line| &line.points).all(|point| point.x.abs() < 1e-8));
+    }
+    assert!(engine.session.undo.is_empty());
+}
+
+#[test]
 fn viewport_integrated_axes_follow_the_visible_grid_plane_and_world_up_axis() {
     let mut engine = SessionAdapter::new();
     let mut view = Viewport::default();
@@ -125,11 +202,11 @@ fn viewport_integrated_axes_follow_the_visible_grid_plane_and_world_up_axis() {
     for (up, standard, expected) in [
         (solidcraft_render::UpAxis::Z, "view.isometric", [true, true, false]),
         (solidcraft_render::UpAxis::Z, "view.top", [true, true, false]),
-        (solidcraft_render::UpAxis::Z, "view.front", [true, false, true]),
-        (solidcraft_render::UpAxis::Z, "view.right", [false, true, true]),
+        (solidcraft_render::UpAxis::Z, "view.front", [true, true, false]),
+        (solidcraft_render::UpAxis::Z, "view.right", [true, true, false]),
         (solidcraft_render::UpAxis::Y, "view.top", [true, false, true]),
-        (solidcraft_render::UpAxis::Y, "view.front", [true, true, false]),
-        (solidcraft_render::UpAxis::Y, "view.right", [false, true, true]),
+        (solidcraft_render::UpAxis::Y, "view.front", [true, false, true]),
+        (solidcraft_render::UpAxis::Y, "view.right", [true, false, true]),
     ] {
         view.camera.up = up;
         view.command(standard, &json!({})).unwrap();
@@ -176,16 +253,16 @@ fn viewport_integrated_axis_overrides_survive_plane_changes_and_grid_visibility(
     view.command("view.origin", &json!({"item":"Z","visible":true})).unwrap();
     assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, true, true, false, false, false]));
     view.command("view.front", &json!({})).unwrap();
-    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, false, true, false, false, false]));
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, true, true, false, false, false]));
     view.command("view.grid", &json!({"visible":false})).unwrap();
     assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, false, true, false, false, false]), "explicit Show survives hidden grid");
     assert!(view.snapshot().unwrap().guides.grid.is_empty());
     view.command("view.origin", &json!({"item":"Z","visible":null})).unwrap();
     assert_eq!(view.diagnostic()["origin"]["visible"], json!(vec![false; 7]), "automatic axes follow the hidden grid");
     view.command("view.grid", &json!({"visible":true})).unwrap();
-    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, false, true, false, false, false]));
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, true, false, false, false, false]));
     view.command("view.origin", &json!({"item":"X","visible":null})).unwrap();
-    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, true, false, true, false, false, false]));
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, true, true, false, false, false, false]));
     assert!(Arc::ptr_eq(&before.model, &view.snapshot().unwrap().model));
     assert!(engine.session.undo.is_empty());
 }
@@ -304,6 +381,7 @@ fn viewport_origin_axes_stay_short_outside_the_current_visible_grid() {
     view.command("view.origin", &json!({"item":"Z","visible":true})).unwrap();
     assert_short_axis(&view, engine.geometry_revision, 2, "Z", Vec3::Z);
 
+    view.command("view.grid", &json!({"visible":true,"vertical":true})).unwrap();
     view.command("view.front", &json!({})).unwrap();
     let in_plane = view.snapshot().unwrap();
     assert!(in_plane.guides.lines.iter().filter(|line| !line.on_top).any(|line| line.points.iter().any(|point| point.z < -30.)));

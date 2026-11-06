@@ -239,6 +239,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var leftBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.leftBrowser") as? Bool ?? true
     private var diagnostics = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.diagnostics")
     private var gridVisible = UserDefaults.standard.object(forKey: "SolidCraft.workspace.gridVisible") as? Bool ?? true
+    private var verticalGrid = UserDefaults.standard.object(forKey: "SolidCraft.workspace.verticalGrid") as? Bool ?? false
     private var integratedGridAxes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.integratedGridAxes") as? Bool ?? true
     private var originInBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.originInBrowser") as? Bool ?? false
     private var resetChromeOffsets = false
@@ -663,7 +664,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .success:
                 self.failure = nil
                 self.updateCanvasAppearance()
-                self.session.command("view.grid", params: ["visible": self.gridVisible, "integrated_axes": self.integratedGridAxes])
+                self.session.command("view.grid", params: ["visible": self.gridVisible, "vertical": self.verticalGrid, "integrated_axes": self.integratedGridAxes])
                 self.session.command("view.touch_orbit", params: ["follows_viewpoint": self.viewpointOrbit])
                 self.session.command("view.touch_twist", params: ["enabled": self.twoFingerTwist])
                 self.session.command("view.sketch_rotation_snap", params: ["enabled": self.sketchRotationSnap])
@@ -1604,6 +1605,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func toggleVerticalGrid() {
+        guard !referencesLocked else { return }
+        let enabled = !(viewPresentation?.grid.vertical ?? verticalGrid)
+        viewControlPending = true; rebuildViewMenu()
+        canvas.cancelInput()
+        session.command("view.grid", params: ["visible": viewPresentation?.grid.visible ?? gridVisible, "vertical": enabled]) { [weak self] result in
+            guard let self else { return }
+            self.viewControlPending = false
+            if case .success = result {
+                self.verticalGrid = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.verticalGrid")
+            }
+            self.table.reloadData(); self.rebuildViewMenu()
+        }
+    }
+
     private func toggleIntegratedGridAxes() {
         guard !referencesLocked else { return }
         let enabled = !(viewPresentation?.grid.integrated_axes ?? integratedGridAxes)
@@ -1674,6 +1691,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         panel.onCommand = { [weak self] command in self?.runViewCommand(command) }
         panel.onPerspective = { [weak self] in self?.togglePerspective() }
         panel.onGrid = { [weak self] in self?.toggleGrid() }
+        panel.onVerticalGrid = { [weak self] in self?.toggleVerticalGrid() }
         panel.onIntegratedAxes = { [weak self] in self?.toggleIntegratedGridAxes() }
         panel.onOrigin = { [weak self] in self?.toggleOriginReferences() }
         panel.onReference = { [weak self] item, group, visible in self?.setOriginVisibility(item: item, group: group, visible: visible) }
@@ -6834,11 +6852,11 @@ private extension FoundationController {
     /// A fresh presented frame precedes every capture. No project is loaded/saved.
     private func checkGridAxesOnDevice() {
         let expected = generation
-        let savedOrigin = originVisibility, savedGrid = gridVisible, savedAxes = integratedGridAxes
+        let savedOrigin = originVisibility, savedGrid = gridVisible, savedAxes = integratedGridAxes, savedVertical = verticalGrid
         let savedAxisLabels = axisLabelsVisible
         let savedVisualPlanes = visualPlaneSelection, savedRevealPlanes = revealSketchPlanes
         let defaults = UserDefaults.standard
-        let keys = ["SolidCraft.workspace.originVisibility", "SolidCraft.workspace.gridVisible", "SolidCraft.workspace.integratedGridAxes", "SolidCraft.workspace.axisLabels"]
+        let keys = ["SolidCraft.workspace.originVisibility", "SolidCraft.workspace.gridVisible", "SolidCraft.workspace.integratedGridAxes", "SolidCraft.workspace.axisLabels", "SolidCraft.workspace.verticalGrid"]
         let savedDefaults = keys.map { defaults.object(forKey: $0) }
         let started = Date().timeIntervalSince1970
         let runID = UUID().uuidString
@@ -6877,12 +6895,12 @@ private extension FoundationController {
             gridAxesCheckAfterFrame = nil
             if planeChoosing || planeDraft != nil { cancelSketchPlane() }
             visualPlaneSelection = savedVisualPlanes; revealSketchPlanes = savedRevealPlanes
-            originVisibility = savedOrigin; gridVisible = savedGrid; integratedGridAxes = savedAxes
+            originVisibility = savedOrigin; gridVisible = savedGrid; integratedGridAxes = savedAxes; verticalGrid = savedVertical
             axisLabelsVisible = savedAxisLabels; showReferenceLabels(latestReferenceLabels)
             for (key, value) in zip(keys, savedDefaults) { defaults.set(value, forKey: key) }
             session.command("view.origin", params: ["visible": NSNull()])
             for (item, visible) in savedOrigin { session.command("view.origin", params: ["item": item, "visible": visible]) }
-            session.command("view.grid", params: ["visible": savedGrid, "integrated_axes": savedAxes])
+            session.command("view.grid", params: ["visible": savedGrid, "vertical": savedVertical, "integrated_axes": savedAxes])
             viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
             failure = nil; updateStatus(); rebuildViewMenu()
             save(issues.isEmpty ? "passed" : "failed")
@@ -6940,8 +6958,14 @@ private extension FoundationController {
                 self.viewControlPending = false; self.rebuildViewMenu()
                 check(self.integratedGridAxes, "busy grid-axis switch changed preference")
             }),
-            ("front", { control("front")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "front" && axes(["X", "Z"]) }, {}),
-            ("right", { control("right")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "right" && axes(["Y", "Z"]) }, {}),
+            ("front", { control("front")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "front" && axes(["X", "Y"]) }, {}),
+            ("vertical-enabled", { control("vertical-grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.vertical == true && axes(["X", "Y", "Z"]) }, {
+                check(defaults.bool(forKey: "SolidCraft.workspace.verticalGrid"), "vertical grid preference did not persist")
+            }),
+            ("right-vertical", { control("right")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "right" && axes(["X", "Y", "Z"]) }, {}),
+            ("vertical-disabled", { control("vertical-grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.vertical == false && axes(["X", "Y"]) }, {
+                check(!defaults.bool(forKey: "SolidCraft.workspace.verticalGrid"), "disabled vertical grid preference did not persist")
+            }),
             ("isometric", { control("isometric")?.sendActions(for: .primaryActionTriggered) }, { self.viewPresentation?.camera.standardView == "isometric" && axes(["X", "Y"]) }, {}),
             ("isometric-z", {
                 control("individual-references")?.sendActions(for: .primaryActionTriggered)
@@ -7004,9 +7028,9 @@ private extension FoundationController {
             self.session.command("view.origin", params: ["visible": NSNull()]) { result in
                 if case .failure(let error) = result { finish(error.description); return }
                 self.originVisibility = [:]
-                self.session.command("view.grid", params: ["visible": true, "integrated_axes": true]) { result in
+                self.session.command("view.grid", params: ["visible": true, "vertical": false, "integrated_axes": true]) { result in
                     if case .failure(let error) = result { finish(error.description); return }
-                    self.gridVisible = true; self.integratedGridAxes = true
+                    self.gridVisible = true; self.integratedGridAxes = true; self.verticalGrid = false
                     self.axisLabelsVisible = false; self.showReferenceLabels(self.latestReferenceLabels)
                     self.showViewControls()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {

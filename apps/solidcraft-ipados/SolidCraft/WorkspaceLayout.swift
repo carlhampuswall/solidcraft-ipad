@@ -1045,7 +1045,7 @@ enum ViewPopoverLayout {
 /// Preferences describe overrides, never whether an automatic guide is visible.
 struct ViewControlsPresentation: Decodable, Equatable {
     struct Origin: Decodable, Equatable { let visible: [Bool]; let choosing: Bool }
-    struct Grid: Decodable, Equatable { let visible: Bool; let integrated_axes: Bool }
+    struct Grid: Decodable, Equatable { let visible: Bool; let vertical: Bool; let integrated_axes: Bool }
     struct Camera: Decodable, Equatable {
         let fov: Double
         let yaw: Double?

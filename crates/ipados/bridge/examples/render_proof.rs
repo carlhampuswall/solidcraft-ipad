@@ -899,12 +899,23 @@ fn grid_axes_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> 
     view.command("view.top", &json!({}))?;
     let top = capture(&view, "top", [true, true, false])?;
     view.command("view.front", &json!({}))?;
-    let front = capture(&view, "front", [true, false, true])?;
+    let front = capture(&view, "front-horizontal", [true, true, false])?;
     view.command("view.right", &json!({}))?;
-    let right = capture(&view, "right", [false, true, true])?;
+    let right = capture(&view, "right-horizontal", [true, true, false])?;
     if top == front || front == right || right == top {
         return Err("principal grid images did not show their different axis colours".into());
     }
+    view.command("view.navigate", &json!({"direction":[0.8,0.6,0.12]}))?;
+    let shallow = capture(&view, "shallow-horizontal", [true, true, false])?;
+    view.command("view.grid", &json!({"visible":true,"vertical":true}))?;
+    if capture(&view, "shallow-vertical-enabled", [true; 3])? == shallow {
+        return Err("optional vertical grid did not change the shallow-angle rendering".into());
+    }
+    view.command("view.front", &json!({}))?;
+    capture(&view, "front-vertical-enabled", [true; 3])?;
+    view.command("view.right", &json!({}))?;
+    capture(&view, "right-vertical-enabled", [true; 3])?;
+    view.command("view.grid", &json!({"visible":true,"vertical":false}))?;
     view.command("view.isometric", &json!({}))?;
     view.command("view.origin", &json!({"item":"Z","visible":true}))?;
     require_short_axis(&view, Vec3::Z)?;

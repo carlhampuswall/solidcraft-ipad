@@ -1,0 +1,34 @@
+{
+  "en": {
+    "ui.ipados.view.vertical_grid": "Vertical grid",
+    "ui.ipados.view.vertical_grid_help": "Add a vertical grid near side views. The horizontal grid stays on the ground at every angle."
+  },
+  "ar": {
+    "ui.ipados.view.vertical_grid": "شبكة عمودية",
+    "ui.ipados.view.vertical_grid_help": "إضافة شبكة عمودية بالقرب من المناظر الجانبية. تبقى الشبكة الأفقية على الأرض عند كل زاوية."
+  },
+  "de": {
+    "ui.ipados.view.vertical_grid": "Vertikales Raster",
+    "ui.ipados.view.vertical_grid_help": "Bei Seitenansichten ein vertikales Raster ergänzen. Das horizontale Raster bleibt bei jedem Winkel auf dem Boden."
+  },
+  "he": {
+    "ui.ipados.view.vertical_grid": "רשת אנכית",
+    "ui.ipados.view.vertical_grid_help": "הוספת רשת אנכית ליד מבטי צד. הרשת האופקית נשארת על הקרקע בכל זווית."
+  },
+  "ja": {
+    "ui.ipados.view.vertical_grid": "垂直グリッド",
+    "ui.ipados.view.vertical_grid_help": "側面に近い視点で垂直グリッドを追加します。水平グリッドはどの角度でも地面に表示されます。"
+  },
+  "ko": {
+    "ui.ipados.view.vertical_grid": "수직 그리드",
+    "ui.ipados.view.vertical_grid_help": "측면에 가까운 뷰에서 수직 그리드를 추가합니다. 수평 그리드는 모든 각도에서 바닥에 유지됩니다."
+  },
+  "vi": {
+    "ui.ipados.view.vertical_grid": "Lưới dọc",
+    "ui.ipados.view.vertical_grid_help": "Thêm lưới dọc gần góc nhìn bên. Lưới ngang luôn nằm trên mặt đất ở mọi góc nhìn."
+  },
+  "zh": {
+    "ui.ipados.view.vertical_grid": "垂直网格",
+    "ui.ipados.view.vertical_grid_help": "接近侧视角时添加垂直网格。水平网格在任何角度都保持在地面上。"
+  }
+}

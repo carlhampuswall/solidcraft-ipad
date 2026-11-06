@@ -77,6 +77,14 @@ mutually exclusive; invalid requests apply no changes. UIKit's **All axes** and
 **All planes** controls save the resulting per-item overrides under the existing
 `SolidCraft.workspace.originVisibility` preference.
 
+The horizontal grid stays on the ground plane at every camera angle, respecting
+the camera's world-up axis. `view.grid` also accepts an optional boolean
+`vertical` (default `false`), returned as `grid.vertical`. **View > Vertical grid**
+saves this option under `SolidCraft.workspace.verticalGrid`. Enabling it adds the
+previous automatic upright grid near side views while retaining the horizontal
+grid. The Grid switch controls both; changing visibility preserves the vertical
+option. Sketch editing continues to use the active sketch plane with either value.
+
 `view.choose_sketch_plane` accepts an optional boolean `reveal_hidden` (default
 `true`) to reveal XY/XZ/YZ targets for the picker without changing saved overrides.
 Preview, creation and cancellation clear this temporary reveal. Invalid parameter

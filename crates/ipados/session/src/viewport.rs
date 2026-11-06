@@ -61,13 +61,14 @@ struct HighlightKey {
 #[derive(Clone, Copy, PartialEq)]
 struct GridStyle {
     visible: bool,
+    vertical: bool,
     integrated_axes: bool,
     colors: Option<[Rgb; 2]>,
 }
 
 impl Default for GridStyle {
     fn default() -> Self {
-        Self { visible: true, integrated_axes: true, colors: None }
+        Self { visible: true, vertical: false, integrated_axes: true, colors: None }
     }
 }
 
@@ -315,14 +316,21 @@ impl Viewport {
         }
         if id == "view.grid" {
             let visible: bool = serde_json::from_value(params["visible"].clone()).map_err(|e| error("bad_params", e.to_string()))?;
+            let vertical = params
+                .get("vertical")
+                .map(|value| serde_json::from_value::<bool>(value.clone()))
+                .transpose()
+                .map_err(|e| error("bad_params", e.to_string()))?
+                .unwrap_or(self.grid.vertical);
             let integrated_axes = params
                 .get("integrated_axes")
                 .map(|value| serde_json::from_value::<bool>(value.clone()))
                 .transpose()
                 .map_err(|e| error("bad_params", e.to_string()))?
                 .unwrap_or(self.grid.integrated_axes);
-            if self.grid.visible != visible || self.grid.integrated_axes != integrated_axes {
+            if self.grid.visible != visible || self.grid.vertical != vertical || self.grid.integrated_axes != integrated_axes {
                 self.grid.visible = visible;
+                self.grid.vertical = vertical;
                 self.grid.integrated_axes = integrated_axes;
                 self.changed();
             }
@@ -951,7 +959,7 @@ impl Viewport {
             "background":self.background.map(|color| [color.0,color.1,color.2]),
             "sketch_color":self.sketch_color.map(|color| [color.0,color.1,color.2]),
             "constrained_green":self.constrained_green,
-            "grid":{"visible":self.grid.visible,"integrated_axes":self.grid.integrated_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
+            "grid":{"visible":self.grid.visible,"vertical":self.grid.vertical,"integrated_axes":self.grid.integrated_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
             "touch_orbit":{"follows_viewpoint":self.touch_orbit_follows_viewpoint},
             "touch_twist":{"enabled":self.two_finger_twist},
             "sketch_rotation_snap":{"enabled":self.sketch_rotation_snap},
@@ -1005,8 +1013,11 @@ impl Viewport {
 
     pub(crate) fn changed(&mut self) {
         let plane = self.plane_preview.or_else(|| self.model.as_ref().and_then(|m| m.sketch_plane));
-        let grid = GuideGrid::new(&self.camera, plane);
-        let automatic = [Vec3::X, Vec3::Y, Vec3::Z].map(|axis| self.grid.integrated_axes && self.grid.visible && grid.contains_axis(axis));
+        let automatic = [Vec3::X, Vec3::Y, Vec3::Z].map(|axis| {
+            self.grid.integrated_axes
+                && self.grid.visible
+                && GuideGrid::for_view(&self.camera, plane, self.grid.vertical).any(|grid| grid.contains_axis(axis))
+        });
         self.origin.set_grid_axes(automatic);
         self.update_reference_feedback();
         self.scene_revision = self.scene_revision.saturating_add(1);
@@ -1309,11 +1320,23 @@ struct GuideGrid {
 }
 
 impl GuideGrid {
-    fn new(camera: &Camera, sketch_plane: Option<Plane>) -> Self {
-        let plane = sketch_plane.unwrap_or_else(|| {
-            let (x, y) = view::grid_plane(camera.to_frame(camera.back()), view::GridPlane::Ground).axes();
+    /// Keep the ground at every orbit angle. The optional upright guide uses
+    /// the shared near-side-view rule and never replaces the ground. Sketches
+    /// retain their own plane rather than acquiring unrelated world grids.
+    fn for_view(camera: &Camera, sketch_plane: Option<Plane>, vertical: bool) -> impl Iterator<Item = Self> {
+        let world_plane = |plane: view::GridPlane| {
+            let (x, y) = plane.axes();
             Plane { origin: Vec3::ZERO, x: camera.from_frame(x), y: camera.from_frame(y) }
-        });
+        };
+        let ground = sketch_plane.unwrap_or_else(|| world_plane(view::GridPlane::Ground));
+        let upright = (vertical && sketch_plane.is_none())
+            .then(|| view::grid_plane(camera.to_frame(camera.back()), view::GridPlane::Ground))
+            .filter(|plane| *plane != view::GridPlane::Ground)
+            .map(world_plane);
+        [Some(ground), upright].into_iter().flatten().map(move |plane| Self::new(camera, plane))
+    }
+
+    fn new(camera: &Camera, plane: Plane) -> Self {
         let (minor, major) = view::grid_step(camera.half_height());
         let target = camera.target - plane.origin;
         let center =
@@ -1334,15 +1357,16 @@ impl GuideGrid {
 
 impl Viewport {
     pub(crate) fn axis_drawn_in_grid(&self, axis: Vec3) -> bool {
-        self.grid.integrated_axes && self.grid.visible && GuideGrid::new(&self.camera, None).contains_axis(axis)
+        self.grid.integrated_axes
+            && self.grid.visible
+            && GuideGrid::for_view(&self.camera, None, self.grid.vertical).any(|grid| grid.contains_axis(axis))
     }
 
     pub(crate) fn reference_axis_segment(&self, axis: Vec3, legacy_extent: f64) -> Option<[Vec3; 2]> {
         if !self.grid.integrated_axes {
             return Some([Vec3::ZERO, axis * legacy_extent]);
         }
-        if self.axis_drawn_in_grid(axis) {
-            let grid = GuideGrid::new(&self.camera, None);
+        if let Some(grid) = GuideGrid::for_view(&self.camera, None, self.grid.vertical).find(|grid| self.grid.visible && grid.contains_axis(axis)) {
             let along = grid.center.dot(axis);
             let offset = (grid.center - axis * along).len();
             let extent2 = grid.fade.end * grid.fade.end - offset * offset;
@@ -1364,58 +1388,61 @@ fn guides(camera: &Camera, metrics: ViewportMetrics, sketch_plane: Option<Plane>
     let mut scene = Scene::default();
     let palette = view::Palette::DEFAULT;
     let [grid_minor, grid_major] = grid.colors.unwrap_or([palette.grid, palette.grid_major]);
-    let GuideGrid { plane, center, minor, major, fade } = GuideGrid::new(camera, sketch_plane);
-    let (u, v) = (plane.x, plane.y);
-    let count = ((fade.end / minor) as i64).clamp(1, 200);
-    for i in (-count..=count).filter(|_| grid.visible) {
-        let offset = i as f64 * minor;
-        let color = if (offset / major).fract().abs() < 1e-9 { grid_major } else { grid_minor };
-        for (along, across) in [(u, v), (v, u)] {
-            let index = GuideGrid::axis_index(along, if along == u { 0 } else { 1 });
-            let zero = (center - plane.origin).dot(across) + offset;
-            if grid.integrated_axes && axes[index] && zero.abs() < minor * 1e-6 {
-                continue;
-            }
-            for (a, b, alpha) in fade.pieces(offset) {
-                scene.grid.push(SceneLine {
-                    points: [a, b].into_iter().map(|n| center + across * offset + along * n).collect(),
-                    color,
-                    alpha,
-                    width: metrics.scale,
-                    on_top: false,
-                });
+    let mut drawn_axes = [false; 3];
+    for GuideGrid { plane, center, minor, major, fade } in GuideGrid::for_view(camera, sketch_plane, grid.vertical) {
+        let (u, v) = (plane.x, plane.y);
+        let count = ((fade.end / minor) as i64).clamp(1, 200);
+        for i in (-count..=count).filter(|_| grid.visible) {
+            let offset = i as f64 * minor;
+            let color = if (offset / major).fract().abs() < 1e-9 { grid_major } else { grid_minor };
+            for (along, across) in [(u, v), (v, u)] {
+                let index = GuideGrid::axis_index(along, if along == u { 0 } else { 1 });
+                let zero = (center - plane.origin).dot(across) + offset;
+                if grid.integrated_axes && axes[index] && zero.abs() < minor * 1e-6 {
+                    continue;
+                }
+                for (a, b, alpha) in fade.pieces(offset) {
+                    scene.grid.push(SceneLine {
+                        points: [a, b].into_iter().map(|n| center + across * offset + along * n).collect(),
+                        color,
+                        alpha,
+                        width: metrics.scale,
+                        on_top: false,
+                    });
+                }
             }
         }
-    }
-    if grid.integrated_axes {
-        // Generate zero lines directly so axes remain present after a large pan,
-        // independently of the neutral grid's bounded line count.
-        for (fallback, (along, across)) in [(u, v), (v, u)].into_iter().enumerate() {
-            let index = GuideGrid::axis_index(along, fallback);
-            if !axes[index] || !grid.visible {
-                continue;
+        if grid.integrated_axes {
+            // Generate zero lines directly so axes remain present after a large pan,
+            // independently of the neutral grid's bounded line count.
+            for (fallback, (along, across)) in [(u, v), (v, u)].into_iter().enumerate() {
+                let index = GuideGrid::axis_index(along, fallback);
+                if !axes[index] || !grid.visible || drawn_axes[index] {
+                    continue;
+                }
+                drawn_axes[index] = true;
+                let offset = (plane.origin - center).dot(across);
+                for (a, b, alpha) in fade.pieces(offset) {
+                    scene.lines.push(SceneLine {
+                        points: [a, b].into_iter().map(|n| center + across * offset + along * n).collect(),
+                        color: axis_colors[index],
+                        alpha,
+                        width: 1.5 * metrics.scale,
+                        on_top: false,
+                    });
+                }
             }
-            let offset = (plane.origin - center).dot(across);
-            for (a, b, alpha) in fade.pieces(offset) {
+        } else if let Some(plane) = sketch_plane {
+            let extent = camera.half_height() * 2.0;
+            for (axis, color) in [plane.x, plane.y].into_iter().zip(palette.axes) {
                 scene.lines.push(SceneLine {
-                    points: [a, b].into_iter().map(|n| center + across * offset + along * n).collect(),
-                    color: axis_colors[index],
-                    alpha,
+                    points: vec![plane.origin - axis * extent, plane.origin + axis * extent],
+                    color,
+                    alpha: 1.0,
                     width: 1.5 * metrics.scale,
                     on_top: false,
                 });
             }
-        }
-    } else if let Some(plane) = sketch_plane {
-        let extent = camera.half_height() * 2.0;
-        for (axis, color) in [plane.x, plane.y].into_iter().zip(palette.axes) {
-            scene.lines.push(SceneLine {
-                points: vec![plane.origin - axis * extent, plane.origin + axis * extent],
-                color,
-                alpha: 1.0,
-                width: 1.5 * metrics.scale,
-                on_top: false,
-            });
         }
     }
     let [w, h] = metrics.pixels();
