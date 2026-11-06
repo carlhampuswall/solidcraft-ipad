@@ -852,6 +852,12 @@ viewport diagnostic, including automatic plane-choice visibility. Saved override
 change only after command success. Edits and pending commands disable the
 corresponding controls.
 
+Create sketch temporarily reveals hidden XY, XZ and YZ planes in the visual
+plane picker. Cancelling, previewing a plane or starting the sketch restores the
+saved visibility overrides. Axes and the origin point retain explicit Hide.
+The More menu's **Show hidden planes when creating sketches** preference is on
+by default; turning it off preserves the previous picker visibility behavior.
+
 Individual references opens a second page in the same popover and retains the
 origin point, per-axis and per-plane switches, axes/planes groups, Show all/Hide
 all, Automatic, and the origin-in-model preference. Back returns to the View page.

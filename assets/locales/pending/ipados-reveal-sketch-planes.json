@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.sketch.reveal_hidden_planes": "Ausgeblendete Ebenen beim Erstellen von Skizzen anzeigen",
+    "ui.ipados.sketch.reveal_hidden_planes_help": "Ebenen vorübergehend zur Auswahl anzeigen. Deaktivieren, um ausgeblendete Ebenen auch bei der Auswahl ausgeblendet zu lassen."
+  },
+  "en": {
+    "ui.ipados.sketch.reveal_hidden_planes": "Show hidden planes when creating sketches",
+    "ui.ipados.sketch.reveal_hidden_planes_help": "Temporarily show planes for selection. Turn off to keep hidden planes hidden in the picker."
+  },
+  "ja": {
+    "ui.ipados.sketch.reveal_hidden_planes": "スケッチ作成時に非表示の平面を表示",
+    "ui.ipados.sketch.reveal_hidden_planes_help": "選択する平面を一時的に表示します。オフにすると、選択時も非表示の平面は表示されません。"
+  },
+  "ko": {
+    "ui.ipados.sketch.reveal_hidden_planes": "스케치 생성 시 숨겨진 평면 표시",
+    "ui.ipados.sketch.reveal_hidden_planes_help": "선택할 수 있도록 평면을 일시적으로 표시합니다. 끄면 선택기에서도 숨겨진 평면이 표시되지 않습니다."
+  },
+  "zh": {
+    "ui.ipados.sketch.reveal_hidden_planes": "创建草图时显示隐藏的平面",
+    "ui.ipados.sketch.reveal_hidden_planes_help": "临时显示平面以供选择。关闭后，选择器中的隐藏平面仍保持隐藏。"
+  }
+}

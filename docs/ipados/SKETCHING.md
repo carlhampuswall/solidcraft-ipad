@@ -294,8 +294,10 @@ for origin references. **Origin controls in Model** restores the optional browse
 rows and their eye controls. Automatic is the default: references
 appear while choosing a sketch plane and hide when the chooser is cancelled or
 the sketch starts. The active sketch retains its own planar axes/grid. Explicit
-Show/Hide choices override automatic visibility, including while choosing a
-plane; reset to Automatic to clear those choices. These native view preferences
+Show/Hide choices override automatic visibility outside the plane picker. The
+picker temporarily reveals XY/XZ/YZ even when hidden; **Show hidden planes when
+creating sketches** can be turned off to retain the previous behavior. Reset to
+Automatic to clear saved overrides. These native view preferences
 persist in UserDefaults and do not edit the design or its undo history. The
 world-space guides use the shared palette/camera and existing `Sel::Plane`,
 `Sel::Axis` and origin `Sel::Vertex` identities. They hide during sketch editing
@@ -310,8 +312,12 @@ the previous always-visible setting. Disable **Tools > Select sketch planes in
 the pre-chooser camera and never creates a feature. Only **Create on this plane**
 executes `sketch.create` and adds one native undo step.
 
-Native viewport commands: `view.choose_sketch_plane {}` starts the interactive
-picker; `view.origin {visible:bool|null,item?:O|X|Y|Z|XY|XZ|YZ,group?:axes|planes}`
+Native viewport commands: `view.choose_sketch_plane {reveal_hidden?:bool}` starts
+the interactive picker. By default it temporarily reveals hidden XY/XZ/YZ planes
+without changing saved visibility. `reveal_hidden:false` preserves explicit Hide
+overrides; the native **Show hidden planes when creating sketches** preference
+controls this parameter. Visibility controls used inside the picker still apply.
+`view.origin {visible:bool|null,item?:O|X|Y|Z|XY|XZ|YZ,group?:axes|planes}`
 updates guide visibility (`null` restores automatic visibility for the item,
 group or all items; `item` and `group` are mutually exclusive);
 `view.cancel_plane {}` restores the previous view. These are presentation commands,

@@ -25,6 +25,8 @@ pub(crate) struct OriginReferences {
     #[serde(skip)]
     overrides: [Option<bool>; 7],
     #[serde(skip)]
+    revealed: [bool; 7],
+    #[serde(skip)]
     grid_axes: [bool; 3],
     #[serde(skip)]
     pub dirty: bool,
@@ -43,6 +45,7 @@ impl Default for OriginReferences {
             choosing: false,
             legacy_planes: false,
             overrides: [None; 7],
+            revealed: [false; 7],
             grid_axes: [false; 3],
             dirty: true,
             selection: Vec::new(),
@@ -54,7 +57,8 @@ impl Default for OriginReferences {
 
 impl OriginReferences {
     fn refresh_visibility(&mut self) {
-        self.visible = std::array::from_fn(|i| self.overrides[i].unwrap_or(self.choosing || (1..4).contains(&i) && self.grid_axes[i - 1]));
+        self.visible =
+            std::array::from_fn(|i| self.revealed[i] || self.overrides[i].unwrap_or(self.choosing || (1..4).contains(&i) && self.grid_axes[i - 1]));
         self.dirty = true;
     }
 
@@ -77,6 +81,7 @@ impl OriginReferences {
 
     pub fn set_choosing(&mut self, choosing: bool) {
         self.choosing = choosing;
+        self.revealed.fill(false);
         self.refresh_visibility();
     }
 
@@ -136,7 +141,11 @@ impl Viewport {
                 } else {
                     0..ITEMS.len()
                 };
-                self.origin.overrides.get_mut(range).ok_or_else(|| error("bad_params", "ui.ipados.sketch.reference_unknown"))?.fill(visible);
+                self.origin.overrides.get_mut(range.clone()).ok_or_else(|| error("bad_params", "ui.ipados.sketch.reference_unknown"))?.fill(visible);
+                // A visibility control used after opening the picker still wins.
+                if let Some(revealed) = self.origin.revealed.get_mut(range) {
+                    revealed.fill(false);
+                }
                 self.origin.refresh_visibility();
                 self.selection.retain(|s| match s {
                     Sel::Plane { .. } | Sel::Axis { .. } => false,
@@ -146,6 +155,11 @@ impl Viewport {
                 self.cancel_interactions();
             }
             "view.choose_sketch_plane" => {
+                let reveal_hidden = match params.get("reveal_hidden") {
+                    None => true,
+                    Some(Value::Bool(value)) => *value,
+                    _ => return Err(error("bad_params", "ui.ipados.sketch.reference_visibility_boolean")),
+                };
                 if self.updating || self.numeric.is_some() || self.modelling.is_some() || self.model.as_ref().is_none_or(|m| m.sketch.is_some()) {
                     return Err(error("disabled", "ui.ipados.workspace.finish_edit"));
                 }
@@ -155,6 +169,12 @@ impl Viewport {
                 }
                 self.plane_preview = None;
                 self.origin.set_choosing(true);
+                // Reveal the plane targets for this interaction only. Saved Hide
+                // overrides return when preview, creation or cancellation ends it.
+                if reveal_hidden {
+                    self.origin.revealed = [false, false, false, false, true, true, true];
+                    self.origin.refresh_visibility();
+                }
                 self.contacts.radius_tool = false;
                 self.planar = false;
                 self.selection.clear();

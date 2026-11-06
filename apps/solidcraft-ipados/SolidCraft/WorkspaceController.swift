@@ -253,6 +253,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var automaticExtrudeDepth = UserDefaults.standard.bool(forKey: ModellingFormPresentation.automaticExtrudeDepthKey)
     private var edgeLengthReadout = EdgeLengthReadout.restored(UserDefaults.standard.object(forKey: EdgeLengthReadout.key) as? Bool)
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
+    private var revealSketchPlanes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.revealSketchPlanes") as? Bool ?? true
     private var legacyOriginPlanes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.legacyOriginPlanes")
     private var axisLabelsVisible = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.axisLabels")
     private var originVisibility = UserDefaults.standard.dictionary(forKey: "SolidCraft.workspace.originVisibility") as? [String: Bool] ?? [:]
@@ -2699,7 +2700,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
             planeChoosing = true
             canvas.cancelInput(); inspectorOpen = false; browserOpen = false
-            session.command("view.choose_sketch_plane") { [weak self] result in
+            session.command("view.choose_sketch_plane", params: ["reveal_hidden": revealSketchPlanes]) { [weak self] result in
                 guard let self else { return }
                 if case .failure = result { self.planeChoosing = false }
                 self.rebuildInspector(); self.updateStatus(); self.updateAvailability()
@@ -3807,6 +3808,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             guard let self else { return }
             self.visualPlaneSelection.toggle()
             UserDefaults.standard.set(self.visualPlaneSelection, forKey: "SolidCraft.workspace.visualPlaneSelection")
+            if self.planeChoosing { self.cancelSketchPlane() }
+            self.rebuildMenus()
+        })
+        moreActions.append(UIAction(title: SketchText.text("reveal_hidden_planes"), subtitle: SketchText.text("reveal_hidden_planes_help"),
+                                    state: revealSketchPlanes ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.revealSketchPlanes.toggle()
+            UserDefaults.standard.set(self.revealSketchPlanes, forKey: "SolidCraft.workspace.revealSketchPlanes")
             if self.planeChoosing { self.cancelSketchPlane() }
             self.rebuildMenus()
         })
@@ -6288,6 +6297,7 @@ private extension FoundationController {
         let expected = generation
         let savedOrigin = originVisibility, savedGrid = gridVisible, savedAxes = integratedGridAxes
         let savedAxisLabels = axisLabelsVisible
+        let savedVisualPlanes = visualPlaneSelection, savedRevealPlanes = revealSketchPlanes
         let defaults = UserDefaults.standard
         let keys = ["SolidCraft.workspace.originVisibility", "SolidCraft.workspace.gridVisible", "SolidCraft.workspace.integratedGridAxes", "SolidCraft.workspace.axisLabels"]
         let savedDefaults = keys.map { defaults.object(forKey: $0) }
@@ -6326,6 +6336,8 @@ private extension FoundationController {
             guard !finished else { return }; finished = true
             if let error { issues.append(error) }
             gridAxesCheckAfterFrame = nil
+            if planeChoosing || planeDraft != nil { cancelSketchPlane() }
+            visualPlaneSelection = savedVisualPlanes; revealSketchPlanes = savedRevealPlanes
             originVisibility = savedOrigin; gridVisible = savedGrid; integratedGridAxes = savedAxes
             axisLabelsVisible = savedAxisLabels; showReferenceLabels(latestReferenceLabels)
             for (key, value) in zip(keys, savedDefaults) { defaults.set(value, forKey: key) }
@@ -6410,7 +6422,21 @@ private extension FoundationController {
                 control("back")?.sendActions(for: .primaryActionTriggered)
                 control("grid")?.sendActions(for: .valueChanged)
             }, { self.viewPresentation?.grid.visible == false && axes(["Z"]) }, {}),
-            ("grid-restored-explicit", { control("grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.visible == true && axes(["X", "Y", "Z"]) }, {})
+            ("grid-restored-explicit", { control("grid")?.sendActions(for: .valueChanged) }, { self.viewPresentation?.grid.visible == true && axes(["X", "Y", "Z"]) }, {}),
+            ("sketch-planes-hidden", { self.setOriginVisibility(visible: false) }, { axes([]) }, {}),
+            ("sketch-planes-revealed", {
+                self.viewControlsPopover?.dismiss(animated: false); self.viewControlsPopover = nil
+                self.visualPlaneSelection = true; self.revealSketchPlanes = true
+                self.createSketchButton.sendActions(for: .primaryActionTriggered)
+            }, { self.planeChoosing && self.viewPresentation?.origin.choosing == true && axes(["XY", "XZ", "YZ"]) }, {
+                check(Self.originItems.allSatisfy { self.originVisibility[$0] == false }, "plane picker changed saved Hide all")
+            }),
+            ("sketch-planes-cancelled", { self.cancelSketchPlane() }, { self.viewPresentation?.origin.choosing == false && axes([]) }, {}),
+            ("sketch-planes-legacy", {
+                self.revealSketchPlanes = false
+                self.createSketchButton.sendActions(for: .primaryActionTriggered)
+            }, { self.planeChoosing && self.viewPresentation?.origin.choosing == true && axes([]) }, {}),
+            ("sketch-planes-legacy-cancelled", { self.cancelSketchPlane() }, { self.viewPresentation?.origin.choosing == false && axes([]) }, {})
         ]
         func step(_ index: Int) {
             guard !finished else { return }

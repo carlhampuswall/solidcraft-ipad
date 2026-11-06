@@ -3704,10 +3704,35 @@ fn origin_references_are_automatic_during_sketch_creation_without_changing_saved
     assert!(Arc::ptr_eq(&before, &engine.session.doc));
     assert!(engine.session.undo.is_empty());
 
+    view.command("view.origin", &json!({"visible":false})).unwrap();
+    view.command("view.choose_sketch_plane", &json!({"reveal_hidden":false})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!(vec![false; 7]), "the preference retains explicit Hide");
+    assert!(view.snapshot().unwrap().guides.meshes.is_empty());
+    view.command("view.cancel_plane", &json!({})).unwrap();
+    view.command("view.choose_sketch_plane", &json!({})).unwrap();
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!([false, false, false, false, true, true, true]));
+    assert_eq!(view.snapshot().unwrap().guides.meshes.len(), 3, "Hide all must not leave the plane picker empty");
+    for (name, direction, world) in
+        [("XY", "view.top", Vec3::new(10., 10., 0.)), ("XZ", "view.front", Vec3::new(10., 0., 10.)), ("YZ", "view.right", Vec3::new(0., 10., 10.))]
+    {
+        view.command(direction, &json!({})).unwrap();
+        assert_eq!(view.pick_reference(point(&view, world)), Some(Sel::Plane { name: name.into() }), "revealed {name} must be pickable");
+    }
+    view.command("select.entity", &json!({"entity":{"type":"plane","name":"XZ"}})).unwrap();
+    view.command("view.cancel_plane", &json!({})).unwrap();
+    assert!(view.selection().is_empty());
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!(vec![false; 7]), "cancel restores Hide all");
+    let hidden = view.diagnostic();
+    for invalid in [Value::Null, json!("true"), json!(1)] {
+        assert!(view.command("view.choose_sketch_plane", &json!({"reveal_hidden":invalid})).is_err());
+        assert_eq!(view.diagnostic(), hidden, "invalid chooser settings must not change the camera or visibility");
+    }
+    view.command("view.origin", &json!({"visible":null})).unwrap();
+
     view.command("view.origin", &json!({"item":"X","visible":true})).unwrap();
     view.command("view.origin", &json!({"item":"XZ","visible":false})).unwrap();
     view.command("view.choose_sketch_plane", &json!({})).unwrap();
-    assert_eq!(view.diagnostic()["origin"]["visible"], json!([true, true, true, true, true, false, true]));
+    assert_eq!(view.diagnostic()["origin"]["visible"], json!(vec![true; 7]), "individual Hide must not hide a sketch plane");
     let plane = engine.preview_sketch_plane(json!("XY")).unwrap();
     view.command("view.sketch_plane", &json!({"plane":plane})).unwrap();
     assert!(view.diagnostic()["reference_labels"].as_array().unwrap().is_empty());
@@ -3814,7 +3839,7 @@ fn origin_planes_pick_with_finger_pencil_and_pointer_and_create_native_sketches(
             view.install(1, engine.snapshot().unwrap());
             view.command("view.origin", &json!({"visible":false})).unwrap();
             view.command("view.origin", &json!({"item":name,"visible":true})).unwrap();
-            view.command("view.choose_sketch_plane", &json!({})).unwrap();
+            view.command("view.choose_sketch_plane", &json!({"reveal_hidden":false})).unwrap();
             assert_eq!(view.snapshot().unwrap().guides.meshes.len(), 1);
             let screen = point(&view, world);
             for phase in [InputPhase::Began, InputPhase::Ended] {
@@ -4016,7 +4041,7 @@ fn origin_references_respect_explicit_topology_filters_and_native_construction_v
     view.begin_update(2);
     view.install(2, engine.snapshot().unwrap());
     view.command("view.origin", &json!({"visible":false})).unwrap();
-    view.command("view.choose_sketch_plane", &json!({})).unwrap();
+    view.command("view.choose_sketch_plane", &json!({"reveal_hidden":false})).unwrap();
     let plane = engine.preview_sketch_plane(json!("Tilted")).unwrap();
     let world = plane.to_world(solidcore_record::Vec2::new(15., 20.));
     let p = point(&view, world);

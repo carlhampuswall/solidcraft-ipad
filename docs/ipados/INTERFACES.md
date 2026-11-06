@@ -77,6 +77,13 @@ mutually exclusive; invalid requests apply no changes. UIKit's **All axes** and
 **All planes** controls save the resulting per-item overrides under the existing
 `SolidCraft.workspace.originVisibility` preference.
 
+`view.choose_sketch_plane` accepts an optional boolean `reveal_hidden` (default
+`true`) to reveal XY/XZ/YZ targets for the picker without changing saved overrides.
+Preview, creation and cancellation clear this temporary reveal. Invalid parameter
+types change no state. The native preference
+`SolidCraft.workspace.revealSketchPlanes` defaults to true; false preserves the
+previous explicit-Hide behavior.
+
 Reference planes default to half their previous width and height, with matching
 rendered outlines and picking bounds. They use one neutral palette color and
 leave a gap of 10% of their width beside each in-plane axis. Only the display
