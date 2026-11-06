@@ -840,6 +840,7 @@ struct ModellingPreviewQueue {
 /// underscores. Older modelling labels retain their existing UI catalogue IDs.
 enum PresentationLabelKey {
     private static let legacy: [String: String] = [
+        "sketch_fillet": "ui.ipados.sketch.fillet",
         "solid_chamfer": "ui.chamfer", "solid_combine": "ui.combine", "solid_extrude": "ui.extrude",
         "solid_fillet": "ui.fillet", "solid_hole": "ui.hole", "solid_loft": "ui.loft", "solid_mirror": "ui.mirror",
         "solid_pattern_circular": "ui.circular_pattern", "solid_pattern_path": "ui.pattern_on_path",
