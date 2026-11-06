@@ -3109,8 +3109,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         properties.addArrangedSubview(title)
         let fields = fillet != nil ? [("radius", "length", "mm", "")] : offset ? [("offset_distance", "length", "mm", "")] : rotate ? [("center_x", "length", "mm", "0 mm"), ("center_y", "length", "mm", "0 mm"), ("angle", "angle", "deg", "90 deg")] : [("delta_x", "length", "mm", "0 mm"), ("delta_y", "length", "mm", "0 mm")]
         transformEditors = fields.map { name, kind, units, expression in
-            let heading = WorkspaceStyle.label(.body); heading.text = SketchText.text(name); properties.addArrangedSubview(heading)
-            let field = NumericExpressionEditor(expression: expression, units: units, showsActions: false)
+            if fillet == nil {
+                let heading = WorkspaceStyle.label(.body); heading.text = SketchText.text(name); properties.addArrangedSubview(heading)
+            }
+            let field = NumericExpressionEditor(expression: expression, units: units, showsActions: false,
+                                                label: fillet != nil ? SketchText.text(name) : nil, compact: fillet != nil)
             field.onFocus = { [weak self] in self?.updateAvailability(); DispatchQueue.main.async { [weak self] in self?.revealField() } }
             properties.addArrangedSubview(field)
             return (name, kind, field)
@@ -5396,7 +5399,7 @@ private extension FoundationController {
                   button.configuration?.image != nil else { issues.append("Fillet toolbar artwork missing"); finish(); return }
             button.sendActions(for: .touchUpInside)
             wait("Fillet tool", until: { self.state?.active_tool == "sketch.fillet" && self.pending.isEmpty }) {
-                self.session.developmentSketchTap([30, 20, 0]) { result in
+                self.session.developmentSketchTap([-30, 20, 0]) { result in
                     guard case .success = result else { issues.append("corner tap failed"); finish(); return }
                     self.session.refreshWorkspace()
                     wait("radius form", until: { self.transformDraft?.fillet != nil && self.transformEditors.first?.name == "radius" }) { next() }
@@ -5432,7 +5435,11 @@ private extension FoundationController {
                 wait("preview", until: { !self.transformBusy && self.canvas.displayingPreview }) {
                     capture("preview")
                     if self.state?.sketch?.curves.count != 4 { issues.append("preview authored geometry") }
-                    self.cancelTransform()
+                    guard let cancel = self.properties.arrangedSubviews.compactMap({ $0 as? WorkspaceButton }).first(where: { $0.configuration?.title == WorkspaceStyle.text("cancel") }) else {
+                        issues.append("Cancel button missing"); finish(); return
+                    }
+                    if !self.inspectorScroll.bounds.contains(cancel.convert(cancel.bounds, to: self.inspectorScroll)) { issues.append("Cancel requires scrolling in the radius form") }
+                    cancel.sendActions(for: .touchUpInside)
                     wait("Cancel", until: { self.transformDraft == nil && self.state?.active_tool == "select" && !self.canvas.displayingPreview }) {
                         if self.state?.sketch?.curves.count != 4 { issues.append("Cancel changed the sketch") }
                         open(apply)

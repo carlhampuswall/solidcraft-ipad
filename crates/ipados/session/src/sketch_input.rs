@@ -8,7 +8,7 @@ use solidcraft_engine::{
     Sel,
     sketch::{ConstraintKind, CurveKind, Shape, Sketch},
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{AdapterError, InputEvent, InputPhase, SceneSnapshot, ToolOperation, ToolWork, Viewport, error};
 
@@ -806,6 +806,8 @@ impl Viewport {
         let tolerance = 10.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
         let curves_only = matches!(self.contacts.sketch.tool.as_str(), "sketch.delete" | "sketch.offset");
         let fillet = self.contacts.sketch.tool == "sketch.fillet";
+        let fillet_points =
+            fillet.then(|| snapshot.sketch.curves.iter().filter_map(|c| c.kind.ends()).flat_map(|(a, b)| [a, b]).collect::<BTreeSet<_>>());
         if !curves_only
             && !fillet
             && (!constraint_filter || self.constraint_tool().is_none())
@@ -831,26 +833,25 @@ impl Viewport {
         {
             return Some(Sel::SketchConstraint { id: c.id.clone() });
         }
-        if let Some(p) = snapshot
+        if let Some((_, p)) = snapshot
             .sketch
             .points
             .iter()
-            .filter(|p| {
-                (!fillet
-                    || snapshot
-                        .sketch
-                        .resolve_point(&p.id)
-                        .is_some_and(|i| snapshot.sketch.curves.iter().any(|c| c.kind.ends().is_some_and(|(a, b)| a == i || b == i))))
+            .enumerate()
+            .filter(|(i, p)| {
+                fillet_points.as_ref().is_none_or(|ends| ends.contains(i))
                     && self.contacts.sketch.tool != "sketch.offset"
                     && (!curves_only
                         || p.id != "origin"
                             && snapshot.sketch.resolve_point(&p.id).is_some_and(|i| !snapshot.sketch.curves.iter().any(|c| c.kind.uses(i))))
             })
-            .filter(|p| {
+            .filter(|(_, p)| {
                 !constraint_filter || self.constraint_tool() != Some("coincident") || !self.is_selected(&Sel::SketchPoint { id: p.id.clone() })
             })
-            .filter(|p| p.pos.dist(point) <= tolerance && (!constraint_filter || self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() })))
-            .min_by(|a, b| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
+            .filter(|(_, p)| {
+                p.pos.dist(point) <= tolerance && (!constraint_filter || self.constraint_accepts(&Sel::SketchPoint { id: p.id.clone() }))
+            })
+            .min_by(|(_, a), (_, b)| a.pos.dist(point).total_cmp(&b.pos.dist(point)))
         {
             return Some(Sel::SketchPoint { id: p.id.clone() });
         }
