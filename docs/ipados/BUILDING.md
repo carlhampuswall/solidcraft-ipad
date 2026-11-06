@@ -10,10 +10,11 @@ the full-gate examples below are for a later explicit full-test request.
 
 ## Sketch corner radius
 
-With **Tools > Edge tools on selection** enabled, selecting two connected
-sketch edges automatically opens a live Fillet preview and a radius handle.
-Continue selecting or deselecting edges while the preview is visible. Three
-consecutive sides of a rectangle round two corners; four sides round all four.
+Selecting sketch edges keeps the Select tool active. With **Tools > Edge tools
+on selection** enabled, choose **Fillet** with two connected sketch edges
+selected to open a live preview and a radius handle. Continue selecting or
+deselecting edges while the preview is visible. Three consecutive sides of a
+rectangle round two corners; four sides round all four.
 Only shared endpoints or explicit Coincident constraints identify corners.
 
 Drag the handle or enter a radius expression in Properties. Every selected
@@ -24,11 +25,11 @@ with its explicit **Preview** button.
 
 Focused adapter coverage is `sketch_fillet`; the GPU evidence example accepts
 `--sketch-fillet`. The Debug device argument `--sketch-fillet-check` exercises
-automatic two-edge preview, adding/removing edges, dragging and entering a
-radius, Cancel, Apply, Undo/Redo and the manual preference on a disposable
-rectangle. It writes `sketch-fillet-check.json` and screenshots to the app's
-Documents folder. Its software contacts are separate from physical Pencil and
-finger observations.
+selection without starting a tool, explicit two-edge preview, adding/removing
+edges, dragging and entering a radius, Cancel, Apply, Undo/Redo and the manual
+preference on a disposable rectangle. It writes `sketch-fillet-check.json` and
+screenshots to the app's Documents folder. Its software contacts are separate
+from physical Pencil and finger observations.
 
 ## Prerequisites
 

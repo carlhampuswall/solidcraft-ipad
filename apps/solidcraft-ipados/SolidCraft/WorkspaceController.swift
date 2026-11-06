@@ -98,7 +98,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var state: WorkspaceState?
     private var selectionExtrudeTrigger = SelectionToolTrigger<WorkspaceEntity>()
     private var selectionEdgeTrigger = SelectionToolTrigger<WorkspaceEntity>()
-    private var selectionFilletTrigger = SelectionToolTrigger<WorkspaceEntity>()
     private var edgeSelectorContext: (document: String, revision: UInt64)?
     private enum AutomaticModellingSource { case extrude, edges }
     private var historyActivation: (feature: UInt64, document: String)?
@@ -908,13 +907,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             inspectorOpen = true; browserOpen = false
             rebuildInspector(); relayoutPanels()
         }
-        let sketchFilletIdle = active && pending.isEmpty && !numericEditing && !modellingEditing &&
-            presentedViewController == nil && value.sketch?.fillet?.params["points"] != nil && value.active_tool == "select" && value.selection.count >= 2
-        if selectionFilletTrigger.update(document: value.document_id, revision: value.geometry_revision,
-                                        selection: value.selection, enabled: edgeToolsOnSelection, idle: sketchFilletIdle,
-                                        source: { $0.type == "sketch_curve" ? "sketch" : nil }) {
-            beginModelling(operation: "sketch.fillet")
-        } else if active, pending.isEmpty, !numericEditing, !modellingEditing, presentedViewController == nil,
+        if active, pending.isEmpty, !numericEditing, !modellingEditing, presentedViewController == nil,
            value.active_tool == "sketch.fillet", let fillet = value.sketch?.fillet {
             if edgeToolsOnSelection && fillet.params["points"] != nil { beginModelling(operation: "sketch.fillet") }
             else { beginTransform(entities: [], rotate: false, copy: false, fillet: fillet) }
@@ -5435,7 +5428,7 @@ private extension FoundationController {
                 let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
                     "at": ISO8601DateFormatter().string(from: Date()),
-                    "coverage": "Automatic two-edge preview/handle, add third edge, deselect/reselect during preview, radius drag, numeric radius, Cancel, Apply, Undo/Redo and legacy preference; synthetic contacts"]
+                    "coverage": "Sketch edge selection stays in Select, explicit Fillet preview/handle, add third edge, deselect/reselect during preview, radius drag, numeric radius, Cancel, Apply, Undo/Redo and legacy preference; synthetic contacts"]
                 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("sketch-fillet-check.json"), options: .atomic)
             } catch { print("Sketch fillet report failed: \(error)") }
@@ -5452,6 +5445,14 @@ private extension FoundationController {
                 guard case .success = result else { issues.append("source edge tap failed"); finish(); return }
                 self.session.refreshWorkspace(); next()
             }
+        }
+        func verifySelectionOnly() -> Bool {
+            guard !modellingEditing, !numericEditing, transformDraft == nil,
+                  state?.active_tool == "select", !canvas.displayingPreview else {
+                issues.append("sketch edge selection automatically opened Fillet")
+                capture("unexpected-fillet"); finish(); return false
+            }
+            return true
         }
         func applyAndHistory() {
             guard let apply = button("apply") else { issues.append("Apply missing"); finish(); return }
@@ -5516,15 +5517,31 @@ private extension FoundationController {
             browserOpen = false; inspectorOpen = false; relayoutPanels(); capture("before")
             tap([0,-20,0]) {
                 wait("first source edge", until: { self.state?.selection.count == 1 && self.pending.isEmpty }) {
-                    if self.modellingToken != nil { issues.append("one edge incorrectly started a corner") }
+                    guard verifySelectionOnly() else { return }
                     tap([-30,0,0]) {
-                        wait("automatic two-edge preview and handle", until: { ready(2) }) {
-                            capture("two-edges")
-                            guard let cancel = button("cancel") else { issues.append("Cancel missing"); finish(); return }
-                            cancel.sendActions(for: .touchUpInside)
-                            wait("Cancel", until: { self.modellingToken == nil && !self.canvas.displayingPreview }) {
-                                if self.state?.sketch?.curves.count != 4 { issues.append("Cancel authored geometry") }
-                                growSelection()
+                        wait("two selected edges", until: { self.state?.selection.count == 2 && self.pending.isEmpty }) {
+                            guard verifySelectionOnly() else { return }; capture("selected")
+                            tap([0,20,0]) {
+                                wait("three selected edges", until: { self.state?.selection.count == 3 && self.pending.isEmpty }) {
+                                    guard verifySelectionOnly() else { return }
+                                    tap([0,20,0]) {
+                                        wait("deselect third edge", until: { self.state?.selection.count == 2 && self.pending.isEmpty }) {
+                                            guard verifySelectionOnly() else { return }
+                                            self.setTool("sketch.fillet")
+                                            wait("explicit two-edge preview and handle", until: { ready(2) }) {
+                                                capture("two-edges")
+                                                guard let cancel = button("cancel") else { issues.append("Cancel missing"); finish(); return }
+                                                cancel.sendActions(for: .touchUpInside)
+                                                wait("Cancel", until: { self.modellingToken == nil && !self.canvas.displayingPreview }) {
+                                                    if self.state?.sketch?.curves.count != 4 { issues.append("Cancel authored geometry") }
+                                                    guard verifySelectionOnly() else { return }
+                                                    self.setTool("sketch.fillet")
+                                                    wait("reopen explicit Fillet", until: { ready(2) }, then: growSelection)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
