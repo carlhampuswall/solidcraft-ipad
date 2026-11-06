@@ -1695,19 +1695,40 @@ private final class InspectorReferenceHeading: UIStackView {
 }
 
 final class ModellingInlineChoices: UIStackView {
-    init(field: ModellingState.Field, selected: PresentationJSON?, illustrated: Bool = false, action: @escaping (PresentationJSON) -> Void) {
+    init(field: ModellingState.Field, selected: PresentationJSON?, illustrated: Bool = false, compactMenu: Bool = false,
+         action: @escaping (PresentationJSON) -> Void) {
         super.init(frame: .zero)
         axis = .vertical; spacing = 8
         let options = field.options ?? []
+        func title(_ option: ModellingState.Field.Option) -> String {
+            if illustrated, ModellingFormPresentation.surfaceChoiceIcon(field: field.key, value: option.value) != nil,
+               case .string(let id) = option.value { return NativeText.value("ui.ipados.handles.mode." + id) }
+            return ModellingText.label(option.label)
+        }
+        if compactMenu {
+            let current = options.first { $0.value == selected }
+            let button = WorkspaceButton(current.map(title) ?? ModellingText.text("choose"), action: {})
+            button.accessibilityIdentifier = "workspace-model-choice-" + field.key
+            button.accessibilityLabel = ModellingText.label(field.label)
+            button.accessibilityValue = current.map(title)
+            button.systemArtwork("chevron.down"); button.configuration?.imagePlacement = .trailing
+            button.menu = UIMenu(children: options.map { option in
+                let icon = InspectorPresentation.choiceIcon(field: field.key, value: option.value)
+                    ?? ModellingFormPresentation.surfaceChoiceIcon(field: field.key, value: option.value)
+                return UIAction(title: title(option),
+                    image: icon.flatMap { WorkspaceIcon.image($0, traits: traitCollection, size: 24) },
+                    state: option.value == selected ? .on : .off) { _ in action(option.value) }
+            })
+            button.showsMenuAsPrimaryAction = true
+            button.availability(enabled: !options.isEmpty)
+            addArrangedSubview(button)
+            return
+        }
         for start in stride(from: 0, to: options.count, by: 2) {
             let row = UIStackView(); row.axis = .horizontal; row.spacing = 8; row.distribution = .fillEqually
             for index in start..<min(start + 2, options.count) {
                 let option = options[index]
-                var label = ModellingText.label(option.label)
-                if illustrated, ModellingFormPresentation.surfaceChoiceIcon(field: field.key, value: option.value) != nil,
-                   case .string(let id) = option.value {
-                    label = NativeText.value("ui.ipados.handles.mode." + id)
-                }
+                let label = title(option)
                 let button = WorkspaceButton(label) { action(option.value) }
                 button.active(option.value == selected)
                 // These are presentation cues over opaque engine values. The
@@ -2020,7 +2041,7 @@ final class ModellingInspector: UIStackView {
                 stack.addArrangedSubview(heading)
             }
             if field.kind == "inline_choice" || surfaceChoice {
-                let choices = ModellingInlineChoices(field: field, selected: parameter(field.key), illustrated: compact) { [weak self] value in
+                let choices = ModellingInlineChoices(field: field, selected: parameter(field.key), illustrated: compact, compactMenu: minimal) { [weak self] value in
                     self?.selectInlineChoice(field.key, value: value)
                 }
                 stack.addArrangedSubview(choices); fieldViews.append(choices)

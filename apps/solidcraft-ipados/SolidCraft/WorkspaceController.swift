@@ -5092,6 +5092,10 @@ private extension FoundationController {
                 self.view.layoutIfNeeded()
                 guard let form = self.modellingInspector, form.minimal, self.inspectorPanel.frame.height < 400,
                       self.inspectorPanel.frame.width <= 320.5 else { finish(operation + " controls occupy too much of the viewport"); return }
+                if index == 0 {
+                    guard let choice = find("workspace-model-choice-operation", in: form) as? UIButton,
+                          choice.menu?.children.count == 4 else { finish("compact operation menu lost its choices"); return }
+                }
                 for id in ["workspace-model-cancel", "workspace-model-apply"] {
                     guard let action = find(id, in: self.inspectorPanel) as? UIButton else { finish(operation + " missing " + id); return }
                     let frame = action.convert(action.bounds, to: self.workspace)
