@@ -334,9 +334,10 @@ keeps the rectangle tool active for the previous repeated-creation workflow.
 Move events update a scratch preview, never a sampled polyline. Lines retain the
 committed endpoint reference for the next segment; snap to the starting point to
 close. **Finish chain** stops a line chain or commits the fit-point spline.
-**Cancel current tool** / Escape discards only the current provisional operation;
-it does not call `sketch.cancel` or remove committed segments. Three-point arc
-prompts are start, end, through; fit-point splines collect explicit fit points.
+The X button is hidden while creating or editing a sketch. Choose **Select** to
+stop drawing, or **Finish sketch** to leave sketch editing. Escape discards only
+the current provisional operation without removing committed segments. Three-point
+arc prompts are start, end, through; fit-point splines collect explicit fit points.
 
 Select geometry with Pencil, use **Multiple selection** for compatible
 constraints, then Properties. The adapter supplies eligible actions from actual
@@ -534,7 +535,7 @@ touch, Pencil or a pointer. Horizontal, Vertical and Fix apply after one pick;
 constraints such as Parallel collect two picks without requiring Multiple
 selection. Existing eligible selections still apply immediately. Each successful
 application is one ordinary engine transaction and undo step, and the tool stays
-active for another application. Choose Select or Cancel current tool to exit.
+active for another application. Choose Select or press Escape to exit.
 
 The status names the active constraint and prompts for the next pick. Tapping
 the first entity again deselects it; empty space clears pending picks. Incompatible

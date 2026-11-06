@@ -3549,7 +3549,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         finishSketchButton.isHidden = headerAction == nil
         finishChainButton.isHidden = !inSketch || !(state?.active_tool == "sketch.line" || state?.active_tool == "sketch.spline.fit_point")
         for button in [sketchToolsButton, finishSketchButton, finishChainButton] { button.availability(enabled: !locked) }
-        cancelToolButton.isHidden = numericEditing || !(inSketch || state?.active_tool == "post_radius" || planeChoosing || planeDraft != nil)
+        cancelToolButton.isHidden = numericEditing || inSketch || !(state?.active_tool == "post_radius" || planeChoosing || planeDraft != nil)
         let cancelTitle = planeChoosing || planeDraft != nil ? WorkspaceStyle.text("cancel") : SketchText.text("cancel_segment")
         cancelToolButton.updateTitle(cancelTitle)
         table.allowsSelection = !numericEditing && !modellingCommitting && pending.isEmpty
