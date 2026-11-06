@@ -210,8 +210,14 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
 
     private func beginDrag(_ button: WorkspaceButton, at point: CGPoint) {
         guard held == nil, let id = buttons.first(where: { $0.value === button })?.key,
-              layout.contains(id), let snapshot = button.snapshotView(afterScreenUpdates: false) else { return }
+              layout.contains(id), !button.bounds.isEmpty else { return }
         onBegin?(); container.layoutIfNeeded()
+        // A render-server snapshot can lose UIButton configuration artwork in
+        // hierarchy captures. A local image keeps the lifted icon visible too.
+        let preview = UIGraphicsImageRenderer(bounds: button.bounds).image { context in
+            button.layer.render(in: context.cgContext)
+        }
+        let snapshot = UIImageView(image: preview)
         held = id; beforeDrag = layout
         snapshot.frame = button.convert(button.bounds, to: container)
         grabOffset = CGPoint(x: point.x - snapshot.center.x, y: point.y - snapshot.center.y)
