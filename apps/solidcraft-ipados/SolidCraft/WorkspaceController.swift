@@ -2511,7 +2511,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         browser.onCreate = { [weak self, weak browser] name, source in
             guard let self, let browser else { return }; browser.setBusy(true)
-            self.session.createProject(name: name, copying: source) { [weak self, weak browser] result in self?.finishProjectChange(result, browser: browser) }
+            self.session.createProject(name: name, copying: source, folder: browser.creationFolder) { [weak self, weak browser] result in self?.finishProjectChange(result, browser: browser) }
+        }
+        browser.onOrganise = { [weak self, weak browser] change in
+            guard let self, let browser else { return }; browser.setBusy(true)
+            self.session.organiseProjects(change) { [weak self, weak browser] result in
+                guard let self, let browser else { return }
+                switch result {
+                case .failure(let error): browser.showError(error)
+                case .success: self.loadProjects(browser)
+                }
+            }
         }
         browser.onDelete = { [weak self, weak browser] project in
             guard let self, let browser else { return }; browser.setBusy(true)
@@ -2547,7 +2557,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func loadProjects(_ browser: ProjectBrowserController) {
         browser.setBusy(true)
-        session.listProjects { [weak self, weak browser] result in
+        session.listProjectContents { [weak self, weak browser] result in
             guard let self, let browser else { return }; browser.setBusy(false)
             switch result {
             case .success(let projects): browser.display(projects, current: self.session.currentProject?.id)
@@ -4563,12 +4573,55 @@ private extension FoundationController {
                 }
             }
         }
+        func checkOrganisation(_ browser: ProjectBrowserController, then next: @escaping () -> Void) {
+            guard let project = self.session.currentProject else { report("Missing organisation fixture"); return }
+            let document = self.state?.document_id, undo = self.state?.can_undo, rows = self.state?.rows.count
+            func back() {
+                guard let button = browser.navigationItem.leftBarButtonItems?.first, let action = button.action else { report("Missing folder Back action"); return }
+                UIApplication.shared.sendAction(action, to: button.target, from: button, for: nil)
+            }
+            browser.onOrganise?(.createFolder("Workshop", parent: nil))
+            wait({ browser.tableView.numberOfRows(inSection: 0) == 1 && browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                browser.tableView(browser.tableView, didSelectRowAt: IndexPath(row: 0, section: 0))
+                guard let folder = browser.creationFolder else { report("Folder tap did not navigate"); return }
+                browser.onOrganise?(.folderIcon(folder, .component))
+                wait({ browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                    browser.onOrganise?(.moveProject(project.id, to: folder))
+                    wait({ browser.tableView.numberOfRows(inSection: 1) == 1 && browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                        browser.onOrganise?(.sort(.nameAscending, folder: folder, archive: false))
+                        wait({ browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                            capture("projects-folder")
+                            browser.onOrganise?(.archiveFolder(folder, true))
+                            wait({ browser.creationFolder == nil && browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                                if browser.tableView.numberOfRows(inSection: 1) != 1 { issues.append("Archived folder lost its project") }
+                                capture("projects-archive-folder")
+                                browser.onOrganise?(.archiveProject(project.id, false))
+                                wait({ browser.tableView.numberOfRows(inSection: 1) == 0 && browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                                    browser.onOrganise?(.archiveFolder(folder, false))
+                                    wait({ browser.creationFolder == folder && browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                                        back()
+                                        if browser.tableView.numberOfRows(inSection: 0) != 1 || browser.tableView.numberOfRows(inSection: 1) != 1 {
+                                            issues.append("Restore did not retain the folder and return its project to Projects")
+                                        }
+                                        if self.state?.document_id != document || self.state?.can_undo != undo || self.state?.rows.count != rows {
+                                            issues.append("Project organisation replaced the active document/history")
+                                        }
+                                        capture("projects-folders")
+                                        next()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         func checkBrowser(openedByButton: Bool = false) {
             if presentedViewController == nil {
                 if openedByButton { documentActionsButton.sendActions(for: .touchUpInside) }
                 else { projectsStartupHandled = false; showStartupProjectsIfReady() }
             }
-            wait({ self.projectsBrowser?.tableView.numberOfRows(inSection: 0) == 1 }) {
+            wait({ self.projectsBrowser?.tableView.numberOfRows(inSection: 1) == 1 }) {
                 guard let browser = self.projectsBrowser, let project = self.session.currentProject else { report("Missing startup project browser"); return }
                 if !openedByButton {
                     browser.dismiss(animated: false) { checkBrowser(openedByButton: true) }
@@ -4597,7 +4650,7 @@ private extension FoundationController {
                         self.appearance = 0; self.applyAppearance()
                         if browser.navigationController?.overrideUserInterfaceStyle != .unspecified { issues.append("Projects ignored System appearance") }
                         self.appearance = 2; self.applyAppearance()
-                        guard let action = browser.tableView(browser.tableView, trailingSwipeActionsConfigurationForRowAt: IndexPath(row: 0, section: 0))?.actions.first else { report("Missing Rename action"); return }
+                        guard let action = browser.tableView(browser.tableView, trailingSwipeActionsConfigurationForRowAt: IndexPath(row: 0, section: 1))?.actions.first(where: { $0.title == ProjectText.text("rename") }) else { report("Missing Rename action"); return }
                         action.handler(action, browser.tableView) { _ in }
                         wait({ browser.presentedViewController is UIAlertController && browser.presentedViewController?.isBeingPresented == false }) {
                             guard let alert = browser.presentedViewController as? UIAlertController,
@@ -4610,7 +4663,7 @@ private extension FoundationController {
                             capture("projects-rename")
                             alert.dismiss(animated: false) {
                                 browser.onRename?(project, "Renamed project")
-                                wait({ self.session.currentProject?.name == "Renamed project" && self.canvas.geometryRevision == self.state?.geometry_revision && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 0))?.contentConfiguration as? UIListContentConfiguration)?.text == "Renamed project" }) {
+                                wait({ self.session.currentProject?.name == "Renamed project" && self.canvas.geometryRevision == self.state?.geometry_revision && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 1))?.contentConfiguration as? UIListContentConfiguration)?.text == "Renamed project" }) {
                                     guard let renamed = self.session.currentProject else { report("Rename lost current project"); return }
                                     if renamed.id != project.id || FileManager.default.fileExists(atPath: project.file.path) { issues.append("Rename lost identity or left old file") }
                                     if self.state?.document_id != oldDocument || self.state?.can_undo != oldUndo || self.state?.rows.count != oldRows { issues.append("Rename replaced document/history") }
@@ -4619,12 +4672,14 @@ private extension FoundationController {
                                         if case .failure(let error) = result { report(error.description); return }
                                         if FileManager.default.fileExists(atPath: project.file.path) { issues.append("Save resurrected old project name") }
                                         browser.onRename?(renamed, "STEP Share Check")
-                                        wait({ self.session.currentProject?.name == "STEP Share Check" && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 0))?.contentConfiguration as? UIListContentConfiguration)?.text == "STEP Share Check" }) {
-                                            browser.onShare?()
-                                            wait({ self.pendingExport != nil && self.presentedViewController is UIActivityViewController }) {
-                                                guard let activity = self.presentedViewController as? UIActivityViewController else { report("Projects Share did not open activity controller"); return }
-                                                activity.dismiss(animated: false) {
-                                                    wait({ self.pendingExport == nil }) { run(0) }
+                                        wait({ self.session.currentProject?.name == "STEP Share Check" && (browser.tableView.cellForRow(at: IndexPath(row: 0, section: 1))?.contentConfiguration as? UIListContentConfiguration)?.text == "STEP Share Check" }) {
+                                            checkOrganisation(browser) {
+                                                browser.onShare?()
+                                                wait({ self.pendingExport != nil && self.presentedViewController is UIActivityViewController }) {
+                                                    guard let activity = self.presentedViewController as? UIActivityViewController else { report("Projects Share did not open activity controller"); return }
+                                                    activity.dismiss(animated: false) {
+                                                        wait({ self.pendingExport == nil }) { run(0) }
+                                                    }
                                                 }
                                             }
                                         }

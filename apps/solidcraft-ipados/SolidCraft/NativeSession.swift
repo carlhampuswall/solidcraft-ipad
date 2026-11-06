@@ -484,6 +484,16 @@ final class NativeSession {
         projectTask({ _, library, _ in try library.projects() }, completion: completion)
     }
 
+    func listProjectContents(completion: @escaping (Result<ProjectLibraryContents, BridgeError>) -> Void) {
+        projectTask({ _, library, _ in
+            try ProjectLibraryContents(projects: library.projects(), organisation: library.organisation())
+        }, completion: completion)
+    }
+
+    func organiseProjects(_ change: ProjectLibraryChange, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+        projectTask({ _, library, _ in _ = try library.organise(change) }, completion: completion)
+    }
+
     func saveProject(completion: @escaping (Result<Void, BridgeError>) -> Void) {
         projectTask({ state, _, current in
             guard current != nil else { throw ProjectLibrary.failure("invalid_project") }
@@ -520,10 +530,11 @@ final class NativeSession {
         }
     }
 
-    func createProject(name: String, copying source: ProjectRecord? = nil, completion: @escaping (Result<Void, BridgeError>) -> Void) {
+    func createProject(name: String, copying source: ProjectRecord? = nil, folder: UUID? = nil,
+                       completion: @escaping (Result<Void, BridgeError>) -> Void) {
         projectTask({ state, library, current in
             try Self.saveProject(state, current)
-            let project = try library.reserve(name: name)
+            let project = try library.reserve(name: name, folder: folder)
             do { _ = try Self.replaceProject(state, source: source?.file, project: project); return project }
             catch { try? library.remove(project); throw error }
         }) { [weak self] result in

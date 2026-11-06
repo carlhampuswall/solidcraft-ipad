@@ -1163,6 +1163,91 @@ struct WorkspaceChecks {
         do { _ = try library.rename(projectB, to: "../Outside"); throw ProjectLibrary.failure("accepted_bad_name") }
         catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_bad_name", "rename accepted path traversal") }
         try require(FileManager.default.fileExists(atPath: projectB.file.path), "invalid deletion touched the current library")
+        let organisedLibrary = ProjectLibrary(root: libraryRoot.appendingPathComponent("Organisation"))
+        let emptyOrganisation = try organisedLibrary.organisation()
+        try require(emptyOrganisation == ProjectOrganisation(), "existing flat libraries need no migration")
+        var organisation = try organisedLibrary.organise(.createFolder("Work", parent: nil))
+        guard let work = organisation.folders.first else { throw ProjectLibrary.failure("missing_test_folder") }
+        organisation = try organisedLibrary.organise(.createFolder("Parts", parent: work.id))
+        guard let parts = organisation.folders.first(where: { $0.parent == work.id }) else { throw ProjectLibrary.failure("missing_test_folder") }
+        organisation = try organisedLibrary.organise(.folderIcon(work.id, .component))
+        _ = try organisedLibrary.organise(.renameFolder(parts.id, "Fasteners"))
+        let design = try organisedLibrary.reserve(name: "Bolt 10", folder: parts.id)
+        let secondDesign = try organisedLibrary.reserve(name: "Bolt 2", folder: parts.id)
+        try Data("unchanged native design".utf8).write(to: design.file)
+        try Data("working recovery".utf8).write(to: design.recoveryFile)
+        try Data("second native design".utf8).write(to: secondDesign.file)
+        let old = Date(timeIntervalSince1970: 100)
+        let recent = Date(timeIntervalSince1970: 200)
+        let sortingRecords = [ProjectRecord(id: design.id, file: design.file, modified: recent), ProjectRecord(id: secondDesign.id, file: secondDesign.file, modified: old)]
+        organisation = try organisedLibrary.organisation()
+        try require(organisation.folder(work.id)?.icon == .component && organisation.path(parts.id) == "Work / Fasteners", "folder icon or nested path was not persisted")
+        try require(organisation.visibleProjects(sortingRecords, in: nil, archive: false).isEmpty, "nested projects leaked into the root")
+        try require(organisation.visibleProjects(sortingRecords, in: parts.id, archive: false).map(\.id) == [design.id, secondDesign.id], "default modification sorting changed")
+        let tiedRecords = sortingRecords.map { ProjectRecord(id: $0.id, file: $0.file, modified: old) }
+        try require(ProjectSort.modified.sorted(tiedRecords).map(\.id) == tiedRecords.map(\.id).sorted { $0.uuidString < $1.uuidString }, "default date ties no longer preserve UUID order")
+        organisation = try organisedLibrary.organise(.sort(.nameAscending, folder: parts.id, archive: false))
+        try require(organisation.visibleProjects(sortingRecords, in: parts.id, archive: false).map(\.id) == [secondDesign.id, design.id], "natural project name sorting failed")
+        try require(organisation.sort(folder: nil, archive: false) == .modified, "sorting one folder changed another location")
+        organisation = try organisedLibrary.organise(.sort(.nameDescending, folder: parts.id, archive: false))
+        try require(organisation.visibleProjects(sortingRecords, in: parts.id, archive: false).map(\.id) == [design.id, secondDesign.id], "descending name sorting failed")
+        try require(organisation.visibleProjects(sortingRecords, in: work.id, archive: false, query: "bolt").count == 2, "folder search omitted descendants")
+        try require(organisation.visibleFolders(in: nil, archive: false, query: "fast").map(\.id) == [parts.id], "folder search omitted nested folders")
+        do {
+            _ = try organisedLibrary.organise(.moveFolder(work.id, to: parts.id))
+            throw ProjectLibrary.failure("accepted_folder_cycle")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.folder_cycle", "moving a folder into its descendant was not rejected") }
+        let organisationAfterFailedMove = try organisedLibrary.organisation()
+        try require(organisationAfterFailedMove == organisation, "failed folder move changed persisted metadata")
+        organisation = try organisedLibrary.organise(.archiveProject(secondDesign.id, true))
+        organisation = try organisedLibrary.organise(.archiveFolder(work.id, true))
+        try require(organisation.visibleFolders(in: nil, archive: false).isEmpty && organisation.visibleFolders(in: nil, archive: true).map(\.id) == [work.id], "archived folder was lost or remained active")
+        try require(organisation.visibleProjects(sortingRecords, in: nil, archive: true).isEmpty, "archive root duplicated projects inside an archived folder")
+        try require(organisation.visibleProjects(sortingRecords, in: parts.id, archive: true).count == 2, "archived folder lost its contents")
+        try require(organisation.visibleProjects(sortingRecords, in: nil, archive: false, query: "Bolt").isEmpty, "active search leaked archived projects")
+        try require(organisation.visibleProjects(sortingRecords, in: nil, archive: true, query: "Bolt").count == 2, "archive search omitted descendants")
+        do {
+            _ = try organisedLibrary.organise(.moveProject(design.id, to: nil))
+            throw ProjectLibrary.failure("accepted_archived_move")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.invalid_project", "archived project moved without being restored") }
+        do {
+            _ = try organisedLibrary.reserve(name: "Hidden", folder: parts.id)
+            throw ProjectLibrary.failure("accepted_archived_destination")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.invalid_folder", "new project entered an archived folder") }
+        organisation = try organisedLibrary.organise(.archiveProject(design.id, false))
+        try require(!organisation.isArchived(project: design.id) && organisation.placement(design.id).folder == nil, "individual restore from an archived folder did not return to Projects")
+        organisation = try organisedLibrary.organise(.archiveFolder(work.id, false))
+        try require(!organisation.isArchived(folder: parts.id) && organisation.isArchived(project: secondDesign.id), "restoring a folder changed an individually archived project")
+        organisation = try organisedLibrary.organise(.archiveProject(secondDesign.id, false))
+        try require(organisation.placement(secondDesign.id).folder == parts.id, "restore lost the original active folder")
+        organisation = try organisedLibrary.organise(.moveProject(design.id, to: work.id))
+        organisation = try organisedLibrary.organise(.moveFolder(parts.id, to: nil))
+        try require(organisation.folder(parts.id)?.parent == nil && organisation.placement(secondDesign.id).folder == parts.id, "moving a folder lost its project membership")
+        let restartedLibrary = ProjectLibrary(root: organisedLibrary.root)
+        let restartedOrganisation = try restartedLibrary.organisation()
+        let designAfterOrganisation = try Data(contentsOf: design.file)
+        let recoveryAfterOrganisation = try Data(contentsOf: design.recoveryFile)
+        try require(restartedOrganisation == organisation, "library organisation did not survive a new session")
+        try require(designAfterOrganisation == Data("unchanged native design".utf8), "organisation changed CAD file bytes")
+        try require(recoveryAfterOrganisation == Data("working recovery".utf8), "organisation changed recovery bytes")
+        do {
+            _ = try organisedLibrary.organise(.moveProject(design.id, to: UUID()))
+            throw ProjectLibrary.failure("accepted_missing_folder")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.invalid_folder", "unknown folder was accepted") }
+        let metadataFile = organisedLibrary.root.appendingPathComponent(".organisation.json")
+        var corruptOrganisation = organisation
+        corruptOrganisation.folders.append(work)
+        try JSONEncoder().encode(corruptOrganisation).write(to: metadataFile)
+        do {
+            _ = try organisedLibrary.organise(.createFolder("Unsafe overwrite", parent: nil))
+            throw ProjectLibrary.failure("accepted_corrupt_metadata")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.invalid_organisation", "corrupt metadata was silently replaced") }
+        try FileManager.default.removeItem(at: metadataFile)
+        try FileManager.default.createSymbolicLink(at: metadataFile, withDestinationURL: design.file)
+        do {
+            _ = try organisedLibrary.organisation()
+            throw ProjectLibrary.failure("accepted_metadata_link")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.invalid_organisation", "metadata followed a symbolic link") }
         let stepFile = libraryRoot.appendingPathComponent("Bracket.STP")
         try Data("ISO-10303-21;".utf8).write(to: stepFile)
         let staged = try ProjectLibrary.stageImport(stepFile)

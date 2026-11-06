@@ -10,6 +10,7 @@ enum ProjectText {
 final class ProjectBrowserController: UITableViewController, UISearchResultsUpdating {
     var onOpen: ((ProjectRecord) -> Void)?
     var onCreate: ((String, ProjectRecord?) -> Void)?
+    var onOrganise: ((ProjectLibraryChange) -> Void)?
     var onImport: (() -> Void)?
     var onExport: ((String) -> Void)?
     var onShare: (() -> Void)?
@@ -18,6 +19,12 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     var onClose: (() -> Void)?
     private var projects: [ProjectRecord] = []
     private var filtered: [ProjectRecord] = []
+    private var folders: [ProjectFolder] = []
+    private var organisation = ProjectOrganisation()
+    private var folder: UUID?
+    private var showingArchive = false
+    var creationFolder: UUID? { showingArchive ? nil : folder }
+    private var query: String { search.searchBar.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" }
     private var current: UUID?
     private let search = UISearchController(searchResultsController: nil)
     private let message = UILabel()
@@ -28,16 +35,16 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = ProjectText.text("title")
         view.backgroundColor = WorkspaceStyle.background
         tableView.accessibilityIdentifier = "project-browser"
-        navigationItem.leftBarButtonItem = UIBarButtonItem(title: WorkspaceStyle.text("close"), style: .plain, target: self, action: #selector(close))
         navigationItem.rightBarButtonItems = [
             UIBarButtonItem(title: ProjectText.text("new"), style: .plain, target: self, action: #selector(newProject)),
-            UIBarButtonItem(title: ProjectText.text("import"), style: .plain, target: self, action: #selector(importFile))
+            UIBarButtonItem(title: ProjectText.text("import"), style: .plain, target: self, action: #selector(importFile)),
+            UIBarButtonItem(title: ProjectText.text("organise"), menu: UIMenu(children: []))
         ]
         navigationItem.rightBarButtonItems?.first?.accessibilityIdentifier = "project-new"
-        navigationItem.rightBarButtonItems?.last?.accessibilityIdentifier = "project-import"
+        navigationItem.rightBarButtonItems?[1].accessibilityIdentifier = "project-import"
+        navigationItem.rightBarButtonItems?.last?.accessibilityIdentifier = "project-organise"
         let export = UIBarButtonItem(title: ProjectText.text("export"), menu: UIMenu(children: ["step", "solidcraft", "stl", "obj", "3mf"].map { format in
             UIAction(title: ProjectText.text("export_" + (format == "solidcraft" ? "native" : format))) { [weak self] _ in
                 guard let self, !self.busy, self.current != nil else { return }
@@ -62,7 +69,13 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     }
 
     func display(_ projects: [ProjectRecord], current: UUID?) {
-        self.projects = projects; self.current = current
+        display(ProjectLibraryContents(projects: projects, organisation: organisation), current: current)
+    }
+
+    func display(_ contents: ProjectLibraryContents, current: UUID?) {
+        projects = contents.projects; organisation = contents.organisation; self.current = current
+        if let folder, organisation.folder(folder) == nil { self.folder = nil }
+        if let folder { showingArchive = organisation.isArchived(folder: folder) }
         loadViewIfNeeded(); updateSearchResults(for: search)
         updateActions()
     }
@@ -76,8 +89,9 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     }
 
     private func updateActions() {
-        navigationItem.leftBarButtonItem?.isEnabled = !busy
+        navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = !busy }
         navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = !busy }
+        navigationItem.rightBarButtonItems?.first?.isEnabled = !busy && !showingArchive
         toolbarItems?.forEach { $0.isEnabled = !busy && current != nil }
     }
 
@@ -93,28 +107,48 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     }
 
     func updateSearchResults(for searchController: UISearchController) {
-        let query = searchController.searchBar.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        filtered = projects.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }
-        message.text = ProjectText.text(projects.isEmpty ? "empty" : "no_matches")
-        message.isHidden = !filtered.isEmpty
+        folders = organisation.visibleFolders(in: folder, archive: showingArchive, query: query)
+        filtered = organisation.visibleProjects(projects, in: folder, archive: showingArchive, query: query)
+        message.text = ProjectText.text(!query.isEmpty ? "organisation_no_matches" : (showingArchive ? "archive_empty" : "folder_empty"))
+        message.isHidden = !filtered.isEmpty || !folders.isEmpty
+        updateNavigation()
         tableView.reloadData()
     }
 
-    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { filtered.count }
+    override func numberOfSections(in tableView: UITableView) -> Int { 2 }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { section == 0 ? folders.count : filtered.count }
+
+    override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        if section == 0 { return folders.isEmpty ? nil : ProjectText.text("folders") }
+        return filtered.isEmpty ? nil : ProjectText.text("title")
+    }
 
     override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
-        guard let project = projects.first(where: { $0.id == current }) else { return nil }
+        guard section == 1, let project = projects.first(where: { $0.id == current }) else { return nil }
         return ProjectText.text("current_actions").replacingOccurrences(of: "{name}", with: project.name)
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: "project") ?? UITableViewCell(style: .subtitle, reuseIdentifier: "project")
+        if indexPath.section == 0 {
+            guard folders.indices.contains(indexPath.row) else { return cell }
+            let value = folders[indexPath.row]
+            var content = cell.defaultContentConfiguration()
+            content.text = value.name
+            content.secondaryText = query.isEmpty ? nil : location(value.parent)
+            content.image = WorkspaceIcon.image(value.icon.rawValue, traits: traitCollection)
+            cell.contentConfiguration = content
+            cell.accessoryType = .disclosureIndicator
+            cell.accessibilityIdentifier = "project-folder-" + value.id.uuidString
+            return cell
+        }
         guard filtered.indices.contains(indexPath.row) else { return cell }
         let project = filtered[indexPath.row]
         var content = cell.defaultContentConfiguration()
         content.text = project.name
         content.secondaryText = DateFormatter.localizedString(from: project.modified, dateStyle: .medium, timeStyle: .short)
-        content.image = WorkspaceIcon.image("folder", traits: traitCollection)
+            + (query.isEmpty ? "" : " · " + location(organisation.placement(project.id).folder))
+        content.image = WorkspaceIcon.image("project", traits: traitCollection)
         cell.contentConfiguration = content
         cell.accessoryType = project.id == current ? .checkmark : .disclosureIndicator
         cell.accessibilityIdentifier = "project-" + project.id.uuidString
@@ -123,17 +157,32 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard !busy, filtered.indices.contains(indexPath.row) else { return }
+        guard !busy else { return }
+        if indexPath.section == 0 {
+            guard folders.indices.contains(indexPath.row) else { return }
+            folder = folders[indexPath.row].id
+            search.searchBar.text = nil
+            updateSearchResults(for: search)
+            return
+        }
+        guard filtered.indices.contains(indexPath.row) else { return }
         onOpen?(filtered[indexPath.row])
     }
 
     override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
-        guard !busy, filtered.indices.contains(indexPath.row) else { return nil }
+        guard !busy else { return nil }
+        if indexPath.section == 0 {
+            guard folders.indices.contains(indexPath.row) else { return nil }
+            let value = folders[indexPath.row]
+            return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in self?.folderMenu(value) }
+        }
+        guard filtered.indices.contains(indexPath.row) else { return nil }
         let project = filtered[indexPath.row]
         return UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { [weak self] _ in
             guard let self else { return nil }
             let rename = UIAction(title: ProjectText.text("rename")) { [weak self] _ in self?.askName(renaming: project) }
-            let duplicate = UIAction(title: ProjectText.text("duplicate")) { [weak self] _ in self?.askName(copying: project) }
+            let duplicate = UIAction(title: ProjectText.text("duplicate"), attributes: self.showingArchive ? .disabled : []) { [weak self] _ in self?.askName(copying: project) }
+            let archive = self.archiveAction(project: project.id)
             let delete = UIAction(title: ProjectText.text("delete"), attributes: project.id == self.current ? [.destructive, .disabled] : [.destructive]) { [weak self] _ in
                 guard let self else { return }
                 let alert = UIAlertController(title: ProjectText.text("delete"), message: ProjectText.text("delete_warning").replacingOccurrences(of: "{name}", with: project.name), preferredStyle: .alert)
@@ -141,26 +190,153 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
                 alert.addAction(UIAlertAction(title: ProjectText.text("delete"), style: .destructive) { [weak self] _ in self?.onDelete?(project) })
                 self.present(alert, animated: true)
             }
-            return UIMenu(children: [rename, duplicate, delete])
+            return UIMenu(children: [rename, duplicate, self.moveMenu(project: project.id), archive, delete])
         }
     }
 
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
-        guard !busy, filtered.indices.contains(indexPath.row) else { return nil }
+        guard !busy else { return nil }
+        if indexPath.section == 0 {
+            guard folders.indices.contains(indexPath.row) else { return nil }
+            let id = folders[indexPath.row].id
+            let action = UIContextualAction(style: .normal, title: ProjectText.text(showingArchive ? "restore" : "archive")) { [weak self] _, _, completion in
+                completion(true)
+                guard let self else { return }
+                self.change(.archiveFolder(id, !self.showingArchive))
+            }
+            let configuration = UISwipeActionsConfiguration(actions: [action])
+            configuration.performsFirstActionWithFullSwipe = false
+            return configuration
+        }
+        guard filtered.indices.contains(indexPath.row) else { return nil }
         let project = filtered[indexPath.row]
         let rename = UIContextualAction(style: .normal, title: ProjectText.text("rename")) { [weak self] _, _, completion in
             completion(true)
             self?.askName(renaming: project)
         }
-        let configuration = UISwipeActionsConfiguration(actions: [rename])
+        let archive = UIContextualAction(style: .normal, title: ProjectText.text(showingArchive ? "restore" : "archive")) { [weak self] _, _, completion in
+            completion(true)
+            guard let self else { return }
+            self.change(.archiveProject(project.id, !self.showingArchive))
+        }
+        let configuration = UISwipeActionsConfiguration(actions: [archive, rename])
         configuration.performsFirstActionWithFullSwipe = false
         return configuration
     }
 
     @objc private func close() { onClose?() }
-    @objc private func newProject() { askName(copying: nil) }
+    @objc private func newProject() { guard !showingArchive else { return }; askName(copying: nil) }
     @objc private func importFile() { guard !busy else { return }; onImport?() }
     @objc private func shareFile() { guard !busy, current != nil else { return }; onShare?() }
+
+    private func location(_ folder: UUID?) -> String {
+        folder == nil ? ProjectText.text("title") : organisation.path(folder)
+    }
+
+    private func change(_ change: ProjectLibraryChange) {
+        guard !busy else { return }
+        onOrganise?(change)
+    }
+
+    private func updateNavigation() {
+        title = organisation.folder(folder)?.name ?? ProjectText.text(showingArchive ? "archive_title" : "title")
+        navigationItem.prompt = folder == nil ? nil : (showingArchive ? ProjectText.text("archive_title") + " / " : "") + location(folder)
+        let close = UIBarButtonItem(title: WorkspaceStyle.text("close"), style: .plain, target: self, action: #selector(close))
+        if folder != nil || showingArchive {
+            let back = UIBarButtonItem(title: ProjectText.text("folder_back"), style: .plain, target: self, action: #selector(back))
+            back.accessibilityIdentifier = "project-folder-back"
+            navigationItem.leftBarButtonItems = [back, close]
+        } else { navigationItem.leftBarButtonItems = [close] }
+        let sort = organisation.sort(folder: folder, archive: showingArchive)
+        let sortMenu = UIMenu(title: ProjectText.text("sort"), children: ProjectSort.allCases.map { value in
+            UIAction(title: ProjectText.text("sort_" + value.rawValue), state: sort == value ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                self.change(.sort(value, folder: self.folder, archive: self.showingArchive))
+            }
+        })
+        var actions: [UIMenuElement] = [sortMenu]
+        if !showingArchive {
+            actions.append(UIAction(title: ProjectText.text("new_folder")) { [weak self] _ in self?.askFolderName() })
+        }
+        if let currentFolder = organisation.folder(folder) {
+            actions.append(folderMenu(currentFolder))
+        }
+        actions.append(UIAction(title: ProjectText.text(showingArchive ? "show_projects" : "show_archive")) { [weak self] _ in
+            guard let self, !self.busy else { return }
+            self.showingArchive.toggle(); self.folder = nil; self.search.searchBar.text = nil
+            self.updateSearchResults(for: self.search)
+        })
+        navigationItem.rightBarButtonItems?.last?.menu = UIMenu(children: actions)
+        updateActions()
+    }
+
+    @objc private func back() {
+        guard !busy else { return }
+        if let value = organisation.folder(folder) {
+            folder = showingArchive && !organisation.isArchived(folder: value.parent) ? nil : value.parent
+        } else { showingArchive = false; folder = nil }
+        search.searchBar.text = nil
+        updateSearchResults(for: search)
+    }
+
+    private func folderMenu(_ value: ProjectFolder) -> UIMenu {
+        let rename = UIAction(title: ProjectText.text("rename_folder")) { [weak self] _ in self?.askFolderName(renaming: value) }
+        let icons = UIMenu(title: ProjectText.text("folder_icon"), children: ProjectFolderIcon.allCases.map { icon in
+            UIAction(title: ProjectText.text("icon_" + icon.rawValue), image: WorkspaceIcon.image(icon.rawValue, traits: traitCollection),
+                     state: value.icon == icon ? .on : .off) { [weak self] _ in self?.change(.folderIcon(value.id, icon)) }
+        })
+        return UIMenu(title: value.name, children: [rename, icons, moveMenu(folder: value.id), archiveAction(folder: value.id)])
+    }
+
+    private func archiveAction(project: UUID? = nil, folder: UUID? = nil) -> UIAction {
+        UIAction(title: ProjectText.text(showingArchive ? "restore" : "archive")) { [weak self] _ in
+            guard let self else { return }
+            if let project { self.change(.archiveProject(project, !self.showingArchive)) }
+            else if let folder { self.change(.archiveFolder(folder, !self.showingArchive)) }
+        }
+    }
+
+    private func moveMenu(project: UUID? = nil, folder: UUID? = nil) -> UIMenu {
+        let currentParent = project.map { organisation.placement($0).folder } ?? organisation.folder(folder)?.parent
+        let root = UIAction(title: ProjectText.text("title"), attributes: showingArchive || currentParent == nil ? .disabled : []) { [weak self] _ in
+            if let project { self?.change(.moveProject(project, to: nil)) }
+            else if let folder { self?.change(.moveFolder(folder, to: nil)) }
+        }
+        let destinations = organisation.folders.filter { value in
+            !organisation.isArchived(folder: value.id) && !organisation.ancestors(of: value.id).contains { $0.id == folder }
+        }.sorted { organisation.path($0.id).localizedStandardCompare(organisation.path($1.id)) == .orderedAscending }
+        let actions = destinations.map { value in
+            UIAction(title: organisation.path(value.id), image: WorkspaceIcon.image(value.icon.rawValue, traits: traitCollection),
+                     attributes: showingArchive || currentParent == value.id ? .disabled : []) { [weak self] _ in
+                if let project { self?.change(.moveProject(project, to: value.id)) }
+                else if let folder { self?.change(.moveFolder(folder, to: value.id)) }
+            }
+        }
+        return UIMenu(title: ProjectText.text("move_to_folder"), children: [root] + actions)
+    }
+
+    private func askFolderName(renaming value: ProjectFolder? = nil) {
+        guard !busy else { return }
+        let alert = UIAlertController(title: ProjectText.text(value == nil ? "new_folder" : "rename_folder"), message: ProjectText.text("folder_name_hint"), preferredStyle: .alert)
+        alert.addTextField { field in
+            field.placeholder = ProjectText.text("folder_name"); field.text = value?.name
+            field.autocapitalizationType = .sentences
+            field.accessibilityIdentifier = "project-folder-name"
+        }
+        alert.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
+        let save = UIAlertAction(title: ProjectText.text(value == nil ? "create" : "rename_folder"), style: .default) { [weak self, weak alert] _ in
+            guard let self, let name = try? ProjectLibrary.validName(alert?.textFields?.first?.text ?? "") else { return }
+            if let value { self.change(.renameFolder(value.id, name)) }
+            else { self.change(.createFolder(name, parent: self.folder)) }
+        }
+        save.isEnabled = value != nil
+        alert.textFields?.first?.addAction(UIAction { [weak save] action in
+            guard let field = action.sender as? UITextField else { return }
+            save?.isEnabled = (try? ProjectLibrary.validName(field.text ?? "")) != nil
+        }, for: .editingChanged)
+        alert.addAction(save)
+        present(alert, animated: true)
+    }
 
     private func askName(copying source: ProjectRecord? = nil, renaming project: ProjectRecord? = nil) {
         guard !busy else { return }
