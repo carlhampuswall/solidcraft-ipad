@@ -62,6 +62,24 @@ impl ModelEdit {
     }
 
     fn edge_pick_selection(&self, model: &SceneSnapshot) -> Vec<Sel> {
+        if self.operation == "sketch.fillet" {
+            let Some(snapshot) = &model.sketch else { return Vec::new() };
+            return self.params["edges"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|reference| {
+                    let id = reference.as_str()?;
+                    if snapshot.sketch.curve_index(id).is_some() {
+                        Some(Sel::SketchCurve { id: id.into(), sketch: Some(snapshot.id) })
+                    } else if snapshot.sketch.resolve_point(id).is_some() {
+                        Some(Sel::SketchPoint { id: id.into() })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
         self.params["edges"]
             .as_array()
             .into_iter()
@@ -505,7 +523,7 @@ impl SessionAdapter {
         selection: &[Sel],
         rollback: bool,
     ) -> Result<ModelEdit, AdapterError> {
-        if self.session.active_sketch.is_some() {
+        if self.session.active_sketch.is_some() && (operation != Some("sketch.fillet") || feature.is_some()) {
             return Err(error("disabled", "Finish the sketch before modelling."));
         }
         let reattach = operation == Some("sketch.redefine");
@@ -526,7 +544,7 @@ impl SessionAdapter {
             if reattach { "sketch.redefine" } else { "timeline.edit" }
         } else {
             let id = operation.ok_or_else(|| error("bad_params", "Choose a modelling operation."))?;
-            if !TOOLS.contains(&id) && !crate::assembly::supported(id) {
+            if !TOOLS.contains(&id) && !crate::assembly::supported(id) && id != "sketch.fillet" {
                 return Err(error("unsupported", "This operation has no native modelling form."));
             }
             id
@@ -552,7 +570,9 @@ impl SessionAdapter {
             reply: Value::Null,
             feedback: Vec::new(),
         };
-        if reattach {
+        if operation == "sketch.fillet" {
+            context.sketch_fillet_form(&mut edit, selection)?;
+        } else if reattach {
             context.sketch_attachment_form(&mut edit)?;
         } else if feature.is_some() {
             // A complete native definition is retained unchanged. Only real expression
@@ -757,7 +777,7 @@ impl SessionAdapter {
         let treatment_edit = feature
             .and_then(|id| self.session.doc.feature(id))
             .is_some_and(|feature| matches!(feature.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. }));
-        if matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer") || treatment_edit {
+        if matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer" | "sketch.fillet") || treatment_edit {
             edit.selection_field = Some("edges".into());
         }
         let source_picking = reattach
@@ -800,6 +820,9 @@ impl SessionAdapter {
     }
 
     fn extrusion_handle(&self, edit: &ModelEdit) -> Option<ModelHandle> {
+        if edit.operation == "sketch.fillet" {
+            return self.sketch_fillet_handle(edit);
+        }
         if let Some(handle) = self.edge_treatment_handle(edit) {
             return Some(handle);
         }
@@ -1021,7 +1044,12 @@ impl SessionAdapter {
             && selection.iter().any(|selection| matches!(selection, Sel::Face { .. })))
         .then(|| (refreshed.params["faces"].clone(), refreshed.params["body"].clone()));
         let canvas_selection = params.is_none();
+        let sketch_edges = (canvas_selection && edit.operation == "sketch.fillet").then(|| refreshed.params["edges"].clone());
         refreshed.params = params.unwrap_or_else(|| edit.params.clone());
+        if let Some(edges) = sketch_edges {
+            refreshed.params["edges"] = edges;
+            refreshed.source_selection_changed = false;
+        }
         if canvas_selection && let Some(field) = edit.body_pick_field() {
             let bodies: Vec<_> = selection
                 .iter()
@@ -1131,6 +1159,9 @@ impl SessionAdapter {
             refreshed.version = edit.version.checked_add(1).ok_or_else(|| error("revision_limit", "Interaction version exhausted."))?;
             refreshed.preview = None;
             refreshed.last_preview = if edit.live_edge_picking() { edit.preview.clone().or_else(|| edit.last_preview.clone()) } else { None };
+        }
+        if edit.operation == "sketch.fillet" {
+            self.refresh_sketch_fillet_anchor(&mut refreshed)?;
         }
         refreshed.handle =
             if crate::assembly::supported(&edit.operation) { self.assembly_handle(&refreshed) } else { self.extrusion_handle(&refreshed) };
@@ -1695,7 +1726,9 @@ impl SessionAdapter {
         {
             return Err(error("selection", "Choose explicit target bodies for this operation."));
         }
-        let (command, p) = if edit.operation == "sketch.redefine" {
+        let (command, p) = if edit.operation == "sketch.fillet" {
+            ("sketch.fillet", self.sketch_fillet_command(&params)?)
+        } else if edit.operation == "sketch.redefine" {
             ("sketch.redefine", self.sketch_attachment_command(edit, &params)?)
         } else if let Some(feature) = edit.feature {
             if hole && let Some(targets) = p.as_object_mut().and_then(|m| m.remove("targets")) {
@@ -1770,7 +1803,11 @@ impl SessionAdapter {
         let treatment = matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer" | "solid.shell")
             || target_feature
                 .is_some_and(|feature| matches!(feature.kind, FeatureKind::Fillet { .. } | FeatureKind::Chamfer { .. } | FeatureKind::Shell { .. }));
-        let handle = if offset || face_extrude || treatment { self.extrusion_handle(&updated) } else { scratch.extrusion_handle(&updated) };
+        let handle = if offset || face_extrude || treatment || edit.operation == "sketch.fillet" {
+            self.extrusion_handle(&updated)
+        } else {
+            scratch.extrusion_handle(&updated)
+        };
         Ok(PreparedModel { model, params, version: edit.version, handle, transaction, reply: Value::Null, feedback })
     }
 
@@ -1950,6 +1987,9 @@ impl Viewport {
             return Err(error("disabled", "Finish the current operation."));
         }
         self.cancel_interactions();
+        if edit.operation == "sketch.fillet" {
+            self.contacts.sketch.tool = "select".into();
+        }
         if edit.repair_source.is_some() && !self.updating {
             edit.repair_original = self
                 .model

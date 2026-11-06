@@ -98,6 +98,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var state: WorkspaceState?
     private var selectionExtrudeTrigger = SelectionToolTrigger<WorkspaceEntity>()
     private var selectionEdgeTrigger = SelectionToolTrigger<WorkspaceEntity>()
+    private var selectionFilletTrigger = SelectionToolTrigger<WorkspaceEntity>()
     private var edgeSelectorContext: (document: String, revision: UInt64)?
     private enum AutomaticModellingSource { case extrude, edges }
     private var historyActivation: (feature: UInt64, document: String)?
@@ -906,9 +907,16 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             inspectorOpen = true; browserOpen = false
             rebuildInspector(); relayoutPanels()
         }
-        if active, pending.isEmpty, !numericEditing, !modellingEditing, presentedViewController == nil,
+        let sketchFilletIdle = active && pending.isEmpty && !numericEditing && !modellingEditing &&
+            presentedViewController == nil && value.sketch?.fillet?.params["points"] != nil && value.active_tool == "select" && value.selection.count >= 2
+        if selectionFilletTrigger.update(document: value.document_id, revision: value.geometry_revision,
+                                        selection: value.selection, enabled: edgeToolsOnSelection, idle: sketchFilletIdle,
+                                        source: { $0.type == "sketch_curve" ? "sketch" : nil }) {
+            beginModelling(operation: "sketch.fillet")
+        } else if active, pending.isEmpty, !numericEditing, !modellingEditing, presentedViewController == nil,
            value.active_tool == "sketch.fillet", let fillet = value.sketch?.fillet {
-            beginTransform(entities: [], rotate: false, copy: false, fillet: fillet)
+            if edgeToolsOnSelection && fillet.params["points"] != nil { beginModelling(operation: "sketch.fillet") }
+            else { beginTransform(entities: [], rotate: false, copy: false, fillet: fillet) }
         }
     }
 
@@ -2999,7 +3007,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         if let fillet = sketch.fillet {
             let button = WorkspaceButton(SketchText.text("fillet")) { [weak self] in
-                self?.beginTransform(entities: [], rotate: false, copy: false, fillet: fillet)
+                guard let self else { return }
+                if self.edgeToolsOnSelection && fillet.params["points"] != nil { self.beginModelling(operation: "sketch.fillet") }
+                else { self.beginTransform(entities: [], rotate: false, copy: false, fillet: fillet) }
             }
             button.commandArtwork("sketch.fillet")
             button.accessibilityIdentifier = "workspace-sketch-fillet"
@@ -3431,7 +3441,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             beginTransform(entities: curves, rotate: false, copy: false, offset: true); return
         }
         if tool == "sketch.fillet", let fillet = state?.sketch?.fillet {
-            beginTransform(entities: [], rotate: false, copy: false, fillet: fillet); return
+            if edgeToolsOnSelection && fillet.params["points"] != nil { beginModelling(operation: "sketch.fillet") }
+            else { beginTransform(entities: [], rotate: false, copy: false, fillet: fillet) }
+            return
         }
         run("tool.set", params: ["tool": tool])
         if tool == "post_radius" { inspectorOpen = true; browserOpen = false; view.setNeedsLayout() }
@@ -5365,12 +5377,28 @@ private extension FoundationController {
         prepare(0)
     }
 
-    /// Real UIKit form and engine workflow over a disposable sketch. Contacts
-    /// are software injected; this does not claim physical Pencil coverage.
+    /// Live source selection and the shared radius handle over a disposable sketch.
+    /// Software contacts do not claim physical Pencil or finger coverage.
     private func checkSketchFilletOnDevice() {
         let expected = generation
+        let savedEdges = edgeToolsOnSelection, savedCompact = compactInspector, savedHandles = directHandles
+        edgeToolsOnSelection = true; compactInspector = true; directHandles = true
         var issues: [String] = []
         var finished = false
+        func buttons(_ view: UIView) -> [WorkspaceButton] {
+            (view as? WorkspaceButton).map { [$0] } ?? view.subviews.flatMap { buttons($0) }
+        }
+        func button(_ title: String) -> WorkspaceButton? {
+            guard let form = modellingInspector else { return nil }
+            return buttons(form.footer).first { $0.configuration?.title == WorkspaceStyle.text(title) }
+        }
+        func count() -> Int {
+            guard case .array(let edges) = modellingInspector?.params["edges"] else { return 0 }; return edges.count
+        }
+        func ready(_ edges: Int) -> Bool {
+            modellingToken != nil && count() == edges && modelValue?.valid == true && canvas.displayingPreview &&
+                button("apply")?.isEnabled == true && modellingPreviewQueue.active == nil && !modellingInspectPending && pending.isEmpty
+        }
         func capture(_ name: String) {
             view.layoutIfNeeded()
             do {
@@ -5382,78 +5410,112 @@ private extension FoundationController {
         }
         func finish() {
             guard !finished else { return }; finished = true
+            edgeToolsOnSelection = savedEdges; compactInspector = savedCompact; directHandles = savedHandles
+            session.command("view.tool_handles", params: ["enabled": savedHandles])
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
                     "at": ISO8601DateFormatter().string(from: Date()),
-                    "coverage": "UIKit tool action, synthetic corner tap, radius preview, Cancel, invalid radius, Apply, Undo/Redo; physical contacts unverified"]
+                    "coverage": "Automatic two-edge preview/handle, add third edge, deselect/reselect during preview, radius drag, numeric radius, Cancel, Apply, Undo/Redo and legacy preference; synthetic contacts"]
                 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("sketch-fillet-check.json"), options: .atomic)
             } catch { print("Sketch fillet report failed: \(error)") }
             print("Sketch fillet check " + (issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")))
         }
-        func wait(_ stage: String, remaining: Int = 100, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
+        func wait(_ stage: String, remaining: Int = 150, until ready: @escaping () -> Bool, then next: @escaping () -> Void) {
             guard active, generation == expected, !finished else { return }
             if ready() { DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: next); return }
-            guard remaining > 0 else { issues.append("timed out: " + stage); finish(); return }
+            guard remaining > 0 else { issues.append("timed out: " + stage); capture("failed"); finish(); return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { wait(stage, remaining: remaining - 1, until: ready, then: next) }
         }
-        func open(_ next: @escaping () -> Void) {
-            guard let button = sketchQuickTools.first(where: { $0.0 == "sketch.fillet" })?.1,
-                  button.configuration?.image != nil else { issues.append("Fillet toolbar artwork missing"); finish(); return }
-            button.sendActions(for: .touchUpInside)
-            wait("Fillet tool", until: { self.state?.active_tool == "sketch.fillet" && self.pending.isEmpty }) {
-                self.session.developmentSketchTap([-30, 20, 0]) { result in
-                    guard case .success = result else { issues.append("corner tap failed"); finish(); return }
-                    self.session.refreshWorkspace()
-                    wait("radius form", until: { self.transformDraft?.fillet != nil && self.transformEditors.first?.name == "radius" }) { next() }
+        func tap(_ world: [Double], _ next: @escaping () -> Void) {
+            session.developmentSketchTap(world) { result in
+                guard case .success = result else { issues.append("source edge tap failed"); finish(); return }
+                self.session.refreshWorkspace(); next()
+            }
+        }
+        func applyAndHistory() {
+            guard let apply = button("apply") else { issues.append("Apply missing"); finish(); return }
+            apply.sendActions(for: .touchUpInside)
+            wait("Apply two corners", until: { self.modellingToken == nil && self.state?.sketch?.curves.count == 6 && !self.canvas.displayingPreview }) {
+                capture("applied")
+                self.run("edit.undo")
+                wait("Undo", until: { self.state?.sketch?.curves.count == 4 && self.pending.isEmpty }) {
+                    self.edgeToolsOnSelection = false
+                    tap([0,-20,0]) {
+                        tap([-30,0,0]) {
+                            wait("legacy selection", until: { self.state?.selection.count == 2 && self.pending.isEmpty }) {
+                                if self.modellingToken != nil { issues.append("legacy preference automatically opened Fillet") }
+                                self.setTool("sketch.fillet")
+                                wait("legacy form", until: { self.transformDraft?.fillet != nil }) {
+                                    self.cancelTransform(); self.edgeToolsOnSelection = true
+                                    self.run("edit.redo")
+                                    wait("Redo", until: { self.state?.sketch?.curves.count == 6 && self.pending.isEmpty }) { capture("redo"); finish() }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-        func apply() {
-            guard let radius = transformEditors.first?.editor else { issues.append("radius missing"); finish(); return }
-            radius.field.text = "100 mm"; evaluateTransform(commit: true)
-            wait("invalid radius", until: { !self.transformBusy }) {
-                guard self.transformDraft != nil, self.state?.sketch?.curves.count == 4 else {
-                    issues.append("invalid radius changed the sketch"); finish(); return
+        func numericRadius() {
+            guard let token = modellingToken, let form = modellingInspector else { issues.append("live editor missing"); finish(); return }
+            var params = form.params; params["radius"] = .string("6 mm")
+            session.requestModelling(action: "inspect", token: token, params: params) { result in
+                guard case .success(let model) = result else { issues.append("numeric radius failed"); finish(); return }
+                form.contextRefreshed(model); self.evaluateModelling(form.params, commit: false)
+                wait("numeric radius preview", until: { ready(3) && abs((self.modelValue?.value ?? 0) - 6) < 0.0001 }) {
+                    capture("preview"); applyAndHistory()
                 }
-                radius.field.text = "10 mm"; self.evaluateTransform(commit: true)
-                wait("Apply", until: { self.transformDraft == nil && self.state?.sketch?.curves.count == 5 && !self.canvas.displayingPreview }) {
-                    capture("applied")
-                    let dimensions = self.state?.sketch?.constraints.filter(\.dimension) ?? []
-                    if !dimensions.contains(where: { $0.expression == "10 mm" }) { issues.append("driving radius expression missing") }
-                    self.run("edit.undo")
-                    wait("Undo", until: { self.state?.sketch?.curves.count == 4 && self.pending.isEmpty }) {
-                        self.run("edit.redo")
-                        wait("Redo", until: { self.state?.sketch?.curves.count == 5 && self.pending.isEmpty }) { capture("redo"); finish() }
+            }
+        }
+        func growSelection() {
+            tap([0,20,0]) {
+                wait("three source edges", until: { ready(3) }) {
+                    capture("three-edges")
+                    tap([0,20,0]) {
+                        wait("edge deselection", until: { ready(2) }) {
+                            tap([0,20,0]) {
+                                wait("edge reselection", until: { ready(3) }) {
+                                    let radius = self.modelValue?.value ?? 2
+                                    let start = [-30 + radius / sqrt(2), -20 + radius / sqrt(2), 0.0]
+                                    let end = [-30 + 4 / sqrt(2), -20 + 4 / sqrt(2), 0.0]
+                                    self.session.developmentSurfaceDrag(from: start, to: end, source: .pencil) { result in
+                                        guard case .success = result else { issues.append("radius handle drag failed"); finish(); return }
+                                        wait("radius drag preview", until: { ready(3) && abs((self.modelValue?.value ?? 0) - 4) < 0.05 }) {
+                                            capture("dragged"); numericRadius()
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         func exercise() {
-            browserOpen = false; inspectorOpen = false; relayoutPanels()
-            capture("before")
-            open {
-                self.transformEditors.first?.editor.field.text = "10 mm"
-                self.evaluateTransform(commit: false)
-                wait("preview", until: { !self.transformBusy && self.canvas.displayingPreview }) {
-                    capture("preview")
-                    if self.state?.sketch?.curves.count != 4 { issues.append("preview authored geometry") }
-                    guard let cancel = self.properties.arrangedSubviews.compactMap({ $0 as? WorkspaceButton }).first(where: { $0.configuration?.title == WorkspaceStyle.text("cancel") }) else {
-                        issues.append("Cancel button missing"); finish(); return
-                    }
-                    if !self.inspectorScroll.bounds.contains(cancel.convert(cancel.bounds, to: self.inspectorScroll)) { issues.append("Cancel requires scrolling in the radius form") }
-                    cancel.sendActions(for: .touchUpInside)
-                    wait("Cancel", until: { self.transformDraft == nil && self.state?.active_tool == "select" && !self.canvas.displayingPreview }) {
-                        if self.state?.sketch?.curves.count != 4 { issues.append("Cancel changed the sketch") }
-                        open(apply)
+            browserOpen = false; inspectorOpen = false; relayoutPanels(); capture("before")
+            tap([0,-20,0]) {
+                wait("first source edge", until: { self.state?.selection.count == 1 && self.pending.isEmpty }) {
+                    if self.modellingToken != nil { issues.append("one edge incorrectly started a corner") }
+                    tap([-30,0,0]) {
+                        wait("automatic two-edge preview and handle", until: { ready(2) }) {
+                            capture("two-edges")
+                            guard let cancel = button("cancel") else { issues.append("Cancel missing"); finish(); return }
+                            cancel.sendActions(for: .touchUpInside)
+                            wait("Cancel", until: { self.modellingToken == nil && !self.canvas.displayingPreview }) {
+                                if self.state?.sketch?.curves.count != 4 { issues.append("Cancel authored geometry") }
+                                growSelection()
+                            }
+                        }
                     }
                 }
             }
         }
-        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane":"XY"]),
-            ("sketch.rectangle.two_point", ["p0":[-30,-20], "p1":[30,20], "connect":false]), ("view.fit", [:])]
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("view.tool_handles", ["enabled":true]),
+            ("sketch.create", ["plane":"XY"]), ("sketch.rectangle.two_point", ["p0":[-30,-20], "p1":[30,20], "connect":false]),
+            ("tool.set", ["tool":"select"]), ("select.multiple", ["enabled":true]), ("view.fit", [:])]
         func prepare(_ index: Int) {
             guard index < fixture.count else {
                 wait("fixture", until: { self.state?.sketch?.curves.count == 4 && self.pending.isEmpty }, then: exercise); return

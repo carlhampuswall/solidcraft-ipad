@@ -1047,6 +1047,7 @@ impl Viewport {
                 && let Some(model) = self.display_model()
                 && model.picks.pick(&self.camera, self.vp(), self.metrics, pixel, crate::PickFilter::Body).is_none()
                 && model.picks.pick_profile(&self.camera, self.vp(), self.metrics, pixel).is_none()
+                && self.pick_sketch_unfiltered(tap_point).is_none()
                 && self.pick_reference(tap_point).is_none()
             {
                 let token = self.modelling.as_ref().map(|edit| edit.token);

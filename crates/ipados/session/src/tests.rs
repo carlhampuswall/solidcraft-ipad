@@ -5765,7 +5765,7 @@ fn sketch_fillet_curve_pair_and_multiple_corners_use_engine_references() {
     assert!(matches!(view.selection(), [Sel::SketchCurve { .. }, Sel::SketchCurve { .. }]));
     assert!(view.take_tool_work().is_none());
     let mut params = engine.workspace(view.selection(), false, false)["sketch"]["fillet"]["params"].clone();
-    assert!(params["a"].is_string() && params["b"].is_string());
+    assert!(params["points"][0]["a"].is_string() && params["points"][0]["b"].is_string());
     params["radius"] = json!("3 mm");
     view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":true})).unwrap();
     assert!(run_tool(&mut engine, &mut view));
@@ -5784,6 +5784,153 @@ fn sketch_fillet_curve_pair_and_multiple_corners_use_engine_references() {
     view.command("tool.propose", &json!({"command":"sketch.fillet","params":params,"commit":true})).unwrap();
     assert!(run_tool(&mut engine, &mut view));
     assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 6);
+}
+
+#[test]
+fn sketch_fillet_live_selection_adds_and_removes_corners_and_drags_one_shared_radius() {
+    use solidcore_record::Vec2;
+    for plane in ["XY", "XZ", "YZ"] {
+        for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+            let (mut engine, mut view) = sketch_input_fixture(json!(plane), "select");
+            engine.execute("sketch.rectangle.two_point", json!({"p0":[-20,-15],"p1":[20,15],"connect":false})).unwrap();
+            view.begin_update(2);
+            view.install(2, engine.snapshot().unwrap());
+            view.direct_handles = true;
+            view.multiple = true;
+            let original = engine.sketch_snapshot().unwrap();
+            let undo = engine.session.undo.len();
+            let tap = |view: &mut Viewport, id: u64, local: Vec2| {
+                let screen = point(view, original.plane.to_world(local));
+                for phase in [InputPhase::Began, InputPhase::Ended] {
+                    let mut input = sample(view, source, phase, id, screen, id as f64 + if phase == InputPhase::Began { 0. } else { 0.1 });
+                    input.display_preview = view.diagnostic()["preview"] == true;
+                    view.input(input).unwrap();
+                }
+            };
+            tap(&mut view, 1, Vec2::new(0., -15.));
+            tap(&mut view, 2, Vec2::new(20., 0.));
+            assert_eq!(view.selection().len(), 2, "{plane} {source:?}");
+            let mut edit = engine.begin_model(8801, Some("sketch.fillet"), None, view.selection()).unwrap();
+            view.begin_model(edit.clone()).unwrap();
+            assert!(edit.handle.is_some());
+            let anchor = edit.handle.as_ref().unwrap().origin;
+            let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+            view.publish_model(edit.token, &preview).unwrap();
+            assert_eq!(view.display_model().unwrap().sketch.as_ref().unwrap().sketch.curves.len(), 5);
+            // The preview keeps the source picks live even with Multiple disabled.
+            view.multiple = false;
+            tap(&mut view, 3, Vec2::new(-20., 0.));
+            assert_eq!(view.selection().len(), 3, "an edge added during preview must remain selected: {plane} {source:?}");
+            edit = engine.refresh_model(&view.model_edit(edit.token).unwrap(), view.selection(), None).unwrap();
+            assert_eq!(edit.params["edges"].as_array().unwrap().len(), 3);
+            view.update_model(edit.clone()).unwrap();
+            assert_eq!(edit.handle.as_ref().unwrap().origin, anchor, "adding an earlier corner must not move the handle");
+            let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+            view.publish_model(edit.token, &preview).unwrap();
+            assert_eq!(preview.model.sketch.as_ref().unwrap().sketch.curves.len(), 6, "three sides round their two corners");
+            tap(&mut view, 4, Vec2::new(0., 15.));
+            edit = engine.refresh_model(&view.model_edit(edit.token).unwrap(), view.selection(), None).unwrap();
+            view.update_model(edit.clone()).unwrap();
+            let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+            view.publish_model(edit.token, &preview).unwrap();
+            assert_eq!(preview.model.sketch.as_ref().unwrap().sketch.curves.len(), 8, "four sides round all four corners");
+            tap(&mut view, 5, Vec2::new(0., 15.));
+            edit = engine.refresh_model(&view.model_edit(edit.token).unwrap(), view.selection(), None).unwrap();
+            view.update_model(edit.clone()).unwrap();
+            let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+            view.publish_model(edit.token, &preview).unwrap();
+            assert_eq!(preview.model.sketch.as_ref().unwrap().sketch.curves.len(), 6);
+            tap(&mut view, 6, Vec2::new(-20., 0.));
+            edit = engine.refresh_model(&view.model_edit(edit.token).unwrap(), view.selection(), None).unwrap();
+            view.update_model(edit.clone()).unwrap();
+            let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+            view.publish_model(edit.token, &preview).unwrap();
+            assert_eq!(preview.model.sketch.as_ref().unwrap().sketch.curves.len(), 5, "deselecting a side removes its corner");
+            tap(&mut view, 7, Vec2::new(-20., 0.));
+            edit = engine.refresh_model(&view.model_edit(edit.token).unwrap(), view.selection(), None).unwrap();
+            view.update_model(edit.clone()).unwrap();
+            let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+            view.publish_model(edit.token, &preview).unwrap();
+            let handle = edit.handle.as_ref().unwrap();
+            let start = point(&view, handle.point());
+            let end = point(&view, handle.origin + handle.normal * 4.);
+            for (phase, screen, time) in [(InputPhase::Began, start, 8.), (InputPhase::Moved, end, 8.1), (InputPhase::Ended, end, 8.2)] {
+                let mut input = sample(&view, source, phase, 8, screen, time);
+                input.display_preview = true;
+                view.input(input).unwrap();
+                if phase != InputPhase::Began {
+                    assert!(!run_tool(&mut engine, &mut view));
+                }
+            }
+            edit = view.model_edit(edit.token).unwrap();
+            assert_eq!(edit.handle.as_ref().unwrap().origin, anchor, "worker previews must retain the selected handle corner");
+            assert!((edit.handle.as_ref().unwrap().distance - 4.).abs() < 1e-6);
+            assert_eq!(engine.session.undo.len(), undo);
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, original.sketch);
+            let filleted = view.display_model().unwrap().sketch.as_ref().unwrap().sketch.clone();
+            assert_eq!(filleted.curves.iter().filter(|c| matches!(c.kind, solidcraft_engine::sketch::CurveKind::Arc { .. })).count(), 2);
+            let prepared = engine.prepare_model(&edit, edit.params.clone(), true).unwrap();
+            let model = engine.accept_model(&edit, prepared).unwrap();
+            view.finish_model(edit.token, Some(model)).unwrap();
+            assert_eq!(engine.session.undo.len(), undo + 1);
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, filleted);
+            engine.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, original.sketch);
+            engine.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, filleted);
+        }
+    }
+}
+
+#[test]
+fn sketch_fillet_live_corners_follow_coincident_constraints_and_cancel_stale_previews() {
+    let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
+    let mut curves = Vec::new();
+    for points in [json!([[0, 0], [30, 0]]), json!([[30, 0], [30, 20]]), json!([[30, 20], [0, 20]])] {
+        let value = engine.execute("sketch.line", json!({"points":points,"connect":false,"infer":false})).unwrap().value;
+        curves.push(value["curves"][0].as_str().unwrap().to_string());
+    }
+    let selection: Vec<_> = curves.iter().map(|id| Sel::SketchCurve { id: id.clone(), sketch: None }).collect();
+    assert!(engine.workspace(&selection, false, false)["sketch"]["fillet"].is_null(), "nearby endpoints are not a topological connection");
+    for i in 0..2 {
+        engine.execute("sketch.constraint.coincident", json!({"a":format!("{}.end",curves[i]),"b":format!("{}.start",curves[i+1])})).unwrap();
+    }
+    view.begin_update(2);
+    view.install(2, engine.snapshot().unwrap());
+    let original = engine.sketch_snapshot().unwrap().sketch;
+    let edit = engine.begin_model(8802, Some("sketch.fillet"), None, &selection).unwrap();
+    view.begin_model(edit.clone()).unwrap();
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+    assert_eq!(preview.model.sketch.as_ref().unwrap().sketch.curves.len(), 5);
+    view.publish_model(edit.token, &preview).unwrap();
+    let before = engine.session.undo.len();
+    view.cancel_model();
+    assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+    assert_eq!(engine.session.undo.len(), before);
+    assert!(view.model_edit(edit.token).is_err());
+    engine.execute("sketch.point", json!({"point":[50,50]})).unwrap();
+    assert!(engine.prepare_model(&edit, edit.params.clone(), true).is_err());
+}
+
+#[test]
+fn sketch_fillet_live_editor_uses_arc_tangents_and_distinguishes_both_shared_ends() {
+    let (mut engine, _) = sketch_input_fixture(json!("XY"), "select");
+    engine.execute("sketch.line", json!({"points":[[0,0],[20,0]],"connect":false,"infer":false})).unwrap();
+    engine.execute("sketch.arc.three_point", json!({"start":[20,0],"end":[0,0],"through":[10,10],"connect":true})).unwrap();
+    let initial = engine.sketch_snapshot().unwrap();
+    let line = initial.sketch.curves.iter().find(|curve| matches!(curve.kind, solidcraft_engine::sketch::CurveKind::Line { .. })).unwrap();
+    let arc = initial.sketch.curves.iter().find(|curve| matches!(curve.kind, solidcraft_engine::sketch::CurveKind::Arc { .. })).unwrap();
+    // Connect the line's freely placed start to the arc's origin snap as well.
+    engine.execute("sketch.constraint.coincident", json!({"a":format!("{}.start",line.id),"b":format!("{}.end",arc.id)})).unwrap();
+    let snapshot = engine.sketch_snapshot().unwrap();
+    let selection: Vec<_> = snapshot.sketch.curves.iter().map(|curve| Sel::SketchCurve { id: curve.id.clone(), sketch: Some(snapshot.id) }).collect();
+    let edit = engine.begin_model(8803, Some("sketch.fillet"), None, &selection).unwrap();
+    assert!(edit.handle.is_some());
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false).unwrap();
+    assert_eq!(preview.model.sketch.as_ref().unwrap().sketch.curves.len(), 4);
+    let foreign: Vec<_> =
+        snapshot.sketch.curves.iter().map(|curve| Sel::SketchCurve { id: curve.id.clone(), sketch: Some(snapshot.id + 1) }).collect();
+    assert!(engine.workspace(&foreign, false, false)["sketch"]["fillet"].is_null());
 }
 
 #[test]

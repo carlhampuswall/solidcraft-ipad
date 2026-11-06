@@ -17,6 +17,7 @@ mod picking;
 mod recovery;
 mod references;
 mod sketch_attachment;
+mod sketch_fillet;
 mod sketch_input;
 mod sketch_projection;
 mod sketching;

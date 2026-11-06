@@ -317,7 +317,12 @@ impl Viewport {
     /// and the contact anchor are distinct, so grabbing off-centre never jumps.
     pub(crate) fn begin_dimension_drag(&mut self, event: &InputEvent, screen: [f64; 2]) -> bool {
         let state = &self.contacts.sketch;
-        if !matches!(state.tool.as_str(), "select" | "sketch.move") || state.contact.is_some() || state.work.is_some() || self.contacts.navigating {
+        if self.modelling.is_some()
+            || !matches!(state.tool.as_str(), "select" | "sketch.move")
+            || state.contact.is_some()
+            || state.work.is_some()
+            || self.contacts.navigating
+        {
             return false;
         }
         let annotations = self.sketch_annotations();
@@ -378,7 +383,7 @@ impl Viewport {
     }
 
     pub(crate) fn begin_sketch_input(&mut self, event: &InputEvent, screen: [f64; 2]) -> bool {
-        if self.constraint_tool().is_some() || self.projection.is_some() || self.contacts.sketch.tool == "sketch.fillet" {
+        if self.modelling.is_some() || self.constraint_tool().is_some() || self.projection.is_some() || self.contacts.sketch.tool == "sketch.fillet" {
             return false;
         }
         let direct = self.contacts.sketch.tool == "select" && self.direct_handles;
@@ -805,7 +810,7 @@ impl Viewport {
         let point = snapshot.plane.to_local(self.plane_point(screen, snapshot.plane)?);
         let tolerance = 10.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
         let curves_only = matches!(self.contacts.sketch.tool.as_str(), "sketch.delete" | "sketch.offset");
-        let fillet = self.contacts.sketch.tool == "sketch.fillet";
+        let fillet = self.contacts.sketch.tool == "sketch.fillet" || self.modelling.as_ref().is_some_and(|edit| edit.operation == "sketch.fillet");
         let fillet_points =
             fillet.then(|| snapshot.sketch.curves.iter().filter_map(|c| c.kind.ends()).flat_map(|(a, b)| [a, b]).collect::<BTreeSet<_>>());
         if !curves_only

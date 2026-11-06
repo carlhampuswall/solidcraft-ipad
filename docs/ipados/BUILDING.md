@@ -10,20 +10,25 @@ the full-gate examples below are for a later explicit full-test request.
 
 ## Sketch corner radius
 
-In an active sketch, choose **Fillet** in the sketch toolbar or menu, tap a
-corner (or two curves), and enter a radius in millimetres or as an expression.
-**Preview** evaluates a disposable engine draft; **Apply** creates the tangent
-arc in one undo step, and **Cancel** preserves the sketch. Selected corners or
-two selected curves also expose **Fillet** in Properties. Select several corners
-before starting Fillet to round them together with one radius. The resulting
-radius remains an editable sketch dimension.
+With **Tools > Edge tools on selection** enabled, selecting two connected
+sketch edges automatically opens a live Fillet preview and a radius handle.
+Continue selecting or deselecting edges while the preview is visible. Three
+consecutive sides of a rectangle round two corners; four sides round all four.
+Only shared endpoints or explicit Coincident constraints identify corners.
+
+Drag the handle or enter a radius expression in Properties. Every selected
+corner uses that radius. **Apply** accepts one undo step; **Cancel** preserves
+the sketch. Choosing **Fillet** or tapping a corner also starts this editor.
+Turn off **Edge tools on selection** to retain the original manual radius form
+with its explicit **Preview** button.
 
 Focused adapter coverage is `sketch_fillet`; the GPU evidence example accepts
-`--sketch-fillet`. The opt-in Debug device argument `--sketch-fillet-check`
-exercises the real UIKit radius form, preview/cancel, invalid input and
-Apply/Undo/Redo on a disposable rectangle. It writes `sketch-fillet-check.json`
-and screenshots to the app's Documents folder. It injects software contacts;
-physical Pencil and finger input require separate observation.
+`--sketch-fillet`. The Debug device argument `--sketch-fillet-check` exercises
+automatic two-edge preview, adding/removing edges, dragging and entering a
+radius, Cancel, Apply, Undo/Redo and the manual preference on a disposable
+rectangle. It writes `sketch-fillet-check.json` and screenshots to the app's
+Documents folder. Its software contacts are separate from physical Pencil and
+finger observations.
 
 ## Prerequisites
 

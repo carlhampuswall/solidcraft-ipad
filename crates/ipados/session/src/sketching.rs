@@ -231,12 +231,16 @@ impl SessionAdapter {
         value["eligible_constraints"] = json!(constraint_actions(sk, selection));
         // Translate native picks into the existing command's references. The
         // engine validates the corner and constructs its exact tangent arc.
-        let fillet = if !selection.is_empty()
-            && selection.len() <= 500
-            && selection.iter().all(|s| matches!(s, Sel::SketchPoint { id } if sk.resolve_point(id).is_some()))
-        {
-            Some(json!({"points":selection.iter().filter_map(|s| match s { Sel::SketchPoint { id } => Some(id), _ => None }).collect::<Vec<_>>()}))
+        let candidates = if selection.iter().any(|selected| matches!(selected, Sel::SketchCurve { sketch: Some(source), .. } if *source != id)) {
+            Vec::new()
+        } else {
+            crate::sketch_fillet::corners(sk, selection)
+        };
+        let fillet = if !candidates.is_empty() {
+            Some(json!({"points":candidates.iter().map(|corner| &corner.reference).collect::<Vec<_>>()}))
         } else if let [Sel::SketchCurve { id: a, sketch: sa }, Sel::SketchCurve { id: b, sketch: sb }] = selection {
+            // Keep the existing manual two-curve form for the engine's extend-
+            // to-intersection workflow; it does not start an automatic preview.
             (sa.is_none_or(|s| s == id)
                 && sb.is_none_or(|s| s == id)
                 && [a, b].iter().all(|c| sk.curve_index(c).and_then(|i| sk.curves.get(i)).is_some_and(|c| c.kind.ends().is_some())))

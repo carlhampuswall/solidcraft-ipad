@@ -713,7 +713,8 @@ impl Viewport {
             return None;
         }
         let pixel = self.metrics.pixel(points)?;
-        if self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking())
+        if model.sketch.is_none()
+            && self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking())
             && let Some(display) = self.display_model()
             && !Arc::ptr_eq(model, display)
         {
@@ -821,7 +822,12 @@ impl Viewport {
     pub(crate) fn select(&mut self, hit: Option<Sel>, add: bool) {
         let body_field = self.modelling.as_ref().and_then(|edit| edit.body_pick_field()).map(str::to_string);
         let source_field = self.modelling.as_ref().and_then(|edit| edit.selection_field.as_deref()).filter(|field| *field == "edges");
-        if source_field.is_some() && hit.as_ref().is_some_and(|hit| !matches!(hit, Sel::Edge { .. })) {
+        let sketch_fillet = self.modelling.as_ref().is_some_and(|edit| edit.operation == "sketch.fillet");
+        if source_field.is_some()
+            && hit.as_ref().is_some_and(|hit| {
+                if sketch_fillet { !matches!(hit, Sel::SketchCurve { .. } | Sel::SketchPoint { .. }) } else { !matches!(hit, Sel::Edge { .. }) }
+            })
+        {
             return;
         }
         let picking_sources = source_field.is_some();
