@@ -5070,7 +5070,7 @@ private extension FoundationController {
             ("solid.chamfer", ["body": .string("Compact stock"), "edges": .array([edge]), "distance": .string("2 mm")]),
             ("solid.shell", ["body": .string("Compact stock"), "faces": .array([face]), "thickness": .string("2 mm")]),
             ("solid.offset_face", ["body": .string("Compact stock"), "faces": .array([face]), "distance": .string("2 mm")]),
-            ("solid.box", ["width": .string("10 mm"), "depth": .string("10 mm"), "height": .string("10 mm")])
+            ("solid.box", ["length": .string("10 mm"), "width": .string("10 mm"), "height": .string("10 mm")])
         ]
         func legacy() {
             compactToolControls = false
@@ -5129,7 +5129,7 @@ private extension FoundationController {
                 } else { cancelAndContinue() }
             }
         }
-        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("solid.box", ["name": "Compact stock", "width": "30 mm", "depth": "25 mm", "height": "20 mm"]), ("view.fit", [:])]
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("solid.box", ["name": "Compact stock", "length": "30 mm", "width": "25 mm", "height": "20 mm"]), ("view.fit", [:])]
         func setup(_ index: Int) {
             guard index < fixture.count else { step(0); return }
             session.command(fixture[index].0, params: fixture[index].1) { result in
