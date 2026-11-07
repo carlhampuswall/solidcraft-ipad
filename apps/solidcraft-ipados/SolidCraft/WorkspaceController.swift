@@ -1739,14 +1739,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         canvas.cancelInput()
         rebuildMenus()
         let panel = WorkspaceSettingsController()
+        panel.overrideUserInterfaceStyle = workspaceInterfaceStyle
         panel.render(settingsSections)
         let navigation = UINavigationController(rootViewController: panel)
         navigation.modalPresentationStyle = .popover
         navigation.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        let appearance = UINavigationBarAppearance()
+        appearance.configureWithOpaqueBackground()
+        appearance.backgroundColor = WorkspaceStyle.background
+        navigation.navigationBar.standardAppearance = appearance
+        navigation.navigationBar.scrollEdgeAppearance = appearance
         let safe = view.safeAreaLayoutGuide.layoutFrame
         navigation.preferredContentSize = CGSize(width: min(540, max(0, safe.width - 24)), height: min(640, max(0, safe.height - 32)))
         if let popover = navigation.popoverPresentationController {
             popover.sourceView = settingsButton; popover.sourceRect = settingsButton.bounds
+            popover.backgroundColor = WorkspaceStyle.background
             popover.permittedArrowDirections = [.down, .right]; popover.delegate = self
         }
         settingsPopover = panel
@@ -4556,6 +4563,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modelValueButton.overrideUserInterfaceStyle = handleButtonStyle
         modellingInspector?.resultButton?.overrideUserInterfaceStyle = handleButtonStyle
         presentedViewController?.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        if let navigation = settingsPopover?.navigationController {
+            navigation.viewControllers.forEach { $0.overrideUserInterfaceStyle = workspaceInterfaceStyle }
+            navigation.popoverPresentationController?.backgroundColor = WorkspaceStyle.background
+        }
     }
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -9555,6 +9566,8 @@ private extension FoundationController {
             guard let panel = self.settingsPopover, let navigation = panel.navigationController else {
                 issues.append("Gear did not present Settings"); finish(); return
             }
+            check(panel.tableView.backgroundView?.backgroundColor?.resolvedColor(with: panel.traitCollection).cgColor.alpha == 1,
+                  "Settings background is translucent")
             check(self.settingsButton.menu == nil, "Gear still opens a command menu")
             check(self.settingsSections.count == WorkspaceSettingsCategory.allCases.count, "Missing settings categories")
             check(self.toolsMoreButton.menu != nil && self.rail.arrangedSubviews.contains(self.toolsMoreButton), "Left tool menu is missing")
@@ -9578,6 +9591,9 @@ private extension FoundationController {
                 if let choices = navigation.topViewController as? UITableViewController, choices !== panel {
                     choices.tableView.delegate?.tableView?(choices.tableView, didSelectRowAt: IndexPath(row: 1, section: 0))
                     check(self.appearance == 1 && navigation.overrideUserInterfaceStyle == .light, "Theme choice did not update the popup")
+                    check(choices.traitCollection.userInterfaceStyle == .light &&
+                          choices.tableView.backgroundView?.backgroundColor?.resolvedColor(with: choices.traitCollection).cgColor.alpha == 1,
+                          "Theme choices have an unreadable background or stale appearance")
                     choices.view.layoutIfNeeded(); capture("theme")
                 } else { issues.append("Theme row did not open its choices") }
                 for controller in navigation.viewControllers.compactMap({ $0 as? UITableViewController }) {

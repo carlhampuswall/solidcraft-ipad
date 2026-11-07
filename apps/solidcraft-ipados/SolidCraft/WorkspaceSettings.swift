@@ -28,6 +28,7 @@ final class WorkspaceSettingsController: UITableViewController, UISearchResultsU
     init() {
         super.init(style: .insetGrouped)
         title = WorkspaceStyle.text("settings")
+        traitOverrides.userInterfaceLevel = .base
         preferredContentSize = CGSize(width: 540, height: 640)
     }
     required init?(coder: NSCoder) { nil }
@@ -35,7 +36,10 @@ final class WorkspaceSettingsController: UITableViewController, UISearchResultsU
     override func viewDidLoad() {
         super.viewDidLoad()
         view.accessibilityIdentifier = "workspace-settings-popup"
-        tableView.backgroundColor = WorkspaceStyle.surface
+        tableView.backgroundColor = WorkspaceStyle.background
+        let background = UIView()
+        background.backgroundColor = WorkspaceStyle.background
+        tableView.backgroundView = background
         tableView.keyboardDismissMode = .onDrag
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 60
@@ -144,12 +148,16 @@ private final class WorkspaceSettingsChoicesController: UITableViewController {
     init(title: String, actions: [UIAction]) {
         self.actions = actions
         super.init(style: .insetGrouped)
+        traitOverrides.userInterfaceLevel = .base
         self.title = title
     }
     required init?(coder: NSCoder) { nil }
     override func viewDidLoad() {
         super.viewDidLoad()
-        tableView.backgroundColor = WorkspaceStyle.surface
+        tableView.backgroundColor = WorkspaceStyle.background
+        let background = UIView()
+        background.backgroundColor = WorkspaceStyle.background
+        tableView.backgroundView = background
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 52
     }
