@@ -802,7 +802,7 @@ fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
         view.set_metrics(ViewportMetrics { width_points: 960.0, height_points: 640.0, scale: 1.0, origin_points: [0.0; 2] })?;
         view.begin_update(1);
         view.install(1, model.clone());
-        view.command("view.top", &json!({}))?;
+        view.command("view.isometric", &json!({}))?;
         view.command("view.navigate", &json!({"motion":"pan","delta":[100,50],"viewport":[960,640]}))?;
         view.command("view.touch_orbit", &json!({"follows_viewpoint":follows_viewpoint}))?;
         let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
@@ -817,6 +817,7 @@ fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
             capture(&view, "before")?;
         }
         let initial = view.command("view.project", &json!({"point":pivot}))?;
+        let initial_roll = view.snapshot().ok_or("missing starting orbit scene")?.camera.roll;
         let x = initial["points"][0].as_f64().ok_or("missing orbit x")?;
         let y = initial["points"][1].as_f64().ok_or("missing orbit y")?;
         for (phase, dx, timestamp) in [(InputPhase::Began, 0.0, 1.0), (InputPhase::Moved, 120.0, 2.0), (InputPhase::Ended, 120.0, 3.0)] {
@@ -836,6 +837,9 @@ fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
         if follows_viewpoint && drift > 1e-6 {
             return Err(format!("object centre drifted {drift} points").into());
         }
+        if view.snapshot().ok_or("missing turned orbit scene")?.camera.roll != initial_roll {
+            return Err("one-finger orbit added image roll".into());
+        }
         println!("{label}: object centre drift {drift:.6} points");
         capture(&view, label)?;
         if follows_viewpoint {
@@ -853,6 +857,9 @@ fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
                     "document_id":report["document_id"],"geometry_revision":report["geometry_revision"],
                     "viewport_epoch":report["viewport_epoch"],"camera_epoch":report["camera_epoch"]
                 }))?)?;
+                if view.snapshot().ok_or("missing circular-orbit scene")?.camera.roll != before.roll {
+                    return Err("circular one-finger orbit added image roll".into());
+                }
                 if step == 16 {
                     capture(&view, "circle-halfway")?;
                 }

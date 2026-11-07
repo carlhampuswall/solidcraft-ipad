@@ -149,9 +149,11 @@ cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
 It captures `-before.png`, `-selected.png` and `-extruded.png` on macOS. This is
 adapter/rendering evidence; physical Pencil and UIKit verification remain separate.
 
-One-finger orbit follows the screen axes, including rolled, top and bottom views,
-and passes smoothly through the poles. Drag right to turn the visible object
-right; drag down to turn it down. Each gesture measures displacement from its
+One-finger orbit changes only yaw and pitch: left/right drags turn around the
+world up axis and up/down drags change elevation. It never adds image roll;
+an intentional two-finger twist is retained. Elevation stops just short of the
+top/bottom poles so the view cannot flip over. Drag right to turn the visible
+object right; drag down to turn it down. Each gesture measures displacement from its
 starting finger position and camera, so completing a circle or retracing a
 straight drag restores the starting view. The viewpoint moves in the opposite
 direction. The orbit pivot is the centre of the body under the initial contact, or the visible model
@@ -164,7 +166,7 @@ in `SolidCraft.workspace.viewpointOrbit` and never changes a design. Sketch pan,
 two-finger pan/zoom and pointer navigation retain their existing mapping.
 
 The existing `render_proof` example accepts `--orbit` for a repeatable GPU
-comparison of a rightward drag after panning a top view:
+comparison of a rightward drag after panning an isometric view:
 
 ```sh
 cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
@@ -173,7 +175,7 @@ cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
 
 It writes `-before.png`, `-previous.png` and `-fixed.png` using the real input
 router and shared renderer, and checks that the corrected object's centre does
-not drift. The `-circle-start.png`, `-circle-halfway.png` and
+not drift or gain roll. The `-circle-start.png`, `-circle-halfway.png` and
 `-circle-restored.png` captures also verify that a closed circular drag restores
 the starting camera. This is macOS GPU evidence, separate from physical iPad verification.
 

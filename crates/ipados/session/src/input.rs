@@ -313,13 +313,19 @@ impl Viewport {
     fn orbit_finger(&mut self, start: [f64; 2], point: [f64; 2]) -> Result<(), AdapterError> {
         let pivot = self.contacts.orbit_pivot.unwrap_or_else(|| self.finger_orbit_pivot(start));
         self.contacts.orbit_pivot = Some(pivot);
-        // Recompute from touch-down rather than composing rotations about
-        // changing screen axes. Closed paths restore their starting viewpoint.
+        // Use shared yaw/pitch orbit so one finger never adds image roll.
+        // Recompute from touch-down so closed paths restore the starting view.
         let camera = *self.contacts.orbit_camera.get_or_insert(self.camera);
+        if point == start {
+            // Named top/bottom views sit just beyond the shared orbit limit.
+            // Returning to touch-down restores that exact saved orientation.
+            self.camera = camera;
+            return Ok(());
+        }
         self.navigate_from(
             camera,
             &json!({"motion":"orbit","delta":[point[0]-start[0],point[1]-start[1]],
-            "viewport":[self.metrics.width_points,self.metrics.height_points],"free_orbit":true,"pivot":pivot}),
+            "viewport":[self.metrics.width_points,self.metrics.height_points],"pivot":pivot}),
         )
     }
 

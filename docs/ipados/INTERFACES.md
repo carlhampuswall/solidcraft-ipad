@@ -128,10 +128,12 @@ with no new engine command, document field, or ABI symbol.
 
 `view.touch_orbit` is a viewport presentation preference. Input is
 `{"follows_viewpoint": boolean}`; the viewport diagnostic reply includes the same
-`touch_orbit` object. The default is `true`: finger deltas retain their direction
-for the shared screen-relative `view.navigate` orbit, with a fixed object-centre
-pivot, so the visible object follows the finger. One-finger gestures retain their
-starting camera and use total finger displacement rather than accumulating
+`touch_orbit` object. The default is `true`: finger deltas use the shared
+yaw/pitch `view.navigate` orbit, with a fixed object-centre pivot, so the visible
+object follows the finger without adding roll. Pitch stops at the shared pole
+limits; existing roll from a deliberate two-finger twist is retained.
+One-finger gestures retain their starting camera and use total finger
+displacement rather than accumulating
 rotations. Returning to the starting point restores the camera, including after
 a circular drag. Finger-count transitions discard this anchor and rebase.
 The existing `follows_viewpoint` wire key and

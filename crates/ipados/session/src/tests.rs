@@ -2908,7 +2908,7 @@ fn ui_ownership_and_contact_capture_are_stable_until_completion() {
 }
 
 #[test]
-fn one_finger_turns_the_object_in_screen_direction_from_every_view() {
+fn one_finger_changes_yaw_and_pitch_without_adding_roll_from_every_view() {
     use solidcraft_render::{Camera, StandardView, UpAxis};
 
     for up in [UpAxis::Z, UpAxis::Y] {
@@ -2942,6 +2942,20 @@ fn one_finger_turns_the_object_in_screen_direction_from_every_view() {
                             let moved = view.camera.eye() - before.eye();
                             let projected = project(view.camera);
                             let context = (up, standard, roll, fov, scale, delta);
+                            assert_eq!(view.camera.roll, before.roll, "one finger added tilt: {context:?}");
+                            assert_eq!((view.camera.target, view.camera.distance, view.camera.fov), (before.target, before.distance, before.fov));
+                            if delta[0] == 0.0 {
+                                assert_eq!(view.camera.yaw, before.yaw, "vertical drag changed heading: {context:?}");
+                            }
+                            if delta[1] == 0.0 {
+                                // Named pole views start slightly closer to the pole
+                                // than the shared orbit limit.
+                                assert!((view.camera.pitch - before.pitch).abs() < 1e-4, "horizontal drag changed elevation: {context:?}");
+                            }
+                            if roll != 0.0 || matches!(standard, StandardView::Top | StandardView::Bottom) {
+                                continue;
+                            }
+                            assert!(view.camera.basis().0.dot(view.camera.up_dir()).abs() < 1e-10, "horizon tilted: {context:?}");
                             if delta[0] != 0.0 {
                                 assert!(moved.dot(right) * delta[0] < 0.0, "horizontal viewpoint: {context:?}");
                                 assert!((projected.0 - start.0) * delta[0] > 0.0, "horizontal object follows finger: {context:?}");
@@ -2951,14 +2965,34 @@ fn one_finger_turns_the_object_in_screen_direction_from_every_view() {
                             if delta[1] != 0.0 {
                                 assert!(moved.dot(screen_up) * delta[1] > 0.0, "vertical viewpoint: {context:?}");
                                 assert!((projected.1 - start.1) * delta[1] > 0.0, "vertical object follows finger: {context:?}");
-                            } else {
-                                assert!(moved.dot(screen_up).abs() < 1e-8, "vertical drift: {context:?}");
                             }
-                            assert_eq!((view.camera.target, view.camera.distance, view.camera.fov), (before.target, before.distance, before.fov));
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn successive_one_finger_drags_keep_the_horizon_level() {
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    // Separate gestures used to accumulate roll even when every stroke was
+    // horizontal or vertical. Cover diagonal strokes and both pitch limits too.
+    for (index, delta) in [[100., 0.], [0., 80.], [-100., 0.], [0., -80.], [60., 40.], [0., -500.], [80., 0.], [0., 500.]].into_iter().enumerate() {
+        let time = (index * 3) as f64 + 1.;
+        let start = [400., if delta[1] < 0. { 580. } else { 20. }];
+        let end = [start[0] + delta[0], start[1] + delta[1]];
+        feed(&mut view, InputSource::Finger, InputPhase::Began, 1, start, time);
+        feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, end, time + 1.);
+        feed(&mut view, InputSource::Finger, InputPhase::Ended, 1, end, time + 2.);
+        assert_eq!(view.camera.roll, 0., "stroke {index} added tilt");
+        let (right, up, _) = view.camera.basis();
+        assert!(right.dot(view.camera.up_dir()).abs() < 1e-10, "stroke {index} tilted the horizon");
+        assert!(up.dot(view.camera.up_dir()) > 0., "stroke {index} flipped the view");
+        if delta[1].abs() == 500. {
+            assert!(view.camera.pitch * delta[1].signum() > std::f64::consts::FRAC_PI_2 - 1e-3, "stroke {index} missed the pole limit");
         }
     }
 }
@@ -2992,6 +3026,7 @@ fn one_finger_returning_to_drag_origin_restores_view_independent_of_path() {
                         let delta = if circular { [90. * angle.sin(), 90. * (1. - angle.cos())] } else { [160. * (1. - (2. * t - 1.).abs()), 0.] };
                         let end = if step == steps { start } else { [start[0] + delta[0], start[1] + delta[1]] };
                         feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, end, 1. + t);
+                        assert_eq!(view.camera.roll, before.roll, "circular drag added tilt");
                         let projected = point(&view, pivot);
                         assert!((projected[0] - start[0]).hypot(projected[1] - start[1]) < 1e-6, "orbit pivot drifted");
                     }
@@ -3093,7 +3128,7 @@ fn touch_orbit_preference_preserves_legacy_orbit_and_leaves_pan_and_pointer_alon
 }
 
 #[test]
-fn one_finger_uses_the_touched_body_centre_and_keeps_it_through_pole_crossings() {
+fn one_finger_uses_the_touched_body_centre_and_stops_upright_at_the_poles() {
     let (mut engine, mut view) = input_fixture();
     view.command("tool.set", &json!({"tool":"select"})).unwrap();
     let model = engine.snapshot().unwrap();
@@ -3103,12 +3138,13 @@ fn one_finger_uses_the_touched_body_centre_and_keeps_it_through_pole_crossings()
     let before = view.camera;
     feed(&mut view, InputSource::Finger, InputPhase::Began, 1, start, 1.0);
     for step in 1..=50 {
-        let previous = view.camera;
         feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [start[0], start[1] + f64::from(step) * 10.0], 1.0 + f64::from(step));
         let projected = point(&view, pivot);
         assert!((projected[0] - start[0]).hypot(projected[1] - start[1]) < 1e-6);
-        assert!((view.camera.back().dot(previous.back()) - 0.08_f64.cos()).abs() < 1e-8, "continuous turn through poles");
+        assert_eq!(view.camera.roll, before.roll, "vertical drag added tilt");
+        assert!(view.camera.basis().1.dot(view.camera.up_dir()) > 0.0, "vertical drag flipped the view");
     }
+    assert!(view.camera.pitch > std::f64::consts::FRAC_PI_2 - 1e-3, "long vertical drag reaches the top view");
     for step in (0..50).rev() {
         feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, [start[0], start[1] + f64::from(step) * 10.0], 102.0 - f64::from(step));
     }
