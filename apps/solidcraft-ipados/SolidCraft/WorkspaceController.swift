@@ -2537,8 +2537,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let popover = picker.popoverPresentationController {
             popover.sourceView = source; popover.sourceRect = source.bounds
             let frame = source.convert(source.bounds, to: workspace)
-            let roomAbove = frame.minY - view.safeAreaLayoutGuide.layoutFrame.minY
-            popover.permittedArrowDirections = roomAbove > picker.preferredContentSize.height + 24 ? .down : [.left, .right, .up]
+            // UIKit may place an unrestricted menu directly on top of the grip.
+            // Reserve room for its arrow and margins, then scroll shorter lists.
+            let roomAbove = frame.minY - view.safeAreaLayoutGuide.layoutFrame.minY - 36
+            if roomAbove >= picker.tableView.rowHeight {
+                picker.preferredContentSize.height = min(picker.preferredContentSize.height, roomAbove)
+                popover.permittedArrowDirections = .down
+            } else {
+                popover.permittedArrowDirections = [.left, .right]
+            }
             popover.delegate = self
         }
         picker.onChoose = { [weak self, weak form, weak picker] value in
@@ -5353,21 +5360,38 @@ private extension FoundationController {
                             }
                             return
                         }
-                        capture("face-preview")
+                        func chooseResult() {
+                            capture("face-preview")
+                            button.sendActions(for: .touchUpInside)
+                            wait("above-handle result menu", until: { self.resultPicker?.view.window != nil }) {
+                                guard let picker = self.resultPicker, picker.tableView.numberOfRows(inSection: 0) == 4,
+                                      picker.view.convert(picker.view.bounds, to: self.workspace).maxY <= button.frame.midY,
+                                      let options = form.fields.first(where: { $0.key == "operation" })?.options,
+                                      let row = options.firstIndex(where: { $0.value == .string("cut") }) else { finish("Boolean result list misplaced or incomplete"); return }
+                                capture("face-options")
+                                picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: row, section: 0))
+                                wait("Subtract preview", until: { form.handleEntryEnabled && form.params["operation"] == .string("cut") && self.canvas.displayingPreview }) {
+                                    capture("face-subtract")
+                                    cancel.sendActions(for: .touchUpInside)
+                                    wait("cancel selected face", until: { !self.modellingEditing && self.pending.isEmpty && !self.canvas.displayingPreview }) {
+                                        guard self.state?.modelling?.timeline.count == initialCount else { finish("Cancel changed stock"); return }
+                                        nextFace()
+                                    }
+                                }
+                            }
+                        }
+                        // Exercise the tightly fitted view as well as a framing
+                        // with enough room for all four rows above the handle.
                         button.sendActions(for: .touchUpInside)
-                        wait("above-handle result menu", until: { self.resultPicker?.view.window != nil }) {
-                            guard let picker = self.resultPicker, picker.tableView.numberOfRows(inSection: 0) == 4,
-                                  picker.view.convert(picker.view.bounds, to: self.workspace).maxY <= button.frame.maxY,
-                                  let options = form.fields.first(where: { $0.key == "operation" })?.options,
-                                  let row = options.firstIndex(where: { $0.value == .string("cut") }) else { finish("Boolean result list misplaced or incomplete"); return }
-                            capture("face-options")
-                            picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: row, section: 0))
-                            wait("Subtract preview", until: { form.handleEntryEnabled && form.params["operation"] == .string("cut") && self.canvas.displayingPreview }) {
-                                capture("face-subtract")
-                                cancel.sendActions(for: .touchUpInside)
-                                wait("cancel selected face", until: { !self.modellingEditing && self.pending.isEmpty && !self.canvas.displayingPreview }) {
-                                    guard self.state?.modelling?.timeline.count == initialCount else { finish("Cancel changed stock"); return }
-                                    nextFace()
+                        wait("result at top of viewport", until: { self.resultPicker?.view.window != nil }) {
+                            guard let picker = self.resultPicker,
+                                  picker.view.convert(picker.view.bounds, to: self.workspace).maxY <= button.frame.midY else {
+                                finish("Near-edge result menu covered drag handle"); return
+                            }
+                            picker.dismiss(animated: false) {
+                                self.session.command("view.navigate", params: ["motion": "zoom", "factor": 1.9]) { result in
+                                    guard case .success = result else { finish("Could not reframe fixture"); return }
+                                    wait("menu follows camera", until: { !button.isHidden && self.modelValue?.valid == true }) { chooseResult() }
                                 }
                             }
                         }
