@@ -34,6 +34,31 @@ struct WorkspaceChecks {
             }
         }
         let quickDefaults = ["select", "line", "circle", "modify"]
+        try require(ToolGrouping.enabled(nil) && ToolGrouping.enabled(true) && !ToolGrouping.enabled(false),
+                    "tool grouping lost its default or the individual-background preference")
+        let sketchBar = ["select", "sketch.point", "sketch.line", "sketch.rectangle.two_point", "sketch.circle.center",
+                         "sketch.offset", "sketch.fillet", "sketch.trim", "sketch.delete", "sketch.tools", "tools.more"]
+        try require(ToolGrouping.ordered(sketchBar, enabled: true) == sketchBar &&
+                    Set(sketchBar.dropFirst().dropLast().map(ToolGrouping.family)) == ["sketch"],
+                    "Point or the sketch menu escaped the shared sketch background")
+        let customizedBar = ["select", "modelling", "assembly", "solid.fillet", "joint.create", "sketch.create", "tools.more"]
+        try require(ToolGrouping.ordered(customizedBar, enabled: true) ==
+                    ["select", "modelling", "solid.fillet", "sketch.create", "assembly", "joint.create", "tools.more"],
+                    "pinned modelling and assembly tools did not join their families in saved relative order")
+        try require(ToolGrouping.ordered(customizedBar, enabled: false) == customizedBar,
+                    "disabling grouping did not preserve the previous placement")
+        let navigationBar = ["navigation.home", "navigation.projection", "navigation.inspector", "navigation.constraints",
+                             "navigation.dimensions", "navigation.construction", "view.front", "navigation.more"]
+        try require(ToolGrouping.ordered(navigationBar, enabled: true) ==
+                    ["navigation.home", "navigation.projection", "view.front", "navigation.inspector", "navigation.constraints",
+                     "navigation.dimensions", "navigation.construction", "navigation.more"],
+                    "view shortcuts did not join the view group or Properties/More lost their separate backgrounds")
+        for standalone in ["select", "tools.more", "navigation.more", "navigation.inspector", "tool.cancel"] {
+            try require(!["sketch", "view", "modelling", "assembly", "sketch-settings"].contains(ToolGrouping.family(standalone)),
+                        "a workspace-wide or completion action joined a tool family")
+        }
+        try require(ToolGrouping.family("edit.undo") == ToolGrouping.family("edit.redo"),
+                    "Undo and Redo lost their shared history background")
         var quick = QuickAccessLayout(defaults: quickDefaults)
         try require(quick.order == quickDefaults, "quick access changed the initial tools")
         quick.remove("line")

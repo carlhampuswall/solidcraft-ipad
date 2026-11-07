@@ -1,5 +1,41 @@
 import Foundation
 
+/// Native chrome only. Group membership is independent of tool availability,
+/// and saved placement retains the user's order within each family.
+enum ToolGrouping {
+    static let key = "SolidCraft.workspace.groupRelatedTools"
+    static func enabled(_ stored: Bool?) -> Bool { stored ?? true }
+
+    static func family(_ id: String) -> String {
+        switch id {
+        case "sketch.create", "modelling", "modify", "pattern", "post_radius": return "modelling"
+        case "assembly": return "assembly"
+        case "navigation.home", "navigation.projection": return "view"
+        case "navigation.constraints", "navigation.dimensions", "navigation.construction": return "sketch-settings"
+        case "edit.undo", "edit.redo": return "history"
+        default:
+            if id.hasPrefix("sketch.") { return "sketch" }
+            if id.hasPrefix("view.") { return "view" }
+            if ["component.", "joint.", "occurrence."].contains(where: id.hasPrefix) { return "assembly" }
+            if ["solid.", "construct.", "parameters."].contains(where: id.hasPrefix) { return "modelling" }
+            // Select, overflow and Properties each keep their own surface.
+            return id
+        }
+    }
+
+    static func ordered(_ ids: [String], enabled: Bool) -> [String] {
+        guard enabled else { return ids }
+        var families: [String] = []
+        var members: [String: [String]] = [:]
+        for id in ids {
+            let family = family(id)
+            if members[family] == nil { families.append(family) }
+            members[family, default: []].append(id)
+        }
+        return families.flatMap { members[$0] ?? [] }
+    }
+}
+
 /// App preferences only: tool placement never changes a CAD document or command.
 struct QuickAccessLayout: Codable, Equatable {
     private(set) var order: [String]

@@ -9,6 +9,16 @@ the source history and current verification scope.
 
 ## Current presentation
 
+Related toolbar tools share one background around their icon column. Sketch
+Point, drawing and editing tools, and Sketch Tools belong to one group. Create
+Sketch and solid tools share a modelling group; assembly tools have their own.
+View shortcuts, sketch constraints/dimensions/construction, and Undo/Redo each
+share a background. Select, More, Properties and Cancel remain separate.
+Pinned shortcuts join their family while keeping the saved relative order of
+its tools. Captions remain outside the icon backgrounds. **Settings > Workspace
+> Group related tools** is on by default; turning it off restores individual
+backgrounds and the saved ungrouped order.
+
 `WorkspaceController.swift` hosts one real `MetalCanvas` behind native floating
 controls. The document header is a centred surface, normally 340 × 52 points,
 showing the actual document name and app-private persistence status. Its folder

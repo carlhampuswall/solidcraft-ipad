@@ -23,22 +23,23 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let topScroll = UIScrollView()
     private let topActions = UIStackView()
     private let railScroll = UIScrollView()
-    private let rail = UIStackView()
+    private let rail = WorkspaceToolStack()
     private let extrusionRailScroll = ContextualRailScrollView()
     private var pendingTapAwayApply = false
     private var draftAppliesOnTapAway = false
     private var applySolidOnTapAway = UserDefaults.standard.object(forKey: "SolidCraft.workspace.applySolidOnTapAway") as? Bool ?? true
     private weak var resultPicker: ExtrudeResultPicker?
     private let navigationScroll = UIScrollView()
-    private let navigationActions = UIStackView()
+    private let navigationActions = WorkspaceToolStack()
     private var railQuickAccess: QuickAccessBar?
     private var navigationQuickAccess: QuickAccessBar?
     private var additionalQuickTools: [String: WorkspaceButton] = [:]
     private var additionalNavigationTools: [String: WorkspaceButton] = [:]
     private var customizeToolbars = UserDefaults.standard.object(forKey: "SolidCraft.workspace.quickAccess.enabled") as? Bool ?? true
     private var showToolLabels = ToolLabels.current
+    private var groupRelatedTools = ToolGrouping.enabled(UserDefaults.standard.object(forKey: ToolGrouping.key) as? Bool)
     private lazy var navigationMoreButton = WorkspaceButton(QuickAccessText.text("more"), action: {})
-    private let historyActions = UIStackView()
+    private let historyActions = WorkspaceToolStack()
     private let featureHistory = FeatureHistoryBar()
     private var historyExpanded = false
     private let table = UITableView(frame: .zero, style: .plain)
@@ -839,8 +840,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             button.toolLabels(showToolLabels, mirrored: !railRight)
         }
         featureHistory.toolLabels(showToolLabels)
-        // Each icon and its separate caption owns its surface. A wide bar
-        // background would put the caption back inside the button's surface.
+        historyActions.identify(undoButton, as: "edit.undo")
+        historyActions.identify(redoButton, as: "edit.redo")
+        historyActions.groupsTools = compactChrome && groupRelatedTools
+        historyActions.updateGroups()
+        // Group backgrounds span only the icon column. Captions keep their
+        // separate chips and the wide scroll hosts stay transparent.
         for host in [railScroll, navigationScroll, historyActions] {
             host.backgroundColor = .clear; host.layer.borderWidth = 0; host.clipsToBounds = true
         }
@@ -3873,6 +3878,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func configureQuickAccess() {
+        for bar in [rail, navigationActions] { bar.groupsTools = compactChrome && groupRelatedTools }
+        rail.identify(sketchToolsButton, as: "sketch.tools")
+        rail.identify(toolsMoreButton, as: "tools.more")
+        navigationActions.identify(navigationMoreButton, as: "navigation.more")
         let railItems: [(String, WorkspaceButton)] = [
             ("select", selectButton), ("sketch.create", createSketchButton)
         ] + sketchQuickTools + [
@@ -4165,6 +4174,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.configureChrome(); self.rebuildMenus()
             UIAccessibility.post(notification: .layoutChanged, argument: self.settingsPopover?.view ?? self.settingsButton)
         }
+        let toolGroups = UIAction(title: WorkspaceStyle.text("group_related_tools"),
+            subtitle: WorkspaceStyle.text("group_related_tools_help"), state: groupRelatedTools ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.canvas.cancelInput()
+            self.railQuickAccess?.cancelDrag(); self.navigationQuickAccess?.cancelDrag()
+            self.groupRelatedTools.toggle()
+            UserDefaults.standard.set(self.groupRelatedTools, forKey: ToolGrouping.key)
+            self.configureChrome(); self.rebuildMenus()
+        }
         let connectedEdges = UIAction(title: WorkspaceStyle.text("connected_edge_selection"), state: canvas.connectedEdgeSelectionEnabled ? .on : .off) { [weak self] _ in
             guard let self, WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: self.textEntryActive, numericEditActive: self.numericEditing) else { return }
             self.canvas.cancelInput()
@@ -4332,7 +4350,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         var preferences: [WorkspaceSettingsCategory: [UIMenuElement]] = [
             .appearance: [UIMenu(title: NativeText.value("ui.ipados.settings.theme"), children: appearances), followAppearance],
-            .workspace: [toolLabels, homeToolbar, side, browserSwipes, immediateSketchEdit, historySelection],
+            .workspace: [toolLabels, toolGroups, homeToolbar, side, browserSwipes, immediateSketchEdit, historySelection],
             .navigation: [historyGestures, orbit, twist, rotationSnap],
             .selection: [UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple, connectedEdges, edgeLength],
             .modelling: [rollbackEditing, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal,
@@ -4800,6 +4818,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             inspectorHeight = inspectorPanel.fittingHeight(contentHeight: measured, width: frame.width)
         }
         func contentHeight(_ stack: UIStackView, width: CGFloat) -> CGFloat {
+            if let tools = stack as? WorkspaceToolStack { return tools.fittingContentHeight(width: width) }
             // The stack is constrained to the scroll view's previous frame.
             // Measure visible controls independently to avoid feeding that old
             // height (or pending hidden constraints) into the next rail frame.
@@ -6497,6 +6516,9 @@ private extension FoundationController {
                 waitForTool(tool) {
                     self.updateAvailability(); self.view.setNeedsLayout(); self.view.layoutIfNeeded()
                     self.railScroll.layoutIfNeeded()
+                    issues += self.rail.developmentIssues()
+                    issues += self.navigationActions.developmentIssues()
+                    issues += self.historyActions.developmentIssues()
                     if self.finishSketchButton.isHidden || !self.finishSketchButton.isEnabled {
                         issues.append("completion unavailable: \(index)")
                     }
@@ -7248,6 +7270,7 @@ private extension FoundationController {
                 updateAvailability(); view.setNeedsLayout(); view.layoutIfNeeded()
                 railScroll.layoutIfNeeded()
                 check(visible() == baseline, name + ": toolbar tools disappeared or changed order")
+                issues += rail.developmentIssues().map { name + ": " + $0 }
                 check(railScroll.frame == frame, name + ": toolbar frame changed")
                 for button in baseline.compactMap({ $0 as? WorkspaceButton }) {
                     check(button.bounds.height >= 44 && button.bounds.height <= 52 && button.bounds.width >= 44,
@@ -7258,7 +7281,7 @@ private extension FoundationController {
                         check(!button.isEnabled, name + ": command enabled during extrusion")
                     }
                 }
-                let content = baseline.reduce(CGFloat(0)) { $0 + $1.bounds.height } + CGFloat(max(0, baseline.count - 1)) * rail.spacing
+                let content = rail.visibleContentHeight
                 check(abs(railScroll.contentSize.height - content) < 1, name + ": stale toolbar content height")
             }
             let surface: UIView = view.window ?? view

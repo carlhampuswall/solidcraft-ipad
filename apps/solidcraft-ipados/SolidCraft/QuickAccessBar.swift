@@ -4,6 +4,122 @@ enum QuickAccessText {
     static func text(_ key: String) -> String { NativeText.value("ui.ipados.quick_access." + key) }
 }
 
+/// Flat stacks keep the existing controls, gestures and accessibility order.
+/// Shared surfaces cover only the icon column; captions retain their own chips.
+final class WorkspaceToolStack: UIStackView {
+    private var identities: [ObjectIdentifier: String] = [:]
+    private var surfaces: [UIView] = []
+    var groupsTools = false
+
+    func identify(_ button: WorkspaceButton, as id: String) {
+        identities[ObjectIdentifier(button)] = id
+    }
+
+    private func identity(_ view: UIView) -> String {
+        identities[ObjectIdentifier(view)] ?? String(describing: ObjectIdentifier(view))
+    }
+
+    func ordered(_ views: [UIView]) -> [UIView] {
+        let ids = views.map(identity)
+        let byID = Dictionary(zip(ids, views), uniquingKeysWith: { first, _ in first })
+        return ToolGrouping.ordered(ids, enabled: groupsTools).compactMap { byID[$0] }
+    }
+
+    func updateGroups() {
+        let visible = arrangedSubviews.filter { !$0.isHidden }
+        for (index, control) in visible.enumerated() {
+            let next = index + 1
+            let separated = groupsTools && next < visible.count &&
+                ToolGrouping.family(identity(control)) != ToolGrouping.family(identity(visible[next]))
+            let gap = separated ? 10 : spacing
+            if customSpacing(after: control) != gap { setCustomSpacing(gap, after: control) }
+        }
+        setNeedsLayout()
+    }
+
+    var visibleContentHeight: CGFloat {
+        let visible = arrangedSubviews.filter { !$0.isHidden }
+        return visible.enumerated().reduce(0) { height, item in
+            height + item.element.bounds.height + (item.offset + 1 < visible.count ? customSpacing(after: item.element) : 0)
+        }
+    }
+
+    func fittingContentHeight(width: CGFloat) -> CGFloat {
+        updateGroups()
+        let visible = arrangedSubviews.filter { !$0.isHidden }
+        return visible.enumerated().reduce(0) { height, item in
+            height + max(WorkspaceStyle.touch, item.element.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+                + (item.offset + 1 < visible.count ? customSpacing(after: item.element) : 0)
+        }
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let buttons = arrangedSubviews.compactMap { $0 as? WorkspaceButton }
+        var runs: [[WorkspaceButton]] = []
+        if groupsTools {
+            for button in buttons where !button.isHidden {
+                if let previous = runs.last?.last,
+                   ToolGrouping.family(identity(previous)) == ToolGrouping.family(identity(button)) {
+                    runs[runs.count - 1].append(button)
+                } else { runs.append([button]) }
+            }
+        }
+        let groups = runs.filter { $0.count > 1 }
+        let shared = Set(groups.flatMap { $0 }.map(ObjectIdentifier.init))
+        buttons.forEach { $0.sharedToolSurface(shared.contains(ObjectIdentifier($0))) }
+        while surfaces.count < groups.count {
+            let surface = UIView()
+            surface.isUserInteractionEnabled = false
+            surface.accessibilityElementsHidden = true
+            surface.accessibilityIdentifier = "workspace-tool-group-surface"
+            addSubview(surface); surfaces.append(surface)
+        }
+        for (index, surface) in surfaces.enumerated() {
+            surface.isHidden = index >= groups.count
+            guard index < groups.count else { continue }
+            var frame = CGRect.null
+            for button in groups[index] {
+                button.layoutIfNeeded()
+                frame = frame.union(button.convert(button.toolIconFrame, to: self))
+            }
+            WorkspaceStyle.floatingSurface(surface)
+            surface.backgroundColor = WorkspaceStyle.surface
+            surface.frame = frame
+            sendSubviewToBack(surface)
+        }
+    }
+
+#if DEBUG
+    func developmentIssues() -> [String] {
+        layoutIfNeeded()
+        let buttons = arrangedSubviews.compactMap { $0 as? WorkspaceButton }.filter { !$0.isHidden }
+        let backgrounds = surfaces.filter { !$0.isHidden }
+        var issues: [String] = []
+        for button in buttons {
+            let icon = button.convert(button.toolIconFrame, to: self)
+            let containing = backgrounds.filter { $0.frame.contains(icon) }
+            let family = ToolGrouping.family(identity(button))
+            let peers = buttons.filter { ToolGrouping.family(identity($0)) == family }
+            if containing.count != (groupsTools && peers.count > 1 ? 1 : 0) {
+                issues.append("Incorrect shared background for " + identity(button))
+            }
+            for background in containing {
+                if background.isUserInteractionEnabled || background.alpha != 1 {
+                    issues.append("Group surface intercepts input or fades with availability")
+                }
+                for other in buttons where ToolGrouping.family(identity(other)) != family {
+                    if background.frame.intersects(other.convert(other.toolIconFrame, to: self)) {
+                        issues.append("Different tool families share a background")
+                    }
+                }
+            }
+        }
+        return issues
+    }
+#endif
+}
+
 /// Presentation-only customization shared by the two native vertical bars.
 /// A drag keeps the real control in the stack while a lifted snapshot follows
 /// the contact. Commands still use the control's existing production action.
@@ -73,6 +189,7 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
 
     func register(_ id: String, button: WorkspaceButton) {
         guard buttons[id] == nil else { return }
+        (stack as? WorkspaceToolStack)?.identify(button, as: id)
         buttons[id] = button; catalog.append(id)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(drag(_:)))
         hold.minimumPressDuration = 0.4; hold.delegate = self
@@ -114,13 +231,14 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
 
     func arrange(fixed: [UIView]) {
         self.fixed = fixed
-        guard customizationEnabled else { return }
         if let id = held, buttons[id]?.isHidden != false { cancelDrag() }
         applyOrder()
     }
 
     private func applyOrder() {
-        let desired: [UIView] = layout.order.compactMap { buttons[$0] } + fixed
+        let placed: [UIView] = customizationEnabled ? layout.order.compactMap { buttons[$0] } + fixed : stack.arrangedSubviews
+        let desired = (stack as? WorkspaceToolStack)?.ordered(placed) ?? placed
+        defer { (stack as? WorkspaceToolStack)?.updateGroups() }
         guard stack.arrangedSubviews != desired else { return }
         for view in stack.arrangedSubviews where !desired.contains(view) {
             stack.removeArrangedSubview(view); view.removeFromSuperview()
@@ -138,7 +256,10 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
 
     /// Only contextually visible tools participate. Disabled tools stay visible
     /// with the same reason and remain customizable.
-    private var visible: [String] { layout.order.filter { buttons[$0]?.isHidden == false } }
+    private var visible: [String] {
+        let ids = layout.order.filter { buttons[$0]?.isHidden == false }
+        return ToolGrouping.ordered(ids, enabled: (stack as? WorkspaceToolStack)?.groupsTools == true)
+    }
 
     func overflowMenu(excluding groupedCommands: Set<String> = []) -> UIMenu {
         let ids = layout.overflow(from: catalog.filter { buttons[$0]?.isHidden == false }, excluding: groupedCommands)
@@ -382,9 +503,9 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
                       stage + ": " + name + " lost its touch target: \(frame)")
                 check(abs(frame.minY - bottom) < 0.5,
                       stage + ": " + name + " overlaps or leaves a gap: \(frame), expected y=\(bottom)")
-                bottom = frame.maxY + self.stack.spacing
+                bottom = frame.maxY + self.stack.customSpacing(after: control)
             }
-            let height = max(0, bottom - self.stack.spacing)
+            let height = max(0, bottom - (controls.last.map { self.stack.customSpacing(after: $0) } ?? 0))
             check(abs(self.scroll.contentSize.height - height) < 0.5,
                   stage + ": scroll content height does not match the buttons")
         }

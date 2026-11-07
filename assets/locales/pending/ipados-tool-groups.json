@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.workspace.group_related_tools": "Verwandte Werkzeuge gruppieren",
+    "ui.ipados.workspace.group_related_tools_help": "Verwandte Werkzeuge teilen sich einen Hintergrund. Ausschalten, um einzelne Schaltflächen wiederherzustellen."
+  },
+  "en": {
+    "ui.ipados.workspace.group_related_tools": "Group related tools",
+    "ui.ipados.workspace.group_related_tools_help": "Give related tools a shared background. Turn off to restore individual button backgrounds."
+  },
+  "ja": {
+    "ui.ipados.workspace.group_related_tools": "関連するツールをまとめる",
+    "ui.ipados.workspace.group_related_tools_help": "関連するツールの背景を共有します。オフにすると各ボタンの背景に戻ります。"
+  },
+  "ko": {
+    "ui.ipados.workspace.group_related_tools": "관련 도구 묶기",
+    "ui.ipados.workspace.group_related_tools_help": "관련 도구가 배경을 공유합니다. 끄면 각 버튼의 개별 배경으로 돌아갑니다."
+  },
+  "zh": {
+    "ui.ipados.workspace.group_related_tools": "分组相关工具",
+    "ui.ipados.workspace.group_related_tools_help": "让相关工具共用背景。关闭后恢复每个按钮的独立背景。"
+  }
+}

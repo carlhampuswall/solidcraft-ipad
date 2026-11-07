@@ -697,6 +697,7 @@ private final class RailButtonContent: UIView {
     private let gap: CGFloat = 6
     private let inset: CGFloat = 9
     private let separateIconSurface: Bool
+    var sharedIconSurface = false
     private var captionVisible = true
     private var requestedCaptionVisible = true
     private var mirrored = false
@@ -739,6 +740,10 @@ private final class RailButtonContent: UIView {
         chip.isHidden = !captionVisible; setNeedsLayout()
     }
     func updateCaptionVisibility(_ visible: Bool) { showCaption(visible, mirrored: mirrored) }
+    var iconFrame: CGRect {
+        let side = WorkspaceStyle.touch
+        return CGRect(x: mirrored ? max(0, bounds.width - side) : 0, y: (bounds.height - side) / 2, width: side, height: side)
+    }
     func render(selected: Bool, enabled: Bool, highlighted: Bool, history: Bool, diagnostic: FeatureDiagnosticSeverity?) {
         // Dim unavailable content, never the surfaces behind it. A pressed tool
         // uses an opaque fill rather than fading its icon, caption and background.
@@ -755,6 +760,10 @@ private final class RailButtonContent: UIView {
         iconSurface.layer.borderColor = (diagnostic.map(FeatureDiagnosticStyle.color) ??
             (selected || history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.separator)).cgColor
         iconSurface.layer.borderWidth = diagnostic == nil ? 0.5 : 2
+        if sharedIconSurface && !selected && !highlighted && diagnostic == nil {
+            iconSurface.backgroundColor = .clear
+            iconSurface.layer.borderWidth = 0
+        }
         glyph.tintColor = history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.foreground
     }
 
@@ -773,7 +782,7 @@ private final class RailButtonContent: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let side = WorkspaceStyle.touch
-        let iconFrame = CGRect(x: mirrored ? max(0, bounds.width - side) : 0, y: (bounds.height - side) / 2, width: side, height: side)
+        let iconFrame = self.iconFrame
         iconSurface.frame = iconFrame
         glyph.frame = iconFrame.insetBy(dx: 11, dy: 11)
         let textWidth = max(1, bounds.width - side - gap - 2 * inset)
@@ -801,6 +810,14 @@ final class WorkspaceButton: UIButton {
     private var toolCaption: RailButtonContent?
     private var diagnosticSeverity: FeatureDiagnosticSeverity?
     var hasExternalToolCaption: Bool { toolCaption != nil }
+    var toolIconFrame: CGRect {
+        toolCaption.map { $0.convert($0.iconFrame, to: self) } ?? bounds
+    }
+    func sharedToolSurface(_ shared: Bool) {
+        guard let toolCaption, toolCaption.sharedIconSurface != shared else { return }
+        toolCaption.sharedIconSurface = shared
+        setNeedsUpdateConfiguration()
+    }
     private var verticallyCenteredContent = false
     private var railContent: RailButtonContent?
     private var choiceCheck: UIImageView?
