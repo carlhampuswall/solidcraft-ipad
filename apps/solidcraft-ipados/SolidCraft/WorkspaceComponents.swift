@@ -821,6 +821,7 @@ final class WorkspaceButton: UIButton {
     private var verticallyCenteredContent = false
     private var railContent: RailButtonContent?
     private var choiceCheck: UIImageView?
+    private var variantsIndicator: UIImageView?
     private var isHistoryAction: Bool {
         iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"
     }
@@ -872,6 +873,19 @@ final class WorkspaceButton: UIButton {
     }
     func textOnly() {
         iconID = nil; commandID = nil; systemIcon = nil; compactIcon = false; flippedArtwork = false; refreshIcon()
+    }
+    func toolVariants(_ visible: Bool) {
+        if visible && variantsIndicator == nil {
+            let indicator = UIImageView()
+            indicator.isUserInteractionEnabled = false
+            indicator.isAccessibilityElement = false
+            indicator.accessibilityIdentifier = "workspace-tool-variants"
+            indicator.contentMode = .scaleAspectFit
+            indicator.tintColor = WorkspaceStyle.foreground
+            addSubview(indicator); variantsIndicator = indicator
+        }
+        variantsIndicator?.isHidden = !visible
+        refreshIcon(); setNeedsLayout()
     }
     /// Retain compact artwork and accessibility names when captions are hidden.
     /// History actions stay icon-only; text-only actions and forms keep titles.
@@ -935,6 +949,7 @@ final class WorkspaceButton: UIButton {
     private func refreshIcon() {
         // The Rust guide is the visible dot. Keep only its accessible touch target.
         guard !isViewportPoint else { return }
+        variantsIndicator?.image = WorkspaceIcon.image("chevron", traits: traitCollection, size: 8)?.withRenderingMode(.alwaysTemplate)
         let artwork = commandID.flatMap { WorkspaceIcon.command($0, traits: traitCollection) }
             ?? iconID.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
             ?? systemIcon.flatMap { UIImage(systemName: $0) }
@@ -969,6 +984,14 @@ final class WorkspaceButton: UIButton {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        defer {
+            if let indicator = variantsIndicator {
+                let surface = (toolCaption ?? railContent).map { $0.convert($0.iconFrame, to: self) } ?? bounds
+                indicator.frame = CGRect(x: surface.maxX - 13, y: surface.maxY - 13, width: 8, height: 8)
+                indicator.alpha = isEnabled ? 1 : 0.45
+                bringSubviewToFront(indicator)
+            }
+        }
         if let toolCaption {
             imageView?.isHidden = true
             let widthChanged = toolCaption.bounds.width != bounds.width

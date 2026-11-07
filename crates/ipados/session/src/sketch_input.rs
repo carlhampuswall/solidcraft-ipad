@@ -146,17 +146,18 @@ impl SketchInput {
             "sketch.fillet" => "fillet_hint",
             "sketch.dimension" => "dimension_place",
             "sketch.point" => "point_place",
+            "sketch.rectangle.center" if self.points.is_empty() => "rectangle_center",
+            "sketch.rectangle.center" => "rectangle_center_corner",
             "sketch.arc.three_point" if self.points.len() == 2 => "arc_through",
             "sketch.arc.three_point" if self.points.len() == 1 => "arc_end",
             "sketch.spline.fit_point" => "spline_point",
             _ if self.points.is_empty() => "first_point",
             _ => "second_point",
         };
-        let feedback = self
-            .points
-            .first()
-            .zip(self.cursor.as_ref())
-            .map(|(a, b)| json!({"width":(b.at.x-a.at.x).abs(),"height":(b.at.y-a.at.y).abs(),"radius":b.at.dist(a.at)}));
+        let feedback = self.points.first().zip(self.cursor.as_ref()).map(|(a, b)| {
+            let scale = if self.tool == "sketch.rectangle.center" { 2.0 } else { 1.0 };
+            json!({"width":scale*(b.at.x-a.at.x).abs(),"height":scale*(b.at.y-a.at.y).abs(),"radius":b.at.dist(a.at)})
+        });
         json!({"points":self.points.iter().map(|p|p.at).collect::<Vec<_>>(),"snap":self.snap,
             "snapping":self.snapping,"auto_constraints":self.automatic,"prompt":prompt,"feedback":feedback,
             "pending":self.work.is_some(),"tool":self.tool,"free_dimensions":self.free_dimensions,"repeat_rectangles":self.repeat_rectangles,"construction":self.construction})
@@ -171,9 +172,9 @@ impl SketchInput {
         {
             self.tool = "select".into();
         }
-        if self.tool == "sketch.rectangle.two_point"
+        if matches!(self.tool.as_str(), "sketch.rectangle.two_point" | "sketch.rectangle.center")
             && !self.repeat_rectangles
-            && matches!(&work.operation, ToolOperation::Sketch { commands, .. } if commands.iter().any(|(id, _)| id == "sketch.rectangle.two_point"))
+            && matches!(&work.operation, ToolOperation::Sketch { commands, .. } if commands.iter().any(|(id, _)| id == &self.tool))
         {
             self.tool = "select".into();
         }
@@ -658,6 +659,9 @@ impl Viewport {
                 "sketch.rectangle.two_point" if first.at.x != last.at.x && first.at.y != last.at.y => {
                     ("sketch.rectangle.two_point".into(), json!({"p0":[first.at.x,first.at.y],"p1":[last.at.x,last.at.y],"connect":automatic}))
                 }
+                "sketch.rectangle.center" if first.at.x != last.at.x && first.at.y != last.at.y => {
+                    ("sketch.rectangle.center".into(), json!({"center":[first.at.x,first.at.y],"corner":[last.at.x,last.at.y],"connect":automatic}))
+                }
                 "sketch.circle.center" if nonzero => {
                     let mut params = json!({"center":arg(first),"radius":first.at.dist(last.at),"connect":automatic});
                     if automatic && last.argument.is_string() {
@@ -685,7 +689,12 @@ impl Viewport {
         };
         if matches!(
             command.0.as_str(),
-            "sketch.line" | "sketch.rectangle.two_point" | "sketch.circle.center" | "sketch.arc.three_point" | "sketch.spline.fit_point"
+            "sketch.line"
+                | "sketch.rectangle.two_point"
+                | "sketch.rectangle.center"
+                | "sketch.circle.center"
+                | "sketch.arc.three_point"
+                | "sketch.spline.fit_point"
         ) {
             command.1["construction"] = json!(state.construction);
         }
@@ -818,7 +827,7 @@ impl Viewport {
         }
         if let Some((_, point, argument, kind)) = best {
             let persistent = self.contacts.sketch.automatic
-                && if self.contacts.sketch.tool == "sketch.rectangle.two_point" {
+                && if matches!(self.contacts.sketch.tool.as_str(), "sketch.rectangle.two_point" | "sketch.rectangle.center") {
                     matches!(kind, "point" | "origin")
                 } else {
                     !argument.is_null() || (self.contacts.sketch.tool == "sketch.line" && matches!(kind, "horizontal" | "vertical"))

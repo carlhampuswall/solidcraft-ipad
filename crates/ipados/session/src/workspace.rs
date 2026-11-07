@@ -182,6 +182,7 @@ impl SessionAdapter {
                     "sketch.point",
                     "sketch.line",
                     "sketch.rectangle.two_point",
+                    "sketch.rectangle.center",
                     "sketch.circle.center",
                     "sketch.arc.three_point",
                     "sketch.spline.fit_point",

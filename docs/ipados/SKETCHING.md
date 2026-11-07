@@ -1,5 +1,28 @@
 # Sketching (Step 6)
 
+## Center rectangle
+
+Press **Rectangle** once to start a normal two-point rectangle. Press the same
+button again while either rectangle mode is active to open its context menu.
+Choose **2-Point Rectangle** or **Center Rectangle**; the current mode has a
+checkmark. The normal rectangle icon keeps a small arrow in its bottom-right
+corner. Both modes also live under Rectangle in the sketch tools menu.
+
+For Center Rectangle, place the center and then a corner, or drag from the center
+to a corner. The status readout shows the full width and height. The adapter
+submits the existing `sketch.rectangle.center` command; the engine creates the
+symmetric sides and construction diagonals. Snapping, construction mode, repeat
+rectangles, cancellation and single-step Undo/Redo use the existing paths.
+
+The bridge regression `center_rectangle_native_input` covers all sketch planes,
+four corner quadrants, Pencil samples, previews, cancellation,
+construction, repeat and history. The existing `--sketch-toolbar-check` device
+diagnostic also checks both Rectangle presses, the arrow and both menu choices,
+and captures `sketch-toolbar-rectangle-menu.png`. Run it only in a reserved iPad
+session. The macOS GPU example accepts `--center-rectangle` to capture the actual
+center rectangle and its dimension preview, commit and history; offscreen output
+does not verify UIKit or physical contacts.
+
 ## Constraint colours
 
 While editing a sketch, fully constrained curves use emerald green: RGB

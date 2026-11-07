@@ -1,0 +1,30 @@
+{
+  "en": {
+    "ui.ipados.sketch.rectangle_center": "Place the rectangle center.",
+    "ui.ipados.sketch.rectangle_center_corner": "Place a corner to set the width and height.",
+    "ui.ipados.sketch.rectangle_variants": "Press again to choose a rectangle type."
+  },
+  "en-GB": {
+    "ui.ipados.sketch.rectangle_center": "Place the rectangle centre."
+  },
+  "de": {
+    "ui.ipados.sketch.rectangle_center": "Mittelpunkt des Rechtecks setzen.",
+    "ui.ipados.sketch.rectangle_center_corner": "Eine Ecke setzen, um Breite und Höhe festzulegen.",
+    "ui.ipados.sketch.rectangle_variants": "Erneut drücken, um einen Rechtecktyp auszuwählen."
+  },
+  "ja": {
+    "ui.ipados.sketch.rectangle_center": "長方形の中心を指定してください。",
+    "ui.ipados.sketch.rectangle_center_corner": "コーナーを指定して幅と高さを設定してください。",
+    "ui.ipados.sketch.rectangle_variants": "もう一度押して長方形の種類を選択します。"
+  },
+  "ko": {
+    "ui.ipados.sketch.rectangle_center": "직사각형의 중심을 지정하세요.",
+    "ui.ipados.sketch.rectangle_center_corner": "모서리를 지정하여 너비와 높이를 설정하세요.",
+    "ui.ipados.sketch.rectangle_variants": "다시 눌러 직사각형 유형을 선택하세요."
+  },
+  "zh": {
+    "ui.ipados.sketch.rectangle_center": "指定矩形的中心。",
+    "ui.ipados.sketch.rectangle_center_corner": "指定一个角点以设置宽度和高度。",
+    "ui.ipados.sketch.rectangle_variants": "再次按下以选择矩形类型。"
+  }
+}

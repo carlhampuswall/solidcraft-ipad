@@ -674,6 +674,93 @@ fn engine_command(id: u64, command: &str, params: Value) -> Value {
 }
 
 #[test]
+fn center_rectangle_native_input_previews_cancels_and_commits_one_symmetric_engine_operation() {
+    use solidcraft_geom::PlaneGeom;
+
+    let _serial = isolated_registry();
+    for plane in ["XY", "XZ", "YZ"] {
+        for (quadrant, corner) in [[20., 15.], [-20., 15.], [-20., -15.], [20., -15.]].into_iter().enumerate() {
+            let id = sc_session_create();
+            engine_command(id, "sketch.create", json!({"plane":plane}));
+            let entry = lookup(id).unwrap();
+            view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
+            let workspace = entry.adapter.lock().unwrap().workspace(&[], false, false);
+            assert!(workspace["tools"].as_array().unwrap().iter().any(|tool| tool["id"] == "sketch.rectangle.center" && tool["enabled"] == true));
+            let construction = quadrant >= 2;
+            let repeat = quadrant % 2 == 1;
+            for (command, params) in [
+                ("tool.construction", json!({"enabled":construction})),
+                ("tool.repeat_rectangles", json!({"enabled":repeat})),
+                ("tool.set", json!({"tool":"sketch.rectangle.center"})),
+            ] {
+                view_request(id, json!({"kind":"command","command":command,"params":params}));
+            }
+            assert_eq!(entry.viewport.lock().unwrap().diagnostic()["input"]["sketch"]["prompt"], "rectangle_center");
+            let original = entry.adapter.lock().unwrap().snapshot().unwrap();
+            let before = original.sketch.as_ref().unwrap().sketch.clone();
+            let history = engine_command(id, "document.inspect", json!({}))["undo"].as_u64().unwrap();
+            let plane = original.sketch.as_ref().unwrap().plane;
+            let input = |phase: &str, at: [f64; 2], contact: u64| {
+                let world = plane.to_world(serde_json::from_value(json!(at)).unwrap());
+                let projected = view_request(id, json!({"kind":"command","command":"view.project","params":{"point":world}}));
+                let viewport = view_request(id, json!({"kind":"snapshot"}))["result"].clone();
+                view_request(
+                    id,
+                    json!({"kind":"input","event":{
+                        "source":"pencil","phase":phase,"id":contact,"timestamp":contact as f64,
+                        "x_points":projected["result"]["points"][0],"y_points":projected["result"]["points"][1],
+                        "x_pixels":projected["result"]["pixels"][0],"y_pixels":projected["result"]["pixels"][1],"scale":2,
+                        "geometry_revision":viewport["geometry_revision"],"document_id":viewport["document_id"],
+                        "viewport_epoch":viewport["viewport_epoch"],"camera_epoch":viewport["camera_epoch"],"display_preview":viewport["preview"]
+                    }}),
+                )
+            };
+            let begun = input("began", [0., 0.], 1);
+            assert_eq!(entry.viewport.lock().unwrap().diagnostic()["input"]["sketch"]["snap"]["persistent"], true, "{begun}");
+            input("moved", corner, 1);
+            let diagnostic = entry.viewport.lock().unwrap().diagnostic();
+            assert_eq!(diagnostic["input"]["sketch"]["prompt"], "rectangle_center_corner");
+            for (key, expected) in [("width", 40.), ("height", 30.)] {
+                assert!((diagnostic["input"]["sketch"]["feedback"][key].as_f64().unwrap() - expected).abs() < 1e-7);
+            }
+            assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
+            assert_eq!(response(id)["result"]["worked"], true);
+            assert_eq!(entry.viewport.lock().unwrap().diagnostic()["preview"], true);
+            assert_eq!(entry.adapter.lock().unwrap().snapshot().unwrap().sketch.as_ref().unwrap().sketch, before);
+            input("cancelled", corner, 1);
+            assert_eq!(entry.viewport.lock().unwrap().diagnostic()["preview"], false);
+            assert_eq!(engine_command(id, "document.inspect", json!({}))["undo"], history);
+
+            // Two distinct taps also use the same center/corner command.
+            for (contact, at) in [(2, [0., 0.]), (3, corner)] {
+                input("began", at, contact);
+                input("ended", at, contact);
+            }
+            assert_eq!(request(id, r#"{"kind":"tool_work"}"#), 0, "{}", response(id));
+            assert_eq!(response(id)["result"]["worked"], true);
+            let created_model = entry.adapter.lock().unwrap().snapshot().unwrap();
+            let created = created_model.sketch.as_ref().unwrap();
+            assert!(created.solved);
+            assert_eq!(created.profiles, usize::from(!construction));
+            assert_eq!(created.sketch.curves.len(), 6, "four engine sides and two construction diagonals");
+            assert_eq!(created.sketch.curves.iter().filter(|curve| curve.construction).count(), if construction { 6 } else { 2 });
+            for x in [-20., 20.] {
+                for y in [-15., 15.] {
+                    assert!(created.sketch.points.iter().any(|p| (p.pos.x - x).hypot(p.pos.y - y) < 1e-6));
+                }
+            }
+            assert_eq!(engine_command(id, "document.inspect", json!({}))["undo"], history + 1);
+            assert_eq!(entry.viewport.lock().unwrap().diagnostic()["input"]["tool"], if repeat { "sketch.rectangle.center" } else { "select" });
+            engine_command(id, "edit.undo", json!({}));
+            assert_eq!(entry.adapter.lock().unwrap().snapshot().unwrap().sketch.as_ref().unwrap().sketch, before);
+            engine_command(id, "edit.redo", json!({}));
+            assert_eq!(entry.adapter.lock().unwrap().snapshot().unwrap().sketch.as_ref().unwrap().sketch, created.sketch);
+            assert_eq!(sc_session_destroy(id), 0);
+        }
+    }
+}
+
+#[test]
 fn constrained_sketch_green_survives_appearance_undo_and_redo_without_colouring_free_curves() {
     let _serial = isolated_registry();
     let id = sc_session_create();

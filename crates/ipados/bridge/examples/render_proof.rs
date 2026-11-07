@@ -155,7 +155,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return orbit_proof(&destination);
     }
     if std::env::args().nth(2).as_deref() == Some("--sketch") {
-        return sketch_proof(&destination);
+        return sketch_proof(&destination, false);
+    }
+    if std::env::args().nth(2).as_deref() == Some("--center-rectangle") {
+        return sketch_proof(&destination, true);
     }
     if std::env::args().nth(2).as_deref() == Some("--sketch-points") {
         return sketch_points_proof(&destination);
@@ -2377,15 +2380,17 @@ fn sketch_points_proof(destination: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-fn sketch_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn sketch_proof(destination: &str, centered: bool) -> Result<(), Box<dyn std::error::Error>> {
     let mut engine = SessionAdapter::new();
     engine.execute("sketch.create", json!({"plane":"XY","name":"Sketch proof"}))?;
     let mut view = Viewport::default();
     view.set_metrics(ViewportMetrics { width_points: 960.0, height_points: 640.0, scale: 1.0, origin_points: [0.0; 2] })?;
     view.begin_update(1);
     view.install(1, engine.snapshot()?);
-    view.command("tool.set", &json!({"tool":"sketch.rectangle.two_point"}))?;
-    for (id, point) in [(1, [0.0, 0.0, 0.0]), (2, [40.0, 30.0, 0.0])] {
+    let tool = if centered { "sketch.rectangle.center" } else { "sketch.rectangle.two_point" };
+    let corner = if centered { [20.0, 15.0, 0.0] } else { [40.0, 30.0, 0.0] };
+    view.command("tool.set", &json!({"tool":tool}))?;
+    for (id, point) in [(1, [0.0, 0.0, 0.0]), (2, corner)] {
         let p = view.command("view.project", &json!({"point":point}))?;
         for phase in ["began", "ended"] {
             view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":id,

@@ -110,7 +110,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         ("sketch.circle.center", "circle"), ("sketch.arc.three_point", "arc"),
         ("sketch.spline.fit_point", "spline"), ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
     ].map { id, label in
-        (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.setTool(id) })
+        (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.activateSketchTool(id) })
     }
     private var state: WorkspaceState?
     private var selectionExtrudeTrigger = SelectionToolTrigger<WorkspaceEntity>()
@@ -762,6 +762,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         for (id, button) in sketchQuickTools {
             button.commandArtwork(id, compact: true)
             button.accessibilityIdentifier = "workspace-tool-" + id
+            button.toolVariants(id == "sketch.rectangle.two_point")
         }
         rail.spacing = compactChrome ? 2 : 8
         if compactChrome {
@@ -3787,6 +3788,42 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             guard let self else { return }; self.projectionBusy = false; self.rebuildInspector(); self.updateAvailability()
         }
     }
+    private static let rectangleTools = ["sketch.rectangle.two_point", "sketch.rectangle.center"]
+
+    private func activateSketchTool(_ tool: String) {
+        if tool == "sketch.rectangle.two_point", Self.rectangleTools.contains(state?.active_tool ?? "") {
+            showRectangleTools()
+        } else { setTool(tool) }
+    }
+
+    private func showRectangleTools() {
+        guard active, !numericEditing, !modellingEditing, pending.isEmpty,
+              presentedViewController == nil, let context = state, let sketch = context.sketch else { return }
+        canvas.cancelInput(); view.endEditing(true)
+        let menu = BrowserActionMenu(title: SketchText.text("rectangle"), children: Self.rectangleTools.map { tool in
+            BrowserActionMenu.Item(title: NativeText.value("cmd." + tool.replacingOccurrences(of: ".", with: "_")),
+                                  icon: tool == "sketch.rectangle.center" ? "rect_center" : "rect",
+                                  selected: context.active_tool == tool) { [weak self] in
+                guard let self, self.active, self.state?.document_id == context.document_id,
+                      self.state?.geometry_revision == context.geometry_revision,
+                      self.state?.sketch?.id == sketch.id else { return }
+                self.setTool(tool)
+            }
+        })
+        let picker = BrowserActionController(menu: menu)
+        let navigation = UINavigationController(rootViewController: picker)
+        navigation.modalPresentationStyle = .popover
+        navigation.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        navigation.preferredContentSize = picker.preferredContentSize
+        if let popover = navigation.popoverPresentationController {
+            let button = sketchQuickTools.first(where: { $0.0 == "sketch.rectangle.two_point" })?.1
+            let source = button.flatMap { $0.window == nil ? nil : $0 } ?? toolsMoreButton
+            popover.sourceView = source; popover.sourceRect = source.bounds
+            popover.delegate = self
+        }
+        present(navigation, animated: true)
+    }
+
     private func setTool(_ tool: String) {
         guard !numericEditing, state?.tools.first(where: { $0.id == tool })?.enabled == true else { return }
         if tool == "sketch.offset", let curves = state?.selection.filter({ $0.type == "sketch_curve" }).compactMap({ $0.id?.readout }), !curves.isEmpty {
@@ -4044,8 +4081,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             for (id, button) in sketchQuickTools {
                 let tool = state?.tools.first { $0.id == id }
                 button.isHidden = !inSketch
-                button.active(state?.active_tool == id)
+                let rectangle = id == "sketch.rectangle.two_point"
+                button.active(rectangle ? Self.rectangleTools.contains(state?.active_tool ?? "") : state?.active_tool == id)
                 button.availability(enabled: !locked && tool?.enabled == true, reason: tool?.reason.map(NativeText.value))
+                if rectangle && button.isEnabled {
+                    button.accessibilityHint = SketchText.text("rectangle_variants")
+                    button.accessibilityValue = state?.active_tool == "sketch.rectangle.center" ? NativeText.value("cmd.sketch_rectangle_center") : nil
+                }
             }
             // A draft locks commands without removing the user's toolbar.
             // Visibility follows sketch/model context, so selection and Cancel
@@ -4492,6 +4534,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         var sketchActions: [UIMenuElement] = sketchTools.compactMap { id, label in
             guard railQuickAccess?.contains(id) != true else { return nil }
             guard let tool = state?.tools.first(where: { $0.id == id }), customizeToolbars || tool.enabled else { return nil }
+            if id == "sketch.rectangle.two_point" {
+                return UIMenu(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), children: Self.rectangleTools.map { variant in
+                    UIAction(title: NativeText.value("cmd." + variant.replacingOccurrences(of: ".", with: "_")),
+                             image: WorkspaceIcon.command(variant, traits: traitCollection),
+                             attributes: tool.enabled ? [] : .disabled,
+                             state: state?.active_tool == variant ? .on : .off) { [weak self] _ in self?.setTool(variant) }
+                })
+            }
             return UIAction(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection),
                             attributes: tool.enabled ? [] : .disabled, state: state?.active_tool == id ? .on : .off) { [weak self] _ in self?.setTool(id) }
         }
@@ -4704,7 +4754,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             if let input = sketchInput, let feedback = input.feedback {
                 let formatter = NumberFormatter(); formatter.locale = .current; formatter.numberStyle = .decimal; formatter.maximumFractionDigits = 3
                 let number: (Double) -> String = { formatter.string(from: NSNumber(value: $0)) ?? String($0) }
-                if input.tool == "sketch.rectangle.two_point" { measurement = number(feedback.width) + " × " + number(feedback.height) + " mm" }
+                if Self.rectangleTools.contains(input.tool ?? "") { measurement = number(feedback.width) + " × " + number(feedback.height) + " mm" }
                 else if input.tool == "sketch.circle.center" { measurement = SketchText.text("radius") + " " + number(feedback.radius) + " mm" }
                 else if input.tool == "sketch.line" { measurement = number(feedback.radius) + " mm" }
             }
@@ -6546,11 +6596,62 @@ private extension FoundationController {
                 }
             }
         }
+        func checkRectangleButton() {
+            guard let button = sketchQuickTools.first(where: { $0.0 == "sketch.rectangle.two_point" })?.1 else {
+                issues.append("missing rectangle button"); report(); return
+            }
+            func waitForMenu(_ remaining: Int = 100, then action: @escaping (BrowserActionController) -> Void) {
+                guard active, generation == expected, !finished else { return }
+                if let navigation = presentedViewController as? UINavigationController,
+                   let picker = navigation.viewControllers.first as? BrowserActionController,
+                   !navigation.isBeingPresented { action(picker); return }
+                guard remaining > 0 else { issues.append("second rectangle press did not open choices"); report(); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitForMenu(remaining - 1, then: action) }
+            }
+            setTool("select")
+            waitForTool("select") {
+                button.sendActions(for: .touchUpInside)
+                waitForTool("sketch.rectangle.two_point") {
+                    if self.presentedViewController != nil { issues.append("first rectangle press opened choices") }
+                    let revision = self.state?.geometry_revision
+                    button.sendActions(for: .touchUpInside)
+                    waitForMenu { picker in
+                        if picker.menu.children.count != 2 || picker.menu.children.map(\.icon) != ["rect", "rect_center"] {
+                            issues.append("rectangle choices or canonical icons missing")
+                        }
+                        if self.state?.geometry_revision != revision || self.keyboardTop != nil || self.textEntryActive {
+                            issues.append("rectangle choices changed geometry or raised the keyboard")
+                        }
+                        self.view.layoutIfNeeded(); button.layoutIfNeeded()
+                        if let arrow = button.subviews.first(where: { $0.accessibilityIdentifier == "workspace-tool-variants" }),
+                           !arrow.isHidden, button.bounds.contains(arrow.frame) {
+                            if arrow.frame.midY <= button.bounds.midY { issues.append("rectangle arrow is not in the bottom corner") }
+                        } else { issues.append("rectangle variants arrow missing") }
+                        do {
+                            let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                            let surface: UIView = self.view.window ?? self.view
+                            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                            try image.pngData()?.write(to: directory.appendingPathComponent("sketch-toolbar-rectangle-menu.png"), options: .atomic)
+                        } catch { issues.append("rectangle menu capture: \(error)") }
+                        picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: 1, section: 0))
+                        waitForTool("sketch.rectangle.center") {
+                            if !button.isSelected { issues.append("center rectangle lost its parent button highlight") }
+                            button.sendActions(for: .touchUpInside)
+                            waitForMenu { picker in
+                                if picker.menu.children.last?.selected != true { issues.append("center rectangle choice is not selected") }
+                                picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: 0, section: 0))
+                                waitForTool("sketch.rectangle.two_point") { check(0) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let fixture: [(String, [String: Any])] = [("file.new", [:]), ("sketch.create", ["plane": "XY"]),
             ("sketch.rectangle.two_point", ["p0": [0, 0], "p1": [20, 20]]), ("view.fit", [:])]
         func prepare(_ index: Int) {
             guard active, generation == expected else { return }
-            guard index < fixture.count else { browserOpen = false; inspectorOpen = false; check(0); return }
+            guard index < fixture.count else { browserOpen = false; inspectorOpen = false; checkRectangleButton(); return }
             session.command(fixture[index].0, params: fixture[index].1) { result in
                 guard case .success = result else { issues.append("fixture failed"); report(); return }
                 prepare(index + 1)

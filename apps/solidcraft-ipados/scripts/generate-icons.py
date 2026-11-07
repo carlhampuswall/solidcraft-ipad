@@ -92,7 +92,7 @@ def check(repository):
         for area in ('modelling', 'assembly'):
             source = (repository / f'crates/ipados/session/src/{area}.rs').read_text()
             native += re.findall(r'"([^"]+)"', source.split('const TOOLS:', 1)[1].split('];', 1)[0])
-        native += ['sketch.point', 'sketch.line', 'sketch.rectangle.two_point', 'sketch.circle.center',
+        native += ['sketch.point', 'sketch.line', 'sketch.rectangle.two_point', 'sketch.rectangle.center', 'sketch.circle.center',
                    'sketch.arc.three_point', 'sketch.spline.fit_point', 'sketch.offset', 'sketch.delete', 'sketch.trim',
                    'sketch.constraint.horizontal_vertical', 'sketch.constraint.parallel',
                    'sketch.constraint.perpendicular', 'sketch.constraint.coincident', 'sketch.constraint.tangent',
@@ -102,6 +102,7 @@ def check(repository):
             if command not in mapping or not (output / ('sc-' + mapping[command] + '.imageset')).is_dir():
                 raise ValueError('Native tool lacks canonical artwork: ' + command)
         for command, expected in [('solid.extrude', 'extrude'), ('sketch.rectangle.two_point', 'rect'),
+                                  ('sketch.rectangle.center', 'rect_center'),
                                   ('solid.pattern.circular', 'pattern_circ'), ('occurrence.ground', 'ground')]:
             if mapping[command] != expected:
                 raise ValueError('Canonical command mapping changed: ' + command)
