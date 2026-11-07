@@ -6590,7 +6590,7 @@ private extension FoundationController {
                     if self.compactChrome {
                         self.railScroll.setContentOffset(CGPoint(x: 0, y: max(0, self.railScroll.contentSize.height - self.railScroll.bounds.height)), animated: false)
                         let frame = self.finishSketchButton.convert(self.finishSketchButton.bounds, to: self.top)
-                        if !self.top.bounds.contains(frame) || frame.height < 44 || self.finishSketchButton.configuration?.title != SketchText.text("finish") {
+                        if !self.top.bounds.contains(frame) || frame.height < 44 || self.finishSketchButton.accessibilityLabel != SketchText.text("finish") {
                             issues.append("labelled completion is outside header: \(index)")
                         }
                         for button in self.rail.arrangedSubviews.compactMap({ $0 as? WorkspaceButton }) where !button.isHidden {
