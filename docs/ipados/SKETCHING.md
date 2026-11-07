@@ -183,6 +183,15 @@ Lines have no endpoint or toolbar Finish chain button. Choose **Select** to stop
 drawing, leaving committed lines and the sketch open. Choose Line again to start
 a new chain. Splines retain the toolbar's `tool.finish_chain` completion.
 
+**Circle** uses the same first-press/second-press interaction. Its default remains
+Centre Diameter Circle: place the centre and then a point on the circumference.
+Press Circle again to choose that tool, **2-Point Circle** (opposite diameter
+ends) or **3-Point Circle** (three distinct, non-collinear points on the circle).
+Each variant uses the existing engine command and scratch-preview/history path;
+creation repeats, and Select stops it. Diameter endpoints snap as positioning
+aids; the three-point command retains supported point references. Construction,
+Cancel and Undo/Redo use the existing sketch controls.
+
 DEBUG `--line-finish-check` draws two lines through synthetic Pencil samples,
 checks that both Finish chain buttons are absent and taps Select, verifies both
 lines and the open sketch remain, then draws another line and stops it through
@@ -204,7 +213,7 @@ not mean missing engine support. Command contracts are in
 | Planes / attached faces | `plane`: `XY`, `XZ`, `YZ`, named construction plane/id, `{origin,x_dir,y_dir}`, or `{face:[world x,y,z],body?,index?,path?}`; face attachment must have certified unique source; `fixed:true` explicitly freezes it | Native picker/preview required; retain resulting PlaneRef |
 | Line chain / closure | `sketch.line {points:[point-or-ref,…],closed?,infer?,connect?}`; refs include `l1.end`; replies contain real curve IDs | Adapter required; shared point refs/connect create real relationships |
 | Rectangle | `sketch.rectangle.two_point {p0,p1,connect?,construction?}` → sides and corners | Adapter required; native H/V relationships |
-| Circle | `sketch.circle.center {center,radius|diameter,through?,connect?}` | Adapter required |
+| Circle | `sketch.circle.center {center,radius|diameter,through?,connect?}`, `sketch.circle.two_point {p0,p1}`, `sketch.circle.three_point {p0,p1,p2}` | Native Pencil input and Circle choices |
 | Solver-aware handles | `sketch.drag {entity,from,to,with?,live?}`, `sketch.drag_end {constraint?}`; `sketch.move_point {point,to}` | Adapter required; live drag defers downstream evaluation until end |
 | Geometric constraints | `sketch.constraint.coincident|parallel|perpendicular|tangent|equal|concentric {a,b}`; `.horizontal_vertical {line,mode}` or `{points,mode}`; `.fix {entity|entities,fixed?}` | Adapter eligibility/inspection required; engine validation authoritative |
 | Remove geometry / constraints | `sketch.delete {entities:[ids]}` | Accessible; selection UI required |

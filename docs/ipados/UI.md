@@ -100,7 +100,8 @@ with at least 44-point interaction regions. Modelling groups expose the actual
 native-supported create, modify, pattern/mirror and assembly forms. Additional
 native-supported operations remain reachable in the create menu. Sketch editing
 replaces these with Line, Rectangle, Circle, Trim and overflow tools. Line groups
-the Line, Three-point Arc and Fit-point Spline tools. Pressing Line or Rectangle
+the Line, Three-point Arc and Fit-point Spline tools. Circle groups Centre Diameter,
+2-Point and 3-Point Circle. Pressing Line, Rectangle or Circle
 starts its default tool; pressing it again while any of its variants is active
 opens its choices. Finish chain appears only for splines. Choose Select to stop
 drawing lines. A labelled **Finish sketch** button occupies its own row in the

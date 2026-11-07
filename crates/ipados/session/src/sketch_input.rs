@@ -148,6 +148,13 @@ impl SketchInput {
             "sketch.point" => "point_place",
             "sketch.rectangle.center" if self.points.is_empty() => "rectangle_center",
             "sketch.rectangle.center" => "rectangle_center_corner",
+            "sketch.circle.center" if self.points.is_empty() => "circle_center",
+            "sketch.circle.center" => "circle_radius",
+            "sketch.circle.two_point" if self.points.is_empty() => "circle_diameter_start",
+            "sketch.circle.two_point" => "circle_diameter_end",
+            "sketch.circle.three_point" if self.points.is_empty() => "circle_first",
+            "sketch.circle.three_point" if self.points.len() == 1 => "circle_second",
+            "sketch.circle.three_point" => "circle_third",
             "sketch.arc.three_point" if self.points.len() == 2 => "arc_through",
             "sketch.arc.three_point" if self.points.len() == 1 => "arc_end",
             "sketch.spline.fit_point" => "spline_point",
@@ -555,11 +562,12 @@ impl Viewport {
         let Some(cursor) = self.contacts.sketch.cursor.clone() else {
             return;
         };
-        if tool == "sketch.spline.fit_point" || tool == "sketch.arc.three_point" {
+        let three_point = matches!(tool, "sketch.arc.three_point" | "sketch.circle.three_point");
+        if tool == "sketch.spline.fit_point" || three_point {
             if (anchored || moved) && self.contacts.sketch.points.last().is_none_or(|p| p.at != cursor.at) {
                 self.contacts.sketch.points.push(cursor);
             }
-            if tool == "sketch.arc.three_point" && self.contacts.sketch.points.len() == 3 {
+            if three_point && self.contacts.sketch.points.len() == 3 {
                 let _ = self.queue_sketch(true);
             } else if tool == "sketch.spline.fit_point" {
                 let _ = self.queue_sketch(false);
@@ -669,6 +677,16 @@ impl Viewport {
                     }
                     ("sketch.circle.center".into(), params)
                 }
+                "sketch.circle.two_point" if nonzero => {
+                    // The shared two-point command accepts diameter coordinates,
+                    // rather than persistent sketch point references.
+                    ("sketch.circle.two_point".into(), json!({"p0":[first.at.x,first.at.y],"p1":[last.at.x,last.at.y],"connect":automatic}))
+                }
+                "sketch.circle.three_point" if state.points.len() >= 2 => {
+                    let second = state.points.get(1).ok_or_else(|| error("sketch", "Place the second circle point"))?;
+                    let third = if commit { state.points.get(2).unwrap_or(last) } else { last };
+                    ("sketch.circle.three_point".into(), json!({"p0":arg(first),"p1":arg(second),"p2":arg(third),"connect":automatic}))
+                }
                 "sketch.arc.three_point" if state.points.len() >= 2 => {
                     let second = state.points.get(1).ok_or_else(|| error("sketch", "Place arc end"))?;
                     let through = if commit { state.points.get(2).unwrap_or(last) } else { last };
@@ -693,6 +711,8 @@ impl Viewport {
                 | "sketch.rectangle.two_point"
                 | "sketch.rectangle.center"
                 | "sketch.circle.center"
+                | "sketch.circle.two_point"
+                | "sketch.circle.three_point"
                 | "sketch.arc.three_point"
                 | "sketch.spline.fit_point"
         ) {
@@ -827,7 +847,9 @@ impl Viewport {
         }
         if let Some((_, point, argument, kind)) = best {
             let persistent = self.contacts.sketch.automatic
-                && if matches!(self.contacts.sketch.tool.as_str(), "sketch.rectangle.two_point" | "sketch.rectangle.center") {
+                && if self.contacts.sketch.tool == "sketch.circle.two_point" {
+                    false
+                } else if matches!(self.contacts.sketch.tool.as_str(), "sketch.rectangle.two_point" | "sketch.rectangle.center") {
                     matches!(kind, "point" | "origin")
                 } else {
                     !argument.is_null() || (self.contacts.sketch.tool == "sketch.line" && matches!(kind, "horizontal" | "vertical"))

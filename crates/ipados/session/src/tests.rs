@@ -5102,7 +5102,15 @@ fn sketch_pencil_rectangle_commits_once_and_cancel_never_removes_previous_geomet
 }
 #[test]
 fn sketch_construction_mode_creates_primitives_and_switches_back_without_converting_existing_curves() {
-    for tool in ["sketch.line", "sketch.rectangle.two_point", "sketch.circle.center", "sketch.arc.three_point", "sketch.spline.fit_point"] {
+    for tool in [
+        "sketch.line",
+        "sketch.rectangle.two_point",
+        "sketch.circle.center",
+        "sketch.circle.two_point",
+        "sketch.circle.three_point",
+        "sketch.arc.three_point",
+        "sketch.spline.fit_point",
+    ] {
         let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "select");
         let history = engine.session.undo.len();
         view.command("tool.construction", &json!({"enabled":true})).unwrap();
@@ -5110,7 +5118,7 @@ fn sketch_construction_mode_creates_primitives_and_switches_back_without_convert
         assert_eq!(view.diagnostic()["input"]["sketch"]["construction"], true);
         sketch_tap(&mut view, 1, [10., 10.]);
         sketch_tap(&mut view, 2, [40., 30.]);
-        if tool == "sketch.arc.three_point" || tool == "sketch.spline.fit_point" {
+        if matches!(tool, "sketch.arc.three_point" | "sketch.circle.three_point" | "sketch.spline.fit_point") {
             sketch_tap(&mut view, 3, [10., 30.]);
         }
         if tool == "sketch.spline.fit_point" {
@@ -5309,12 +5317,102 @@ fn sketch_pencil_chain_native_references_close_profile_and_segment_undo_is_indep
     assert_eq!(engine.sketch_snapshot().unwrap().profiles, 1);
 }
 #[test]
+fn sketch_circle_variants_preview_cancel_and_commit_once_on_each_plane() {
+    for plane in ["XY", "XZ", "YZ"] {
+        for tool in ["sketch.circle.two_point", "sketch.circle.three_point"] {
+            for cancel in [false, true] {
+                let (mut engine, mut view) = sketch_input_fixture(json!(plane), tool);
+                let before = engine.session.doc.clone();
+                let history = engine.session.undo.len();
+                assert!(engine.workspace(&[], false, false)["tools"].as_array().unwrap().iter().any(|t| t["id"] == tool && t["enabled"] == true));
+                sketch_tap(&mut view, 1, [-10., 0.]);
+                assert!(view.take_tool_work().is_none());
+                let (start, end) = if tool == "sketch.circle.three_point" {
+                    sketch_tap(&mut view, 2, [10., 0.]);
+                    assert!(view.take_tool_work().is_none(), "two points must not complete a three-point circle");
+                    assert_eq!(view.diagnostic()["input"]["sketch"]["prompt"], "circle_third");
+                    ([0., 5.], [0., 10.])
+                } else {
+                    assert_eq!(view.diagnostic()["input"]["sketch"]["prompt"], "circle_diameter_end");
+                    ([5., 0.], [10., 0.])
+                };
+                let plane = view.model.as_ref().unwrap().sketch.as_ref().unwrap().plane;
+                let from = point(&view, plane.to_world(solidcore_record::Vec2::from(start)));
+                let to = point(&view, plane.to_world(solidcore_record::Vec2::from(end)));
+                feed(&mut view, InputSource::Pencil, InputPhase::Began, 3, from, 3.);
+                feed(&mut view, InputSource::Pencil, InputPhase::Moved, 3, to, 3.1);
+                let work = view.take_tool_work().unwrap();
+                assert!(!work.commit);
+                let prepared = engine.prepare_tool(work.clone()).unwrap();
+                let preview = prepared.model.sketch.as_ref().unwrap();
+                assert_eq!(preview.sketch.curves.len(), 1);
+                assert!(matches!(preview.sketch.curves[0].kind, solidcraft_engine::sketch::CurveKind::Circle { r, .. } if (r - 10.).abs() < 1e-6));
+                assert!(Arc::ptr_eq(&before, &engine.session.doc), "preview must not mutate the document");
+                assert_eq!(engine.session.undo.len(), history);
+                assert!(view.publish_tool_preview(prepared));
+                if cancel {
+                    view.command("tool.cancel", &json!({})).unwrap();
+                    assert!(!view.publish_preview(&work, engine.prepare_tool(work.clone()).unwrap().model));
+                    assert!(engine.sketch_snapshot().unwrap().sketch.curves.is_empty());
+                    assert_eq!(engine.session.undo.len(), history);
+                    continue;
+                }
+                feed(&mut view, InputSource::Pencil, InputPhase::Ended, 3, to, 3.2);
+                assert!(run_tool(&mut engine, &mut view));
+                let sketch = engine.sketch_snapshot().unwrap().sketch;
+                assert_eq!(sketch.curves.len(), 1);
+                assert_eq!(view.diagnostic()["input"]["tool"], tool, "circle variants repeat like the default circle");
+                assert_eq!(engine.session.undo.len(), history + 1);
+                engine.execute("edit.undo", json!({})).unwrap();
+                assert!(engine.sketch_snapshot().unwrap().sketch.curves.is_empty());
+                engine.execute("edit.redo", json!({})).unwrap();
+                assert_eq!(engine.sketch_snapshot().unwrap().sketch, sketch);
+            }
+        }
+    }
+}
+
+#[test]
+fn sketch_circle_variants_refuse_coincident_and_collinear_points_without_history() {
+    for tool in ["sketch.circle.two_point", "sketch.circle.three_point"] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), tool);
+        let before = engine.session.doc.clone();
+        let history = engine.session.undo.len();
+        sketch_tap(&mut view, 1, [-10., 0.]);
+        sketch_tap(&mut view, 2, [-10., 0.]);
+        assert!(view.take_tool_work().is_none(), "a repeated point cannot create a circle");
+        if tool == "sketch.circle.three_point" {
+            sketch_tap(&mut view, 3, [10., 0.]);
+            sketch_tap(&mut view, 4, [20., 0.]);
+            let work = view.take_tool_work().unwrap();
+            assert!(work.commit);
+            assert!(engine.prepare_tool(work.clone()).is_err(), "the engine must refuse collinear points");
+            view.fail_tool(&work);
+            assert!(view.diagnostic()["input"]["sketch"]["points"].as_array().unwrap().is_empty());
+        } else {
+            view.command("tool.cancel", &json!({})).unwrap();
+        }
+        assert!(Arc::ptr_eq(&before, &engine.session.doc));
+        assert_eq!(engine.session.undo.len(), history);
+        sketch_tap(&mut view, 5, [-10., 0.]);
+        sketch_tap(&mut view, 6, [10., 0.]);
+        if tool == "sketch.circle.three_point" {
+            sketch_tap(&mut view, 7, [0., 10.]);
+        }
+        assert!(run_tool(&mut engine, &mut view), "a valid circle must recover after rejection");
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch.curves.len(), 1);
+        assert_eq!(engine.session.undo.len(), history + 1);
+    }
+}
+
+#[test]
 fn sketch_pencil_curves_use_native_entities_and_stale_preview_is_rejected() {
-    for tool in ["sketch.circle.center", "sketch.arc.three_point", "sketch.spline.fit_point"] {
+    for tool in ["sketch.circle.center", "sketch.circle.two_point", "sketch.circle.three_point", "sketch.arc.three_point", "sketch.spline.fit_point"]
+    {
         let (mut engine, mut view) = sketch_input_fixture(json!("XZ"), tool);
         sketch_tap(&mut view, 1, [0.0, 0.0]);
         sketch_tap(&mut view, 2, [20.0, 0.0]);
-        if tool != "sketch.circle.center" {
+        if matches!(tool, "sketch.circle.three_point" | "sketch.arc.three_point" | "sketch.spline.fit_point") {
             sketch_tap(&mut view, 3, [10.0, 10.0]);
         }
         if tool == "sketch.spline.fit_point" {
@@ -5325,6 +5423,8 @@ fn sketch_pencil_curves_use_native_entities_and_stale_preview_is_rejected() {
         assert!(matches!(
             (tool, kind),
             ("sketch.circle.center", solidcraft_engine::sketch::CurveKind::Circle { .. })
+                | ("sketch.circle.two_point", solidcraft_engine::sketch::CurveKind::Circle { .. })
+                | ("sketch.circle.three_point", solidcraft_engine::sketch::CurveKind::Circle { .. })
                 | ("sketch.arc.three_point", solidcraft_engine::sketch::CurveKind::Arc { .. })
                 | ("sketch.spline.fit_point", solidcraft_engine::sketch::CurveKind::Spline { .. })
         ));
@@ -6725,10 +6825,17 @@ fn sketch_snapping_line_ends_stay_on_round_and_freeform_curves() {
 }
 
 #[test]
-fn sketch_snapping_drawing_tools_share_curve_targets_and_rectangle_feedback_is_temporary() {
-    for tool in
-        ["sketch.point", "sketch.line", "sketch.circle.center", "sketch.arc.three_point", "sketch.spline.fit_point", "sketch.rectangle.two_point"]
-    {
+fn sketch_snapping_drawing_tools_share_curve_targets_and_coordinate_only_feedback_is_temporary() {
+    for tool in [
+        "sketch.point",
+        "sketch.line",
+        "sketch.circle.center",
+        "sketch.circle.two_point",
+        "sketch.circle.three_point",
+        "sketch.arc.three_point",
+        "sketch.spline.fit_point",
+        "sketch.rectangle.two_point",
+    ] {
         let (mut engine, mut view) = sketch_input_fixture(json!("XY"), tool);
         engine.execute("sketch.line", json!({"points":[[20,20],[60,20]],"infer":false,"connect":false})).unwrap();
         view.begin_update(2);
@@ -6738,7 +6845,7 @@ fn sketch_snapping_drawing_tools_share_curve_targets_and_rectangle_feedback_is_t
         sketch_tap(&mut view, 1, [53., 20.2]);
         let snap = &view.diagnostic()["input"]["sketch"]["snap"];
         assert_eq!(snap["kind"], "on_curve", "{tool}");
-        assert_eq!(snap["persistent"], tool != "sketch.rectangle.two_point", "{tool}");
+        assert_eq!(snap["persistent"], !matches!(tool, "sketch.rectangle.two_point" | "sketch.circle.two_point"), "{tool}");
         view.command("tool.cancel", &json!({})).unwrap();
         assert!(view.take_tool_work().is_none());
         assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);

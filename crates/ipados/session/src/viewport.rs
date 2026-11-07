@@ -488,6 +488,8 @@ impl Viewport {
                         | "sketch.rectangle.two_point"
                         | "sketch.rectangle.center"
                         | "sketch.circle.center"
+                        | "sketch.circle.two_point"
+                        | "sketch.circle.three_point"
                         | "sketch.arc.three_point"
                         | "sketch.spline.fit_point"
                         | "sketch.move"

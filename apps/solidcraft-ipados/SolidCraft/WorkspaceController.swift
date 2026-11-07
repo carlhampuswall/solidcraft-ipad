@@ -4556,6 +4556,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 let number: (Double) -> String = { formatter.string(from: NSNumber(value: $0)) ?? String($0) }
                 if Self.rectangleTools.contains(input.tool ?? "") { measurement = number(feedback.width) + " × " + number(feedback.height) + " mm" }
                 else if input.tool == "sketch.circle.center" { measurement = SketchText.text("radius") + " " + number(feedback.radius) + " mm" }
+                else if input.tool == "sketch.circle.two_point" { measurement = SketchText.text("diameter") + " " + number(feedback.radius) + " mm" }
                 else if input.tool == "sketch.line" { measurement = number(feedback.radius) + " mm" }
             }
             if compactChrome && !diagnostics {
@@ -6410,27 +6411,80 @@ private extension FoundationController {
                 }
             }
         }
-        func checkLineButton() {
-            guard let button = sketchQuickTools.first(where: { $0.0 == "sketch.line" })?.1 else {
-                issues.append("missing Line button"); report(); return
+        func checkCircleDrawing() {
+            let drawings: [(String, [[Double]])] = [
+                ("sketch.circle.two_point", [[2, 4, 0], [8, 4, 0]]),
+                ("sketch.circle.three_point", [[12, 12, 0], [18, 12, 0], [15, 15, 0]])
+            ]
+            func waitForCurves(_ count: Int, remaining: Int = 100, then action: @escaping () -> Void) {
+                guard active, generation == expected, !finished else { return }
+                if state?.sketch?.curves.count == count && pending.isEmpty { action(); return }
+                guard remaining > 0 else { issues.append("circle drawing/history did not publish \(count) curves"); report(); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitForCurves(count, remaining: remaining - 1, then: action) }
+            }
+            func tap(_ points: [[Double]], index: Int = 0, then action: @escaping () -> Void) {
+                guard index < points.count else { action(); return }
+                session.developmentSketchTap(points[index]) { result in
+                    guard case .success = result else { issues.append("circle Pencil placement failed: \(result)"); report(); return }
+                    self.session.command("view.grid", params: ["visible": self.gridVisible]) { result in
+                        guard case .success = result else { issues.append("circle publication failed"); report(); return }
+                        tap(points, index: index + 1, then: action)
+                    }
+                }
+            }
+            func draw(_ index: Int) {
+                guard index < drawings.count else { check(0); return }
+                let (tool, points) = drawings[index]
+                let before = state?.sketch?.curves.count ?? 0
+                setTool(tool)
+                waitForTool(tool) {
+                    tap(points) {
+                        waitForCurves(before + 1) {
+                            if self.state?.sketch?.curves.last?.type != "circle" || self.state?.sketch?.solved != true {
+                                issues.append("circle variant did not create a solved native circle")
+                            }
+                            do {
+                                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                                let surface: UIView = self.view.window ?? self.view
+                                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                                try image.pngData()?.write(to: directory.appendingPathComponent("sketch-toolbar-circle-drawn-\(index).png"), options: .atomic)
+                            } catch { issues.append("circle drawing capture: \(error)") }
+                            self.session.command("edit.undo") { result in
+                                guard case .success = result else { issues.append("circle undo failed"); report(); return }
+                                waitForCurves(before) {
+                                    self.session.command("edit.redo") { result in
+                                        guard case .success = result else { issues.append("circle redo failed"); report(); return }
+                                        waitForCurves(before + 1) { draw(index + 1) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            draw(0)
+        }
+        func checkToolFamily(_ family: SketchToolFamily, then next: @escaping () -> Void) {
+            let name = SketchText.text(family.labelKey)
+            guard let button = sketchQuickTools.first(where: { $0.0 == family.defaultTool })?.1 else {
+                issues.append("missing \(name) button"); report(); return
             }
             func waitForMenu(_ remaining: Int = 100, then action: @escaping (BrowserActionController) -> Void) {
                 guard active, generation == expected, !finished else { return }
                 if let navigation = presentedViewController as? UINavigationController,
                    let picker = navigation.viewControllers.first as? BrowserActionController,
                    !navigation.isBeingPresented { action(picker); return }
-                guard remaining > 0 else { issues.append("second Line press did not open choices"); report(); return }
+                guard remaining > 0 else { issues.append("second \(name) press did not open choices"); report(); return }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitForMenu(remaining - 1, then: action) }
             }
             func choose(_ index: Int) {
-                let family = SketchToolFamily.line
                 guard index < family.tools.count else {
                     setTool("select")
                     waitForTool("select") {
                         button.sendActions(for: .touchUpInside)
                         waitForTool(family.defaultTool) {
-                            if self.presentedViewController != nil { issues.append("returning to Line opened choices instead of its default") }
-                            check(0)
+                            if self.presentedViewController != nil { issues.append("returning to \(name) opened choices instead of its default") }
+                            next()
                         }
                     }
                     return
@@ -6439,31 +6493,31 @@ private extension FoundationController {
                 button.sendActions(for: .touchUpInside)
                 waitForMenu { picker in
                     if picker.menu.children.map(\.icon) != family.icons || picker.menu.children.count != family.tools.count {
-                        issues.append("Line choices or canonical icons missing")
+                        issues.append("\(name) choices or canonical icons missing")
                         picker.dismiss(animated: false) { report() }; return
                     }
                     if picker.menu.children.contains(where: { $0.title.hasPrefix("cmd.") }) {
-                        issues.append("Line choices contain an untranslated command ID")
+                        issues.append("\(name) choices contain an untranslated command ID")
                     }
                     if family.icons.contains(where: { WorkspaceIcon.image($0, traits: self.traitCollection) == nil }) {
-                        issues.append("Line choices contain a missing icon asset")
+                        issues.append("\(name) choices contain a missing icon asset")
                     }
                     let selected = family.tools.firstIndex(of: self.state?.active_tool ?? "")
                     if picker.menu.children.enumerated().contains(where: { $0.element.selected != ($0.offset == selected) }) {
-                        issues.append("Line choices lost the selected tool")
+                        issues.append("\(name) choices lost the selected tool")
                     }
                     if self.state?.geometry_revision != revision || self.keyboardTop != nil || self.textEntryActive {
-                        issues.append("Line choices changed geometry or raised the keyboard")
+                        issues.append("\(name) choices changed geometry or raised the keyboard")
                     }
                     do {
                         let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                         let surface: UIView = self.view.window ?? self.view
                         let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
-                        try image.pngData()?.write(to: directory.appendingPathComponent("sketch-toolbar-line-menu-\(index).png"), options: .atomic)
-                    } catch { issues.append("Line menu capture: \(error)") }
+                        try image.pngData()?.write(to: directory.appendingPathComponent("sketch-toolbar-\(family.labelKey)-menu-\(index).png"), options: .atomic)
+                    } catch { issues.append("\(name) menu capture: \(error)") }
                     picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: index, section: 0))
                     waitForTool(family.tools[index]) {
-                        if !button.isSelected { issues.append("Line variant lost its parent highlight") }
+                        if !button.isSelected { issues.append("\(name) variant lost its parent highlight") }
                         if self.finishChainButton.isHidden != (family.tools[index] != "sketch.spline.fit_point") {
                             issues.append("Finish chain is not limited to Spline")
                         }
@@ -6474,14 +6528,14 @@ private extension FoundationController {
             setTool("select")
             waitForTool("select") {
                 button.sendActions(for: .touchUpInside)
-                waitForTool("sketch.line") {
-                    if self.presentedViewController != nil { issues.append("first Line press opened choices") }
-                    if button.accessibilityLabel != SketchText.text("line") { issues.append("Line has the wrong label") }
-                    if self.sketchQuickTools.contains(where: { ["sketch.arc.three_point", "sketch.spline.fit_point"].contains($0.0) }) {
-                        issues.append("Line variants are still separate default buttons")
+                waitForTool(family.defaultTool) {
+                    if self.presentedViewController != nil { issues.append("first \(name) press opened choices") }
+                    if button.accessibilityLabel != name { issues.append("\(name) has the wrong label") }
+                    if self.sketchQuickTools.contains(where: { family.tools.dropFirst().contains($0.0) }) {
+                        issues.append("\(name) variants are still separate default buttons")
                     }
                     if !button.subviews.contains(where: { $0.accessibilityIdentifier == "workspace-tool-variants" && !$0.isHidden }) {
-                        issues.append("Line variants arrow missing")
+                        issues.append("\(name) variants arrow missing")
                     }
                     choose(0)
                 }
@@ -6541,7 +6595,9 @@ private extension FoundationController {
                             waitForMenu { picker in
                                 if picker.menu.children.last?.selected != true { issues.append("center rectangle choice is not selected") }
                                 picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: 0, section: 0))
-                                waitForTool("sketch.rectangle.two_point") { checkLineButton() }
+                                waitForTool("sketch.rectangle.two_point") {
+                                    checkToolFamily(.line) { checkToolFamily(.circle) { checkCircleDrawing() } }
+                                }
                             }
                         }
                     }

@@ -3,28 +3,32 @@ import Foundation
 
 /// A first press starts the default tool; pressing an active family opens choices.
 enum SketchToolFamily: CaseIterable {
-    case line, rectangle
+    case circle, line, rectangle
 
     var tools: [String] {
         switch self {
+        case .circle: return ["sketch.circle.center", "sketch.circle.two_point", "sketch.circle.three_point"]
         case .line: return ["sketch.line", "sketch.arc.three_point", "sketch.spline.fit_point"]
         case .rectangle: return ["sketch.rectangle.two_point", "sketch.rectangle.center"]
         }
     }
     var defaultTool: String {
         switch self {
+        case .circle: return "sketch.circle.center"
         case .line: return "sketch.line"
         case .rectangle: return "sketch.rectangle.two_point"
         }
     }
     var labelKey: String {
         switch self {
+        case .circle: return "circle"
         case .line: return "line"
         case .rectangle: return "rectangle"
         }
     }
     var icons: [String] {
         switch self {
+        case .circle: return ["circle", "circle2", "circle3"]
         case .line: return ["line", "arc3", "spline"]
         case .rectangle: return ["rect", "rect_center"]
         }
