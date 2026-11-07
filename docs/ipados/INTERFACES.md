@@ -85,6 +85,16 @@ previous automatic upright grid near side views while retaining the horizontal
 grid. The Grid switch controls both; changing visibility preserves the vertical
 option. Sketch editing continues to use the active sketch plane with either value.
 
+World and sketch axis lines use 55% of their previous opacity by default, keeping
+their shared XYZ colours and distance fade. The corner orientation triad and
+axis selection/hover feedback retain full strength. `view.grid` accepts optional
+boolean `vibrant_axes` (default `false`), returned as `grid.vibrant_axes`; `true`
+restores the original opacity. **View > Individual references > Vibrant axes**
+and **Settings > View > Vibrant axes** save this preference under
+`SolidCraft.workspace.vibrantAxes`. It is restored on startup and retained when
+grid visibility changes. Invalid values apply no state changes. Only guide
+buffers change; model geometry, picking, camera and document history are retained.
+
 `view.choose_sketch_plane` accepts an optional boolean `reveal_hidden` (default
 `true`) to reveal XY/XZ/YZ targets for the picker without changing saved overrides.
 Preview, creation and cancellation clear this temporary reveal. Invalid parameter

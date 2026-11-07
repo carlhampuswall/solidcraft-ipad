@@ -63,12 +63,20 @@ struct GridStyle {
     visible: bool,
     vertical: bool,
     integrated_axes: bool,
+    vibrant_axes: bool,
     colors: Option<[Rgb; 2]>,
 }
 
 impl Default for GridStyle {
     fn default() -> Self {
-        Self { visible: true, vertical: false, integrated_axes: true, colors: None }
+        Self { visible: true, vertical: false, integrated_axes: true, vibrant_axes: false, colors: None }
+    }
+}
+
+impl GridStyle {
+    fn axis_opacity(self, color: Rgb) -> f32 {
+        // Preserve full-strength selection/hover feedback and the corner triad.
+        if !self.vibrant_axes && view::Palette::DEFAULT.axes.contains(&color) { 0.55 } else { 1.0 }
     }
 }
 
@@ -341,10 +349,21 @@ impl Viewport {
                 .transpose()
                 .map_err(|e| error("bad_params", e.to_string()))?
                 .unwrap_or(self.grid.integrated_axes);
-            if self.grid.visible != visible || self.grid.vertical != vertical || self.grid.integrated_axes != integrated_axes {
+            let vibrant_axes = params
+                .get("vibrant_axes")
+                .map(|value| serde_json::from_value::<bool>(value.clone()))
+                .transpose()
+                .map_err(|e| error("bad_params", e.to_string()))?
+                .unwrap_or(self.grid.vibrant_axes);
+            if self.grid.visible != visible
+                || self.grid.vertical != vertical
+                || self.grid.integrated_axes != integrated_axes
+                || self.grid.vibrant_axes != vibrant_axes
+            {
                 self.grid.visible = visible;
                 self.grid.vertical = vertical;
                 self.grid.integrated_axes = integrated_axes;
+                self.grid.vibrant_axes = vibrant_axes;
                 self.changed();
             }
             return Ok(self.diagnostic());
@@ -978,7 +997,7 @@ impl Viewport {
             "background":self.background.map(|color| [color.0,color.1,color.2]),
             "sketch_color":self.sketch_color.map(|color| [color.0,color.1,color.2]),
             "constrained_green":self.constrained_green,
-            "grid":{"visible":self.grid.visible,"vertical":self.grid.vertical,"integrated_axes":self.grid.integrated_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
+            "grid":{"visible":self.grid.visible,"vertical":self.grid.vertical,"integrated_axes":self.grid.integrated_axes,"vibrant_axes":self.grid.vibrant_axes,"colors":self.grid.colors.map(|colors| colors.map(|color| [color.0,color.1,color.2]))},
             "touch_orbit":{"follows_viewpoint":self.touch_orbit_follows_viewpoint},
             "touch_twist":{"enabled":self.two_finger_twist},
             "sketch_rotation_snap":{"enabled":self.sketch_rotation_snap},
@@ -1028,6 +1047,10 @@ impl Viewport {
             scene.lines.push(line(vec![base - side * size * 7., tip, base + side * size * 7.]));
         }
         true
+    }
+
+    pub(crate) fn axis_opacity(&self, color: Rgb) -> f32 {
+        self.grid.axis_opacity(color)
     }
 
     pub(crate) fn changed(&mut self) {
@@ -1445,7 +1468,7 @@ fn guides(camera: &Camera, metrics: ViewportMetrics, sketch_plane: Option<Plane>
                     scene.lines.push(SceneLine {
                         points: [a, b].into_iter().map(|n| center + across * offset + along * n).collect(),
                         color: axis_colors[index],
-                        alpha,
+                        alpha: alpha * grid.axis_opacity(axis_colors[index]),
                         width: 1.5 * metrics.scale,
                         on_top: false,
                     });
@@ -1457,7 +1480,7 @@ fn guides(camera: &Camera, metrics: ViewportMetrics, sketch_plane: Option<Plane>
                 scene.lines.push(SceneLine {
                     points: vec![plane.origin - axis * extent, plane.origin + axis * extent],
                     color,
-                    alpha: 1.0,
+                    alpha: grid.axis_opacity(color),
                     width: 1.5 * metrics.scale,
                     on_top: false,
                 });

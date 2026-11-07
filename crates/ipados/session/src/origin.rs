@@ -391,7 +391,13 @@ impl Viewport {
             }
             let Some(points) = self.reference_axis_segment(axis, self.reference_size() * 1.2) else { continue };
             let color = self.reference_color(&Sel::Axis { name: name.to_string() }, palette.axes[index]);
-            scene.lines.push(SceneLine { points: points.to_vec(), color, alpha: 1.0, width: 2.5 * self.metrics.scale, on_top: false });
+            scene.lines.push(SceneLine {
+                points: points.to_vec(),
+                color,
+                alpha: self.axis_opacity(color),
+                width: 2.5 * self.metrics.scale,
+                on_top: false,
+            });
         }
         if self.origin.visible.first() == Some(&true) {
             let color = self.reference_color(&Sel::Vertex { body: String::new(), point: Vec3::ZERO }, palette.edge);

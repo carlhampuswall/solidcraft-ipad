@@ -237,6 +237,63 @@ fn viewport_integrated_axes_follow_the_visible_grid_plane_and_world_up_axis() {
 }
 
 #[test]
+fn viewport_axes_are_muted_and_vibrant_preference_restores_opacity_without_changing_geometry() {
+    use solidcore_record::Plane;
+
+    let mut engine = SessionAdapter::new();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, engine.snapshot().unwrap());
+    view.command("view.origin", &json!({"group":"axes","visible":true})).unwrap();
+    assert_eq!(view.diagnostic()["grid"]["vibrant_axes"], false);
+    for plane in [None, Some(Plane::XY)] {
+        if let Some(plane) = plane {
+            view.command("view.sketch_plane", &json!({"plane":plane})).unwrap();
+        }
+        for integrated in [true, false] {
+            view.command("view.grid", &json!({"visible":true,"integrated_axes":integrated,"vibrant_axes":false})).unwrap();
+            let muted = view.snapshot().unwrap();
+            assert!(muted.guides.lines.iter().any(|line| !line.on_top));
+            assert!(muted.guides.lines.iter().filter(|line| !line.on_top).all(|line| line.alpha <= 0.55));
+            assert!(muted.guides.lines.iter().filter(|line| line.on_top).all(|line| line.alpha == 1.), "corner triad stays legible");
+            view.command("view.grid", &json!({"visible":true,"vibrant_axes":true})).unwrap();
+            let vibrant = view.snapshot().unwrap();
+            assert_eq!(muted.guides.lines.len(), vibrant.guides.lines.len());
+            for (soft, original) in muted.guides.lines.iter().zip(&vibrant.guides.lines) {
+                assert_eq!((soft.color, &soft.points, soft.width, soft.on_top), (original.color, &original.points, original.width, original.on_top));
+                assert_eq!(soft.alpha, original.alpha * if soft.on_top { 1. } else { 0.55 });
+            }
+            assert!(vibrant.guides.lines.iter().any(|line| !line.on_top && line.alpha == 1.), "original opacity is reachable");
+            assert!(Arc::ptr_eq(&muted.model, &vibrant.model));
+            assert_eq!(muted.camera, vibrant.camera);
+            assert!(vibrant.guide_revision > muted.guide_revision);
+            let before = view.diagnostic();
+            for invalid in [json!(null), json!("true"), json!(0), json!([])] {
+                assert!(view.command("view.grid", &json!({"visible":false,"vibrant_axes":invalid})).is_err());
+                assert_eq!(view.diagnostic(), before, "invalid style applies no partial changes");
+            }
+            view.command("view.grid", &json!({"visible":false})).unwrap();
+            assert_eq!(view.diagnostic()["grid"]["vibrant_axes"], true, "grid toggles retain the style preference");
+        }
+    }
+    view.command("view.cancel_plane", &json!({})).unwrap();
+    view.command("view.grid", &json!({"visible":true,"integrated_axes":true,"vibrant_axes":false})).unwrap();
+    view.selection = vec![Sel::Axis { name: "X".into() }];
+    view.hover = Some(Sel::Axis { name: "Z".into() });
+    view.origin.dirty = true;
+    view.changed();
+    let highlighted = view.snapshot().unwrap();
+    for color in [solidcraft_engine::view::Palette::DEFAULT.body_selected, solidcraft_engine::view::Palette::DEFAULT.sketch_construction] {
+        assert!(
+            highlighted.guides.lines.iter().any(|line| !line.on_top && line.color == color && line.alpha == 1.),
+            "feedback retains original opacity"
+        );
+    }
+    assert!(engine.session.undo.is_empty());
+}
+
+#[test]
 fn viewport_integrated_axis_overrides_survive_plane_changes_and_grid_visibility() {
     let mut engine = SessionAdapter::new();
     let mut view = Viewport::default();

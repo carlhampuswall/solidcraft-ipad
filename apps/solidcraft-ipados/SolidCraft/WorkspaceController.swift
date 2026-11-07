@@ -260,6 +260,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var gridVisible = UserDefaults.standard.object(forKey: "SolidCraft.workspace.gridVisible") as? Bool ?? true
     private var verticalGrid = UserDefaults.standard.object(forKey: "SolidCraft.workspace.verticalGrid") as? Bool ?? false
     private var integratedGridAxes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.integratedGridAxes") as? Bool ?? true
+    private var vibrantAxes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.vibrantAxes")
     private var originInBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.originInBrowser") as? Bool ?? false
     private var resetChromeOffsets = false
     private var sketchRotationSnap = UserDefaults.standard.object(forKey: "SolidCraft.workspace.sketchRotationSnap") as? Bool ?? true
@@ -699,7 +700,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .success:
                 self.failure = nil
                 self.updateCanvasAppearance()
-                self.session.command("view.grid", params: ["visible": self.gridVisible, "vertical": self.verticalGrid, "integrated_axes": self.integratedGridAxes])
+                self.session.command("view.grid", params: ["visible": self.gridVisible, "vertical": self.verticalGrid, "integrated_axes": self.integratedGridAxes, "vibrant_axes": self.vibrantAxes])
                 self.session.command("view.touch_orbit", params: ["follows_viewpoint": self.viewpointOrbit])
                 self.session.command("view.touch_twist", params: ["enabled": self.twoFingerTwist])
                 self.session.command("view.sketch_rotation_snap", params: ["enabled": self.sketchRotationSnap])
@@ -1689,6 +1690,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func toggleVibrantAxes() {
+        guard !referencesLocked else { return }
+        let enabled = !vibrantAxes
+        viewControlPending = true; rebuildViewMenu()
+        session.command("view.grid", params: ["visible": viewPresentation?.grid.visible ?? gridVisible, "vibrant_axes": enabled]) { [weak self] result in
+            guard let self else { return }
+            self.viewControlPending = false
+            if case .success = result {
+                self.vibrantAxes = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.vibrantAxes")
+            }
+            self.rebuildViewMenu()
+        }
+    }
+
     private func togglePerspective() {
         guard !numericEditing, !modellingCommitting, pending.isEmpty, !viewControlPending, state?.sketch == nil else { return }
         let enabled = !(viewPresentation.map { $0.camera.fov > 0 } ?? perspective)
@@ -1779,6 +1795,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 UserDefaults.standard.set(self.axisLabelsVisible, forKey: "SolidCraft.workspace.axisLabels")
                 self.showReferenceLabels(self.latestReferenceLabels); self.rebuildViewMenu()
             },
+            UIAction(title: ViewText.text("vibrant_axes"), attributes: locked,
+                     state: vibrantAxes ? .on : .off) { [weak self] _ in self?.toggleVibrantAxes() },
             UIAction(title: ViewText.text("legacy_planes"), subtitle: ViewText.text("legacy_planes_help"), attributes: locked,
                      state: legacyOriginPlanes ? .on : .off) { [weak self] _ in self?.toggleLegacyOriginPlanes() },
             UIAction(title: WorkspaceStyle.text("origin_in_model"), state: originInBrowser ? .on : .off) { [weak self] _ in self?.toggleOriginInModel() }
@@ -1820,6 +1838,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         panel.onOrigin = { [weak self] in self?.toggleOriginReferences() }
         panel.onReference = { [weak self] item, group, visible in self?.setOriginVisibility(item: item, group: group, visible: visible) }
         panel.onLegacyPlanes = { [weak self] in self?.toggleLegacyOriginPlanes() }
+        panel.onVibrantAxes = { [weak self] in self?.toggleVibrantAxes() }
         panel.onAxisLabels = { [weak self] in
             guard let self else { return }
             self.axisLabelsVisible.toggle()
@@ -1898,7 +1917,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
             automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes,
-            axisLabels: axisLabelsVisible, twoFingerRotation: twoFingerTwist,
+            axisLabels: axisLabelsVisible, vibrantAxes: vibrantAxes, twoFingerRotation: twoFingerTwist,
             quickCommands: Set(additionalNavigationTools.keys.filter { navigationQuickAccess?.contains($0) == true })
                 .union(!homeToolbar && navigationQuickAccess?.contains("navigation.home") == true ? ["view.fit"] : []),
             quickPerspective: navigationQuickAccess?.contains("navigation.projection") == true)
