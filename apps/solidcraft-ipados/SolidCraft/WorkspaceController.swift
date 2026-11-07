@@ -741,6 +741,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewButton.showsLargeContentViewer = false
         for interaction in viewButton.interactions where interaction is UILargeContentViewerInteraction { viewButton.removeInteraction(interaction) }
         for (id, button) in sketchQuickTools {
+        documentActionsButton.artwork("folder", compact: true)
             button.commandArtwork(id, compact: true)
             button.accessibilityIdentifier = "workspace-tool-" + id
         }
@@ -807,9 +808,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         finishSketchButton.accessibilityIdentifier = "workspace-finish-sketch"
         cancelToolButton.accessibilityIdentifier = "workspace-cancel-tool"
         configureQuickAccess()
-        // Settings remains a small standalone gear, with its name available to
-        // VoiceOver and pointer tooltips rather than a toolbar caption.
-        let labelledControls = chromeIcons.map(\.0).filter { $0 !== moreButton } + sketchQuickTools.map(\.1) + [navigationMoreButton]
+        // Settings and Projects retain their accessible names and pointer
+        // tooltips while keeping their compact icon-only presentation.
+        let labelledControls = chromeIcons.map(\.0).filter { $0 !== moreButton && $0 !== documentActionsButton } + sketchQuickTools.map(\.1) + [navigationMoreButton]
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
         labelledControls.forEach { $0.toolLabels(showToolLabels) }
         viewButton.toolLabels(showToolLabels, mirrored: !railRight)
@@ -4625,14 +4626,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let subtitleHeight = 2 * ceil(subtitle.font.lineHeight) + 2
         let actionsHeight = max(44, ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 20)
         let compactHeadingHeight = max(52, titleHeight + ceil(subtitle.font.lineHeight) + 8)
-        let labelledHeader = compactChrome && showToolLabels
-        let railWidth = ToolLabels.railWidth(enabled: showToolLabels, largeText: largeText)
-        let betweenColumns = max(0, chrome.width - 2 * (max(railWidth, viewButton.intrinsicContentSize.width) + 16))
-        let headerWidth = min(largeText ? 420 : 340, betweenColumns < 180 && labelledHeader ? max(0, chrome.width - 16) : betweenColumns)
-        let documentRowHeight = labelledHeader ? max(44, documentActionsButton.sizeThatFits(
-            CGSize(width: max(44, headerWidth - 16), height: .greatestFiniteMagnitude)).height) + 8 : 0
         let completionHeight = finishSketchButton.isHidden ? 0 : actionsHeight + 8
-        let headingHeight = compactChrome ? compactHeadingHeight + documentRowHeight + completionHeight :
+        let headingHeight = compactChrome ? compactHeadingHeight + completionHeight :
             (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
         var inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
             (modellingEditing ? (modellingInspector?.compact == true ? 620 : min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84)) : 640))
@@ -4696,14 +4691,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if resolved.floating {
             let statusSize = status.sizeThatFits(resolved.status.size)
             status.frame.size.width = min(resolved.status.width, statusSize.width)
-            let titleWidth = max(0, top.bounds.width - (labelledHeader ? 24 : 64))
+            let titleWidth = max(0, top.bounds.width - 64)
             titleLabel.frame = CGRect(x: 12, y: 5, width: titleWidth, height: titleHeight)
             subtitle.frame = CGRect(x: 12, y: titleHeight + 5, width: titleWidth, height: ceil(subtitle.font.lineHeight) + 2)
-            documentActionsButton.frame = labelledHeader ?
-                CGRect(x: 8, y: compactHeadingHeight, width: max(0, top.bounds.width - 16), height: max(0, documentRowHeight - 8)) :
-                CGRect(x: max(0, top.bounds.width - 48), y: 4, width: min(44, top.bounds.width), height: max(0, compactHeadingHeight - 8))
-            finishSketchButton.frame = CGRect(x: 8, y: compactHeadingHeight + documentRowHeight, width: max(0, top.bounds.width - 16),
-                height: max(0, top.bounds.height - compactHeadingHeight - documentRowHeight - 8))
+            documentActionsButton.frame = CGRect(x: max(0, top.bounds.width - 48), y: 4, width: min(44, top.bounds.width), height: max(0, compactHeadingHeight - 8))
+            finishSketchButton.frame = CGRect(x: 8, y: compactHeadingHeight, width: max(0, top.bounds.width - 16),
+                height: max(0, top.bounds.height - compactHeadingHeight - 8))
             browserButton.frame = resolved.browserAccess
             navigationScroll.frame = resolved.navigation
             viewButton.frame = resolved.viewAccess
@@ -9379,7 +9372,7 @@ private extension FoundationController {
         let saved = UserDefaults.standard.object(forKey: ToolLabels.key)
         let original = showToolLabels
         var issues: [String] = []
-        let controls = [viewButton, documentActionsButton, browserButton, undoButton, redoButton]
+        let controls = [viewButton, browserButton, undoButton, redoButton]
             + Array(railQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(navigationQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
@@ -9408,18 +9401,35 @@ private extension FoundationController {
             for button in controls {
                 if button.configuration?.title != nil { issues.append("Title remains inside " + (button.accessibilityLabel ?? "button")) }
                 if button.accessibilityLabel?.isEmpty != false { issues.append("Missing accessibility name") }
-                let caption = button.subviews.flatMap(\.subviews).first { $0.accessibilityIdentifier == "workspace-rail-caption" }
-                if caption?.isHidden != !visible { issues.append("Caption visibility: " + (button.accessibilityLabel ?? "button")) }
-                if visible, button.window != nil, !button.isHidden, let caption, let icon = caption.superview?.subviews.first(where: {
+                let label = caption(button)
+                if label?.isHidden != !visible { issues.append("Caption visibility: " + (button.accessibilityLabel ?? "button")) }
+                if visible, button.window != nil, !button.isHidden, let caption = label, let icon = caption.superview?.subviews.first(where: {
                     $0.accessibilityIdentifier == "workspace-tool-icon-surface"
                 }), caption.frame.intersects(icon.frame) {
                     issues.append("Caption overlaps its icon surface: " + (button.accessibilityLabel ?? "button"))
                 }
             }
-            let historyCaption = featureHistory.subviews.flatMap(\.subviews).flatMap(\.subviews).first {
-                $0.accessibilityIdentifier == "workspace-rail-caption"
+            let historyButtons = descendants(featureHistory).compactMap { $0 as? WorkspaceButton }
+            let transport = historyButtons.filter {
+                ["workspace-history-back", "workspace-history-play", "workspace-history-forward"].contains($0.accessibilityIdentifier ?? "")
             }
-            if historyCaption?.isHidden != !visible { issues.append("History caption is not outside its icon") }
+            if transport.count != 3 { issues.append("Missing history transport controls") }
+            for button in [documentActionsButton] + transport {
+                if button.configuration?.title != nil || caption(button)?.isHidden == false {
+                    issues.append("Unexpected caption: " + (button.accessibilityLabel ?? "button"))
+                }
+                if button.accessibilityLabel?.isEmpty != false { issues.append("Icon-only control lost its accessible name") }
+            }
+            if documentActionsButton.frame.minX < titleLabel.frame.maxX ||
+                documentActionsButton.frame.minY > titleLabel.frame.maxY || documentActionsButton.frame.maxY < titleLabel.frame.minY {
+                issues.append("Projects is not inline with the project title")
+            }
+            if let historyToggle = historyButtons.first(where: { $0.accessibilityIdentifier == "workspace-feature-history-toggle" }) {
+                if caption(historyToggle)?.isHidden != (!visible || historyExpanded) {
+                    issues.append("History caption did not follow expansion and label visibility")
+                }
+                if historyExpanded && featureHistory.preferredToggleWidth > 52 { issues.append("Expanded History kept its caption width") }
+            } else { issues.append("Missing History toggle") }
         }
         if !showToolLabels { toggle() }
         verify(true); capture("shown")
@@ -9442,6 +9452,10 @@ private extension FoundationController {
     }
 
     func checkChromeOnDevice() {
+        func descendants(_ root: UIView) -> [UIView] { [root] + root.subviews.flatMap(descendants) }
+        func caption(_ button: WorkspaceButton) -> UIView? {
+            descendants(button).first { $0.accessibilityIdentifier == "workspace-rail-caption" }
+        }
         struct Report: Encodable {
             let compact: Bool
             let appearance: Int
@@ -9473,6 +9487,8 @@ private extension FoundationController {
                     try encoder.encode(reports).write(to: directory.appendingPathComponent("workspace-chrome-check.json"), options: .atomic)
                 } catch { print("SolidCraft native chrome check could not save its report: \(error)") }
                 print("SolidCraft native chrome check \(reports.allSatisfy { $0.issues.isEmpty } ? "PASS" : "FAIL")")
+        toggle(); verify(false); capture("history-expanded-hidden")
+        toggle(); verify(true)
                 return
             }
             canvas.cancelInput()

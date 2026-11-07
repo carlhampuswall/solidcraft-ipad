@@ -166,6 +166,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private var scrub = HistoryScrubQueue()
     private var playback = HistoryPlaybackQueue()
     private var playbackEnabled = false
+    private var showToolLabels = ToolLabels.current
     private var playbackTimer: Timer?
     private var scrubbingEnabled = false
     private var documentID: String?
@@ -200,11 +201,10 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         transport.axis = .horizontal; transport.spacing = 0; transport.distribution = .fillEqually
         for (control, id) in [(back, "back"), (play, "play"), (forward, "forward")] {
             if control === play { control.systemArtwork("play.fill", compact: true) }
-            else { control.artwork("chevron_right", compact: true) }
+            else { control.artwork("chevron_right", compact: true, flippedHorizontally: control === back) }
             control.accessibilityIdentifier = "workspace-history-" + id
             transport.addArrangedSubview(control)
         }
-        back.imageView?.transform = CGAffineTransform(rotationAngle: .pi)
         back.menu = UIMenu(children: [UIAction(title: HistoryText.text("first")) { [weak self] _ in
             self?.cancelPlayback(); self?.onMove?(0)
         }])
@@ -260,8 +260,8 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     deinit { dragScrollTimer?.invalidate(); playbackTimer?.invalidate() }
 
     func toolLabels(_ visible: Bool) {
-        toggle.toolLabels(visible, mirrored: true)
-        [back, play, forward].forEach { $0.toolLabels(visible) }
+        showToolLabels = visible
+        toggle.toolLabels(visible && !expanded, mirrored: true)
         styleSurface()
         setNeedsLayout(); onPreferredSizeChange?()
     }
@@ -275,6 +275,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         if !value { cancelScrub(); cancelPlayback() }
         expanded = value; scroll.isHidden = !value; transportScroll.isHidden = !value
         accessibilityElements = value ? [transportScroll, scroll, toggle] : [toggle]
+        toggle.toolLabels(showToolLabels && !value, mirrored: true)
         toggle.active(value)
         // Keep the original compact toggle's neutral selected surface; only its
         // label and measured width change, not the timeline's presentation.
@@ -775,6 +776,7 @@ final class WorkspaceButton: UIButton {
     private var commandID: String?
     private var systemIcon: String?
     private var compactIcon = false
+    private var flippedArtwork = false
     private var toolCaption: RailButtonContent?
     private var diagnosticSeverity: FeatureDiagnosticSeverity?
     var hasExternalToolCaption: Bool { toolCaption != nil }
@@ -822,14 +824,15 @@ final class WorkspaceButton: UIButton {
         largeContentTitle = title; toolTip = title
     }
 
-    func artwork(_ id: String, compact: Bool = false) {
-        iconID = id; commandID = nil; systemIcon = nil; compactIcon = compact; refreshIcon()
+    func artwork(_ id: String, compact: Bool = false, flippedHorizontally: Bool = false) {
+        iconID = id; commandID = nil; systemIcon = nil; compactIcon = compact
+        flippedArtwork = flippedHorizontally; refreshIcon()
     }
     func commandArtwork(_ id: String, compact: Bool = false) {
-        commandID = id; iconID = nil; systemIcon = nil; compactIcon = compact; refreshIcon()
+        commandID = id; iconID = nil; systemIcon = nil; compactIcon = compact; flippedArtwork = false; refreshIcon()
     }
     func textOnly() {
-        iconID = nil; commandID = nil; systemIcon = nil; compactIcon = false; refreshIcon()
+        iconID = nil; commandID = nil; systemIcon = nil; compactIcon = false; flippedArtwork = false; refreshIcon()
     }
     /// Retain compact artwork and accessibility names when captions are hidden.
     /// Text-only actions and existing form labels always keep their titles.
@@ -848,7 +851,7 @@ final class WorkspaceButton: UIButton {
         invalidateIntrinsicContentSize(); setNeedsLayout()
     }
     func systemArtwork(_ name: String, compact: Bool = false) {
-        iconID = nil; commandID = nil; systemIcon = name; compactIcon = compact; refreshIcon()
+        iconID = nil; commandID = nil; systemIcon = name; compactIcon = compact; flippedArtwork = false; refreshIcon()
     }
     func centerIconAndTitleVertically() {
         verticallyCenteredContent = true
@@ -890,9 +893,10 @@ final class WorkspaceButton: UIButton {
     private func refreshIcon() {
         // The Rust guide is the visible dot. Keep only its accessible touch target.
         guard !isViewportPoint else { return }
-        let image = commandID.flatMap { WorkspaceIcon.command($0, traits: traitCollection) }
+        let artwork = commandID.flatMap { WorkspaceIcon.command($0, traits: traitCollection) }
             ?? iconID.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
             ?? systemIcon.flatMap { UIImage(systemName: $0) }
+        let image = flippedArtwork ? artwork?.withHorizontallyFlippedOrientation() : artwork
         if let railContent {
             railContent.setImage(image); largeContentImage = image
             setNeedsLayout(); setNeedsUpdateConfiguration()
