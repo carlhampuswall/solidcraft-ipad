@@ -469,6 +469,31 @@ references, and derive the snap radius from display points. Rectangle midpoint
 and intersection positioning is temporary because the rectangle creator accepts
 coordinates; origin/existing-point connection still uses native `connect`.
 
+Drawing tools also snap to visible curve interiors, so a line can connect an
+inner rectangle to any point on an outer edge. Automatic constraints retain the
+point-on-curve relationship in the same undo step as the new geometry; disabling
+them retains only the snapped position. Midpoints and curve interiors choose the
+nearest eligible target. Hidden construction/projected geometry and private
+generated points do not attract snaps. Free-form targets use the shared sketch's
+exact curve pieces where available; finite lines and arcs retain their bounds.
+
+The `sketch_snapping` session regressions cover nested rectangles on XY/XZ/YZ,
+zoom/display scale, previews, constraints, Undo/Redo, visibility and curved
+targets. `render_proof OUTPUT.png --sketch-snapping` captures the nested rectangle
+preview, committed line and Undo through the production adapter and shared GPU.
+These use synthetic Pencil input and do not verify physical Pencil delivery.
+
+Verified on 2026-11-07: all six new session regressions and the new shared
+intersection regression pass. The complete adapter run has 286 session passes
+and 37 bridge passes; the single session failure is the unchanged smooth-rail
+chamfer case already listed in `tests/KNOWN_FAILING_TESTS`. All nine intersection
+snap tests, affected Clippy with warnings denied, formatting, wasm compilation,
+the 756-case native harness/icon checks and the unsigned iPad build pass. The
+wasm check retains the existing engine dead-code warning. All four GPU captures
+were inspected and remain in ignored `target/sketch-snapping/`, alongside the
+native build log. No simulator, physical iPad session, engine suite or full CI
+was run.
+
 The left sketch rail exposes Delete beside Trim. Delete stays active for repeated
 taps on curves, including their endpoints; each removed curve uses the existing
 `sketch.delete` command and is one undoable action. It never expands deletion to

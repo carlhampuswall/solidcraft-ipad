@@ -216,6 +216,22 @@ fn curve_distance(sketch: &Sketch, curve: usize, point: Vec2) -> Option<f64> {
     })
 }
 
+/// Snap to the shared sketch's analytic or exact free-form geometry. A finite
+/// line or arc cannot attract the cursor along its undrawn extension.
+fn curve_projection(sketch: &Sketch, curve: usize, point: Vec2) -> Option<Vec2> {
+    if let Some(shape) = sketch.shape(curve) {
+        let at = shape.project(point);
+        let infinite = sketch.curves.get(curve).is_some_and(|c| c.infinite) && matches!(shape, Shape::Line { .. });
+        return (at.is_finite() && (infinite || shape.param_on(at, 1e-8).is_some())).then_some(at);
+    }
+    sketch
+        .exact_segs(curve)?
+        .iter()
+        .map(|seg| seg.point_at(seg.closest_param(point)))
+        .filter(|p| p.is_finite())
+        .min_by(|a, b| a.dist(point).total_cmp(&b.dist(point)))
+}
+
 impl Viewport {
     /// Presentation-only anchor for finishing committed lines. Keep the active
     /// drawing contact and provisional evaluations clear of native controls.
@@ -710,6 +726,15 @@ impl Viewport {
         }
         let sk = &snapshot.sketch;
         let tolerance = 9.0 * 2.0 * self.camera.half_height() / self.metrics.height_points.max(1.0);
+        let visible_curves: BTreeSet<_> = (0..sk.curves.len()).filter(|i| solidcraft_engine::view::sketch_curve_visible(sk, *i)).collect();
+        let owned: BTreeSet<_> = sk.curves.iter().flat_map(|c| c.kind.point_ids()).collect();
+        let visible_owned: BTreeSet<_> = visible_curves.iter().filter_map(|i| sk.curves.get(*i)).flat_map(|c| c.kind.point_ids()).collect();
+        let roles = solidcraft_engine::view::SketchPointVisibility::new(sk);
+        let point_visible = |i: usize| {
+            sk.points.get(i).is_some_and(|p| {
+                roles.takes(p) && if owned.contains(&i) { visible_owned.contains(&i) } else { p.link.is_none() || !sk.view.hide_projected }
+            })
+        };
         let mut best: Option<(f64, Vec2, Value, &'static str)> = None;
         let mut offer = |point: Vec2, argument: Value, kind| {
             let distance = point.dist(local);
@@ -721,7 +746,9 @@ impl Viewport {
         let centers: std::collections::BTreeSet<usize> = sk
             .curves
             .iter()
-            .filter_map(|curve| match curve.kind {
+            .enumerate()
+            .filter(|(i, _)| visible_curves.contains(i))
+            .filter_map(|(_, curve)| match curve.kind {
                 solidcraft_engine::sketch::CurveKind::Circle { c, .. }
                 | solidcraft_engine::sketch::CurveKind::Arc { c, .. }
                 | solidcraft_engine::sketch::CurveKind::Ellipse { c, .. } => Some(c),
@@ -729,17 +756,23 @@ impl Viewport {
             })
             .collect();
         for (index, point) in sk.points.iter().enumerate() {
-            offer(point.pos, json!(point.id), if centers.contains(&index) { "center" } else { "point" });
+            if point_visible(index) {
+                offer(point.pos, json!(point.id), if centers.contains(&index) { "center" } else { "point" });
+            }
         }
         if best.is_none()
             && self.contacts.sketch.tool != "sketch.point"
-            && let Some((point, a, b)) = solidcraft_engine::sketch::nearest_curve_intersection(sk, local, tolerance)
+            && let Some((point, a, b)) =
+                solidcraft_engine::sketch::nearest_curve_intersection_filtered(sk, local, tolerance, point_visible, |i| visible_curves.contains(&i))
             && let (Some(a), Some(b)) = (sk.curves.get(a), sk.curves.get(b))
         {
             best = Some((point.dist(local), point, json!(format!("x:{}+{}:{},{}", a.id, b.id, point.x, point.y)), "intersection"));
         }
         if best.is_none() {
             for (index, curve) in sk.curves.iter().enumerate() {
+                if !visible_curves.contains(&index) {
+                    continue;
+                }
                 let Some(shape) = sk.shape(index) else {
                     continue;
                 };
@@ -749,21 +782,20 @@ impl Viewport {
                 };
                 if let Some((point, arg, kind)) = candidate
                     && point.dist(local) <= tolerance
+                    && best.as_ref().is_none_or(|b| point.dist(local) < b.0)
                 {
                     best = Some((point.dist(local), point, arg, kind));
-                    break;
                 }
             }
         }
-        if best.is_none() && self.contacts.sketch.tool == "sketch.point" {
+        if best.is_none() {
             for (index, curve) in sk.curves.iter().enumerate() {
-                if !solidcraft_engine::view::sketch_curve_visible(sk, index) {
+                if !visible_curves.contains(&index) {
                     continue;
                 }
-                let Some(shape) = sk.shape(index) else { continue };
-                let point = shape.project(local);
+                let Some(point) = curve_projection(sk, index, local) else { continue };
                 let distance = point.dist(local);
-                if distance <= tolerance && shape.param_on(point, 1e-8).is_some() && best.as_ref().is_none_or(|b| distance < b.0) {
+                if distance <= tolerance && best.as_ref().is_none_or(|b| distance < b.0) {
                     best = Some((distance, point, json!(format!("on:{}:{},{}", curve.id, point.x, point.y)), "on_curve"));
                 }
             }

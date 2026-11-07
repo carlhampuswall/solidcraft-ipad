@@ -176,11 +176,26 @@ fn nearest_crossing_with_extents(x: &Shape, y: &Shape, near: Vec2, infinite: [bo
 /// cannot meet near the cursor and are ignored. Infinite lines use their full support;
 /// ordinary segments and arcs keep their bounds.
 pub fn nearest_curve_intersection(sk: &Sketch, p: Vec2, tol: f64) -> Option<(Vec2, usize, usize)> {
+    nearest_curve_intersection_filtered(sk, p, tol, |_| true, |_| true)
+}
+
+/// As [`nearest_curve_intersection`], considering only eligible points and curves.
+/// View adapters can exclude hidden geometry without cloning or renumbering the sketch.
+pub fn nearest_curve_intersection_filtered(
+    sk: &Sketch,
+    p: Vec2,
+    tol: f64,
+    point_visible: impl Fn(usize) -> bool,
+    curve_visible: impl Fn(usize) -> bool,
+) -> Option<(Vec2, usize, usize)> {
     if !p.is_finite() || !tol.is_finite() || tol <= 0.0 {
         return None;
     }
     let mut candidates: Vec<(usize, Shape, bool)> = Vec::new();
     for (i, curve) in sk.curves.iter().enumerate() {
+        if !curve_visible(i) {
+            continue;
+        }
         if candidates.len() >= MAX_INTERSECTION_CANDIDATES {
             break;
         }
@@ -199,7 +214,7 @@ pub fn nearest_curve_intersection(sk: &Sketch, p: Vec2, tol: f64) -> Option<(Vec
             if d > tol {
                 continue;
             }
-            if sk.points.iter().any(|pt| pt.pos.dist(q) <= ON_CURVE) {
+            if sk.points.iter().enumerate().any(|(i, pt)| point_visible(i) && pt.pos.dist(q) <= ON_CURVE) {
                 continue;
             }
             if best.is_none_or(|prev| d < prev.0) {
@@ -302,6 +317,22 @@ mod intersection_snap_tests {
         let (p, i, j) = nearest_curve_intersection(&sk, v(10.2, 9.8), 1.0).expect("crossing");
         assert!(p.dist(v(10.0, 10.0)) < 1e-9, "{p:?}");
         assert_eq!([i.min(j), i.max(j)], [a.min(b), a.max(b)]);
+    }
+
+    #[test]
+    fn nearest_curve_intersection_filters_before_choosing_a_crossing() {
+        let mut sk = Sketch::new();
+        let a = sk.add_line(v(0., 10.), v(20., 10.), None, None, None).unwrap();
+        let b = sk.add_line(v(10., 0.), v(10., 20.), None, None, None).unwrap();
+        let hidden = sk.add_line(v(10.2, 0.), v(10.2, 20.), None, None, None).unwrap();
+        let hidden_point = sk.add_point(v(10., 10.), None).unwrap();
+        let near = v(10.2, 10.1);
+        let (_, i, j) = nearest_curve_intersection(&sk, near, 1.).unwrap();
+        assert!([i, j].contains(&hidden));
+        let (at, i, j) = nearest_curve_intersection_filtered(&sk, near, 1., |p| p != hidden_point, |c| c != hidden).unwrap();
+        assert!(at.dist(v(10., 10.)) < 1e-9);
+        assert_eq!([i, j], [a, b]);
+        assert!(nearest_curve_intersection_filtered(&sk, near, 1., |_| true, |c| c != hidden).is_none());
     }
 
     #[test]

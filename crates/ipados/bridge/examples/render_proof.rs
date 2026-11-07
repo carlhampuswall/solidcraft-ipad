@@ -82,6 +82,9 @@ fn appearance_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>>
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let destination = std::env::args().nth(1).ok_or("usage: render_proof OUTPUT.png")?;
+    if std::env::args().nth(2).as_deref() == Some("--sketch-snapping") {
+        return sketch_snapping_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--connected-edges") {
         return connected_edges_proof(&destination);
     }
@@ -2233,6 +2236,69 @@ fn construction_proof(destination: &str) -> Result<(), Box<dyn std::error::Error
     println!(
         "PASS: construction mode before Pencil placement creates orange dashed line, rectangle and circle; original rectangle remains a profile. Synthetic input and macOS GPU evidence."
     );
+    Ok(())
+}
+
+fn sketch_snapping_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("sketch.create", json!({"plane":"XY"}))?;
+    for (a, b) in [([-40., -30.], [40., 30.]), ([-15., -10.], [15., 10.])] {
+        engine.execute("sketch.rectangle.two_point", json!({"p0":a,"p1":b}))?;
+    }
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.fit", &json!({}))?;
+    view.command("tool.set", &json!({"tool":"sketch.line"}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("no snapping frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG encoding")?)?;
+        println!("{stage}: {path}");
+        Ok(())
+    };
+    let feed = |view: &mut Viewport, phase: &str, at: [f64; 3], time: f64| -> Result<(), Box<dyn std::error::Error>> {
+        let p = view.command("view.project", &json!({"point":at}))?;
+        let stamp = view.diagnostic();
+        view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":1,
+            "x_points":p["points"][0],"y_points":p["points"][1],"x_pixels":p["pixels"][0],"y_pixels":p["pixels"][1],
+            "scale":1,"timestamp":time,"geometry_revision":p["geometry_revision"],
+            "viewport_epoch":stamp["viewport_epoch"],"camera_epoch":stamp["camera_epoch"]}))?)?;
+        Ok(())
+    };
+    let before = engine.snapshot()?;
+    capture(&view, "before")?;
+    feed(&mut view, "began", [8., 10.2, 0.], 1.)?;
+    feed(&mut view, "moved", [24., 29.8, 0.], 2.)?;
+    let snap = view.diagnostic()["input"]["sketch"]["snap"].clone();
+    let work = view.take_tool_work().ok_or("no snapping preview")?;
+    let prepared = engine.prepare_tool(work.clone())?;
+    if !view.publish_preview(&work, prepared.model) {
+        return Err("snapping preview rejected".into());
+    }
+    capture(&view, "preview")?;
+    if snap["kind"] != "on_curve" || snap["persistent"] != true {
+        return Err(format!("line missed outer edge: {snap}").into());
+    }
+    feed(&mut view, "ended", [24., 29.8, 0.], 3.)?;
+    let work = view.take_tool_work().ok_or("no snapping commit")?;
+    let prepared = engine.prepare_tool(work.clone())?;
+    if !work.commit || !view.complete_tool(&work, engine.accept_tool(prepared)?) {
+        return Err("snapping commit rejected".into());
+    }
+    capture(&view, "committed")?;
+    engine.execute("edit.undo", json!({}))?;
+    let undone = engine.snapshot()?;
+    if undone.sketch.as_ref().map(|s| &s.sketch) != before.sketch.as_ref().map(|s| &s.sketch) {
+        return Err("Undo did not remove the line and its snap relations together".into());
+    }
+    view.begin_update(2);
+    view.install(2, undone);
+    capture(&view, "undo")?;
+    println!("PASS: line snaps from inner to outer rectangle edge; preview, commit and one-step Undo. Synthetic Pencil input; macOS GPU evidence.");
     Ok(())
 }
 

@@ -6424,6 +6424,180 @@ fn sketch_edit_and_native_roundtrip_preserve_unexposed_ellipse() {
 }
 
 #[test]
+fn sketch_snapping_connects_nested_rectangle_edges_in_every_plane_and_zoom() {
+    use solidcore_record::Vec2;
+    use solidcraft_engine::sketch::ConstraintKind;
+    for plane in ["XY", "XZ", "YZ"] {
+        for (height, scale, automatic) in [(60., 1., true), (160., 2., true), (60., 2., false)] {
+            let (mut engine, mut view) = sketch_input_fixture(json!(plane), "sketch.line");
+            for (a, b) in [([-40., -30.], [40., 30.]), ([-15., -10.], [15., 10.])] {
+                engine.execute("sketch.rectangle.two_point", json!({"p0":a,"p1":b})).unwrap();
+            }
+            view.begin_update(2);
+            view.install(2, engine.snapshot().unwrap());
+            view.camera.distance *= height / view.camera.half_height();
+            view.set_metrics(metrics(800., 600., scale)).unwrap();
+            view.command("tool.auto_constraints", &json!({"enabled":automatic})).unwrap();
+            let before = engine.sketch_snapshot().unwrap().sketch;
+            let history = engine.session.undo.len();
+            let basis = engine.sketch_snapshot().unwrap().plane;
+            for (n, (phase, local)) in
+                [(InputPhase::Began, Vec2::new(8., 10.2)), (InputPhase::Moved, Vec2::new(24., 29.8)), (InputPhase::Ended, Vec2::new(24., 29.8))]
+                    .into_iter()
+                    .enumerate()
+            {
+                let at = point(&view, basis.to_world(local));
+                feed(&mut view, InputSource::Pencil, phase, 1, at, 1. + n as f64);
+                let snap = &view.diagnostic()["input"]["sketch"]["snap"];
+                assert_eq!(snap["kind"], "on_curve", "{plane}, {height}, {phase:?}");
+                assert_eq!(snap["persistent"], automatic);
+                if phase == InputPhase::Moved {
+                    let work = view.take_tool_work().unwrap();
+                    let prepared = engine.prepare_tool(work.clone()).unwrap();
+                    assert!(view.publish_preview(&work, prepared.model));
+                    assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+                }
+            }
+            assert!(run_tool(&mut engine, &mut view));
+            let snapshot = engine.sketch_snapshot().unwrap();
+            assert!(snapshot.solved);
+            let sk = &snapshot.sketch;
+            let (a, b) = sk.curves.last().unwrap().kind.ends().unwrap();
+            assert!(sk.point(a).unwrap().dist(Vec2::new(8., 10.)) < 1e-6);
+            assert!(sk.point(b).unwrap().dist(Vec2::new(24., 30.)) < 1e-6);
+            for p in [a, b] {
+                assert_eq!(sk.constraints.iter().any(|c| matches!(c.kind, ConstraintKind::PointOnCurve { p: q, .. } if p == q)), automatic);
+            }
+            assert_eq!(&sk.curves[..8], before.curves.as_slice());
+            for (a, b) in sk.points.iter().zip(&before.points) {
+                assert!(a.pos.dist(b.pos) < 1e-6, "snapping must not move either rectangle");
+            }
+            assert_eq!(engine.session.undo.len(), history + 1);
+            engine.execute("edit.undo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+            engine.execute("edit.redo", json!({})).unwrap();
+            assert_eq!(engine.sketch_snapshot().unwrap().sketch, *sk);
+        }
+    }
+}
+
+#[test]
+fn sketch_snapping_chooses_the_nearest_midpoint_and_edge() {
+    for (xy, kind, target) in [([40., 20.8], "midpoint", "near"), ([53., 20.8], "on_curve", "near")] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.point");
+        for (id, y) in [("far", 20.), ("near", 21.)] {
+            engine.execute("sketch.line", json!({"points":[[20.,y],[60.,y]],"ids":[id],"infer":false,"connect":false})).unwrap();
+        }
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        sketch_tap(&mut view, 1, xy);
+        assert_eq!(view.diagnostic()["input"]["sketch"]["snap"]["kind"], kind);
+        assert!(run_tool(&mut engine, &mut view));
+        let sk = engine.sketch_snapshot().unwrap().sketch;
+        let p = sk.points.len() - 1;
+        let c = sk.curve_index(target).unwrap();
+        assert!(sk.constraints.iter().any(|constraint| match constraint.kind {
+            solidcraft_engine::sketch::ConstraintKind::Midpoint { p: q, l } => kind == "midpoint" && p == q && l == c,
+            solidcraft_engine::sketch::ConstraintKind::PointOnCurve { p: q, c: i } => kind == "on_curve" && p == q && i == c,
+            _ => false,
+        }));
+    }
+}
+
+#[test]
+fn sketch_snapping_ignores_hidden_geometry_at_endpoints_midpoints_edges_and_crossings() {
+    for tool in ["sketch.line", "sketch.point"] {
+        for xy in [[20., 20.], [40., 20.], [53., 20.], [53., 27.]] {
+            let (mut engine, mut view) = sketch_input_fixture(json!("XY"), tool);
+            for points in [json!([[20, 20], [60, 20]]), json!([[43, 17], [63, 37]]), json!([[43, 37], [63, 17]])] {
+                engine.execute("sketch.line", json!({"points":points,"construction":true,"infer":false,"connect":false})).unwrap();
+            }
+            engine.execute("sketch.options", json!({"show_construction":false})).unwrap();
+            view.begin_update(2);
+            view.install(2, engine.snapshot().unwrap());
+            sketch_tap(&mut view, 1, xy);
+            assert!(view.diagnostic()["input"]["sketch"]["snap"].is_null(), "{tool}, {xy:?}");
+        }
+    }
+}
+
+#[test]
+fn sketch_snapping_line_ends_stay_on_round_and_freeform_curves() {
+    use solidcore_record::Vec2;
+    use solidcraft_engine::sketch::ConstraintKind;
+    for curve in ["circle", "arc", "spline", "ellipse"] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
+        let reply = match curve {
+            "circle" => engine.execute("sketch.circle.center", json!({"center":[50,25],"radius":20})),
+            "arc" => engine.execute("sketch.arc.three_point", json!({"start":[30,25],"end":[70,25],"through":[50,45]})),
+            "spline" => engine.execute("sketch.spline.fit_point", json!({"points":[[20,20],[50,40],[80,20]]})),
+            _ => engine.execute("sketch.ellipse", json!({"center":[50,25],"major":[75,25],"minor_radius":15})),
+        }
+        .unwrap();
+        let id = reply.value["curves"][0].as_str().unwrap().to_string();
+        engine.execute("sketch.constraint.fix", json!({"entity":id,"fixed":true})).unwrap();
+        let sk = engine.sketch_snapshot().unwrap().sketch;
+        let c = sk.curve_index(&id).unwrap();
+        let at = if let Some(shape) = sk.shape(c) {
+            let (a, b) = shape.range();
+            shape.point(a + (b - a) * 0.31)
+        } else {
+            use solidcraft_engine::geom::prelude::*;
+            sk.exact_segs(c).unwrap()[0].point_at(0.37)
+        };
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        sketch_tap(&mut view, 1, [-20., -20.]);
+        sketch_tap(&mut view, 2, [at.x + 0.1, at.y + 0.1]);
+        assert_eq!(view.diagnostic()["input"]["sketch"]["snap"]["kind"], "on_curve", "{curve}");
+        let shown: Vec2 = serde_json::from_value(view.diagnostic()["input"]["sketch"]["snap"]["at"].clone()).unwrap();
+        assert!(run_tool(&mut engine, &mut view), "{curve}");
+        let snapshot = engine.sketch_snapshot().unwrap();
+        assert!(snapshot.solved, "{curve}");
+        let sk = &snapshot.sketch;
+        let (_, end) = sk.curves.last().unwrap().kind.ends().unwrap();
+        assert!(sk.point(end).unwrap().dist(shown) < 1e-6, "{curve}: preview and commit differ");
+        assert!(sk.constraints.iter().any(|k| matches!(k.kind, ConstraintKind::PointOnCurve { p, c: i } if p == end && i == c)));
+    }
+}
+
+#[test]
+fn sketch_snapping_drawing_tools_share_curve_targets_and_rectangle_feedback_is_temporary() {
+    for tool in
+        ["sketch.point", "sketch.line", "sketch.circle.center", "sketch.arc.three_point", "sketch.spline.fit_point", "sketch.rectangle.two_point"]
+    {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), tool);
+        engine.execute("sketch.line", json!({"points":[[20,20],[60,20]],"infer":false,"connect":false})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        let before = engine.sketch_snapshot().unwrap().sketch;
+        let history = engine.session.undo.len();
+        sketch_tap(&mut view, 1, [53., 20.2]);
+        let snap = &view.diagnostic()["input"]["sketch"]["snap"];
+        assert_eq!(snap["kind"], "on_curve", "{tool}");
+        assert_eq!(snap["persistent"], tool != "sketch.rectangle.two_point", "{tool}");
+        view.command("tool.cancel", &json!({})).unwrap();
+        assert!(view.take_tool_work().is_none());
+        assert_eq!(engine.sketch_snapshot().unwrap().sketch, before);
+        assert_eq!(engine.session.undo.len(), history);
+    }
+}
+
+#[test]
+fn sketch_snapping_respects_disabled_snapping_and_bounded_curves() {
+    for (enabled, xy) in [(false, [53., 20.2]), (true, [65., 20.]), (true, [50., 5.])] {
+        let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.line");
+        engine.execute("sketch.line", json!({"points":[[20,20],[60,20]],"infer":false,"connect":false})).unwrap();
+        engine.execute("sketch.arc.three_point", json!({"start":[30,25],"end":[70,25],"through":[50,45]})).unwrap();
+        engine.execute("sketch.options", json!({"snap":enabled})).unwrap();
+        view.begin_update(2);
+        view.install(2, engine.snapshot().unwrap());
+        sketch_tap(&mut view, 1, xy);
+        assert!(view.diagnostic()["input"]["sketch"]["snap"].is_null(), "{enabled}, {xy:?}");
+    }
+}
+
+#[test]
 fn sketch_snapping_uses_saved_native_preference_and_failed_preview_can_recover() {
     let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.circle.center");
     view.command("tool.snapping", &json!({"enabled":false})).unwrap();
