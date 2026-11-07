@@ -9499,8 +9499,19 @@ private extension FoundationController {
 
     /// Actual UIKit regression for floating controls across appearance and safe-area
     /// settings. Foundation rectangle tests cannot observe retained scroll state.
-    func checkSettingsOnDevice() {
+    func checkSettingsOnDevice(attempt: Int = 0) {
         guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        guard state != nil, viewPresentation != nil, pending.isEmpty else {
+            if attempt < 100 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.checkSettingsOnDevice(attempt: attempt + 1) }
+            } else {
+                let report: [String: Any] = ["passed": false, "issues": ["Document startup did not finish"],
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unknown"]
+                do { try JSONSerialization.data(withJSONObject: report).write(to: directory.appendingPathComponent("settings-check.json"), options: .atomic) }
+                catch { print("Settings report failed: \(error)") }
+            }
+            return
+        }
         let savedLabels = UserDefaults.standard.object(forKey: ToolLabels.key)
         let originalLabels = showToolLabels
         let originalAppearance = appearance
@@ -9510,7 +9521,8 @@ private extension FoundationController {
         var issues: [String] = []
         func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
         func capture(_ name: String) {
-            let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+            let surface: UIView = view.window ?? view
+            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
             do { try image.pngData()?.write(to: directory.appendingPathComponent("settings-" + name + ".png"), options: .atomic) }
             catch { issues.append("Capture: \(error)") }
         }
@@ -9521,7 +9533,7 @@ private extension FoundationController {
             UserDefaults.standard.set(savedAppearance, forKey: "SolidCraft.workspace.appearance")
             applyAppearance(); configureChrome(); rebuildMenus(); view.layoutIfNeeded()
             check(state?.document_id == document && state?.geometry_revision == revision && state?.can_undo == undo,
-                  "Settings changed the design or its undo history")
+                  "Settings changed the design or its undo history: \(String(describing: document))/\(String(describing: revision))/\(String(describing: undo)) -> \(String(describing: state?.document_id))/\(String(describing: state?.geometry_revision))/\(String(describing: state?.can_undo))")
             for caption in descendants(workspace).filter({ $0.accessibilityIdentifier == "workspace-rail-caption" }) {
                 for label in caption.subviews.compactMap({ $0 as? UILabel }) {
                     check(label.numberOfLines == 1 && label.lineBreakMode == .byTruncatingTail, "Toolbar caption can wrap")
@@ -9562,7 +9574,7 @@ private extension FoundationController {
             } else { issues.append("Tool label setting is missing") }
             panel.tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: false)
             panel.tableView.delegate?.tableView?(panel.tableView, didSelectRowAt: IndexPath(row: 0, section: 0))
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                 if let choices = navigation.topViewController as? UITableViewController, choices !== panel {
                     choices.tableView.delegate?.tableView?(choices.tableView, didSelectRowAt: IndexPath(row: 1, section: 0))
                     check(self.appearance == 1 && navigation.overrideUserInterfaceStyle == .light, "Theme choice did not update the popup")
