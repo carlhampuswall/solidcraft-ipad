@@ -9435,6 +9435,10 @@ private extension FoundationController {
             action.performWithSender(moreButton, target: nil)
             view.layoutIfNeeded()
         }
+        func descendants(_ root: UIView) -> [UIView] { [root] + root.subviews.flatMap(descendants) }
+        func caption(_ button: WorkspaceButton) -> UIView? {
+            descendants(button).first { $0.accessibilityIdentifier == "workspace-rail-caption" }
+        }
         func verify(_ visible: Bool) {
             if ToolLabels.current != visible { issues.append("Saved visibility does not survive restoration") }
             if moreButton.superview !== workspace || rail.arrangedSubviews.contains(moreButton) || navigationActions.arrangedSubviews.contains(moreButton) {
@@ -9478,11 +9482,63 @@ private extension FoundationController {
                 if historyExpanded && featureHistory.preferredToggleWidth > 52 { issues.append("Expanded History kept its caption width") }
             } else { issues.append("Missing History toggle") }
         }
+        // The two custom surfaces must stay opaque while the gap between them
+        // stays clear, including UIKit's selected and highlighted configurations.
+        func verifyButtonSurfaces() {
+            for appearance in [UIUserInterfaceStyle.light, .dark] {
+                let samples = UIView(frame: CGRect(x: 0, y: 0, width: 560, height: 240))
+                samples.overrideUserInterfaceStyle = appearance
+                samples.backgroundColor = WorkspaceStyle.background
+                view.addSubview(samples)
+                defer { samples.removeFromSuperview() }
+                for (row, state) in [(false, false, true), (true, false, true),
+                                     (true, true, true), (true, false, false)].enumerated() {
+                    for (column, presentation) in [(true, false), (true, true), (false, false), (false, true)].enumerated() {
+                        let button = WorkspaceButton(WorkspaceStyle.text("select")) {}
+                        button.artwork("select", compact: true)
+                        button.toolLabels(presentation.0, mirrored: presentation.1)
+                        samples.addSubview(button)
+                        let x: CGFloat = column < 2 ? CGFloat(column) * 210 : 420 + CGFloat(column - 2) * 60
+                        button.frame = CGRect(x: x, y: CGFloat(row) * 58, width: column < 2 ? 200 : 44, height: 44)
+                        button.active(state.0); button.isHighlighted = state.1
+                        button.availability(enabled: state.2)
+                        button.setNeedsUpdateConfiguration(); button.layoutIfNeeded()
+                        let name = "\(appearance.rawValue)/\(row)/\(column)"
+                        guard let configuration = button.configuration else { issues.append("Missing configuration: " + name); continue }
+                        let updated = configuration.updated(for: button)
+                        if updated.background.resolvedBackgroundColor(for: button.tintColor).cgColor.alpha != 0 {
+                            issues.append("Background spans icon and caption: " + name)
+                        }
+                        for surface in descendants(button).filter({ ["workspace-tool-icon-surface", "workspace-rail-caption"].contains($0.accessibilityIdentifier ?? "") }) {
+                            if surface.backgroundColor?.resolvedColor(with: button.traitCollection).cgColor.alpha != 1 {
+                                issues.append("Translucent tool surface: " + name)
+                            }
+                            var ancestor: UIView? = surface
+                            while let current = ancestor, current !== button {
+                                if current.alpha != 1 { issues.append("Faded tool surface: " + name); break }
+                                ancestor = current.superview
+                            }
+                        }
+                        if let glyph = descendants(button).first(where: { $0.accessibilityIdentifier == "workspace-rail-glyph" }),
+                           glyph.alpha != (state.2 ? 1 : 0.45) { issues.append("Incorrect glyph availability: " + name) }
+                    }
+                }
+                samples.layoutIfNeeded()
+                let image = UIGraphicsImageRenderer(bounds: samples.bounds).image { _ in
+                    samples.drawHierarchy(in: samples.bounds, afterScreenUpdates: true)
+                }
+                do { try image.pngData()?.write(to: directory.appendingPathComponent("tool-labels-surfaces-\(appearance.rawValue).png"), options: .atomic) }
+                catch { issues.append("Surface capture: \(error)") }
+            }
+        }
+        verifyButtonSurfaces()
         if !showToolLabels { toggle() }
         verify(true); capture("shown")
         let wasExpanded = historyExpanded
         if !wasExpanded { featureHistory.onToggle?(); view.layoutIfNeeded() }
         verify(true); capture("history-expanded")
+        toggle(); verify(false); capture("history-expanded-hidden")
+        toggle(); verify(true)
         if !wasExpanded { featureHistory.onToggle?(); view.layoutIfNeeded() }
         toggle(); verify(false); capture("hidden")
         toggle(); verify(true); capture("restored")
@@ -9499,10 +9555,6 @@ private extension FoundationController {
     }
 
     func checkChromeOnDevice() {
-        func descendants(_ root: UIView) -> [UIView] { [root] + root.subviews.flatMap(descendants) }
-        func caption(_ button: WorkspaceButton) -> UIView? {
-            descendants(button).first { $0.accessibilityIdentifier == "workspace-rail-caption" }
-        }
         struct Report: Encodable {
             let compact: Bool
             let appearance: Int
@@ -9534,8 +9586,6 @@ private extension FoundationController {
                     try encoder.encode(reports).write(to: directory.appendingPathComponent("workspace-chrome-check.json"), options: .atomic)
                 } catch { print("SolidCraft native chrome check could not save its report: \(error)") }
                 print("SolidCraft native chrome check \(reports.allSatisfy { $0.issues.isEmpty } ? "PASS" : "FAIL")")
-        toggle(); verify(false); capture("history-expanded-hidden")
-        toggle(); verify(true)
                 return
             }
             canvas.cancelInput()

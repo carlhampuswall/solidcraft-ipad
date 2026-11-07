@@ -29,6 +29,17 @@ enum WorkspaceStyle {
     static let separator = UIColor.separator
     static let fieldBackground = UIColor.tertiarySystemBackground
     static let selectionFill = UIColor.tertiarySystemFill
+    // Preserve the neutral selected tint without letting the canvas show through.
+    static let selectedToolSurface = UIColor { traits in
+        let base = surface.resolvedColor(with: traits)
+        let fill = selectionFill.resolvedColor(with: traits)
+        var br: CGFloat = 0, bg: CGFloat = 0, bb: CGFloat = 0, ba: CGFloat = 0
+        var fr: CGFloat = 0, fg: CGFloat = 0, fb: CGFloat = 0, fa: CGFloat = 0
+        guard base.getRed(&br, green: &bg, blue: &bb, alpha: &ba),
+              fill.getRed(&fr, green: &fg, blue: &fb, alpha: &fa) else { return base }
+        return UIColor(red: fr * fa + br * (1 - fa), green: fg * fa + bg * (1 - fa),
+                       blue: fb * fa + bb * (1 - fa), alpha: 1)
+    }
     static let scrim = UIColor.systemBackground.withAlphaComponent(0.45)
     static let foreground = UIColor.label
     static let secondary = UIColor.secondaryLabel
@@ -726,11 +737,18 @@ private final class RailButtonContent: UIView {
     }
     func updateCaptionVisibility(_ visible: Bool) { showCaption(visible, mirrored: mirrored) }
     func render(selected: Bool, enabled: Bool, highlighted: Bool, history: Bool, diagnostic: FeatureDiagnosticSeverity?) {
-        alpha = enabled ? (highlighted ? 0.72 : 1) : 0.45
+        // Dim unavailable content, never the surfaces behind it. A pressed tool
+        // uses an opaque fill rather than fading its icon, caption and background.
+        alpha = 1
+        glyph.alpha = enabled ? 1 : 0.45
+        caption.alpha = enabled ? 1 : 0.45
+        detail.alpha = enabled ? 1 : 0.45
+        chip.backgroundColor = WorkspaceStyle.surface
         guard separateIconSurface else { return }
         WorkspaceStyle.floatingSurface(iconSurface)
         WorkspaceStyle.floatingSurface(chip)
-        iconSurface.backgroundColor = selected ? WorkspaceStyle.selectionFill : WorkspaceStyle.surface
+        chip.backgroundColor = WorkspaceStyle.surface
+        iconSurface.backgroundColor = selected || highlighted ? WorkspaceStyle.selectedToolSurface : WorkspaceStyle.surface
         iconSurface.layer.borderColor = (diagnostic.map(FeatureDiagnosticStyle.color) ??
             (selected || history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.separator)).cgColor
         iconSurface.layer.borderWidth = diagnostic == nil ? 0.5 : 2
@@ -837,6 +855,7 @@ final class WorkspaceButton: UIButton {
     /// Retain compact artwork and accessibility names when captions are hidden.
     /// Text-only actions and existing form labels always keep their titles.
     func toolLabels(_ visible: Bool, mirrored: Bool = false) {
+        automaticallyUpdatesConfiguration = false
         if toolCaption == nil {
             let caption = RailButtonContent(title: fullTitle, tint: WorkspaceStyle.foreground, separateIconSurface: true)
             addSubview(caption); toolCaption = caption
@@ -862,7 +881,9 @@ final class WorkspaceButton: UIButton {
         let content = RailButtonContent(title: fullTitle, tint: tint)
         content.showCaption(ToolLabels.current, mirrored: false)
         railContent = content
+        automaticallyUpdatesConfiguration = false
         var config = UIButton.Configuration.plain()
+        config.automaticallyUpdateForSelection = false
         config.background = .clear()
         configuration = config
         addSubview(content); refreshIcon()
@@ -910,6 +931,7 @@ final class WorkspaceButton: UIButton {
         config?.title = toolCaption != nil || compactIcon && image != nil ? nil : fullTitle
         if let toolCaption {
             toolCaption.setImage(config?.image); toolCaption.setTitle(fullTitle)
+            config?.automaticallyUpdateForSelection = false
             config?.background = .clear()
             config?.baseBackgroundColor = .clear
         }
@@ -955,20 +977,19 @@ final class WorkspaceButton: UIButton {
     }
 
     override func updateConfiguration() {
-        super.updateConfiguration()
-        if let toolCaption {
+        if let content = toolCaption ?? railContent {
+            // Custom icon/caption surfaces own every state. UIKit's plain-button
+            // update can otherwise add a selected rectangle across both surfaces.
             imageView?.isHidden = true
-            toolCaption.render(selected: isSelected, enabled: isEnabled, highlighted: isHighlighted,
-                               history: isHistoryAction, diagnostic: diagnosticSeverity)
+            content.render(selected: isSelected, enabled: isEnabled, highlighted: isHighlighted,
+                           history: isHistoryAction, diagnostic: diagnosticSeverity)
             var config = configuration
+            config?.automaticallyUpdateForSelection = false
             config?.background = .clear(); config?.baseBackgroundColor = .clear
             configuration = config
             return
         }
-        if let railContent {
-            railContent.alpha = isEnabled ? (isHighlighted ? 0.72 : 1) : 0.45
-            return
-        }
+        super.updateConfiguration()
         guard isHistoryAction else { return }
         var config = configuration
         config?.baseForegroundColor = isEnabled ? WorkspaceStyle.accent : .tertiaryLabel
@@ -1026,7 +1047,7 @@ final class WorkspaceButton: UIButton {
         isSelected = value
         if value { accessibilityTraits.insert(.selected) }
         else { accessibilityTraits.remove(.selected) }
-        if toolCaption != nil { setNeedsUpdateConfiguration(); return }
+        if toolCaption != nil || railContent != nil { setNeedsUpdateConfiguration(); return }
         var config = configuration
         let fill = isViewportPoint ? UIColor.clear : (compactIcon ? WorkspaceStyle.selectionFill : WorkspaceStyle.accent)
         config?.baseBackgroundColor = value ? fill : .clear
@@ -1039,7 +1060,7 @@ final class WorkspaceButton: UIButton {
 
     func diagnostic(_ severity: FeatureDiagnosticSeverity?) {
         diagnosticSeverity = severity
-        if toolCaption != nil { setNeedsUpdateConfiguration(); return }
+        if toolCaption != nil || railContent != nil { setNeedsUpdateConfiguration(); return }
         var config = configuration
         config?.background.strokeColor = severity.map(FeatureDiagnosticStyle.color) ?? .clear
         config?.background.strokeWidth = severity == nil ? 0 : 2
