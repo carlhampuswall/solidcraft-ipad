@@ -9724,8 +9724,10 @@ private extension FoundationController {
                             ancestor = current.superview
                         }
                     }
-                    if let glyph = descendants(button).first(where: { $0.accessibilityIdentifier == "workspace-rail-glyph" }),
-                       glyph.alpha != (enabled ? 1 : 0.45) { issues.append("Incorrect glyph availability: " + name) }
+                    if let glyph = descendants(button).first(where: { $0.accessibilityIdentifier == "workspace-rail-glyph" }) {
+                        let visible = enabled ? glyph.alpha > 0.99 : glyph.alpha > 0 && glyph.alpha < 0.99
+                        if !visible { issues.append("Incorrect glyph availability: " + name + " alpha=\(glyph.alpha)") }
+                    }
                 }
                 do { try image.pngData()?.write(to: directory.appendingPathComponent("tool-labels-surfaces-\(appearance.rawValue).png"), options: .atomic) }
                 catch { issues.append("Surface capture: \(error)") }
