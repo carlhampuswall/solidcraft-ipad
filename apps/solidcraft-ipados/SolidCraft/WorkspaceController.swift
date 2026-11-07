@@ -4588,7 +4588,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let add = railQuickAccess?.addMenu(ids: sketchTools.map(\.0) + ["sketch.project"]) { sketchActions.append(add) }
         sketchToolsButton.menu = UIMenu(children: sketchActions)
         sketchToolsButton.showsMenuAsPrimaryAction = true
-        sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true && state?.active_tool.hasPrefix("sketch.constraint.") != true)
+        // The menu launcher stays neutral; individual sketch tools show selection.
         constraintsButton.active(state?.active_tool.hasPrefix("sketch.constraint.") == true)
         preferences[.workspace, default: []].append(UIAction(title: QuickAccessText.text("enabled"), subtitle: QuickAccessText.text("help"), state: customizeToolbars ? .on : .off) { [weak self] _ in
             guard let self else { return }
