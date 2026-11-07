@@ -238,7 +238,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var compactInspector = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactInspector") as? Bool ?? true
     private var compactToolControls = ModellingFormPresentation.compactToolControls(UserDefaults.standard.object(forKey: ModellingFormPresentation.compactToolControlsKey) as? Bool)
     private var tuckExtrudeOptions = UserDefaults.standard.object(forKey: ModellingFormPresentation.tuckExtrudeOptionsKey) as? Bool ?? true
-    private var useTopSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useTopSafeArea") as? Bool ?? true
+    private var useTopSafeArea = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.useTopSafeArea")
     private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
     private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
     private var featuresInBrowser = BrowserFeatureVisibility.restored(UserDefaults.standard.object(forKey: BrowserFeatureVisibility.key) as? Bool)

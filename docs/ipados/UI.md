@@ -24,14 +24,10 @@ and opens the system share sheet with its named `.step` file for AirDrop and
 compatible apps. Temporary exports remain available until the activity finishes
 or is cancelled. See INTERFACES.md for ownership and limits.
 
-On iPadOS 26 and later, the floating document header moves up into the centre of
-the top status strip when it fits, retaining its full height and menu touch area.
-It leaves 240 points at each end for system indicators and window controls.
-Narrow windows, a browser that shifts the header too close to an edge,
-accessibility-sized headers, and older iPadOS versions retain the safe-area
-placement. The rest of the chrome and the Metal viewport do not move.
-Changes a default: yes — **Tools → Use top strip for document header** is enabled;
-turning it off restores the previous header position
+The floating document header sits eight points below the top safe-area boundary
+by default. On iPadOS 26 and later, **Tools → Use top strip for document header**
+restores the raised position when the header fits with 240 points at each end
+for system indicators and window controls. The app respects a saved choice
 (`SolidCraft.workspace.useTopSafeArea`).
 
 The floating header hosts its folder button directly, with a full 44-point
