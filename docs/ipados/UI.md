@@ -9,14 +9,24 @@ the source history and current verification scope.
 
 ## Current presentation
 
+The Settings button opens 28 preference rows in seven categories: Appearance,
+Workspace, Navigation, Selection, Modelling, Sketching and Projects. These cover
+user choices such as theme, tool labels/grouping, toolbar and browser placement,
+gestures, selection filters, modelling workflow, sketch aids and project startup.
+Projection, grid, axes, planes, origin visibility and two-finger rotation live
+only in View. Settings no longer repeats those controls or offers diagnostics,
+legacy presentation switches, or switches for standard features such as compact
+tool controls, inline dimensions and quick-access customization. Previously saved
+compatibility values still load; removing their rows does not reset the workspace
+or change the document. Older fallback descriptions below document those saved
+values and their regression checks, rather than current Settings rows.
+
 In the right-hand **More tools** list, hold a view such as **Top** to open a
 native context menu with **Add to quick access**. The list keeps the same rows
 and size while the context menu is open. Tap that action to pin the view;
 an ordinary tap on Top still selects that view. VoiceOver exposes the same Add
 action on each tool. Disabled tools can be pinned without running them.
-**Settings > Workspace > Hold in More to add quick access** restores the previous
-menu and its Add submenu when turned off. The existing toolbar hold-and-drag
-gesture still reorders or removes pinned tools.
+The toolbar hold-and-drag gesture reorders or removes pinned tools.
 
 Related toolbar tools share one background around their icon column. Sketch
 Point, drawing and editing tools, and Sketch Tools belong to one group. Create

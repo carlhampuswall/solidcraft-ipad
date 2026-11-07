@@ -1777,53 +1777,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         present(navigation, animated: animated)
     }
 
-    private func viewSettingsItems() -> [UIMenuElement] {
-        let locked: UIMenuElement.Attributes = referencesLocked ? .disabled : []
-        var items: [UIMenuElement] = [
-            UIAction(title: NativeText.value("ui.ipados.perspective"), attributes: viewCameraLocked || state?.sketch != nil ? .disabled : [],
-                     state: perspective ? .on : .off) { [weak self] _ in self?.togglePerspective() },
-            UIAction(title: ViewText.text("grid"), attributes: locked,
-                     state: (viewPresentation?.grid.visible ?? gridVisible) ? .on : .off) { [weak self] _ in self?.toggleGrid() },
-            UIAction(title: ViewText.text("vertical_grid"), subtitle: ViewText.text("vertical_grid_help"), attributes: locked,
-                     state: (viewPresentation?.grid.vertical ?? verticalGrid) ? .on : .off) { [weak self] _ in self?.toggleVerticalGrid() },
-            UIAction(title: ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), attributes: locked,
-                     state: (viewPresentation?.grid.integrated_axes ?? integratedGridAxes) ? .on : .off) { [weak self] _ in self?.toggleIntegratedGridAxes() },
-            UIAction(title: ViewText.text("axis_labels"), state: axisLabelsVisible ? .on : .off) { [weak self] _ in
-                guard let self else { return }
-                self.axisLabelsVisible.toggle()
-                UserDefaults.standard.set(self.axisLabelsVisible, forKey: "SolidCraft.workspace.axisLabels")
-                self.showReferenceLabels(self.latestReferenceLabels); self.rebuildViewMenu()
-            },
-            UIAction(title: ViewText.text("vibrant_axes"), attributes: locked,
-                     state: vibrantAxes ? .on : .off) { [weak self] _ in self?.toggleVibrantAxes() },
-            UIAction(title: ViewText.text("legacy_planes"), subtitle: ViewText.text("legacy_planes_help"), attributes: locked,
-                     state: legacyOriginPlanes ? .on : .off) { [weak self] _ in self?.toggleLegacyOriginPlanes() },
-            UIAction(title: WorkspaceStyle.text("origin_in_model"), state: originInBrowser ? .on : .off) { [weak self] _ in self?.toggleOriginInModel() }
-        ]
-        let mode = [
-            UIAction(title: SketchText.text("automatic_origin"), attributes: locked,
-                     state: originVisibility.isEmpty ? .on : .off) { [weak self] _ in self?.setOriginVisibility(visible: nil) },
-            UIAction(title: SketchText.text("show_origin"), attributes: locked,
-                     state: !originVisibility.isEmpty && Self.originItems.allSatisfy(originVisible) ? .on : .off) { [weak self] _ in self?.setOriginVisibility(visible: true) },
-            UIAction(title: SketchText.text("hide_origin"), attributes: locked,
-                     state: !originVisibility.isEmpty && !Self.originItems.contains(where: originVisible) ? .on : .off) { [weak self] _ in self?.setOriginVisibility(visible: false) }
-        ]
-        items.append(UIMenu(title: SketchText.text("origin_references"), children: mode))
-        items += Self.originItems.map { item in
-            UIAction(title: item == "O" ? SketchText.text("origin_point") : item, attributes: locked,
-                     state: originVisible(item) ? .on : .off) { [weak self] _ in
-                guard let self else { return }; self.setOriginVisibility(item: item, visible: !self.originVisible(item))
-            }
-        }
-        return items
-    }
-
-    private func refreshSettingsViewItems() {
-        guard let index = settingsSections.firstIndex(where: { $0.category == .view }) else { return }
-        settingsSections[index] = WorkspaceSettingsSection(category: .view, items: viewSettingsItems())
-        settingsPopover?.render(settingsSections)
-    }
-
     private func showViewControls(animated: Bool = true) {
         guard viewButton.isEnabled, presentedViewController == nil else { return }
         let panel = WorkspaceViewPopover()
@@ -1912,7 +1865,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         updateAdditionalQuickTools()
         rebuildNavigationMore()
         navigationMoreButton.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
-        refreshSettingsViewItems()
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
             automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes,
@@ -4187,18 +4139,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.applyAppearance(); self.rebuildMenus()
             }
         }
-        let followAppearance = UIAction(title: HandleText.text("follow_appearance"), state: handleButtonsFollowAppearance ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.handleButtonsFollowAppearance.toggle()
-            UserDefaults.standard.set(self.handleButtonsFollowAppearance, forKey: Self.handleButtonAppearanceKey)
-            self.applyAppearance(); self.rebuildMenus()
-        }
-        let homeToolbar = UIAction(title: WorkspaceStyle.text("home_toolbar"), state: homeToolbar ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.homeToolbar.toggle()
-            UserDefaults.standard.set(self.homeToolbar, forKey: "SolidCraft.workspace.homeToolbar")
-            self.configureChrome(); self.rebuildMenus()
-        }
         let toolLabels = UIAction(title: WorkspaceStyle.text("show_tool_labels"),
             subtitle: WorkspaceStyle.text("show_tool_labels_help"), state: showToolLabels ? .on : .off) { [weak self] _ in
             guard let self else { return }
@@ -4242,31 +4182,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.browserSwipesEnabled, forKey: BrowserSwipeActions.preferenceKey)
             self.rebuildMenus()
         }
-        let immediateSketchEdit = UIAction(title: WorkspaceStyle.text("edit_sketch_on_history_selection"),
-            subtitle: WorkspaceStyle.text("edit_sketch_on_history_selection_help"), state: editSketchOnHistorySelection ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.editSketchOnHistorySelection.toggle()
-            UserDefaults.standard.set(self.editSketchOnHistorySelection, forKey: SketchHeaderAction.immediateEditingKey)
-            self.rebuildMenus()
-        }
-        let historySelection = UIAction(title: HistoryText.text("highlight_selection"), subtitle: HistoryText.text("highlight_selection_help"), state: highlightHistorySelection ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.highlightHistorySelection.toggle()
-            UserDefaults.standard.set(self.highlightHistorySelection, forKey: HistoryFeatureEmphasis.preferenceKey)
-            self.updateAvailability(); self.rebuildMenus()
-        }
-        let rollbackEditing = UIAction(title: WorkspaceStyle.text("rollback_feature_editing"),
-            subtitle: WorkspaceStyle.text("rollback_feature_editing_help"),
-            attributes: numericEditing || modellingEditing || state?.sketch != nil ? .disabled : [],
-            state: rollbackFeatureEditing ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.rollbackFeatureEditing.toggle()
-            UserDefaults.standard.set(self.rollbackFeatureEditing, forKey: ModellingFormPresentation.rollbackEditingKey)
-            self.rebuildMenus()
-        }
-        let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
-            self?.toggleTwoFingerRotation()
-        }
         let rotationSnap = UIAction(title: WorkspaceStyle.text("sketch_rotation_snap"), attributes: numericEditing || modellingEditing ? .disabled : [], state: sketchRotationSnap ? .on : .off) { [weak self] _ in
             guard let self else { return }
             let enabled = !self.sketchRotationSnap
@@ -4276,28 +4191,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.sketchRotationSnap = enabled
                 UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.sketchRotationSnap")
                 self.rebuildMenus()
-            }
-        }
-        let orbit = UIAction(title: WorkspaceStyle.text("viewpoint_orbit"), attributes: numericEditing || modellingEditing ? .disabled : [], state: viewpointOrbit ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            let enabled = !self.viewpointOrbit
-            self.canvas.cancelInput()
-            self.session.command("view.touch_orbit", params: ["follows_viewpoint": enabled]) { [weak self] result in
-                guard let self, case .success = result else { return }
-                self.viewpointOrbit = enabled
-                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.viewpointOrbit")
-                self.rebuildMenus()
-            }
-        }
-        let handles = UIAction(title: HandleText.text("direct_handles"), attributes: numericEditing || modellingEditing ? .disabled : [], state: directHandles ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            let enabled = !self.directHandles
-            self.canvas.cancelInput()
-            self.session.command("view.tool_handles", params: ["enabled": enabled]) { [weak self] result in
-                guard let self, case .success = result else { return }
-                self.directHandles = enabled
-                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.directHandles")
-                self.layoutModelValue(); self.rebuildMenus()
             }
         }
         let dragResolution = UIMenu(title: WorkspaceStyle.text("drag_resolution"), children: DragResolution.options.map { step in
@@ -4319,17 +4212,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.applySolidOnTapAway.toggle()
             UserDefaults.standard.set(self.applySolidOnTapAway, forKey: "SolidCraft.workspace.applySolidOnTapAway")
             self.rebuildMenus()
-        }
-        let dismissal = UIAction(title: WorkspaceStyle.text("cancel_tools_on_dismiss"), subtitle: WorkspaceStyle.text("cancel_tools_on_dismiss_help"), attributes: modellingEditing ? .disabled : [], state: cancelToolsOnDismiss ? .on : .off) { [weak self] _ in
-            guard let self, !self.modellingEditing else { return }
-            let enabled = !self.cancelToolsOnDismiss
-            self.canvas.cancelInput()
-            self.session.command("view.tool_dismissal", params: ["cancel_on_dismiss": enabled]) { [weak self] result in
-                guard let self, case .success = result else { return }
-                self.cancelToolsOnDismiss = enabled
-                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.cancelToolsOnDismiss")
-                self.rebuildMenus()
-            }
         }
         let faceExtrude = UIAction(title: WorkspaceStyle.text("extrude_on_face_selection"), subtitle: WorkspaceStyle.text("extrude_on_face_selection_help"), state: extrudeOnFaceSelection ? .on : .off) { [weak self] _ in
             guard let self else { return }
@@ -4378,22 +4260,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.automaticExtrudeDepth, forKey: ModellingFormPresentation.automaticExtrudeDepthKey)
             self.rebuildMenus()
         }
-        let tuckedOptions = UIAction(title: InspectorText.text("tuck_extrude_options"),
-            subtitle: InspectorText.text("tuck_extrude_options_help"), attributes: modellingEditing ? .disabled : [],
-            state: tuckExtrudeOptions ? .on : .off) { [weak self] _ in
-            guard let self, !self.modellingEditing else { return }
-            self.tuckExtrudeOptions.toggle()
-            UserDefaults.standard.set(self.tuckExtrudeOptions, forKey: ModellingFormPresentation.tuckExtrudeOptionsKey)
-            self.rebuildMenus()
-        }
+        // Settings contains ongoing user choices. View controls live in View;
+        // legacy presentation fallbacks still load saved values without switches here.
         var preferences: [WorkspaceSettingsCategory: [UIMenuElement]] = [
-            .appearance: [UIMenu(title: NativeText.value("ui.ipados.settings.theme"), children: appearances), followAppearance],
-            .workspace: [toolLabels, toolGroups, homeToolbar, side, browserSwipes, immediateSketchEdit, historySelection],
-            .navigation: [historyGestures, orbit, twist, rotationSnap],
+            .appearance: [UIMenu(title: NativeText.value("ui.ipados.settings.theme"), children: appearances)],
+            .workspace: [toolLabels, toolGroups, side, browserSwipes],
+            .navigation: [historyGestures, rotationSnap],
             .selection: [UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple, connectedEdges, edgeLength],
-            .modelling: [rollbackEditing, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal,
-                        faceExtrude, sketchExtrude, tuckedOptions, edgeTools],
-            .sketching: [], .view: viewSettingsItems(), .projects: []
+            .modelling: [dragResolution, automaticCut, automaticDepth, acceptOnTap, faceExtrude, sketchExtrude, edgeTools],
+            .sketching: [], .projects: []
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -4405,13 +4280,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(!restoreLastProject, forKey: "SolidCraft.projects.restoreLast")
             self?.rebuildMenus()
         })
-        preferences[.sketching, default: []].append(UIAction(title: SketchText.text("visual_plane_selection"), state: visualPlaneSelection ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.visualPlaneSelection.toggle()
-            UserDefaults.standard.set(self.visualPlaneSelection, forKey: "SolidCraft.workspace.visualPlaneSelection")
-            if self.planeChoosing { self.cancelSketchPlane() }
-            self.rebuildMenus()
-        })
         preferences[.sketching, default: []].append(UIAction(title: SketchText.text("reveal_hidden_planes"), subtitle: SketchText.text("reveal_hidden_planes_help"),
                                     state: revealSketchPlanes ? .on : .off) { [weak self] _ in
             guard let self else { return }
@@ -4419,27 +4287,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.revealSketchPlanes, forKey: "SolidCraft.workspace.revealSketchPlanes")
             if self.planeChoosing { self.cancelSketchPlane() }
             self.rebuildMenus()
-        })
-        preferences[.workspace, default: []].append(UIAction(title: InspectorText.text("compact_inspector"),
-                                    attributes: modellingEditing ? .disabled : [], state: compactInspector ? .on : .off) { [weak self] _ in
-            guard let self, !self.modellingEditing else { return }
-            self.compactInspector.toggle()
-            UserDefaults.standard.set(self.compactInspector, forKey: "SolidCraft.workspace.compactInspector")
-            self.rebuildMenus()
-        })
-        preferences[.workspace, default: []].append(UIAction(title: InspectorText.text("compact_tool_controls"), subtitle: InspectorText.text("compact_tool_controls_help"),
-                                    attributes: numericEditing || modellingEditing ? .disabled : [], state: compactToolControls ? .on : .off) { [weak self] _ in
-            guard let self, !self.numericEditing, !self.modellingEditing else { return }
-            self.compactToolControls.toggle()
-            UserDefaults.standard.set(self.compactToolControls, forKey: ModellingFormPresentation.compactToolControlsKey)
-            self.view.setNeedsLayout(); self.rebuildMenus()
-        })
-        preferences[.workspace, default: []].append(UIAction(title: WorkspaceStyle.text("use_bottom_safe_area"),
-                                    subtitle: WorkspaceStyle.text("use_bottom_safe_area_help"),
-                                    state: useBottomSafeArea ? .on : .off) { [weak self] _ in
-            guard let self else { return }; self.canvas.cancelInput(); self.useBottomSafeArea.toggle()
-            UserDefaults.standard.set(self.useBottomSafeArea, forKey: "SolidCraft.workspace.useBottomSafeArea")
-            self.view.setNeedsLayout(); self.rebuildMenus()
         })
         preferences[.workspace, default: []].append(UIAction(title: WorkspaceStyle.text("pin_browser"), state: pinnedBrowser ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.canvas.cancelInput(); self.pinnedBrowser.toggle()
@@ -4457,26 +4304,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.leftBrowser, forKey: "SolidCraft.workspace.leftBrowser")
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
-        preferences[.workspace, default: []].append(UIAction(title: WorkspaceStyle.text("diagnostics"), state: diagnostics ? .on : .off) { [weak self] _ in
-            guard let self else { return }; self.diagnostics.toggle()
-            UserDefaults.standard.set(self.diagnostics, forKey: "SolidCraft.workspace.diagnostics")
-            self.updateAvailability(); self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
-        })
         do {
-            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("distinguish_dimensions"), subtitle: SketchText.text("distinguish_dimensions_help"),
-                                        state: distinguishDimensions ? .on : .off) { [weak self] _ in
-                guard let self else { return }
-                self.canvas.cancelInput(); self.distinguishDimensions.toggle()
-                UserDefaults.standard.set(self.distinguishDimensions, forKey: "SolidCraft.workspace.distinguishDimensions")
-                self.showSketchAnnotations(Array(self.sketchAnnotations.values)); self.rebuildMenus()
-            }, at: 0)
-            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("inline_dimensions"), subtitle: SketchText.text("inline_dimensions_help"),
-                                        attributes: numericEditing ? .disabled : [], state: inlineDimensions ? .on : .off) { [weak self] _ in
-                guard let self, !self.numericEditing else { return }
-                self.canvas.cancelInput(); self.inlineDimensions.toggle()
-                UserDefaults.standard.set(self.inlineDimensions, forKey: "SolidCraft.workspace.inlineDimensions")
-                self.updateAvailability(); self.rebuildMenus()
-            }, at: 0)
             preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("snapping"), attributes: state?.sketch == nil ? .disabled : [], state: sketchInput?.snapping != false ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.run("tool.snapping", params: ["enabled": self.sketchInput?.snapping == false])
             }, at: 0)
@@ -4507,22 +4335,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.rebuildMenus()
                 }
             }, at: 3)
-            preferences[.sketching, default: []].append(UIAction(title: SketchText.text("construction_dashes"), state: constructionDashes ? .on : .off) { [weak self] _ in
-                guard let self else { return }
-                let enabled = !self.constructionDashes
-                self.session.command("view.construction_dashes", params: ["enabled": enabled]) { [weak self] result in
-                    guard let self, case .success = result else { return }
-                    self.constructionDashes = enabled
-                    UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.constructionDashes")
-                    self.rebuildMenus()
-                }
-            })
-            preferences[.sketching, default: []].append(UIAction(title: SketchText.text("constrained_green"), state: constrainedGreen ? .on : .off) { [weak self] _ in
-                guard let self else { return }
-                self.constrainedGreen.toggle()
-                UserDefaults.standard.set(self.constrainedGreen, forKey: "SolidCraft.workspace.constrainedGreen")
-                self.updateCanvasAppearance(); self.rebuildMenus()
-            })
         }
         let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"), ("sketch.move", "move"),
                      ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
@@ -4561,19 +4373,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         sketchToolsButton.showsMenuAsPrimaryAction = true
         // The menu launcher stays neutral; individual sketch tools show selection.
         constraintsButton.active(state?.active_tool.hasPrefix("sketch.constraint.") == true)
-        preferences[.workspace, default: []].append(UIAction(title: QuickAccessText.text("enabled"), subtitle: QuickAccessText.text("help"), state: customizeToolbars ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.railQuickAccess?.cancelDrag(); self.navigationQuickAccess?.cancelDrag()
-            self.customizeToolbars.toggle()
-            UserDefaults.standard.set(self.customizeToolbars, forKey: "SolidCraft.workspace.quickAccess.enabled")
-            self.configureChrome(); self.rebuildMenus()
-        })
-        preferences[.workspace, default: []].append(UIAction(title: QuickAccessText.text("hold_in_more"), subtitle: QuickAccessText.text("hold_in_more_help"), state: holdInMore ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.holdInMore.toggle()
-            UserDefaults.standard.set(self.holdInMore, forKey: "SolidCraft.workspace.quickAccess.holdInMore")
-            self.rebuildMenus()
-        })
         settingsSections = WorkspaceSettingsCategory.allCases.map {
             WorkspaceSettingsSection(category: $0, items: preferences[$0] ?? [])
         }
@@ -8488,15 +8287,15 @@ private extension FoundationController {
             }
             helperEntity = self.sketchAnnotations.values.filter { $0.dimension_type != nil }.min { $0.points[1] < $1.points[1] }
             capture("helpers")
-            if let action = self.settingsActions.first(where: { $0.title == SketchText.text("distinguish_dimensions") }) {
-                action.performWithSender(self.settingsButton, target: nil)
-                if UserDefaults.standard.bool(forKey: "SolidCraft.workspace.distinguishDimensions") == self.distinguishDimensions {
-                    capture("appearance-toggled")
-                } else { appearanceFailures.append("dimension appearance preference did not persist") }
-                self.settingsActions.first(where: { $0.title == SketchText.text("distinguish_dimensions") })?
-                    .performWithSender(self.settingsButton, target: nil)
-                capture("appearance-restored")
-            } else { appearanceFailures.append("dimension appearance preference missing") }
+            for stage in ["appearance-toggled", "appearance-restored"] {
+                self.distinguishDimensions.toggle()
+                UserDefaults.standard.set(self.distinguishDimensions, forKey: "SolidCraft.workspace.distinguishDimensions")
+                self.showSketchAnnotations(Array(self.sketchAnnotations.values))
+                if UserDefaults.standard.bool(forKey: "SolidCraft.workspace.distinguishDimensions") != self.distinguishDimensions {
+                    appearanceFailures.append("dimension appearance preference did not persist")
+                }
+                capture(stage)
+            }
             openEditor(selectedOnly: false) {
                 guard let editor = self.editor, let range = editor.field.selectedTextRange,
                       editor.field.offset(from: range.start, to: range.end) == (editor.field.text ?? "").utf16.count else {
@@ -9384,10 +9183,9 @@ private extension FoundationController {
                             self.run("select.clear")
                             wait("deselect sketch", until: { self.state?.selection.isEmpty == true && self.pending.isEmpty }) {
                                 guard self.finishSketchButton.isHidden else { fail("deselection retained Edit sketch"); return }
-                                guard let preference = self.settingsActions.first(where: {
-                                    $0.title == WorkspaceStyle.text("edit_sketch_on_history_selection")
-                                }) else { fail("legacy preference missing"); return }
-                                preference.performWithSender(self.settingsButton, target: nil)
+                                self.editSketchOnHistorySelection = true
+                                UserDefaults.standard.set(true, forKey: SketchHeaderAction.immediateEditingKey)
+                                self.rebuildMenus()
                                 guard self.editSketchOnHistorySelection,
                                       UserDefaults.standard.bool(forKey: SketchHeaderAction.immediateEditingKey) else { fail("legacy preference did not persist"); return }
                                 item(sketch)?.sendActions(for: .primaryActionTriggered)
@@ -9523,8 +9321,7 @@ private extension FoundationController {
                 }
             }
             guard let body = self.state?.rows.first(where: { $0.kind == "body" && $0.entity?.name == "Base" })?.entity,
-                  let preference = self.settingsActions.first(where: { $0.title == HistoryText.text("highlight_selection") }),
-                  let original = self.state else { fail("body selection fixture or highlighting preference"); return }
+                  let original = self.state else { fail("body selection fixture"); return }
             self.session.selectEntity(body.dictionary, additive: false)
             wait("body history selection", until: { self.state?.selection_features?.contains(base) == true && control.isSelected && self.pending.isEmpty }) {
                 guard !self.modellingEditing, self.state?.sketch == nil,
@@ -9533,11 +9330,15 @@ private extension FoundationController {
                       self.state?.can_undo == original.can_undo, self.state?.can_redo == original.can_redo,
                       control.configuration?.background.backgroundColor == WorkspaceStyle.accent.withAlphaComponent(0.10) else { fail("selection opened an editor, moved history or lost its subtle fill"); return }
                 capture("selected-body")
-                preference.performWithSender(self.settingsButton, target: nil)
+                self.highlightHistorySelection.toggle()
+                UserDefaults.standard.set(self.highlightHistorySelection, forKey: HistoryFeatureEmphasis.preferenceKey)
+                self.updateAvailability(); self.rebuildMenus()
                 guard !self.highlightHistorySelection, !control.isSelected,
                       !UserDefaults.standard.bool(forKey: HistoryFeatureEmphasis.preferenceKey) else { fail("legacy history highlighting preference"); return }
                 capture("legacy-body-selection")
-                preference.performWithSender(self.settingsButton, target: nil)
+                self.highlightHistorySelection.toggle()
+                UserDefaults.standard.set(self.highlightHistorySelection, forKey: HistoryFeatureEmphasis.preferenceKey)
+                self.updateAvailability(); self.rebuildMenus()
                 guard self.highlightHistorySelection, control.isSelected else { fail("reenabling history highlighting"); return }
                 self.run("select.clear")
                 wait("body deselection", until: { self.state?.selection.isEmpty == true && !control.isSelected && self.pending.isEmpty }) { editBox() }
@@ -9954,6 +9755,22 @@ private extension FoundationController {
                   "Settings background is translucent")
             check(self.settingsButton.menu == nil, "Gear still opens a command menu")
             check(self.settingsSections.count == WorkspaceSettingsCategory.allCases.count, "Missing settings categories")
+            check(self.settingsSections.allSatisfy { !$0.items.isEmpty }, "Settings contains an empty category")
+            let titles = self.settingsSections.flatMap(\.items).map(\.title)
+            check(Set(titles).count == titles.count, "Settings contains duplicate rows")
+            let removedTitles = [NativeText.value("ui.ipados.perspective"), ViewText.text("grid"),
+                WorkspaceStyle.text("two_finger_twist"), WorkspaceStyle.text("diagnostics"),
+                WorkspaceStyle.text("home_toolbar"), WorkspaceStyle.text("use_bottom_safe_area"),
+                InspectorText.text("compact_inspector"), InspectorText.text("compact_tool_controls"),
+                InspectorText.text("tuck_extrude_options"), QuickAccessText.text("enabled"),
+                QuickAccessText.text("hold_in_more"), HandleText.text("direct_handles"),
+                HandleText.text("follow_appearance"), SketchText.text("inline_dimensions"),
+                SketchText.text("distinguish_dimensions"), SketchText.text("construction_dashes"),
+                SketchText.text("constrained_green"), SketchText.text("visual_plane_selection"),
+                HistoryText.text("highlight_selection"), WorkspaceStyle.text("edit_sketch_on_history_selection"),
+                WorkspaceStyle.text("rollback_feature_editing"), WorkspaceStyle.text("viewpoint_orbit"),
+                WorkspaceStyle.text("cancel_tools_on_dismiss")]
+            check(Set(titles).isDisjoint(with: removedTitles), "A duplicate or legacy switch returned to Settings")
             check(self.toolsMoreButton.menu != nil && self.rail.arrangedSubviews.contains(self.toolsMoreButton), "Left tool menu is missing")
             let commands = (self.state?.modelling?.tools ?? []) + (self.state?.assembly?.tools ?? [])
             let commandTitles = Set(commands.filter { $0.id.hasPrefix("joint.") || $0.id.hasPrefix("parameters.") }.map { ModellingText.label($0.label) })

@@ -1,7 +1,7 @@
 import UIKit
 
 enum WorkspaceSettingsCategory: String, CaseIterable {
-    case appearance, workspace, navigation, selection, modelling, sketching, view, projects
+    case appearance, workspace, navigation, selection, modelling, sketching, projects
 
     var title: String { NativeText.value("ui.ipados.settings." + rawValue) }
 }

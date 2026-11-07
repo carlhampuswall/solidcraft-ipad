@@ -15,14 +15,13 @@ controls and on-model handles enabled in the floating workspace, drag the arrow
 or tap its distance to edit the depth. The result button follows the handle.
 Tap it to choose New Body, Union, Intersect or Subtract. Direction, applicable
 targets and additional inputs are on the left, alongside the checkmark and Cancel.
-Turn off **Tools > Collapse Extrude options** to use the previous tool card.
 
 A tap on empty canvas or surrounding workspace controls applies a valid new
 solid operation. The checkmark also applies it. Cancel discards the draft and
 camera gestures keep it open. Disable **Tools > Apply solid tools on tap away**
 to restore the previous dismissal behavior.
 
-**Tools > Compact tool controls** is on by default. Fillet uses a small radius
+Compact tool controls are on by default. Fillet uses a small radius
 input with pinned Apply and Cancel actions; selecting edges and dragging the
 viewport handle remain available during the preview. Numeric edits preview
 automatically in the same input.
@@ -36,9 +35,9 @@ opened Properties fit their content instead of reserving a fixed tall panel.
 Finishing a compact tool closes its card; selecting a browser item does not open
 Properties automatically. Properties remains available from its toolbar button.
 
-Turn **Compact tool controls** off to restore the previous panel sizing,
-source lists and automatic Properties presentation. **Compact operation
-inspector** still controls the older compact versus expanded form style.
+Saved compatibility values for compact tool controls and the operation inspector
+still restore their older presentations. Their switches have been removed from
+Settings, along with the Collapse Extrude options switch.
 
 ## Sketch corner radius
 
