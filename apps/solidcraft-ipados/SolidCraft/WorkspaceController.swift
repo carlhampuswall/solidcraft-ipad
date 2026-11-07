@@ -66,7 +66,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var viewButton = WorkspaceButton(WorkspaceStyle.text("view"), activationEvent: .primaryActionTriggered) { [weak self] in self?.showViewControls() }
     private lazy var selectButton = WorkspaceButton(WorkspaceStyle.text("select")) { [weak self] in self?.setTool("select") }
     private lazy var radiusButton = WorkspaceButton(WorkspaceStyle.text("radius")) { [weak self] in self?.setTool("post_radius") }
-    private lazy var moreButton = WorkspaceButton(WorkspaceStyle.text("settings"), action: {})
+    private lazy var settingsButton = WorkspaceButton(WorkspaceStyle.text("settings")) { [weak self] in self?.showSettings() }
+    private lazy var toolsMoreButton = WorkspaceButton(WorkspaceStyle.text("tools"), action: {})
+    private var settingsSections: [WorkspaceSettingsSection] = []
+    private var settingsActions: [UIAction] { settingsSections.flatMap(\.actions) }
+    private weak var settingsPopover: WorkspaceSettingsController?
     private lazy var modellingButton = WorkspaceButton(ModellingText.text("tools"), action: {})
     private lazy var assemblyButton = WorkspaceButton(AssemblyText.text("tools"), action: {})
     private lazy var cancelToolButton = WorkspaceButton(SketchText.text("cancel_segment")) { [weak self] in
@@ -335,7 +339,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             topActions.heightAnchor.constraint(equalTo: topScroll.frameLayoutGuide.heightAnchor)
         ])
         rail.axis = .vertical; rail.spacing = 8; rail.alignment = .fill
-        [selectButton, createSketchButton, sketchToolsButton, finishChainButton, finishSketchButton, modellingButton, assemblyButton, radiusButton, moreButton, cancelToolButton].forEach(rail.addArrangedSubview)
+        [selectButton, createSketchButton, sketchToolsButton, finishChainButton, finishSketchButton, modellingButton, assemblyButton, radiusButton, toolsMoreButton, cancelToolButton].forEach(rail.addArrangedSubview)
         railScroll.addSubview(rail)
         rail.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
@@ -425,7 +429,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         ])
         for (button, id) in [(undoButton, "undo"), (redoButton, "redo"), (browserButton, "browser"),
                              (inspectorButton, "inspector"), (viewButton, "view"), (selectButton, "select"),
-                             (radiusButton, "radius"), (moreButton, "tools")] {
+                             (radiusButton, "radius"), (settingsButton, "settings"), (toolsMoreButton, "tools")] {
             button.accessibilityIdentifier = "workspace-" + id
         }
         configureChrome()
@@ -480,7 +484,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (controller: FoundationController, _: UITraitCollection) in
             controller.rebuildMenus()
             if controller.compactChrome {
-                [controller.top, controller.moreButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
+                [controller.top, controller.settingsButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
             }
         }
         canvas.onResize = { [weak self] in self?.updateSurface() }
@@ -648,6 +652,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkFeatureDiagnosticsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
                     self.startGroupedInspectorCheckIfReady()
+                } else if ProcessInfo.processInfo.arguments.contains("--settings-check") {
+                    self.developmentCheckStarted = true; self.checkSettingsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--tool-labels-check") {
                     self.developmentCheckStarted = true; self.checkToolLabelsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
@@ -728,12 +734,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         documentActionsButton.removeFromSuperview()
         viewButton.removeFromSuperview()
-        moreButton.removeFromSuperview()
+        settingsButton.removeFromSuperview()
         homeButton.updateTitle(WorkspaceStyle.text(homeToolbar ? "home" : "fit"))
         let chromeIcons: [(WorkspaceButton, String)] = [
             (undoButton, "undo"), (redoButton, "redo"), (browserButton, "list"),
             (inspectorButton, "inspect"), (selectButton, "select"),
-            (radiusButton, "dimension"), (moreButton, "settings"), (modellingButton, "extrude"),
+            (radiusButton, "dimension"), (settingsButton, "settings"), (modellingButton, "extrude"),
             (modifyButton, "fillet"), (patternButton, "pattern_rect"), (assemblyButton, "component"),
             (cancelToolButton, "sketch_cancel"), (createSketchButton, "sketch"),
             (sketchToolsButton, "sketch"), (finishSketchButton, "finish"), (finishChainButton, "finish"),
@@ -741,6 +747,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             (constraintsButton, "c_parallel"), (dimensionsButton, "dimension"), (constructionButton, "construction")
         ]
         chromeIcons.forEach { $0.0.artwork($0.1, compact: compactChrome) }
+        toolsMoreButton.systemArtwork("ellipsis", compact: compactChrome)
+        documentActionsButton.artwork("folder", compact: true)
         viewButton.artwork("chevron")
         viewButton.configuration?.imagePlacement = .trailing
         viewButton.configuration?.baseForegroundColor = WorkspaceStyle.foreground
@@ -748,7 +756,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewButton.showsLargeContentViewer = false
         for interaction in viewButton.interactions where interaction is UILargeContentViewerInteraction { viewButton.removeInteraction(interaction) }
         for (id, button) in sketchQuickTools {
-        documentActionsButton.artwork("folder", compact: true)
             button.commandArtwork(id, compact: true)
             button.accessibilityIdentifier = "workspace-tool-" + id
         }
@@ -763,14 +770,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             [selectButton, createSketchButton].forEach(rail.addArrangedSubview)
             sketchQuickTools.forEach { rail.addArrangedSubview($0.1) }
             [sketchToolsButton, finishChainButton, modellingButton, modifyButton,
-             patternButton, assemblyButton, radiusButton, cancelToolButton].forEach(rail.addArrangedSubview)
+             patternButton, assemblyButton, radiusButton, toolsMoreButton, cancelToolButton].forEach(rail.addArrangedSubview)
             navigationActions.axis = .vertical; navigationActions.spacing = 2
             [homeButton, projectionButton, inspectorButton, constraintsButton, dimensionsButton, constructionButton].forEach(navigationActions.addArrangedSubview)
             viewButton.translatesAutoresizingMaskIntoConstraints = true
             workspace.addSubview(viewButton)
             WorkspaceStyle.floatingSurface(viewButton)
-            moreButton.translatesAutoresizingMaskIntoConstraints = true
-            workspace.addSubview(moreButton)
+            settingsButton.translatesAutoresizingMaskIntoConstraints = true
+            workspace.addSubview(settingsButton)
             historyActions.axis = .horizontal; historyActions.spacing = 2; historyActions.distribution = .fillEqually
             [undoButton, redoButton].forEach(historyActions.addArrangedSubview)
             // UIStackView turns this off while it owns the browser button. Its
@@ -789,12 +796,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 ])
             }
             navigationScroll.showsVerticalScrollIndicator = false
-            [top, railScroll, navigationScroll, historyActions, browserButton, moreButton, status].forEach(WorkspaceStyle.floatingSurface)
+            [top, railScroll, navigationScroll, historyActions, browserButton, settingsButton, status].forEach(WorkspaceStyle.floatingSurface)
             subtitle.numberOfLines = 1
         } else {
             [undoButton, redoButton, browserButton, inspectorButton, viewButton].forEach(topActions.addArrangedSubview)
             [selectButton, createSketchButton, sketchToolsButton, finishChainButton, finishSketchButton,
-             modellingButton, assemblyButton, radiusButton, moreButton, cancelToolButton].forEach(rail.addArrangedSubview)
+             modellingButton, assemblyButton, radiusButton, toolsMoreButton, cancelToolButton].forEach(rail.addArrangedSubview)
             top.backgroundColor = .clear; status.backgroundColor = .clear
             subtitle.numberOfLines = 2
         }
@@ -821,7 +828,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         configureQuickAccess()
         // Settings and Projects retain their accessible names and pointer
         // tooltips while keeping their compact icon-only presentation.
-        let labelledControls = chromeIcons.map(\.0).filter { $0 !== moreButton && $0 !== documentActionsButton } + sketchQuickTools.map(\.1) + [navigationMoreButton]
+        let labelledControls = chromeIcons.map(\.0).filter { $0 !== settingsButton && $0 !== documentActionsButton } + sketchQuickTools.map(\.1) + [navigationMoreButton, toolsMoreButton]
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
         labelledControls.forEach { $0.toolLabels(showToolLabels) }
         viewButton.toolLabels(showToolLabels, mirrored: !railRight)
@@ -1727,6 +1734,70 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         ])
     }
 
+    private func showSettings(animated: Bool = true) {
+        guard settingsButton.isEnabled, presentedViewController == nil else { return }
+        canvas.cancelInput()
+        rebuildMenus()
+        let panel = WorkspaceSettingsController()
+        panel.render(settingsSections)
+        let navigation = UINavigationController(rootViewController: panel)
+        navigation.modalPresentationStyle = .popover
+        navigation.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        let safe = view.safeAreaLayoutGuide.layoutFrame
+        navigation.preferredContentSize = CGSize(width: min(540, max(0, safe.width - 24)), height: min(640, max(0, safe.height - 32)))
+        if let popover = navigation.popoverPresentationController {
+            popover.sourceView = settingsButton; popover.sourceRect = settingsButton.bounds
+            popover.permittedArrowDirections = [.down, .right]; popover.delegate = self
+        }
+        settingsPopover = panel
+        present(navigation, animated: animated)
+    }
+
+    private func viewSettingsItems() -> [UIMenuElement] {
+        let locked: UIMenuElement.Attributes = referencesLocked ? .disabled : []
+        var items: [UIMenuElement] = [
+            UIAction(title: NativeText.value("ui.ipados.perspective"), attributes: viewCameraLocked || state?.sketch != nil ? .disabled : [],
+                     state: perspective ? .on : .off) { [weak self] _ in self?.togglePerspective() },
+            UIAction(title: ViewText.text("grid"), attributes: locked,
+                     state: (viewPresentation?.grid.visible ?? gridVisible) ? .on : .off) { [weak self] _ in self?.toggleGrid() },
+            UIAction(title: ViewText.text("vertical_grid"), subtitle: ViewText.text("vertical_grid_help"), attributes: locked,
+                     state: (viewPresentation?.grid.vertical ?? verticalGrid) ? .on : .off) { [weak self] _ in self?.toggleVerticalGrid() },
+            UIAction(title: ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), attributes: locked,
+                     state: (viewPresentation?.grid.integrated_axes ?? integratedGridAxes) ? .on : .off) { [weak self] _ in self?.toggleIntegratedGridAxes() },
+            UIAction(title: ViewText.text("axis_labels"), state: axisLabelsVisible ? .on : .off) { [weak self] _ in
+                guard let self else { return }
+                self.axisLabelsVisible.toggle()
+                UserDefaults.standard.set(self.axisLabelsVisible, forKey: "SolidCraft.workspace.axisLabels")
+                self.showReferenceLabels(self.latestReferenceLabels); self.rebuildViewMenu()
+            },
+            UIAction(title: ViewText.text("legacy_planes"), subtitle: ViewText.text("legacy_planes_help"), attributes: locked,
+                     state: legacyOriginPlanes ? .on : .off) { [weak self] _ in self?.toggleLegacyOriginPlanes() },
+            UIAction(title: WorkspaceStyle.text("origin_in_model"), state: originInBrowser ? .on : .off) { [weak self] _ in self?.toggleOriginInModel() }
+        ]
+        let mode = [
+            UIAction(title: SketchText.text("automatic_origin"), attributes: locked,
+                     state: originVisibility.isEmpty ? .on : .off) { [weak self] _ in self?.setOriginVisibility(visible: nil) },
+            UIAction(title: SketchText.text("show_origin"), attributes: locked,
+                     state: !originVisibility.isEmpty && Self.originItems.allSatisfy(originVisible) ? .on : .off) { [weak self] _ in self?.setOriginVisibility(visible: true) },
+            UIAction(title: SketchText.text("hide_origin"), attributes: locked,
+                     state: !originVisibility.isEmpty && !Self.originItems.contains(where: originVisible) ? .on : .off) { [weak self] _ in self?.setOriginVisibility(visible: false) }
+        ]
+        items.append(UIMenu(title: SketchText.text("origin_references"), children: mode))
+        items += Self.originItems.map { item in
+            UIAction(title: item == "O" ? SketchText.text("origin_point") : item, attributes: locked,
+                     state: originVisible(item) ? .on : .off) { [weak self] _ in
+                guard let self else { return }; self.setOriginVisibility(item: item, visible: !self.originVisible(item))
+            }
+        }
+        return items
+    }
+
+    private func refreshSettingsViewItems() {
+        guard let index = settingsSections.firstIndex(where: { $0.category == .view }) else { return }
+        settingsSections[index] = WorkspaceSettingsSection(category: .view, items: viewSettingsItems())
+        settingsPopover?.render(settingsSections)
+    }
+
     private func showViewControls(animated: Bool = true) {
         guard viewButton.isEnabled, presentedViewController == nil else { return }
         let panel = WorkspaceViewPopover()
@@ -1814,6 +1885,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         updateAdditionalQuickTools()
         navigationMoreButton.menu = navigationQuickAccess?.overflowMenu()
         navigationMoreButton.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
+        refreshSettingsViewItems()
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
             automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes,
@@ -1829,7 +1901,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         var content = cell.defaultContentConfiguration()
         content.text = item.map { $0 == "O" ? SketchText.text("origin_point") : $0 } ?? SketchText.text("origin_references")
         content.textProperties.font = .preferredFont(forTextStyle: item == nil ? .headline : .body)
-        content.textProperties.numberOfLines = 0
+        content.textProperties.numberOfLines = 1
         content.secondaryTextProperties.color = WorkspaceStyle.secondary
         content.directionalLayoutMargins = NSDirectionalEdgeInsets(top: 10, leading: item == nil ? 16 : 40, bottom: 10, trailing: 8)
         content.image = WorkspaceIcon.image(item == nil ? "origin" : (item == "O" ? "point" : (item?.count == 2 ? "plane" : "axis")), traits: traitCollection, size: 24)
@@ -2569,7 +2641,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let anchor = CGPoint(x: canvas.frame.minX + value.position[0], y: canvas.frame.minY + value.position[1])
         let fitting = modelValueButton.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
         let size = CGSize(width: min(220, max(80, fitting.width)), height: max(44, fitting.height))
-        var obstacles = [top, railScroll, extrusionRailScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton, moreButton, status, browserPanel, inspectorPanel]
+        var obstacles = [top, railScroll, extrusionRailScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton, settingsButton, status, browserPanel, inspectorPanel]
             .filter { !$0.isHidden }.map { $0.frame.insetBy(dx: -6, dy: -6) }
         let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
         let bounds = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: canvas.frame, useBottomSafeArea: useBottomSafeArea)
@@ -2913,7 +2985,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let expected = generation
         // The Projects sheet closes before sharing. Anchor to its workspace
         // launcher, with Tools as the compact-layout fallback.
-        let source = documentActionsButton.isHidden ? moreButton : documentActionsButton
+        let source = documentActionsButton.isHidden ? toolsMoreButton : documentActionsButton
         controller.popoverPresentationController?.sourceView = source
         controller.popoverPresentationController?.sourceRect = source.bounds
         controller.completionWithItemsHandler = { [weak self] _, completed, _, error in
@@ -2991,7 +3063,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             chooser.addAction(UIAlertAction(title: SketchText.text("selected_face"), style: .default) { [weak self] _ in self?.previewSketchPlane(plane, label: SketchText.text("selected_face")) })
         }
         chooser.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
-        let source = createSketchButton.window == nil ? moreButton : createSketchButton
+        let source = createSketchButton.window == nil ? toolsMoreButton : createSketchButton
         chooser.popoverPresentationController?.sourceView = source
         chooser.popoverPresentationController?.sourceRect = source.bounds
         present(chooser, animated: true)
@@ -3740,7 +3812,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let animateBrowser = compactChrome && leftBrowser && !UIAccessibility.isReduceMotionEnabled
         let wasOpen = !browserPanel.isHidden
         let oldFrame = browserPanel.frame
-        let chrome: [UIView] = [top, status, railScroll, navigationScroll, historyActions, featureHistory, browserButton, moreButton]
+        let chrome: [UIView] = [top, status, railScroll, navigationScroll, historyActions, featureHistory, browserButton, settingsButton]
         let oldChrome = chrome.map(\.frame)
         browserAnimationGeneration &+= 1
         let animation = browserAnimationGeneration
@@ -3798,7 +3870,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         navigationMoreButton.accessibilityIdentifier = "workspace-navigation-more"
         navigationMoreButton.showsMenuAsPrimaryAction = true
         navigationMoreButton.isHidden = !customizeToolbars
-        railQuickAccess?.arrange(fixed: compactChrome ? [sketchToolsButton] : [sketchToolsButton, moreButton])
+        railQuickAccess?.arrange(fixed: [sketchToolsButton, toolsMoreButton])
         navigationQuickAccess?.arrange(fixed: [navigationMoreButton])
     }
 
@@ -3853,7 +3925,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 button.availability(enabled: !locked && modelIDs.contains(id))
             }
         }
-        railQuickAccess?.arrange(fixed: compactChrome ? [sketchToolsButton] : [sketchToolsButton, moreButton])
+        railQuickAccess?.arrange(fixed: [sketchToolsButton, toolsMoreButton])
         navigationQuickAccess?.arrange(fixed: [navigationMoreButton])
     }
 
@@ -3887,7 +3959,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 (pending.isEmpty || featureHistory.playbackInFlight), documentID: state?.document_id)
         undoButton.availability(enabled: !locked && state?.can_undo == true, reason: numericEditing || modellingEditing ? WorkspaceStyle.text("editing_lock") : WorkspaceStyle.text("nothing_undo"))
         redoButton.availability(enabled: !locked && state?.can_redo == true, reason: numericEditing || modellingEditing ? WorkspaceStyle.text("editing_lock") : WorkspaceStyle.text("nothing_redo"))
-        for button in [browserButton, inspectorButton, viewButton, moreButton] { button.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty, reason: numericEditing ? WorkspaceStyle.text("editing_lock") : nil) }
+        for button in [browserButton, inspectorButton, viewButton, settingsButton, toolsMoreButton] { button.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty, reason: numericEditing ? WorkspaceStyle.text("editing_lock") : nil) }
         browserButton.active(browserOpen); inspectorButton.active(inspectorOpen)
         inspectorButton.isHidden = false
         for (button, id) in [(selectButton, "select"), (radiusButton, "post_radius")] {
@@ -4022,7 +4094,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let multiple = UIAction(title: WorkspaceStyle.text("multiple"), state: multiple ? .on : .off) { [weak self] _ in
             self?.toggleMultipleSelection()
         }
-        let side = UIAction(title: WorkspaceStyle.text(railRight ? "rail_left" : "rail_right")) { [weak self] _ in
+        let side = UIAction(title: NativeText.value("ui.ipados.settings.toolbar_right"), state: railRight ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.canvas.cancelInput(); self.railRight.toggle()
             UserDefaults.standard.set(self.railRight, forKey: "SolidCraft.workspace.railRight")
@@ -4058,7 +4130,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
             refresh(self.workspace)
             self.configureChrome(); self.rebuildMenus()
-            UIAccessibility.post(notification: .layoutChanged, argument: self.moreButton)
+            UIAccessibility.post(notification: .layoutChanged, argument: self.settingsPopover?.view ?? self.settingsButton)
         }
         let connectedEdges = UIAction(title: WorkspaceStyle.text("connected_edge_selection"), state: canvas.connectedEdgeSelectionEnabled ? .on : .off) { [weak self] _ in
             guard let self, WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: self.textEntryActive, numericEditActive: self.numericEditing) else { return }
@@ -4225,30 +4297,33 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.tuckExtrudeOptions, forKey: ModellingFormPresentation.tuckExtrudeOptionsKey)
             self.rebuildMenus()
         }
-        var moreActions: [UIMenuElement] = [
-            UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
-            UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
-            UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            toolLabels, homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances + [UIMenu(options: .displayInline, children: [followAppearance])])
+        var preferences: [WorkspaceSettingsCategory: [UIMenuElement]] = [
+            .appearance: [UIMenu(title: NativeText.value("ui.ipados.settings.theme"), children: appearances), followAppearance],
+            .workspace: [toolLabels, homeToolbar, side, browserSwipes, immediateSketchEdit, historySelection],
+            .navigation: [historyGestures, orbit, twist, rotationSnap],
+            .selection: [UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple, connectedEdges, edgeLength],
+            .modelling: [rollbackEditing, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal,
+                        faceExtrude, sketchExtrude, tuckedOptions, edgeTools],
+            .sketching: [], .view: viewSettingsItems(), .projects: []
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
-        moreActions.append(UIAction(title: ProjectText.text("show_on_launch"), state: showProjectsOnLaunch ? .on : .off) { [weak self] _ in
+        preferences[.projects, default: []].append(UIAction(title: ProjectText.text("show_on_launch"), state: showProjectsOnLaunch ? .on : .off) { [weak self] _ in
             UserDefaults.standard.set(!showProjectsOnLaunch, forKey: ProjectLibrary.showBrowserOnLaunchKey)
             self?.rebuildMenus()
         })
-        moreActions.append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
+        preferences[.projects, default: []].append(UIAction(title: ProjectText.text("restore_last"), state: restoreLastProject ? .on : .off) { [weak self] _ in
             UserDefaults.standard.set(!restoreLastProject, forKey: "SolidCraft.projects.restoreLast")
             self?.rebuildMenus()
         })
-        moreActions.append(UIAction(title: SketchText.text("visual_plane_selection"), state: visualPlaneSelection ? .on : .off) { [weak self] _ in
+        preferences[.sketching, default: []].append(UIAction(title: SketchText.text("visual_plane_selection"), state: visualPlaneSelection ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.visualPlaneSelection.toggle()
             UserDefaults.standard.set(self.visualPlaneSelection, forKey: "SolidCraft.workspace.visualPlaneSelection")
             if self.planeChoosing { self.cancelSketchPlane() }
             self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: SketchText.text("reveal_hidden_planes"), subtitle: SketchText.text("reveal_hidden_planes_help"),
+        preferences[.sketching, default: []].append(UIAction(title: SketchText.text("reveal_hidden_planes"), subtitle: SketchText.text("reveal_hidden_planes_help"),
                                     state: revealSketchPlanes ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.revealSketchPlanes.toggle()
@@ -4256,71 +4331,70 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             if self.planeChoosing { self.cancelSketchPlane() }
             self.rebuildMenus()
         })
-        moreActions.append(UIMenu(title: ModellingText.text("parameters"), children: modelActions { $0.hasPrefix("parameters.") }))
-        moreActions.append(UIAction(title: InspectorText.text("compact_inspector"),
+        preferences[.workspace, default: []].append(UIAction(title: InspectorText.text("compact_inspector"),
                                     attributes: modellingEditing ? .disabled : [], state: compactInspector ? .on : .off) { [weak self] _ in
             guard let self, !self.modellingEditing else { return }
             self.compactInspector.toggle()
             UserDefaults.standard.set(self.compactInspector, forKey: "SolidCraft.workspace.compactInspector")
             self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: InspectorText.text("compact_tool_controls"), subtitle: InspectorText.text("compact_tool_controls_help"),
+        preferences[.workspace, default: []].append(UIAction(title: InspectorText.text("compact_tool_controls"), subtitle: InspectorText.text("compact_tool_controls_help"),
                                     attributes: numericEditing || modellingEditing ? .disabled : [], state: compactToolControls ? .on : .off) { [weak self] _ in
             guard let self, !self.numericEditing, !self.modellingEditing else { return }
             self.compactToolControls.toggle()
             UserDefaults.standard.set(self.compactToolControls, forKey: ModellingFormPresentation.compactToolControlsKey)
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: WorkspaceStyle.text("use_bottom_safe_area"),
+        preferences[.workspace, default: []].append(UIAction(title: WorkspaceStyle.text("use_bottom_safe_area"),
                                     subtitle: WorkspaceStyle.text("use_bottom_safe_area_help"),
                                     state: useBottomSafeArea ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.canvas.cancelInput(); self.useBottomSafeArea.toggle()
             UserDefaults.standard.set(self.useBottomSafeArea, forKey: "SolidCraft.workspace.useBottomSafeArea")
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: WorkspaceStyle.text("pin_browser"), state: pinnedBrowser ? .on : .off) { [weak self] _ in
+        preferences[.workspace, default: []].append(UIAction(title: WorkspaceStyle.text("pin_browser"), state: pinnedBrowser ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.canvas.cancelInput(); self.pinnedBrowser.toggle()
             UserDefaults.standard.set(self.pinnedBrowser, forKey: "SolidCraft.workspace.pinnedBrowser")
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: BrowserText.text("show_features"), subtitle: BrowserText.text("show_features_help"),
+        preferences[.workspace, default: []].append(UIAction(title: BrowserText.text("show_features"), subtitle: BrowserText.text("show_features_help"),
                                     state: featuresInBrowser ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.featuresInBrowser.toggle()
             UserDefaults.standard.set(self.featuresInBrowser, forKey: BrowserFeatureVisibility.key)
             self.updateRows(); self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: BrowserText.text("left_browser"), state: leftBrowser ? .on : .off) { [weak self] _ in
+        preferences[.workspace, default: []].append(UIAction(title: BrowserText.text("left_browser"), state: leftBrowser ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.canvas.cancelInput(); self.leftBrowser.toggle()
             UserDefaults.standard.set(self.leftBrowser, forKey: "SolidCraft.workspace.leftBrowser")
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: WorkspaceStyle.text("diagnostics"), state: diagnostics ? .on : .off) { [weak self] _ in
+        preferences[.workspace, default: []].append(UIAction(title: WorkspaceStyle.text("diagnostics"), state: diagnostics ? .on : .off) { [weak self] _ in
             guard let self else { return }; self.diagnostics.toggle()
             UserDefaults.standard.set(self.diagnostics, forKey: "SolidCraft.workspace.diagnostics")
             self.updateAvailability(); self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
         })
-        if state?.sketch != nil {
-            moreActions.insert(UIAction(title: SketchText.text("distinguish_dimensions"), subtitle: SketchText.text("distinguish_dimensions_help"),
+        do {
+            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("distinguish_dimensions"), subtitle: SketchText.text("distinguish_dimensions_help"),
                                         state: distinguishDimensions ? .on : .off) { [weak self] _ in
                 guard let self else { return }
                 self.canvas.cancelInput(); self.distinguishDimensions.toggle()
                 UserDefaults.standard.set(self.distinguishDimensions, forKey: "SolidCraft.workspace.distinguishDimensions")
                 self.showSketchAnnotations(Array(self.sketchAnnotations.values)); self.rebuildMenus()
             }, at: 0)
-            moreActions.insert(UIAction(title: SketchText.text("inline_dimensions"), subtitle: SketchText.text("inline_dimensions_help"),
+            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("inline_dimensions"), subtitle: SketchText.text("inline_dimensions_help"),
                                         attributes: numericEditing ? .disabled : [], state: inlineDimensions ? .on : .off) { [weak self] _ in
                 guard let self, !self.numericEditing else { return }
                 self.canvas.cancelInput(); self.inlineDimensions.toggle()
                 UserDefaults.standard.set(self.inlineDimensions, forKey: "SolidCraft.workspace.inlineDimensions")
                 self.updateAvailability(); self.rebuildMenus()
             }, at: 0)
-            moreActions.insert(UIAction(title: SketchText.text("snapping"), state: sketchInput?.snapping != false ? .on : .off) { [weak self] _ in
+            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("snapping"), attributes: state?.sketch == nil ? .disabled : [], state: sketchInput?.snapping != false ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.run("tool.snapping", params: ["enabled": self.sketchInput?.snapping == false])
             }, at: 0)
-            moreActions.insert(UIAction(title: SketchText.text("auto_constraints"), state: sketchInput?.auto_constraints != false ? .on : .off) { [weak self] _ in
+            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("auto_constraints"), attributes: state?.sketch == nil ? .disabled : [], state: sketchInput?.auto_constraints != false ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.run("tool.auto_constraints", params: ["enabled": self.sketchInput?.auto_constraints == false])
             }, at: 1)
-            moreActions.insert(UIAction(title: SketchText.text("free_dimensions"), subtitle: SketchText.text("free_dimensions_help"),
+            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("free_dimensions"), subtitle: SketchText.text("free_dimensions_help"),
                                         attributes: numericEditing || modellingEditing ? .disabled : [], state: freeDimensions ? .on : .off) { [weak self] _ in
                 guard let self, !self.numericEditing, !self.modellingEditing else { return }
                 let enabled = !self.freeDimensions
@@ -4332,7 +4406,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.rebuildMenus()
                 }
             }, at: 2)
-            moreActions.insert(UIAction(title: SketchText.text("repeat_rectangles"), subtitle: SketchText.text("repeat_rectangles_help"),
+            preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("repeat_rectangles"), subtitle: SketchText.text("repeat_rectangles_help"),
                                         attributes: numericEditing || modellingEditing ? .disabled : [], state: repeatRectangles ? .on : .off) { [weak self] _ in
                 guard let self, !self.numericEditing, !self.modellingEditing else { return }
                 let enabled = !self.repeatRectangles
@@ -4344,7 +4418,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.rebuildMenus()
                 }
             }, at: 3)
-            moreActions.append(UIAction(title: SketchText.text("construction_dashes"), state: constructionDashes ? .on : .off) { [weak self] _ in
+            preferences[.sketching, default: []].append(UIAction(title: SketchText.text("construction_dashes"), state: constructionDashes ? .on : .off) { [weak self] _ in
                 guard let self else { return }
                 let enabled = !self.constructionDashes
                 self.session.command("view.construction_dashes", params: ["enabled": enabled]) { [weak self] result in
@@ -4354,7 +4428,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.rebuildMenus()
                 }
             })
-            moreActions.append(UIAction(title: SketchText.text("constrained_green"), state: constrainedGreen ? .on : .off) { [weak self] _ in
+            preferences[.sketching, default: []].append(UIAction(title: SketchText.text("constrained_green"), state: constrainedGreen ? .on : .off) { [weak self] _ in
                 guard let self else { return }
                 self.constrainedGreen.toggle()
                 UserDefaults.standard.set(self.constrainedGreen, forKey: "SolidCraft.workspace.constrainedGreen")
@@ -4391,17 +4465,28 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         sketchToolsButton.showsMenuAsPrimaryAction = true
         sketchToolsButton.active(state?.active_tool.hasPrefix("sketch.") == true && state?.active_tool.hasPrefix("sketch.constraint.") != true)
         constraintsButton.active(state?.active_tool.hasPrefix("sketch.constraint.") == true)
-        moreActions.append(UIAction(title: QuickAccessText.text("enabled"), subtitle: QuickAccessText.text("help"), state: customizeToolbars ? .on : .off) { [weak self] _ in
+        preferences[.workspace, default: []].append(UIAction(title: QuickAccessText.text("enabled"), subtitle: QuickAccessText.text("help"), state: customizeToolbars ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.railQuickAccess?.cancelDrag(); self.navigationQuickAccess?.cancelDrag()
             self.customizeToolbars.toggle()
             UserDefaults.standard.set(self.customizeToolbars, forKey: "SolidCraft.workspace.quickAccess.enabled")
             self.configureChrome(); self.rebuildMenus()
         })
-        moreButton.menu = UIMenu(children: (customizeToolbars ? [railQuickAccess?.overflowMenu()].compactMap { $0 } : []) + moreActions)
-        moreButton.showsMenuAsPrimaryAction = true
+        settingsSections = WorkspaceSettingsCategory.allCases.map {
+            WorkspaceSettingsSection(category: $0, items: preferences[$0] ?? [])
+        }
+        settingsPopover?.render(settingsSections)
+        settingsButton.menu = nil
+        settingsButton.showsMenuAsPrimaryAction = false
+        let commands: [UIMenuElement] = [
+            UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
+            UIMenu(title: ModellingText.text("parameters"), children: modelActions { $0.hasPrefix("parameters.") }),
+            UIMenu(title: ProjectText.text("title"), children: projectMenuActions())
+        ]
+        toolsMoreButton.menu = UIMenu(children: (customizeToolbars ? [railQuickAccess?.overflowMenu()].compactMap { $0 } : []) + commands)
+        toolsMoreButton.showsMenuAsPrimaryAction = true
         navigationMoreButton.menu = navigationQuickAccess?.overflowMenu()
-        navigationMoreButton.availability(enabled: moreButton.isEnabled)
+        navigationMoreButton.availability(enabled: settingsButton.isEnabled)
     }
 
     private func showDimensions() {
@@ -4721,7 +4806,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             browserButton.frame = resolved.browserAccess
             navigationScroll.frame = resolved.navigation
             viewButton.frame = resolved.viewAccess
-            moreButton.frame = resolved.settingsAccess
+            settingsButton.frame = resolved.settingsAccess
             historyActions.frame = resolved.history
         } else {
             let titleWidth = compact ? top.bounds.width - 24 : max(140, top.bounds.width - min(520, topActions.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width) - 36)
@@ -7000,7 +7085,7 @@ private extension FoundationController {
                           name + ": incorrect button size: " + (button.accessibilityLabel ?? ""))
                     check(button.configuration?.image != nil && button.configuration?.title == nil,
                           name + ": missing toolbar artwork")
-                    if locked && button !== moreButton {
+                    if locked && button !== settingsButton {
                         check(!button.isEnabled, name + ": command enabled during extrusion")
                     }
                 }
@@ -8008,13 +8093,13 @@ private extension FoundationController {
             }
             helperEntity = self.sketchAnnotations.values.filter { $0.dimension_type != nil }.min { $0.points[1] < $1.points[1] }
             capture("helpers")
-            if let action = self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == SketchText.text("distinguish_dimensions") }) {
-                action.performWithSender(self.moreButton, target: nil)
+            if let action = self.settingsActions.first(where: { $0.title == SketchText.text("distinguish_dimensions") }) {
+                action.performWithSender(self.settingsButton, target: nil)
                 if UserDefaults.standard.bool(forKey: "SolidCraft.workspace.distinguishDimensions") == self.distinguishDimensions {
                     capture("appearance-toggled")
                 } else { appearanceFailures.append("dimension appearance preference did not persist") }
-                self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == SketchText.text("distinguish_dimensions") })?
-                    .performWithSender(self.moreButton, target: nil)
+                self.settingsActions.first(where: { $0.title == SketchText.text("distinguish_dimensions") })?
+                    .performWithSender(self.settingsButton, target: nil)
                 capture("appearance-restored")
             } else { appearanceFailures.append("dimension appearance preference missing") }
             openEditor(selectedOnly: false) {
@@ -8294,14 +8379,14 @@ private extension FoundationController {
         check(leading.actions.map(\.title) == [BrowserText.text("rename"), BrowserText.text("new_folder"), BrowserText.text("move_to_folder")], "unexpected right swipe actions")
         check(stale.style == .destructive, "Delete was not destructive")
         check(tableView(table, trailingSwipeActionsConfigurationForRowAt: IndexPath(row: 0, section: 0)) == nil, "origin offered Delete")
-        if let preference = moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == BrowserText.text("swipe_actions") }) {
-            preference.performWithSender(moreButton, target: nil)
+        if let preference = settingsActions.first(where: { $0.title == BrowserText.text("swipe_actions") }) {
+            preference.performWithSender(settingsButton, target: nil)
             check(!browserSwipesEnabled && !UserDefaults.standard.bool(forKey: BrowserSwipeActions.preferenceKey) &&
                   tableView(table, leadingSwipeActionsConfigurationForRowAt: path) == nil && tableView(table, trailingSwipeActionsConfigurationForRowAt: path) == nil,
                   "legacy preference did not disable swipe actions")
             stale.handler(stale, table) { check(!$0, "disabled stale action remained executable") }
-            moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == BrowserText.text("swipe_actions") })?
-                .performWithSender(moreButton, target: nil)
+            settingsActions.first(where: { $0.title == BrowserText.text("swipe_actions") })?
+                .performWithSender(settingsButton, target: nil)
         } else { issues.append("missing swipe preference") }
         guard invoke("body:Post", leading: true, title: BrowserText.text("rename")) != nil else { return }
         submitName("Swipe Post", until: { self.rowByID[postID] != nil && self.rowByID["body:Post"] == nil }) {
@@ -8904,10 +8989,10 @@ private extension FoundationController {
                             self.run("select.clear")
                             wait("deselect sketch", until: { self.state?.selection.isEmpty == true && self.pending.isEmpty }) {
                                 guard self.finishSketchButton.isHidden else { fail("deselection retained Edit sketch"); return }
-                                guard let preference = self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: {
+                                guard let preference = self.settingsActions.first(where: {
                                     $0.title == WorkspaceStyle.text("edit_sketch_on_history_selection")
                                 }) else { fail("legacy preference missing"); return }
-                                preference.performWithSender(self.moreButton, target: nil)
+                                preference.performWithSender(self.settingsButton, target: nil)
                                 guard self.editSketchOnHistorySelection,
                                       UserDefaults.standard.bool(forKey: SketchHeaderAction.immediateEditingKey) else { fail("legacy preference did not persist"); return }
                                 item(sketch)?.sendActions(for: .primaryActionTriggered)
@@ -9043,7 +9128,7 @@ private extension FoundationController {
                 }
             }
             guard let body = self.state?.rows.first(where: { $0.kind == "body" && $0.entity?.name == "Base" })?.entity,
-                  let preference = self.moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: { $0.title == HistoryText.text("highlight_selection") }),
+                  let preference = self.settingsActions.first(where: { $0.title == HistoryText.text("highlight_selection") }),
                   let original = self.state else { fail("body selection fixture or highlighting preference"); return }
             self.session.selectEntity(body.dictionary, additive: false)
             wait("body history selection", until: { self.state?.selection_features?.contains(base) == true && control.isSelected && self.pending.isEmpty }) {
@@ -9053,11 +9138,11 @@ private extension FoundationController {
                       self.state?.can_undo == original.can_undo, self.state?.can_redo == original.can_redo,
                       control.configuration?.background.backgroundColor == WorkspaceStyle.accent.withAlphaComponent(0.10) else { fail("selection opened an editor, moved history or lost its subtle fill"); return }
                 capture("selected-body")
-                preference.performWithSender(self.moreButton, target: nil)
+                preference.performWithSender(self.settingsButton, target: nil)
                 guard !self.highlightHistorySelection, !control.isSelected,
                       !UserDefaults.standard.bool(forKey: HistoryFeatureEmphasis.preferenceKey) else { fail("legacy history highlighting preference"); return }
                 capture("legacy-body-selection")
-                preference.performWithSender(self.moreButton, target: nil)
+                preference.performWithSender(self.settingsButton, target: nil)
                 guard self.highlightHistorySelection, control.isSelected else { fail("reenabling history highlighting"); return }
                 self.run("select.clear")
                 wait("body deselection", until: { self.state?.selection.isEmpty == true && !control.isSelected && self.pending.isEmpty }) { editBox() }
@@ -9414,6 +9499,88 @@ private extension FoundationController {
 
     /// Actual UIKit regression for floating controls across appearance and safe-area
     /// settings. Foundation rectangle tests cannot observe retained scroll state.
+    func checkSettingsOnDevice() {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let savedLabels = UserDefaults.standard.object(forKey: ToolLabels.key)
+        let originalLabels = showToolLabels
+        let originalAppearance = appearance
+        let savedAppearance = UserDefaults.standard.object(forKey: "SolidCraft.workspace.appearance")
+        let document = state?.document_id, revision = state?.geometry_revision
+        let undo = state?.can_undo
+        var issues: [String] = []
+        func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
+        func capture(_ name: String) {
+            let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+            do { try image.pngData()?.write(to: directory.appendingPathComponent("settings-" + name + ".png"), options: .atomic) }
+            catch { issues.append("Capture: \(error)") }
+        }
+        func descendants(_ root: UIView) -> [UIView] { [root] + root.subviews.flatMap(descendants) }
+        func finish() {
+            showToolLabels = originalLabels; appearance = originalAppearance
+            UserDefaults.standard.set(savedLabels, forKey: ToolLabels.key)
+            UserDefaults.standard.set(savedAppearance, forKey: "SolidCraft.workspace.appearance")
+            applyAppearance(); configureChrome(); rebuildMenus(); view.layoutIfNeeded()
+            check(state?.document_id == document && state?.geometry_revision == revision && state?.can_undo == undo,
+                  "Settings changed the design or its undo history")
+            for caption in descendants(workspace).filter({ $0.accessibilityIdentifier == "workspace-rail-caption" }) {
+                for label in caption.subviews.compactMap({ $0 as? UILabel }) {
+                    check(label.numberOfLines == 1 && label.lineBreakMode == .byTruncatingTail, "Toolbar caption can wrap")
+                }
+            }
+            capture("workspace")
+            do {
+                try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unknown",
+                    "categories": settingsSections.count, "preferences": settingsActions.count,
+                    "coverage": "Physical iPad popup, native switches and choices, persistence and single-line labels; synthetic UIKit actions"])
+                    .write(to: directory.appendingPathComponent("settings-check.json"), options: .atomic)
+            } catch { print("Settings report failed: \(error)") }
+            print("Settings check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+        }
+        showSettings(animated: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            guard let self else { return }
+            guard let panel = self.settingsPopover, let navigation = panel.navigationController else {
+                issues.append("Gear did not present Settings"); finish(); return
+            }
+            check(self.settingsButton.menu == nil, "Gear still opens a command menu")
+            check(self.settingsSections.count == WorkspaceSettingsCategory.allCases.count, "Missing settings categories")
+            check(self.toolsMoreButton.menu != nil && self.rail.arrangedSubviews.contains(self.toolsMoreButton), "Left tool menu is missing")
+            let commands = (self.state?.modelling?.tools ?? []) + (self.state?.assembly?.tools ?? [])
+            let commandTitles = Set(commands.filter { $0.id.hasPrefix("joint.") || $0.id.hasPrefix("parameters.") }.map { ModellingText.label($0.label) })
+            check(!self.settingsActions.contains { commandTitles.contains($0.title) }, "CAD command leaked into Settings")
+            panel.view.layoutIfNeeded(); capture("popup")
+            if let section = self.settingsSections.firstIndex(where: { $0.category == .workspace }),
+               let row = self.settingsSections[section].items.firstIndex(where: { $0.title == WorkspaceStyle.text("show_tool_labels") }) {
+                let path = IndexPath(row: row, section: section)
+                panel.tableView.scrollToRow(at: path, at: .middle, animated: false); panel.tableView.layoutIfNeeded()
+                if let toggle = panel.tableView.cellForRow(at: path)?.accessoryView as? UISwitch {
+                    toggle.setOn(!originalLabels, animated: false); toggle.sendActions(for: .valueChanged)
+                    check(self.showToolLabels == !originalLabels && ToolLabels.current == !originalLabels, "Settings switch did not apply and persist")
+                    check(self.presentedViewController === navigation, "Changing a setting closed the popup")
+                } else { issues.append("Settings row has no native switch") }
+            } else { issues.append("Tool label setting is missing") }
+            panel.tableView.scrollToRow(at: IndexPath(row: 0, section: 0), at: .top, animated: false)
+            panel.tableView.delegate?.tableView?(panel.tableView, didSelectRowAt: IndexPath(row: 0, section: 0))
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                if let choices = navigation.topViewController as? UITableViewController, choices !== panel {
+                    choices.tableView.delegate?.tableView?(choices.tableView, didSelectRowAt: IndexPath(row: 1, section: 0))
+                    check(self.appearance == 1 && navigation.overrideUserInterfaceStyle == .light, "Theme choice did not update the popup")
+                    choices.view.layoutIfNeeded(); capture("theme")
+                } else { issues.append("Theme row did not open its choices") }
+                for controller in navigation.viewControllers.compactMap({ $0 as? UITableViewController }) {
+                    for cell in controller.tableView.visibleCells {
+                        if let content = cell.contentConfiguration as? UIListContentConfiguration {
+                            check(content.textProperties.numberOfLines == 1, "Settings title can wrap")
+                            check(content.secondaryText == nil || content.secondaryTextProperties.numberOfLines == 1, "Settings value can wrap")
+                        }
+                    }
+                }
+                navigation.dismiss(animated: false, completion: finish)
+            }
+        }
+    }
+
     func checkToolLabelsOnDevice() {
         guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let saved = UserDefaults.standard.object(forKey: ToolLabels.key)
@@ -9429,10 +9596,10 @@ private extension FoundationController {
             catch { issues.append("Capture: \(error)") }
         }
         func toggle() {
-            guard let action = moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: {
+            guard let action = settingsActions.first(where: {
                 $0.title == WorkspaceStyle.text("show_tool_labels")
             }) else { issues.append("Show tool labels is missing from Tools"); return }
-            action.performWithSender(moreButton, target: nil)
+            action.performWithSender(settingsButton, target: nil)
             view.layoutIfNeeded()
         }
         func descendants(_ root: UIView) -> [UIView] { [root] + root.subviews.flatMap(descendants) }
@@ -9441,14 +9608,14 @@ private extension FoundationController {
         }
         func verify(_ visible: Bool) {
             if ToolLabels.current != visible { issues.append("Saved visibility does not survive restoration") }
-            if moreButton.superview !== workspace || rail.arrangedSubviews.contains(moreButton) || navigationActions.arrangedSubviews.contains(moreButton) {
+            if settingsButton.superview !== workspace || rail.arrangedSubviews.contains(settingsButton) || navigationActions.arrangedSubviews.contains(settingsButton) {
                 issues.append("Settings is still inside a side toolbar")
             }
-            if moreButton.frame != layout?.settingsAccess || moreButton.bounds.size != CGSize(width: 44, height: 44) || moreButton.configuration?.title != nil {
+            if settingsButton.frame != layout?.settingsAccess || settingsButton.bounds.size != CGSize(width: 44, height: 44) || settingsButton.configuration?.title != nil {
                 issues.append("Settings lost its compact standalone placement")
             }
-            let point = moreButton.convert(CGPoint(x: moreButton.bounds.midX, y: moreButton.bounds.midY), to: workspace)
-            if workspace.hitTest(point, with: nil) !== moreButton { issues.append("Settings cannot be tapped") }
+            let point = settingsButton.convert(CGPoint(x: settingsButton.bounds.midX, y: settingsButton.bounds.midY), to: workspace)
+            if workspace.hitTest(point, with: nil) !== settingsButton { issues.append("Settings cannot be tapped") }
             for button in controls {
                 if button.configuration?.title != nil { issues.append("Title remains inside " + (button.accessibilityLabel ?? "button")) }
                 if button.accessibilityLabel?.isEmpty != false { issues.append("Missing accessibility name") }

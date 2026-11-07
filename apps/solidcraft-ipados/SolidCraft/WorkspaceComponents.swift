@@ -64,7 +64,8 @@ enum WorkspaceStyle {
         label.font = .preferredFont(forTextStyle: style)
         label.adjustsFontForContentSizeCategory = true
         label.textColor = secondary ? self.secondary : foreground
-        label.numberOfLines = 0
+        label.numberOfLines = 1
+        label.lineBreakMode = .byTruncatingTail
         return label
     }
 }
@@ -811,11 +812,12 @@ final class WorkspaceButton: UIButton {
         super.init(frame: .zero)
         var config = prominent ? UIButton.Configuration.filled() : .plain()
         config.title = viewportPoint ? nil : title
+        config.titleLineBreakMode = .byTruncatingTail
         config.cornerStyle = .medium
         config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10)
         configuration = config
         titleLabel?.adjustsFontForContentSizeCategory = true
-        titleLabel?.numberOfLines = 2
+        titleLabel?.numberOfLines = 1
         let minimumHeight = heightAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch)
         // Hidden arranged tools collapse to zero height. Let the stack's
         // required hiding constraint win while retaining visible touch targets.
@@ -928,6 +930,7 @@ final class WorkspaceButton: UIButton {
         // colour follow availability instead of retaining an always-original ink.
         config?.image = isHistoryAction ? image?.withRenderingMode(.alwaysTemplate) : image
         config?.imagePadding = compactIcon ? 0 : 8
+        config?.titleLineBreakMode = .byTruncatingTail
         config?.title = toolCaption != nil || compactIcon && image != nil ? nil : fullTitle
         if let toolCaption {
             toolCaption.setImage(config?.image); toolCaption.setTitle(fullTitle)
@@ -1113,7 +1116,7 @@ final class BrowserActionController: UITableViewController {
         let item = menu.children[indexPath.row]
         var content = cell.defaultContentConfiguration()
         content.text = item.title
-        content.textProperties.numberOfLines = 0
+        content.textProperties.numberOfLines = 1
         content.image = item.icon.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
         content.directionalLayoutMargins.top = 14; content.directionalLayoutMargins.bottom = 14
         cell.contentConfiguration = content
@@ -2829,8 +2832,8 @@ final class WorkspaceSketchPicker: UIViewController {
             button.commandArtwork(kind.command(for: key))
             button.contentHorizontalAlignment = .leading
             button.configuration?.titleAlignment = .leading
-            button.configuration?.titleLineBreakMode = .byWordWrapping
-            button.titleLabel?.numberOfLines = 0
+            button.configuration?.titleLineBreakMode = .byTruncatingTail
+            button.titleLabel?.numberOfLines = 1
             button.accessibilityIdentifier = "workspace-" + kind.identifier + "-choice-" + key
             buttons[key] = button; rows.addArrangedSubview(button)
         }
@@ -2886,7 +2889,7 @@ private final class ViewOptionButton: UIButton {
         super.init(frame: .zero)
         accessibilityIdentifier = "workspace-view-" + id
         accessibilityLabel = title
-        titleLabel?.numberOfLines = 0
+        titleLabel?.numberOfLines = 1
         titleLabel?.adjustsFontForContentSizeCategory = true
         heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
         addAction(UIAction { _ in action() }, for: .primaryActionTriggered)
@@ -2912,7 +2915,7 @@ private final class ViewOptionButton: UIButton {
         var style = UIButton.Configuration.plain()
         style.title = label
         style.titleAlignment = .leading
-        style.titleLineBreakMode = .byWordWrapping
+        style.titleLineBreakMode = .byTruncatingTail
         style.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 34)
         style.baseForegroundColor = WorkspaceStyle.foreground
         style.background.backgroundColor = selected ? WorkspaceStyle.accent.withAlphaComponent(0.16) : WorkspaceStyle.fieldBackground
@@ -2926,7 +2929,7 @@ private final class ViewOptionButton: UIButton {
         style.image = WorkspaceIcon.image(iconID, traits: traitCollection, size: 24)
         style.imagePlacement = .leading; style.imagePadding = 8
         configuration = style
-        titleLabel?.numberOfLines = 0
+        titleLabel?.numberOfLines = 1
         titleLabel?.adjustsFontForContentSizeCategory = true
         invalidateIntrinsicContentSize(); setNeedsLayout()
         indicator.image = disclosure ? WorkspaceIcon.image("chevron_right", traits: traitCollection, size: 16) : UIImage(systemName: "checkmark")

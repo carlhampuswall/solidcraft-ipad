@@ -87,6 +87,7 @@ final class ModellingFormButton: UIButton {
         super.init(frame: .zero)
         var style = UIButton.Configuration.plain()
         style.title = iconOnly ? nil : title
+        style.titleLineBreakMode = .byTruncatingTail
         style.image = UIImage(systemName: symbol)
         style.imagePlacement = iconOnly || accent ? .leading : .trailing
         style.imagePadding = 8
@@ -98,7 +99,7 @@ final class ModellingFormButton: UIButton {
         }
         configuration = style
         titleLabel?.adjustsFontForContentSizeCategory = true
-        titleLabel?.numberOfLines = 0
+        titleLabel?.numberOfLines = 1
         contentHorizontalAlignment = accent ? .center : .trailing
         heightAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch).isActive = true
         widthAnchor.constraint(greaterThanOrEqualToConstant: WorkspaceStyle.touch).isActive = true

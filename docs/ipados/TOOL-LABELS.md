@@ -4,10 +4,15 @@ The iPad workspace shows tool and menu-button names in separate captions beside
 their icons. View and History use the same external caption style. Names come
 from the existing offline translations, including tools added to quick access.
 
-Use **Settings > Show tool labels** to switch between captions and compact icons.
+Open the gear above History, then **Workspace > Show tool labels**, to switch
+between captions and compact icons. Settings opens a searchable preferences
+popup; modeling commands and toolbar customization stay in the left tool menu.
 The preference is enabled by default, applies immediately, and persists across
 launches. VoiceOver names, pointer tooltips and menu action text remain available
 with captions hidden. Native menu rows keep their existing text.
+
+Captions and control labels use one line. Long text is truncated with an ellipsis
+when space is limited; its full accessibility name and pointer tooltip remain.
 
 Changes a default: yes — workspace captions are visible; compact icons remain
 available through **Show tool labels**.

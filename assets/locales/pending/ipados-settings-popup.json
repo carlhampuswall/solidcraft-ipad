@@ -1,0 +1,65 @@
+{
+  "de": {
+    "ui.ipados.settings.appearance": "Darstellung",
+    "ui.ipados.settings.modelling": "Modellierung",
+    "ui.ipados.settings.navigation": "Navigation",
+    "ui.ipados.settings.projects": "Projekte",
+    "ui.ipados.settings.selection": "Auswahl",
+    "ui.ipados.settings.sketching": "Skizzieren",
+    "ui.ipados.settings.theme": "Design",
+    "ui.ipados.settings.toolbar_right": "Werkzeugleiste rechts",
+    "ui.ipados.settings.view": "Ansicht und Referenzen",
+    "ui.ipados.settings.workspace": "Arbeitsbereich"
+  },
+  "en": {
+    "ui.ipados.settings.appearance": "Appearance",
+    "ui.ipados.settings.modelling": "Modeling",
+    "ui.ipados.settings.navigation": "Navigation",
+    "ui.ipados.settings.projects": "Projects",
+    "ui.ipados.settings.selection": "Selection",
+    "ui.ipados.settings.sketching": "Sketching",
+    "ui.ipados.settings.theme": "Theme",
+    "ui.ipados.settings.toolbar_right": "Toolbar on the right",
+    "ui.ipados.settings.view": "View and references",
+    "ui.ipados.settings.workspace": "Workspace"
+  },
+  "en-GB": {
+    "ui.ipados.settings.modelling": "Modelling"
+  },
+  "ja": {
+    "ui.ipados.settings.appearance": "外観",
+    "ui.ipados.settings.modelling": "モデリング",
+    "ui.ipados.settings.navigation": "ナビゲーション",
+    "ui.ipados.settings.projects": "プロジェクト",
+    "ui.ipados.settings.selection": "選択",
+    "ui.ipados.settings.sketching": "スケッチ",
+    "ui.ipados.settings.theme": "テーマ",
+    "ui.ipados.settings.toolbar_right": "ツールバーを右に配置",
+    "ui.ipados.settings.view": "表示と参照",
+    "ui.ipados.settings.workspace": "ワークスペース"
+  },
+  "ko": {
+    "ui.ipados.settings.appearance": "모양",
+    "ui.ipados.settings.modelling": "모델링",
+    "ui.ipados.settings.navigation": "탐색",
+    "ui.ipados.settings.projects": "프로젝트",
+    "ui.ipados.settings.selection": "선택",
+    "ui.ipados.settings.sketching": "스케치",
+    "ui.ipados.settings.theme": "테마",
+    "ui.ipados.settings.toolbar_right": "도구 모음을 오른쪽에 배치",
+    "ui.ipados.settings.view": "보기 및 참조",
+    "ui.ipados.settings.workspace": "작업 공간"
+  },
+  "zh": {
+    "ui.ipados.settings.appearance": "外观",
+    "ui.ipados.settings.modelling": "建模",
+    "ui.ipados.settings.navigation": "导航",
+    "ui.ipados.settings.projects": "项目",
+    "ui.ipados.settings.selection": "选择",
+    "ui.ipados.settings.sketching": "草图",
+    "ui.ipados.settings.theme": "主题",
+    "ui.ipados.settings.toolbar_right": "工具栏位于右侧",
+    "ui.ipados.settings.view": "视图与参考",
+    "ui.ipados.settings.workspace": "工作区"
+  }
+}
