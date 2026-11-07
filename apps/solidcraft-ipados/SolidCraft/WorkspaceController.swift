@@ -6564,7 +6564,7 @@ private extension FoundationController {
         }
         func waitForTool(_ tool: String, remaining: Int = 100, then action: @escaping () -> Void) {
             guard active, generation == expected, !finished else { return }
-            if state?.sketch != nil && state?.active_tool == tool && pending.isEmpty { action(); return }
+            if state?.sketch != nil && state?.active_tool == tool && pending.isEmpty && presentedViewController == nil { action(); return }
             guard remaining > 0 else { issues.append("workspace did not publish tool: \(tool)"); report(); return }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitForTool(tool, remaining: remaining - 1, then: action) }
         }
@@ -6645,6 +6645,9 @@ private extension FoundationController {
                     }
                     if picker.menu.children.contains(where: { $0.title.hasPrefix("cmd.") }) {
                         issues.append("Line choices contain an untranslated command ID")
+                    }
+                    if family.icons.contains(where: { WorkspaceIcon.image($0, traits: self.traitCollection) == nil }) {
+                        issues.append("Line choices contain a missing icon asset")
                     }
                     let selected = family.tools.firstIndex(of: self.state?.active_tool ?? "")
                     if picker.menu.children.enumerated().contains(where: { $0.element.selected != ($0.offset == selected) }) {

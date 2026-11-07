@@ -25,7 +25,7 @@ enum SketchToolFamily: CaseIterable {
     }
     var icons: [String] {
         switch self {
-        case .line: return ["line", "arc", "spline"]
+        case .line: return ["line", "arc3", "spline"]
         case .rectangle: return ["rect", "rect_center"]
         }
     }
