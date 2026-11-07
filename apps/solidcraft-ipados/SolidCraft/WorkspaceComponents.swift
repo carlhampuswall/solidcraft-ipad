@@ -587,7 +587,9 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         if bounds.size != lastLayoutSize { cancelScrub(); lastLayoutSize = bounds.size }
         let inset = min(4, bounds.width / 8, bounds.height / 8)
         let toggleWidth = min(preferredToggleWidth - 2 * inset, max(0, bounds.width - 2 * inset))
-        toggle.frame = CGRect(x: max(inset, bounds.width - inset - toggleWidth), y: inset,
+        // The icon's trailing edge shares the right rail's edge. Insets still
+        // provide vertical padding and space for the expanded timeline controls.
+        toggle.frame = CGRect(x: max(inset, bounds.width - toggleWidth), y: inset,
             width: toggleWidth, height: max(0, bounds.height - 2 * inset))
         let transportWidth = 3 * max(44, back.intrinsicContentSize.width, play.intrinsicContentSize.width, forward.intrinsicContentSize.width)
         transportScroll.frame = CGRect(x: inset, y: inset,

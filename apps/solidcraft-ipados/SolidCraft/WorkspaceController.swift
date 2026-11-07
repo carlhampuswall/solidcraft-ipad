@@ -484,7 +484,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (controller: FoundationController, _: UITraitCollection) in
             controller.rebuildMenus()
             if controller.compactChrome {
-                [controller.top, controller.settingsButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
+                [controller.top, controller.status].forEach(WorkspaceStyle.floatingSurface)
             }
         }
         canvas.onResize = { [weak self] in self?.updateSurface() }
@@ -798,7 +798,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 ])
             }
             navigationScroll.showsVerticalScrollIndicator = false
-            [top, railScroll, navigationScroll, historyActions, browserButton, settingsButton, status].forEach(WorkspaceStyle.floatingSurface)
+            [top, railScroll, navigationScroll, historyActions, browserButton, status].forEach(WorkspaceStyle.floatingSurface)
             subtitle.numberOfLines = 1
         } else {
             [undoButton, redoButton, browserButton, inspectorButton, viewButton].forEach(topActions.addArrangedSubview)
@@ -828,12 +828,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         finishSketchButton.accessibilityIdentifier = "workspace-finish-sketch"
         cancelToolButton.accessibilityIdentifier = "workspace-cancel-tool"
         configureQuickAccess()
-        // Settings and Projects retain their accessible names and pointer
-        // tooltips while keeping their compact icon-only presentation.
-        let labelledControls = chromeIcons.map(\.0).filter { $0 !== settingsButton && $0 !== documentActionsButton } + sketchQuickTools.map(\.1) + [navigationMoreButton, toolsMoreButton]
+        // Projects keeps its compact icon-only presentation beside the title.
+        let labelledControls = chromeIcons.map(\.0).filter { $0 !== documentActionsButton } + sketchQuickTools.map(\.1) + [navigationMoreButton, toolsMoreButton]
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
         labelledControls.forEach { $0.toolLabels(showToolLabels) }
         viewButton.toolLabels(showToolLabels, mirrored: !railRight)
+        settingsButton.toolLabels(showToolLabels, mirrored: true)
         for button in navigationActions.arrangedSubviews.compactMap({ $0 as? WorkspaceButton }) {
             button.toolLabels(showToolLabels, mirrored: !railRight)
         }
@@ -4846,7 +4846,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         browserPanel.accessibilityViewIsModal = compact && browserOpen
         inspectorPanel.accessibilityViewIsModal = sketchInput?.projection == nil && compact && inspectorOpen
         let modelControls: [UIView] = [modellingInspector?.resultButton, modelValueButton, endpointFinishButton].compactMap { $0 }
-        workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointFinishButton, canvas, inspectorPanel, featureHistory, status]
+        workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, settingsButton, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointFinishButton, canvas, inspectorPanel, featureHistory, status]
         if resetChromeOffsets {
             // Reparenting the same controls changes scroll content dimensions.
             // Discard the old text-toolbar offsets once, after the new frames
@@ -9671,7 +9671,7 @@ private extension FoundationController {
         let saved = UserDefaults.standard.object(forKey: ToolLabels.key)
         let original = showToolLabels
         var issues: [String] = []
-        let controls = [viewButton, browserButton]
+        let controls = [viewButton, browserButton, settingsButton]
             + Array(railQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(navigationQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
@@ -9696,8 +9696,8 @@ private extension FoundationController {
             if settingsButton.superview !== workspace || rail.arrangedSubviews.contains(settingsButton) || navigationActions.arrangedSubviews.contains(settingsButton) {
                 issues.append("Settings is still inside a side toolbar")
             }
-            if settingsButton.frame != layout?.settingsAccess || settingsButton.bounds.size != CGSize(width: 44, height: 44) || settingsButton.configuration?.title != nil {
-                issues.append("Settings lost its compact standalone placement")
+            if settingsButton.frame != layout?.settingsAccess || settingsButton.bounds.width < WorkspaceStyle.touch || settingsButton.bounds.height < WorkspaceStyle.touch {
+                issues.append("Settings lost its standalone touch target")
             }
             let point = settingsButton.convert(CGPoint(x: settingsButton.bounds.midX, y: settingsButton.bounds.midY), to: workspace)
             if workspace.hitTest(point, with: nil) !== settingsButton { issues.append("Settings cannot be tapped") }
@@ -9728,6 +9728,16 @@ private extension FoundationController {
                 issues.append("Projects is not inline with the project title")
             }
             if let historyToggle = historyButtons.first(where: { $0.accessibilityIdentifier == "workspace-feature-history-toggle" }) {
+                for button in [settingsButton, historyToggle] {
+                    button.layoutIfNeeded()
+                    guard let icon = descendants(button).first(where: { $0.accessibilityIdentifier == "workspace-tool-icon-surface" }),
+                          let layout else { issues.append("Missing right-side icon surface"); continue }
+                    let frame = icon.convert(icon.bounds, to: workspace)
+                    let rightRail = railRight ? layout.rail : layout.navigation
+                    if abs(frame.maxX - rightRail.maxX) > 0.5 || frame.size != CGSize(width: WorkspaceStyle.touch, height: WorkspaceStyle.touch) {
+                        issues.append("Icon is not aligned with the right toolbar: " + (button.accessibilityLabel ?? "button"))
+                    }
+                }
                 if caption(historyToggle)?.isHidden != (!visible || historyExpanded) {
                     issues.append("History caption did not follow expansion and label visibility")
                 }

@@ -693,7 +693,7 @@ struct WorkspaceChecks {
                                     let layout = resolve(header: 164, content: content)
                                     let availableHeight = size.height - (expanded ? (largeText ? 84 : 60) : 0)
                                     try require(layout.rail.height == content && layout.rail.midY == availableHeight / 2,
-                                                "tool rail is not vertically centred as its content changes")
+                                                "tool rail is not vertically centred as its content changes: size=\(size) large=\(largeText) mirrored=\(railRight) browser=\(browser) expanded=\(expanded) content=\(content) rail=\(layout.rail) settings=\(layout.settingsAccess)")
                                 }
                             }
                             try require(idle.canvas == editing.canvas, "sketch header changed rendering/picking coordinates")
@@ -1007,8 +1007,13 @@ struct WorkspaceChecks {
                                 toolLabels: labels, historyActionsWidth: labels ? 300 : 100)
                             let chrome = CGRect(x: 12, y: 24, width: size.width, height: size.height)
                             let layout = source.placed(in: chrome, viewport: chrome)
-                            try require(chrome.contains(layout.settingsAccess) && layout.settingsAccess.size == CGSize(width: 44, height: 44),
-                                        "Settings lost its compact touch target or safe-area placement")
+                            try require(chrome.contains(layout.settingsAccess) &&
+                                        layout.settingsAccess.width == ToolLabels.railWidth(enabled: labels, largeText: largeText) &&
+                                        layout.settingsAccess.height == min(52, layout.featureHistory.height),
+                                        "Settings lost its toolbar caption space, row height or safe-area placement")
+                            let rightRail = railRight ? layout.rail : layout.navigation
+                            try require(layout.settingsAccess.maxX == rightRail.maxX,
+                                        "Settings icon column is not aligned with the right toolbar")
                             try require(layout.settingsAccess.maxX == layout.featureHistory.maxX && layout.settingsAccess.maxY + 8 == layout.featureHistory.minY,
                                         "Settings is not at the right edge above History")
                             for frame in [layout.rail, layout.navigation, layout.history, layout.featureHistory] where !frame.isEmpty {

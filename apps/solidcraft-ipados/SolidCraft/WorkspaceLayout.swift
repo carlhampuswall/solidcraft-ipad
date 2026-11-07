@@ -434,11 +434,12 @@ struct WorkspaceLayout {
             result.status.size.width = min(result.status.width, max(0, result.featureHistory.minX - gap - result.status.minX))
         }
         if result.floating {
-            // Settings stays at the right edge above History, independently of
-            // toolbar handedness. Long side rails scroll before reaching it.
-            let side = min(44, max(0, width - 2 * gap), max(0, result.featureHistory.minY - 2 * gap))
-            result.settingsAccess = CGRect(x: max(gap, width - gap - side),
-                y: max(gap, result.featureHistory.minY - gap - side), width: side, height: side)
+            // Match the right rail's icon column and caption space, independently
+            // of toolbar handedness. Long rails scroll before reaching Settings.
+            let settingsWidth = min(ToolLabels.railWidth(enabled: toolLabels, largeText: largeText), max(0, width - 2 * gap))
+            let settingsHeight = min(52, barHeight, max(0, result.featureHistory.minY - 2 * gap))
+            result.settingsAccess = CGRect(x: max(gap, width - gap - settingsWidth),
+                y: max(gap, result.featureHistory.minY - gap - settingsHeight), width: settingsWidth, height: settingsHeight)
             func aboveSettings(_ frame: CGRect) -> CGRect {
                 guard frame.minX < result.settingsAccess.maxX && frame.maxX > result.settingsAccess.minX else { return frame }
                 return CGRect(x: frame.minX, y: frame.minY, width: frame.width,
