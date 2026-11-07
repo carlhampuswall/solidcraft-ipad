@@ -60,7 +60,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var viewButton = WorkspaceButton(WorkspaceStyle.text("view"), activationEvent: .primaryActionTriggered) { [weak self] in self?.showViewControls() }
     private lazy var selectButton = WorkspaceButton(WorkspaceStyle.text("select")) { [weak self] in self?.setTool("select") }
     private lazy var radiusButton = WorkspaceButton(WorkspaceStyle.text("radius")) { [weak self] in self?.setTool("post_radius") }
-    private lazy var moreButton = WorkspaceButton(WorkspaceStyle.text("tools"), action: {})
+    private lazy var moreButton = WorkspaceButton(WorkspaceStyle.text("settings"), action: {})
     private lazy var modellingButton = WorkspaceButton(ModellingText.text("tools"), action: {})
     private lazy var assemblyButton = WorkspaceButton(AssemblyText.text("tools"), action: {})
     private lazy var cancelToolButton = WorkspaceButton(SketchText.text("cancel_segment")) { [weak self] in
@@ -474,7 +474,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             controller.rebuildMenus()
             if controller.compactChrome {
                 [controller.top, controller.railScroll, controller.navigationScroll, controller.historyActions,
-                 controller.browserButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
+                 controller.browserButton, controller.moreButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
             }
         }
         canvas.onResize = { [weak self] in self?.updateSurface() }
@@ -722,6 +722,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         documentActionsButton.removeFromSuperview()
         viewButton.removeFromSuperview()
+        moreButton.removeFromSuperview()
         homeButton.updateTitle(WorkspaceStyle.text(homeToolbar ? "home" : "fit"))
         let chromeIcons: [(WorkspaceButton, String)] = [
             (undoButton, "undo"), (redoButton, "redo"), (browserButton, "list"),
@@ -755,12 +756,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             [selectButton, createSketchButton].forEach(rail.addArrangedSubview)
             sketchQuickTools.forEach { rail.addArrangedSubview($0.1) }
             [sketchToolsButton, finishChainButton, modellingButton, modifyButton,
-             patternButton, assemblyButton, radiusButton, moreButton, cancelToolButton].forEach(rail.addArrangedSubview)
+             patternButton, assemblyButton, radiusButton, cancelToolButton].forEach(rail.addArrangedSubview)
             navigationActions.axis = .vertical; navigationActions.spacing = 2
             [homeButton, projectionButton, inspectorButton, constraintsButton, dimensionsButton, constructionButton].forEach(navigationActions.addArrangedSubview)
             viewButton.translatesAutoresizingMaskIntoConstraints = true
             workspace.addSubview(viewButton)
             WorkspaceStyle.floatingSurface(viewButton)
+            moreButton.translatesAutoresizingMaskIntoConstraints = true
+            workspace.addSubview(moreButton)
             historyActions.axis = .horizontal; historyActions.spacing = 2; historyActions.distribution = .fillEqually
             [undoButton, redoButton].forEach(historyActions.addArrangedSubview)
             // UIStackView turns this off while it owns the browser button. Its
@@ -779,7 +782,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 ])
             }
             navigationScroll.showsVerticalScrollIndicator = false
-            [top, railScroll, navigationScroll, historyActions, browserButton, status].forEach(WorkspaceStyle.floatingSurface)
+            [top, railScroll, navigationScroll, historyActions, browserButton, moreButton, status].forEach(WorkspaceStyle.floatingSurface)
             subtitle.numberOfLines = 1
         } else {
             [undoButton, redoButton, browserButton, inspectorButton, viewButton].forEach(topActions.addArrangedSubview)
@@ -805,7 +808,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         finishSketchButton.accessibilityIdentifier = "workspace-finish-sketch"
         cancelToolButton.accessibilityIdentifier = "workspace-cancel-tool"
         configureQuickAccess()
-        let labelledControls = chromeIcons.map(\.0) + sketchQuickTools.map(\.1) + [navigationMoreButton]
+        // Settings remains a small standalone gear, with its name available to
+        // VoiceOver and pointer tooltips rather than a toolbar caption.
+        let labelledControls = chromeIcons.map(\.0).filter { $0 !== moreButton } + sketchQuickTools.map(\.1) + [navigationMoreButton]
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
         labelledControls.forEach { $0.toolLabels(showToolLabels) }
         viewButton.toolLabels(showToolLabels, mirrored: !railRight)
@@ -2548,7 +2553,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let anchor = CGPoint(x: canvas.frame.minX + value.position[0], y: canvas.frame.minY + value.position[1])
         let fitting = modelValueButton.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
         let size = CGSize(width: min(220, max(80, fitting.width)), height: max(44, fitting.height))
-        var obstacles = [top, railScroll, extrusionRailScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton, status, browserPanel, inspectorPanel]
+        var obstacles = [top, railScroll, extrusionRailScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton, moreButton, status, browserPanel, inspectorPanel]
             .filter { !$0.isHidden }.map { $0.frame.insetBy(dx: -6, dy: -6) }
         let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
         let bounds = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: canvas.frame, useBottomSafeArea: useBottomSafeArea)
@@ -3714,7 +3719,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let animateBrowser = compactChrome && leftBrowser && !UIAccessibility.isReduceMotionEnabled
         let wasOpen = !browserPanel.isHidden
         let oldFrame = browserPanel.frame
-        let chrome: [UIView] = [top, status, railScroll, navigationScroll, historyActions, featureHistory, browserButton]
+        let chrome: [UIView] = [top, status, railScroll, navigationScroll, historyActions, featureHistory, browserButton, moreButton]
         let oldChrome = chrome.map(\.frame)
         browserAnimationGeneration &+= 1
         let animation = browserAnimationGeneration
@@ -3772,7 +3777,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         navigationMoreButton.accessibilityIdentifier = "workspace-navigation-more"
         navigationMoreButton.showsMenuAsPrimaryAction = true
         navigationMoreButton.isHidden = !customizeToolbars
-        railQuickAccess?.arrange(fixed: [sketchToolsButton, moreButton])
+        railQuickAccess?.arrange(fixed: compactChrome ? [sketchToolsButton] : [sketchToolsButton, moreButton])
         navigationQuickAccess?.arrange(fixed: [navigationMoreButton])
     }
 
@@ -3827,7 +3832,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 button.availability(enabled: !locked && modelIDs.contains(id))
             }
         }
-        railQuickAccess?.arrange(fixed: [sketchToolsButton, moreButton])
+        railQuickAccess?.arrange(fixed: compactChrome ? [sketchToolsButton] : [sketchToolsButton, moreButton])
         navigationQuickAccess?.arrange(fixed: [navigationMoreButton])
     }
 
@@ -4703,6 +4708,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             browserButton.frame = resolved.browserAccess
             navigationScroll.frame = resolved.navigation
             viewButton.frame = resolved.viewAccess
+            moreButton.frame = resolved.settingsAccess
             historyActions.frame = resolved.history
         } else {
             let titleWidth = compact ? top.bounds.width - 24 : max(140, top.bounds.width - min(520, topActions.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize).width) - 36)
@@ -9362,7 +9368,7 @@ private extension FoundationController {
         let saved = UserDefaults.standard.object(forKey: ToolLabels.key)
         let original = showToolLabels
         var issues: [String] = []
-        let controls = [viewButton, documentActionsButton, browserButton, moreButton, undoButton, redoButton]
+        let controls = [viewButton, documentActionsButton, browserButton, undoButton, redoButton]
             + Array(railQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(navigationQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
@@ -9380,6 +9386,14 @@ private extension FoundationController {
         }
         func verify(_ visible: Bool) {
             if ToolLabels.current != visible { issues.append("Saved visibility does not survive restoration") }
+            if moreButton.superview !== workspace || rail.arrangedSubviews.contains(moreButton) || navigationActions.arrangedSubviews.contains(moreButton) {
+                issues.append("Settings is still inside a side toolbar")
+            }
+            if moreButton.frame != layout?.settingsAccess || moreButton.bounds.size != CGSize(width: 44, height: 44) || moreButton.configuration?.title != nil {
+                issues.append("Settings lost its compact standalone placement")
+            }
+            let point = moreButton.convert(CGPoint(x: moreButton.bounds.midX, y: moreButton.bounds.midY), to: workspace)
+            if workspace.hitTest(point, with: nil) !== moreButton { issues.append("Settings cannot be tapped") }
             for button in controls {
                 if button.configuration?.title != nil { issues.append("Title remains inside " + (button.accessibilityLabel ?? "button")) }
                 if button.accessibilityLabel?.isEmpty != false { issues.append("Missing accessibility name") }

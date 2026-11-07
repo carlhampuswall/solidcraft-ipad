@@ -977,6 +977,33 @@ struct WorkspaceChecks {
                 }
             }
         }
+        // A long or mirrored toolbar must leave the standalone Settings gear
+        // tappable above History, including when captions move undo/redo up.
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 834, height: 1140),
+                     CGSize(width: 390, height: 420), CGSize(width: 320, height: 240)] {
+            for railRight in [false, true] {
+                for largeText in [false, true] {
+                    for labels in [false, true] {
+                        for expanded in [false, true] {
+                            let source = WorkspaceLayout.resolve(size: size, browser: true, inspector: true,
+                                railRight: railRight, largeText: largeText, railContentHeight: 2000,
+                                navigationContentHeight: 2000, historyExpanded: expanded,
+                                toolLabels: labels, historyActionsWidth: labels ? 300 : 100)
+                            let chrome = CGRect(x: 12, y: 24, width: size.width, height: size.height)
+                            let layout = source.placed(in: chrome, viewport: chrome)
+                            try require(chrome.contains(layout.settingsAccess) && layout.settingsAccess.size == CGSize(width: 44, height: 44),
+                                        "Settings lost its compact touch target or safe-area placement")
+                            try require(layout.settingsAccess.maxX == layout.featureHistory.maxX && layout.settingsAccess.maxY + 8 == layout.featureHistory.minY,
+                                        "Settings is not at the right edge above History")
+                            for frame in [layout.rail, layout.navigation, layout.history, layout.featureHistory] where !frame.isEmpty {
+                                try require(!frame.intersects(layout.settingsAccess), "toolbar or history covers Settings")
+                            }
+                            cases += 1
+                        }
+                    }
+                }
+            }
+        }
         try require(!WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: true, textEntryActive: false), "dismissal tap can reach viewport")
         try require(!WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: false, textEntryActive: true), "typing leaves viewport active")
         try require(WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: false, textEntryActive: false), "viewport unavailable at rest")
