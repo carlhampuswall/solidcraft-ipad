@@ -85,11 +85,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var sketchToolsButton = WorkspaceButton(SketchText.text("draw"), action: {})
     private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.performSketchHeaderAction() }
     private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.finishSketchChain() }
-    private lazy var endpointFinishButton: WorkspaceButton = WorkspaceButton(SketchText.text("finish_chain"), prominent: true) { [weak self] in
-        guard let self, !self.endpointFinishButton.isHidden, self.endpointFinishButton.isEnabled else { return }
-        self.endpointFinishButton.isHidden = true
-        self.finishSketchChain()
-    }
     private lazy var documentActionsButton = WorkspaceButton(ProjectText.text("title")) { [weak self] in self?.showProjects() }
     private lazy var homeButton = WorkspaceButton(WorkspaceStyle.text("home")) { [weak self] in
         guard let self else { return }
@@ -109,8 +104,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var sketchQuickTools: [(String, WorkspaceButton)] = [
         ("sketch.point", "draw_point"),
         ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"),
-        ("sketch.circle.center", "circle"), ("sketch.arc.three_point", "arc"),
-        ("sketch.spline.fit_point", "spline"), ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
+        ("sketch.circle.center", "circle"), ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim")
     ].map { id, label in
         (id, WorkspaceButton(SketchText.text(label)) { [weak self] in self?.activateSketchTool(id) })
     }
@@ -521,7 +515,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.sketchInput = value; self.updateStatus(); self.rebuildMenus()
             if constructionChanged || projectionChanged { self.updateAvailability() }
             if projectionChanged { self.rebuildInspector(); self.view.setNeedsLayout() }
-            self.layoutEndpointFinish()
         }
         session.onSketchAnnotations = { [weak self] annotations in self?.showSketchAnnotations(annotations) }
         canvas.dimensionAt = { [weak self] point in
@@ -549,10 +542,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modelValueButton.isHidden = true
         WorkspaceStyle.floatingSurface(modelValueButton)
         workspace.insertSubview(modelValueButton, aboveSubview: canvas)
-        endpointFinishButton.artwork("finish", compact: true)
-        endpointFinishButton.accessibilityIdentifier = "sketch-endpoint-finish"
-        endpointFinishButton.isHidden = true
-        workspace.insertSubview(endpointFinishButton, aboveSubview: canvas)
         session.onModelValue = { [weak self] value in
             guard let self else { return }
             self.modelValue = self.acceptsModelValueFrame ? value : nil
@@ -766,7 +755,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         for (id, button) in sketchQuickTools {
             button.commandArtwork(id, compact: true)
             button.accessibilityIdentifier = "workspace-tool-" + id
-            button.toolVariants(id == "sketch.rectangle.two_point")
+            button.toolVariants(SketchToolFamily.forButton(id) != nil)
         }
         rail.spacing = compactChrome ? 2 : 8
         if compactChrome {
@@ -3182,25 +3171,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
-    private func layoutEndpointFinish() {
-        guard active, state?.sketch != nil, state?.active_tool == "sketch.line",
-              !numericEditing, !modellingEditing, pending.isEmpty, presentedViewController == nil,
-              let position = sketchInput?.finish_chain_at, position.count == 2, position.allSatisfy(\.isFinite),
-              canvas.isUserInteractionEnabled else { endpointFinishButton.isHidden = true; return }
-        let anchor = CGPoint(x: canvas.frame.minX + position[0], y: canvas.frame.minY + position[1])
-        let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
-        let bounds = canvas.frame.intersection(safe).insetBy(dx: 8, dy: 8)
-        let obstacles = [top, railScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton, status, browserPanel, inspectorPanel]
-            .filter { !$0.isHidden }.map { $0.frame.insetBy(dx: -6, dy: -6) }
-        guard bounds.contains(anchor), let frame = ModelValuePlacement.resolve(anchor: anchor,
-            size: CGSize(width: 44, height: 44), bounds: bounds, obstacles: obstacles) else {
-            endpointFinishButton.isHidden = true; return
-        }
-        endpointFinishButton.frame = frame
-        endpointFinishButton.isEnabled = true
-        endpointFinishButton.isHidden = false
-    }
-
     private func sketchSolverText(_ sketch: WorkspaceSketch) -> String {
         if let oversized = sketch.report?.oversized { return SketchText.text("solve_limit") + ": " + String(oversized) }
         if let folded = sketch.report?.folded, !folded.isEmpty { return SketchText.text("orientation_failure") + ": " + folded.joined(separator: ", ") }
@@ -3792,21 +3762,25 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             guard let self else { return }; self.projectionBusy = false; self.rebuildInspector(); self.updateAvailability()
         }
     }
-    private static let rectangleTools = ["sketch.rectangle.two_point", "sketch.rectangle.center"]
+    private static let rectangleTools = SketchToolFamily.rectangle.tools
+
+    private func sketchToolTitle(_ tool: String) -> String {
+        tool == "sketch.line" ? SketchText.text("line") : NativeText.value("cmd." + tool.replacingOccurrences(of: ".", with: "_"))
+    }
 
     private func activateSketchTool(_ tool: String) {
-        if tool == "sketch.rectangle.two_point", Self.rectangleTools.contains(state?.active_tool ?? "") {
-            showRectangleTools()
+        if let family = SketchToolFamily.forButton(tool), family.contains(state?.active_tool) {
+            showSketchToolChoices(family)
         } else { setTool(tool) }
     }
 
-    private func showRectangleTools() {
+    private func showSketchToolChoices(_ family: SketchToolFamily) {
         guard active, !numericEditing, !modellingEditing, pending.isEmpty,
               presentedViewController == nil, let context = state, let sketch = context.sketch else { return }
         canvas.cancelInput(); view.endEditing(true)
-        let menu = BrowserActionMenu(title: SketchText.text("rectangle"), children: Self.rectangleTools.map { tool in
-            BrowserActionMenu.Item(title: NativeText.value("cmd." + tool.replacingOccurrences(of: ".", with: "_")),
-                                  icon: tool == "sketch.rectangle.center" ? "rect_center" : "rect",
+        let menu = BrowserActionMenu(title: SketchText.text(family.labelKey), children: zip(family.tools, family.icons).map { tool, icon in
+            BrowserActionMenu.Item(title: sketchToolTitle(tool),
+                                  icon: icon,
                                   selected: context.active_tool == tool) { [weak self] in
                 guard let self, self.active, self.state?.document_id == context.document_id,
                       self.state?.geometry_revision == context.geometry_revision,
@@ -3820,7 +3794,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         navigation.overrideUserInterfaceStyle = workspaceInterfaceStyle
         navigation.preferredContentSize = picker.preferredContentSize
         if let popover = navigation.popoverPresentationController {
-            let button = sketchQuickTools.first(where: { $0.0 == "sketch.rectangle.two_point" })?.1
+            let button = sketchQuickTools.first(where: { $0.0 == family.defaultTool })?.1
             let source = button.flatMap { $0.window == nil ? nil : $0 } ?? toolsMoreButton
             popover.sourceView = source; popover.sourceRect = source.bounds
             popover.delegate = self
@@ -3842,8 +3816,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if tool == "post_radius" { inspectorOpen = true; browserOpen = false; view.setNeedsLayout() }
     }
     private func finishSketchChain() {
-        if state?.active_tool == "sketch.line" { setTool("select") }
-        else { run("tool.finish_chain") }
+        run("tool.finish_chain")
     }
     private func toggleMultipleSelection() {
         let enabled = !multiple
@@ -4086,7 +4059,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         radiusButton.isHidden = inSketch || compactChrome && !diagnostics
         sketchToolsButton.isHidden = !inSketch
         finishSketchButton.isHidden = headerAction == nil
-        finishChainButton.isHidden = !inSketch || !(state?.active_tool == "sketch.line" || state?.active_tool == "sketch.spline.fit_point")
+        finishChainButton.isHidden = !inSketch || state?.active_tool != "sketch.spline.fit_point"
         for button in [sketchToolsButton, finishSketchButton, finishChainButton] { button.availability(enabled: !locked) }
         cancelToolButton.isHidden = numericEditing || inSketch || !(state?.active_tool == "post_radius" || planeChoosing || planeDraft != nil)
         let cancelTitle = planeChoosing || planeDraft != nil ? WorkspaceStyle.text("cancel") : SketchText.text("cancel_segment")
@@ -4096,7 +4069,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let textBlocksViewport = textEntryActive && !((cancelToolsOnDismiss || draftAppliesOnTapAway) && modellingEditing)
         canvas.isUserInteractionEnabled = !numericEditing && WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: modal, textEntryActive: textBlocksViewport)
         canvas.accessibilityElementsHidden = modal || numericEditing
-        layoutEndpointFinish()
         for button in referenceLabels.values {
             button.accessibilityElementsHidden = modal || numericEditing || modellingEditing
             button.isUserInteractionEnabled = !modal && !numericEditing && !modellingEditing && sketchInput?.projection == nil
@@ -4105,12 +4077,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             for (id, button) in sketchQuickTools {
                 let tool = state?.tools.first { $0.id == id }
                 button.isHidden = !inSketch
-                let rectangle = id == "sketch.rectangle.two_point"
-                button.active(rectangle ? Self.rectangleTools.contains(state?.active_tool ?? "") : state?.active_tool == id)
+                let family = SketchToolFamily.forButton(id)
+                button.active(family?.contains(state?.active_tool) ?? (state?.active_tool == id))
                 button.availability(enabled: !locked && tool?.enabled == true, reason: tool?.reason.map(NativeText.value))
-                if rectangle && button.isEnabled {
-                    button.accessibilityHint = SketchText.text("rectangle_variants")
-                    button.accessibilityValue = state?.active_tool == "sketch.rectangle.center" ? NativeText.value("cmd.sketch_rectangle_center") : nil
+                if let family, button.isEnabled {
+                    button.accessibilityHint = SketchText.text(family.labelKey + "_variants")
+                    button.accessibilityValue = family.contains(state?.active_tool) ? state.map { sketchToolTitle($0.active_tool) } : nil
                 }
             }
             // A draft locks commands without removing the user's toolbar.
@@ -4552,15 +4524,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.updateCanvasAppearance(); self.rebuildMenus()
             })
         }
-        let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"),
-                     ("sketch.arc.three_point", "arc"), ("sketch.spline.fit_point", "spline"), ("sketch.move", "move"),
+        let sketchTools = [("sketch.point", "draw_point"), ("sketch.line", "line"), ("sketch.rectangle.two_point", "rectangle"), ("sketch.circle.center", "circle"), ("sketch.move", "move"),
                      ("sketch.offset", "offset"), ("sketch.fillet", "fillet"), ("sketch.delete", "delete"), ("sketch.trim", "trim"), ("sketch.extend", "extend")]
         var sketchActions: [UIMenuElement] = sketchTools.compactMap { id, label in
             guard railQuickAccess?.contains(id) != true else { return nil }
             guard let tool = state?.tools.first(where: { $0.id == id }), customizeToolbars || tool.enabled else { return nil }
-            if id == "sketch.rectangle.two_point" {
-                return UIMenu(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), children: Self.rectangleTools.map { variant in
-                    UIAction(title: NativeText.value("cmd." + variant.replacingOccurrences(of: ".", with: "_")),
+            if let family = SketchToolFamily.forButton(id) {
+                return UIMenu(title: SketchText.text(label), image: WorkspaceIcon.command(id, traits: traitCollection), children: family.tools.map { variant in
+                    UIAction(title: sketchToolTitle(variant),
                              image: WorkspaceIcon.command(variant, traits: traitCollection),
                              attributes: tool.enabled ? [] : .disabled,
                              state: state?.active_tool == variant ? .on : .off) { [weak self] _ in self?.setTool(variant) }
@@ -4911,7 +4882,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                navHeight: contentHeight(navigationActions, width: available.navigation.width))
         if canvas.frame != resolved.canvas {
             canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true
-            sketchInput = nil; endpointFinishButton.isHidden = true
+            sketchInput = nil
         }
         layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
@@ -4968,8 +4939,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorScroll.frame = inspectorPanel.content.bounds
         browserPanel.accessibilityViewIsModal = compact && browserOpen
         inspectorPanel.accessibilityViewIsModal = sketchInput?.projection == nil && compact && inspectorOpen
-        let modelControls: [UIView] = [modellingInspector?.resultButton, modelValueButton, endpointFinishButton].compactMap { $0 }
-        workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, settingsButton, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointFinishButton, canvas, inspectorPanel, featureHistory, status]
+        let modelControls: [UIView] = [modellingInspector?.resultButton, modelValueButton].compactMap { $0 }
+        workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, settingsButton, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, canvas, inspectorPanel, featureHistory, status]
         if resetChromeOffsets {
             // Reparenting the same controls changes scroll content dimensions.
             // Discard the old text-toolbar offsets once, after the new frames
@@ -4990,7 +4961,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         featureHistory.cancelPlayback()
         edgeSelectorContext = nil
         active = false
-        endpointFinishButton.isHidden = true
 #if DEBUG
         groupedInspectorFrameReady = false
 #endif
@@ -5566,33 +5536,26 @@ private extension FoundationController {
                 return
             }
             tap([-20, -10, 0]) {
-                if !self.endpointFinishButton.isHidden { issues.append("Button appeared before the first line") }
                 tap([0, 10, 0]) {
                     tap([25, 10, 0]) {
-                        wait({ !self.endpointFinishButton.isHidden && self.pending.isEmpty && self.state?.sketch?.curves.count == 2 }) {
-                            let button = self.endpointFinishButton
-                            if self.state?.sketch?.curves.count != 2 { issues.append("Expected two committed lines") }
-                            if button.bounds.width < 44 || button.bounds.height < 44 || button.configuration?.image == nil { issues.append("Missing artwork or touch target") }
-                            if self.workspace.hitTest(button.center, with: nil) !== button { issues.append("Endpoint button cannot receive taps") }
-                            if let position = self.sketchInput?.finish_chain_at {
-                                let endpoint = CGPoint(x: self.canvas.frame.minX + position[0], y: self.canvas.frame.minY + position[1])
-                                if hypot(button.center.x - endpoint.x, button.center.y - endpoint.y) > 90 { issues.append("Button too far from endpoint") }
-                                if button.frame.contains(endpoint) { issues.append("Button covers endpoint") }
-                            } else { issues.append("Missing endpoint projection") }
+                        wait({ self.pending.isEmpty && self.state?.sketch?.curves.count == 2 }) {
+                            if !self.finishChainButton.isHidden { issues.append("Line still shows toolbar Finish chain") }
+                            if self.workspace.subviews.contains(where: { $0.accessibilityIdentifier == "sketch-endpoint-finish" }) {
+                                issues.append("Line still has an endpoint Finish chain button")
+                            }
                             capture("ready")
-                            button.sendActions(for: .touchUpInside)
-                            wait({ self.sketchInput?.finish_chain_at == nil && self.pending.isEmpty }) {
-                                if !button.isHidden || self.state?.sketch?.curves.count != 2 || self.state?.sketch == nil { issues.append("Finish changed geometry or closed the sketch") }
-                                if self.state?.active_tool != "select" { issues.append("Finish did not return to Select") }
+                            self.selectButton.sendActions(for: .touchUpInside)
+                            wait({ self.state?.active_tool == "select" && self.sketchInput?.finish_chain_at == nil && self.pending.isEmpty }) {
+                                if self.state?.sketch?.curves.count != 2 || self.state?.sketch == nil { issues.append("Select changed geometry or closed the sketch") }
                                 capture("finished")
                                 self.setTool("sketch.line")
                                 wait({ self.state?.active_tool == "sketch.line" && self.pending.isEmpty }) {
                                     tap([-25, 20, 0]) {
                                         tap([-10, 25, 0]) {
-                                            wait({ !self.endpointFinishButton.isHidden && self.pending.isEmpty && self.state?.sketch?.curves.count == 3 }) {
-                                                self.finishChainButton.sendActions(for: .touchUpInside)
+                                            wait({ self.pending.isEmpty && self.state?.sketch?.curves.count == 3 }) {
+                                                self.selectButton.sendActions(for: .touchUpInside)
                                                 wait({ self.state?.active_tool == "select" && self.pending.isEmpty }) {
-                                                    if self.state?.sketch?.curves.count != 3 { issues.append("Toolbar Finish changed geometry") }
+                                                    if self.state?.sketch?.curves.count != 3 { issues.append("Stopping another line changed geometry") }
                                                     capture("toolbar-finished"); report()
                                                 }
                                             }
@@ -6587,7 +6550,8 @@ private extension FoundationController {
             applyAppearance(); configureChrome(); updateAvailability(); view.layoutIfNeeded()
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                let data = try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues, "variants": variants.count], options: [.prettyPrinted, .sortedKeys])
+                let data = try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues, "variants": variants.count,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"], options: [.prettyPrinted, .sortedKeys])
                 try data.write(to: directory.appendingPathComponent("sketch-toolbar-check.json"), options: .atomic)
             } catch { print("Sketch toolbar report failed: \(error)") }
             print("Sketch toolbar check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
@@ -6647,6 +6611,80 @@ private extension FoundationController {
                 }
             }
         }
+        func checkLineButton() {
+            guard let button = sketchQuickTools.first(where: { $0.0 == "sketch.line" })?.1 else {
+                issues.append("missing Line button"); report(); return
+            }
+            func waitForMenu(_ remaining: Int = 100, then action: @escaping (BrowserActionController) -> Void) {
+                guard active, generation == expected, !finished else { return }
+                if let navigation = presentedViewController as? UINavigationController,
+                   let picker = navigation.viewControllers.first as? BrowserActionController,
+                   !navigation.isBeingPresented { action(picker); return }
+                guard remaining > 0 else { issues.append("second Line press did not open choices"); report(); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitForMenu(remaining - 1, then: action) }
+            }
+            func choose(_ index: Int) {
+                let family = SketchToolFamily.line
+                guard index < family.tools.count else {
+                    setTool("select")
+                    waitForTool("select") {
+                        button.sendActions(for: .touchUpInside)
+                        waitForTool(family.defaultTool) {
+                            if self.presentedViewController != nil { issues.append("returning to Line opened choices instead of its default") }
+                            check(0)
+                        }
+                    }
+                    return
+                }
+                let revision = state?.geometry_revision
+                button.sendActions(for: .touchUpInside)
+                waitForMenu { picker in
+                    if picker.menu.children.map(\.icon) != family.icons || picker.menu.children.count != family.tools.count {
+                        issues.append("Line choices or canonical icons missing")
+                        picker.dismiss(animated: false) { report() }; return
+                    }
+                    if picker.menu.children.contains(where: { $0.title.hasPrefix("cmd.") }) {
+                        issues.append("Line choices contain an untranslated command ID")
+                    }
+                    let selected = family.tools.firstIndex(of: self.state?.active_tool ?? "")
+                    if picker.menu.children.enumerated().contains(where: { $0.element.selected != ($0.offset == selected) }) {
+                        issues.append("Line choices lost the selected tool")
+                    }
+                    if self.state?.geometry_revision != revision || self.keyboardTop != nil || self.textEntryActive {
+                        issues.append("Line choices changed geometry or raised the keyboard")
+                    }
+                    do {
+                        let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                        let surface: UIView = self.view.window ?? self.view
+                        let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                        try image.pngData()?.write(to: directory.appendingPathComponent("sketch-toolbar-line-menu-\(index).png"), options: .atomic)
+                    } catch { issues.append("Line menu capture: \(error)") }
+                    picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: index, section: 0))
+                    waitForTool(family.tools[index]) {
+                        if !button.isSelected { issues.append("Line variant lost its parent highlight") }
+                        if self.finishChainButton.isHidden != (family.tools[index] != "sketch.spline.fit_point") {
+                            issues.append("Finish chain is not limited to Spline")
+                        }
+                        choose(index + 1)
+                    }
+                }
+            }
+            setTool("select")
+            waitForTool("select") {
+                button.sendActions(for: .touchUpInside)
+                waitForTool("sketch.line") {
+                    if self.presentedViewController != nil { issues.append("first Line press opened choices") }
+                    if button.accessibilityLabel != SketchText.text("line") { issues.append("Line has the wrong label") }
+                    if self.sketchQuickTools.contains(where: { ["sketch.arc.three_point", "sketch.spline.fit_point"].contains($0.0) }) {
+                        issues.append("Line variants are still separate default buttons")
+                    }
+                    if !button.subviews.contains(where: { $0.accessibilityIdentifier == "workspace-tool-variants" && !$0.isHidden }) {
+                        issues.append("Line variants arrow missing")
+                    }
+                    choose(0)
+                }
+            }
+        }
         func checkRectangleButton() {
             guard let button = sketchQuickTools.first(where: { $0.0 == "sketch.rectangle.two_point" })?.1 else {
                 issues.append("missing rectangle button"); report(); return
@@ -6701,7 +6739,7 @@ private extension FoundationController {
                             waitForMenu { picker in
                                 if picker.menu.children.last?.selected != true { issues.append("center rectangle choice is not selected") }
                                 picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: 0, section: 0))
-                                waitForTool("sketch.rectangle.two_point") { check(0) }
+                                waitForTool("sketch.rectangle.two_point") { checkLineButton() }
                             }
                         }
                     }

@@ -89,8 +89,11 @@ The 52-point tool rail (56 for accessibility text) contains icon-first controls
 with at least 44-point interaction regions. Modelling groups expose the actual
 native-supported create, modify, pattern/mirror and assembly forms. Additional
 native-supported operations remain reachable in the create menu. Sketch editing
-replaces these with Line, Rectangle, Circle, Arc, Spline, Trim, overflow tools and
-Finish chain. A labelled **Finish sketch** button occupies its own row in the
+replaces these with Line, Rectangle, Circle, Trim and overflow tools. Line groups
+the Line, Three-point Arc and Fit-point Spline tools. Pressing Line or Rectangle
+starts its default tool; pressing it again while any of its variants is active
+opens its choices. Finish chain appears only for splines. Choose Select to stop
+drawing lines. A labelled **Finish sketch** button occupies its own row in the
 document header, outside the scrolling rail. Cancelling a segment retains its
 icon-only presentation after state refreshes and plane-picker cancellation.
 Constraints, dimensions and construction appear

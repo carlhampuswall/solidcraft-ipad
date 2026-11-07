@@ -1,0 +1,17 @@
+{
+  "en": {
+    "ui.ipados.sketch.line_variants": "Press again to choose a line, arc or spline."
+  },
+  "de": {
+    "ui.ipados.sketch.line_variants": "Erneut drücken, um eine Linie, einen Bogen oder einen Spline auszuwählen."
+  },
+  "ja": {
+    "ui.ipados.sketch.line_variants": "もう一度押して線分、円弧、スプラインを選択します。"
+  },
+  "ko": {
+    "ui.ipados.sketch.line_variants": "다시 눌러 선, 호 또는 스플라인을 선택하세요."
+  },
+  "zh": {
+    "ui.ipados.sketch.line_variants": "再次按下以选择直线、圆弧或样条曲线。"
+  }
+}

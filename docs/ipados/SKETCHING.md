@@ -175,19 +175,18 @@ captures creation, coincidence and Undo through synthetic Pencil input and the
 actual macOS GPU renderer. Captures were inspected; this does not verify UIKit
 runtime or physical Pencil input. The engine test suite was not run.
 
-While drawing a line chain, a small checkmark button appears beside the last
-committed endpoint. It switches to Select through `tool.set`, leaving the
-committed lines and the sketch open. Choose Line again to start a new chain.
-The toolbar's Finish chain button also returns to Select for lines; splines
-retain their existing `tool.finish_chain` completion. The endpoint button uses the shared
-camera projection, avoids workspace controls and hides during drawing/evaluation. Its accessible
-label is **Finish chain** and its touch target is 44 points. The toolbar's
-existing Finish chain and Finish sketch controls remain available.
+The **Line** button starts the line tool on its first press. Press it again while
+Line, Three-point Arc or Fit-point Spline is active to open those choices, using
+the same interaction as Rectangle. The parent button stays highlighted for each
+variant. Returning to Line from another tool family starts the default line tool.
+Lines have no endpoint or toolbar Finish chain button. Choose **Select** to stop
+drawing, leaving committed lines and the sketch open. Choose Line again to start
+a new chain. Splines retain the toolbar's `tool.finish_chain` completion.
 
 DEBUG `--line-finish-check` draws two lines through synthetic Pencil samples,
-checks the production UIKit endpoint button and taps it, verifies Select is
-active while both lines and the open sketch remain, then draws another line
-and checks the toolbar's Finish chain action also returns to Select. It writes
+checks that both Finish chain buttons are absent and taps Select, verifies both
+lines and the open sketch remain, then draws another line and stops it through
+Select again. It writes
 `line-finish-check.json` and `line-finish-ready.png`, `line-finish-finished.png`
 and `line-finish-toolbar-finished.png` in Documents. Physical input
 delivery requires a separate manual check.
@@ -359,7 +358,7 @@ Creating a rectangle returns to Select. **Tools > Repeat rectangle creation**
 keeps the rectangle tool active for the previous repeated-creation workflow.
 Move events update a scratch preview, never a sampled polyline. Lines retain the
 committed endpoint reference for the next segment; snap to the starting point to
-close. **Finish chain** stops a line chain or commits the fit-point spline.
+close. **Finish chain** commits the fit-point spline.
 The X button is hidden while creating or editing a sketch. Choose **Select** to
 stop drawing, or **Finish sketch** to leave sketch editing. Escape discards only
 the current provisional operation without removing committed segments. Three-point
