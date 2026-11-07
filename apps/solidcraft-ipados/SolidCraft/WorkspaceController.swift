@@ -473,8 +473,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (controller: FoundationController, _: UITraitCollection) in
             controller.rebuildMenus()
             if controller.compactChrome {
-                [controller.top, controller.railScroll, controller.navigationScroll, controller.historyActions,
-                 controller.browserButton, controller.moreButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
+                [controller.top, controller.moreButton, controller.status].forEach(WorkspaceStyle.floatingSurface)
             }
         }
         canvas.onResize = { [weak self] in self?.updateSurface() }
@@ -5592,6 +5591,16 @@ private extension FoundationController {
             if root.accessibilityIdentifier == id { return root as? WorkspaceButton }
             return root.subviews.compactMap { button(id, in: $0) }.first
         }
+        func descendant(_ id: String, in root: UIView?) -> UIView? {
+            guard let root else { return nil }
+            if root.accessibilityIdentifier == id { return root }
+            return root.subviews.compactMap { descendant(id, in: $0) }.first
+        }
+        func historyDiagnosticWidth() -> CGFloat {
+            let toggle = button("workspace-feature-history-toggle")
+            return descendant("workspace-tool-icon-surface", in: toggle)?.layer.borderWidth ??
+                toggle?.configuration?.background.strokeWidth ?? 0
+        }
         func capture(_ name: String, feature: ModellingPresentation.Feature? = nil) {
             view.layoutIfNeeded()
             let surface: UIView = view.window ?? view
@@ -5627,13 +5636,15 @@ private extension FoundationController {
             view.layoutIfNeeded(); featureHistory.layoutIfNeeded()
             button("workspace-feature-history-toggle")?.layoutIfNeeded()
             let color = FeatureDiagnosticStyle.color(severity).resolvedColor(with: traitCollection)
-            guard let title = button("workspace-feature-history-toggle")?.titleLabel else { finish("Missing History label"); return }
+            let toggle = button("workspace-feature-history-toggle")
+            let caption = descendant("workspace-rail-caption", in: toggle)?.subviews.compactMap { $0 as? UILabel }.first
+            guard let title = caption ?? toggle?.titleLabel else { finish("Missing History label"); return }
             let fittedWidth = title.sizeThatFits(CGSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)).width
-            guard fittedWidth <= title.bounds.width + 1 else {
+            guard !showToolLabels || fittedWidth <= title.bounds.width + 1 else {
                 finish("History label needs " + String(describing: fittedWidth) + " points, has " + String(describing: title.bounds.width)); return
             }
             guard status.diagnosticSeverity == severity, status.text?.contains(feature.name) == true,
-                  button("workspace-feature-history-toggle")?.configuration?.background.strokeWidth == 2 else {
+                  historyDiagnosticWidth() == 2 else {
                 finish("Status or collapsed History lost its named severity indicator"); return
             }
             let name = severity.rawValue + (theme == .dark ? "-dark" : "-light")
@@ -5686,7 +5697,7 @@ private extension FoundationController {
                                 commands([("edit.undo", [:])]) {
                                     wait({ self.state?.modelling?.attentionFeatures.isEmpty == true }) {
                                         self.failure = nil; self.updateStatus(); self.updateAvailability()
-                                        guard button("workspace-feature-history-toggle")?.configuration?.background.strokeWidth == 0 else {
+                                        guard historyDiagnosticWidth() < 2 else {
                                             finish("Repaired model kept its History indicator"); return
                                         }
                                         capture("repaired"); finish()

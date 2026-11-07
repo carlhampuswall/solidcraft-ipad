@@ -722,13 +722,15 @@ private final class RailButtonContent: UIView {
         chip.isHidden = !captionVisible; setNeedsLayout()
     }
     func updateCaptionVisibility(_ visible: Bool) { showCaption(visible, mirrored: mirrored) }
-    func render(selected: Bool, enabled: Bool, highlighted: Bool, history: Bool) {
+    func render(selected: Bool, enabled: Bool, highlighted: Bool, history: Bool, diagnostic: FeatureDiagnosticSeverity?) {
         alpha = enabled ? (highlighted ? 0.72 : 1) : 0.45
         guard separateIconSurface else { return }
         WorkspaceStyle.floatingSurface(iconSurface)
         WorkspaceStyle.floatingSurface(chip)
         iconSurface.backgroundColor = selected ? WorkspaceStyle.selectionFill : WorkspaceStyle.surface
-        iconSurface.layer.borderColor = (selected || history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.separator).cgColor
+        iconSurface.layer.borderColor = (diagnostic.map(FeatureDiagnosticStyle.color) ??
+            (selected || history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.separator)).cgColor
+        iconSurface.layer.borderWidth = diagnostic == nil ? 0.5 : 2
         glyph.tintColor = history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.foreground
     }
 
@@ -772,6 +774,7 @@ final class WorkspaceButton: UIButton {
     private var systemIcon: String?
     private var compactIcon = false
     private var toolCaption: RailButtonContent?
+    private var diagnosticSeverity: FeatureDiagnosticSeverity?
     var hasExternalToolCaption: Bool { toolCaption != nil }
     private var verticallyCenteredContent = false
     private var railContent: RailButtonContent?
@@ -949,7 +952,8 @@ final class WorkspaceButton: UIButton {
         super.updateConfiguration()
         if let toolCaption {
             imageView?.isHidden = true
-            toolCaption.render(selected: isSelected, enabled: isEnabled, highlighted: isHighlighted, history: isHistoryAction)
+            toolCaption.render(selected: isSelected, enabled: isEnabled, highlighted: isHighlighted,
+                               history: isHistoryAction, diagnostic: diagnosticSeverity)
             var config = configuration
             config?.background = .clear(); config?.baseBackgroundColor = .clear
             configuration = config
@@ -1027,6 +1031,8 @@ final class WorkspaceButton: UIButton {
     }
 
     func diagnostic(_ severity: FeatureDiagnosticSeverity?) {
+        diagnosticSeverity = severity
+        if toolCaption != nil { setNeedsUpdateConfiguration(); return }
         var config = configuration
         config?.background.strokeColor = severity.map(FeatureDiagnosticStyle.color) ?? .clear
         config?.background.strokeWidth = severity == nil ? 0 : 2
