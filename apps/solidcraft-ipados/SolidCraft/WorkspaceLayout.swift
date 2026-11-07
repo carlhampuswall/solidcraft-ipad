@@ -365,7 +365,7 @@ struct WorkspaceLayout {
     let rail: CGRect
     var canvas: CGRect
     var browser: CGRect?
-    let inspector: CGRect?
+    var inspector: CGRect?
     let compact: Bool
     var navigation: CGRect = .zero
     var history: CGRect = .zero
@@ -373,6 +373,14 @@ struct WorkspaceLayout {
     var browserAccess: CGRect = .zero
     var viewAccess: CGRect = .zero
     var floating = false
+
+    /// Keep a collapsed tool beside the navigation rail, clear of the model grip.
+    mutating func fitInspectorHeader(_ size: CGSize, railRight: Bool) {
+        guard floating, let panel = inspector else { return }
+        let width = min(panel.width, ceil(size.width) + 8)
+        let height = min(panel.height, max(54, ceil(size.height) + 8))
+        inspector = CGRect(x: railRight ? panel.minX : panel.maxX - width, y: panel.minY, width: width, height: height)
+    }
 
     static func resolve(size: CGSize, browser: Bool, inspector: Bool,
                         railRight: Bool, largeText: Bool,

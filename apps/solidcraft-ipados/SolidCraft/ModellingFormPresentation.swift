@@ -5,6 +5,7 @@ import Foundation
 enum ModellingFormPresentation {
     static let automaticExtrudeDepthKey = "SolidCraft.workspace.automaticExtrudeDepth"
     static let compactToolControlsKey = "SolidCraft.workspace.compactToolControls"
+    static let tuckExtrudeOptionsKey = "SolidCraft.workspace.tuckExtrudeOptions"
     static let rollbackEditingKey = "SolidCraft.workspace.rollbackFeatureEditing"
 
     static func compactToolControls(_ stored: Bool?) -> Bool { stored ?? true }

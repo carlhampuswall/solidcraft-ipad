@@ -895,6 +895,7 @@ final class WorkspacePanel: UIView {
     private let heading = WorkspaceStyle.label(.headline)
     private let close: WorkspaceButton
     private let headerActions = UIStackView()
+    private weak var toolHeader: UIView?
     init(title: String, onClose: @escaping () -> Void) {
         close = WorkspaceButton(WorkspaceStyle.text("close_short"), action: onClose)
         super.init(frame: .zero)
@@ -952,8 +953,27 @@ final class WorkspacePanel: UIView {
         action.widthAnchor.constraint(equalToConstant: 44).isActive = true
     }
     func setTitle(_ title: String) { heading.text = title }
+    func setToolHeader(_ view: UIView?) {
+        toolHeader?.removeFromSuperview()
+        toolHeader = view
+        heading.isHidden = view != nil
+        close.isHidden = view != nil
+        body.isHidden = false
+        guard let view else { return }
+        view.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            body.topAnchor.constraint(greaterThanOrEqualTo: view.bottomAnchor, constant: 4)
+        ])
+    }
+    func setBodyHidden(_ hidden: Bool) { body.isHidden = hidden }
     func fittingHeight(contentHeight: CGFloat, width: CGFloat) -> CGFloat {
-        let headerHeight = max(54, ceil(heading.font.lineHeight) + 20)
+        let headerHeight = max(54, toolHeader.map { $0.systemLayoutSizeFitting(
+            CGSize(width: max(0, width - 8), height: 0), withHorizontalFittingPriority: .required,
+            verticalFittingPriority: .fittingSizeLevel).height + 8 } ?? (ceil(heading.font.lineHeight) + 20))
         let footerHeight = footer.isHidden ? 0 : footer.systemLayoutSizeFitting(
             CGSize(width: width, height: 0), withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel).height
@@ -1753,6 +1773,9 @@ final class ModellingInspector: UIStackView {
     let title: String
     let compact: Bool
     let minimal: Bool
+    private(set) var extrusionBar: UIStackView?
+    private(set) var extrusionOptionsHidden = false
+    private lazy var extrusionOptions = WorkspaceButton(title, action: {})
     private let operation: String?
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
@@ -1828,7 +1851,7 @@ final class ModellingInspector: UIStackView {
         if !textEntryActive { rebuildFields() }
     }
 
-    init(state: ModellingState, compact: Bool = true, minimal: Bool = false) {
+    init(state: ModellingState, compact: Bool = true, minimal: Bool = false, tuckExtrudeOptions: Bool = false) {
         self.compact = compact
         self.minimal = compact && minimal
         operation = state.operation
@@ -1881,15 +1904,33 @@ final class ModellingInspector: UIStackView {
             divider.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
             footer.addArrangedSubview(divider)
         }
-        footer.addArrangedSubview(message)
-        let actions: UIStackView = compact ? InspectorActionRow(buttons: [cancel, apply]) : UIStackView(arrangedSubviews: [apply])
-        actions.spacing = 8; actions.distribution = .fillEqually
-        if compact {
-            // Text keeps the actions readable at narrow widths. Their
-            // canonical tool artwork remains on the operation choices.
-            for button in [cancel, apply] { button.textOnly() }
-            footer.addArrangedSubview(actions)
-        } else { footer.addArrangedSubview(actions); footer.addArrangedSubview(cancel); addArrangedSubview(footer) }
+        if self.minimal && tuckExtrudeOptions && state.operation == "solid.extrude" {
+            // Keep the same transaction buttons and their enablement in both presentations.
+            for (button, icon) in [(cancel, "close"), (apply, "finish")] {
+                button.artwork(icon, compact: true)
+                button.widthAnchor.constraint(equalToConstant: WorkspaceStyle.touch).isActive = true
+            }
+            extrusionOptions.contentHorizontalAlignment = .leading
+            extrusionOptions.titleLabel?.numberOfLines = 1
+            extrusionOptions.configuration?.titleLineBreakMode = .byTruncatingTail
+            extrusionOptions.accessibilityIdentifier = "workspace-extrude-options"
+            extrusionOptions.addAction(UIAction { [weak self] _ in
+                guard let self, !self.extrusionOptionsHidden else { return }
+                self.setExtrusionOptionsHidden(true)
+            }, for: .touchUpInside)
+            extrusionBar = UIStackView(arrangedSubviews: [extrusionOptions, cancel, apply])
+            extrusionBar?.spacing = 4
+            extrusionOptionsHidden = true
+            addArrangedSubview(message)
+        } else {
+            footer.addArrangedSubview(message)
+            if compact {
+                for button in [cancel, apply] { button.textOnly() }
+                footer.addArrangedSubview(InspectorActionRow(buttons: [cancel, apply]))
+            } else {
+                footer.addArrangedSubview(apply); footer.addArrangedSubview(cancel); addArrangedSubview(footer)
+            }
+        }
         apply.addAction(UIAction { [weak self] _ in
             guard let self, !self.busy, !self.contextRefreshing, self.attachmentReady,
                   !ModellingFormPresentation.needsCombineBodies(self.params),
@@ -1909,6 +1950,38 @@ final class ModellingInspector: UIStackView {
         cancel = WorkspaceButton(WorkspaceStyle.text("cancel"), action: {})
         select = WorkspaceButton(ModellingText.text("select_in_viewport"), action: {})
         super.init(coder: coder)
+    }
+
+    private func setExtrusionOptionsHidden(_ hidden: Bool) {
+        endEditing(true)
+        extrusionOptionsHidden = hidden
+        updateExtrusionMenu()
+        onPreferredSizeChange?()
+    }
+
+    private func updateExtrusionMenu() {
+        guard extrusionBar != nil else { return }
+        extrusionOptions.systemArtwork(extrusionOptionsHidden ? "chevron.down" : "chevron.up")
+        extrusionOptions.configuration?.imagePlacement = .trailing
+        let field = fields.first { $0.key == "operation" }
+        let selected = parameter("operation")
+        let options = field?.options ?? []
+        let current = options.first { $0.value == selected }.map { ModellingText.label($0.label) }
+        extrusionOptions.configuration?.subtitle = current
+        extrusionOptions.accessibilityValue = current
+        extrusionOptions.showsMenuAsPrimaryAction = extrusionOptionsHidden
+        guard extrusionOptionsHidden else { extrusionOptions.menu = nil; return }
+        let operations = options.map { option in
+            UIAction(title: ModellingText.label(option.label), state: option.value == selected ? .on : .off) { [weak self] _ in
+                guard let self, self.extrusionBar?.window != nil else { return }
+                self.selectInlineChoice("operation", value: option.value)
+            }
+        }
+        let more = UIAction(title: InspectorText.text("more_options")) { [weak self] _ in
+            guard let self, self.extrusionBar?.window != nil, self.handleEntryEnabled else { return }
+            self.setExtrusionOptionsHidden(false)
+        }
+        extrusionOptions.menu = UIMenu(children: [UIMenu(options: .displayInline, children: operations), more])
     }
 
     func evaluated(_ state: ModellingState) {
@@ -1964,6 +2037,7 @@ final class ModellingInspector: UIStackView {
     func failed(_ error: BridgeError) {
         busy = false; committing = false; inputWhileBusy = false; contextRefreshing = false; validated = nil
         editors.forEach { $0.setBusy(false) }
+        if extrusionOptionsHidden { setExtrusionOptionsHidden(false) }
         updateAvailability(); message.show(error.message, error: true); onPreferredSizeChange?()
     }
     func setBusy(committing: Bool, allowInput: Bool = false) {
@@ -1976,6 +2050,7 @@ final class ModellingInspector: UIStackView {
         if !busy { message.show(minimal ? nil : entryHint); onPreferredSizeChange?() }
     }
     private func updateAvailability() {
+        if extrusionBar != nil { extrusionOptions.availability(enabled: handleEntryEnabled) }
         apply.availability(enabled: !busy && !contextRefreshing && attachmentReady && !ModellingFormPresentation.needsExtrusionDistance(params)
             && !ModellingFormPresentation.needsCombineBodies(params))
         cancel.availability(enabled: !committing)
@@ -1998,6 +2073,7 @@ final class ModellingInspector: UIStackView {
         return String(result.dropFirst().dropLast())
     }
     private func rebuildFields() {
+        updateExtrusionMenu()
         defer { onPreferredSizeChange?() }
         fieldsStack.arrangedSubviews.forEach { fieldsStack.removeArrangedSubview($0); $0.removeFromSuperview() }
         editors.removeAll(); textFields.removeAll(); fieldViews.removeAll(); sliders.removeAll()
@@ -2106,7 +2182,9 @@ final class ModellingInspector: UIStackView {
             }
             if stack === fieldsStack { fieldsStack.setCustomSpacing(compact ? 12 : 16, after: stack.arrangedSubviews.last ?? heading) }
         }
-        if !additionalFields.arrangedSubviews.isEmpty {
+        if extrusionBar != nil && !additionalFields.arrangedSubviews.isEmpty {
+            fieldsStack.addArrangedSubview(additionalFields)
+        } else if !additionalFields.arrangedSubviews.isEmpty {
             let options = InspectorDisclosure(title: InspectorText.text("more_options"), expanded: optionsExpanded,
                                               identifier: "workspace-model-more-options") { [weak self] expanded in
                 self?.optionsExpanded = expanded; self?.onPreferredSizeChange?()

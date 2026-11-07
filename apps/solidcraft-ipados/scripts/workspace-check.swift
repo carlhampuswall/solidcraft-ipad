@@ -464,6 +464,17 @@ struct WorkspaceChecks {
         mailbox.clear()
         if let staleInputToken { try require(mailbox.take(token: staleInputToken) == nil, "cancelled input batch survived a context change") }
         // On-model value chips stay readable, clear of both the grip and chrome.
+        for railRight in [false, true] {
+            for width: CGFloat in [390, 834, 1194] {
+                var layout = WorkspaceLayout.resolve(size: CGSize(width: width, height: 800), browser: false, inspector: true,
+                                                     railRight: railRight, largeText: false)
+                let panel = layout.inspector, canvas = layout.canvas
+                layout.fitInspectorHeader(CGSize(width: 198, height: 44), railRight: railRight)
+                guard let panel, let bar = layout.inspector else { throw NSError(domain: "ExtrudeHeader", code: 1) }
+                try require(panel.contains(bar) && bar.height == 54 && layout.canvas == canvas, "tucked Extrude moved or covered the viewport")
+                try require(railRight ? bar.minX == panel.minX : bar.maxX == panel.maxX, "Extrude controls moved away from navigation")
+            }
+        }
         for bounds in [CGRect(x: 0, y: 0, width: 1194, height: 790), CGRect(x: 0, y: 0, width: 390, height: 420)] {
             for anchor in [CGPoint(x: bounds.midX, y: bounds.midY), CGPoint(x: bounds.maxX - 5, y: bounds.midY), CGPoint(x: 5, y: 5)] {
                 let obstacle = CGRect(x: bounds.maxX - 100, y: 0, width: 100, height: 120)

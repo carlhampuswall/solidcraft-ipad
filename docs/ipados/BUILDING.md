@@ -10,6 +10,14 @@ the full-gate examples below are for a later explicit full-test request.
 
 ## Compact tool controls
 
+Selecting a face or sketch region starts Extrude immediately. With compact
+controls and on-model handles enabled in the floating workspace, drag the arrow
+or tap its distance to edit the depth. The small Extrude menu shows the current
+operation and offers New Body, Union, Intersect and Subtract. **More options**
+opens the full inputs for the same draft. Tap the menu title to collapse them.
+The checkmark applies the draft and the cross cancels it. Turn off **Tools >
+Collapse Extrude options** to start with the previous tool card.
+
 **Tools > Compact tool controls** is on by default. Fillet uses a small radius
 input with pinned Apply and Cancel actions; selecting edges and dragging the
 viewport handle remain available during the preview. Numeric edits preview

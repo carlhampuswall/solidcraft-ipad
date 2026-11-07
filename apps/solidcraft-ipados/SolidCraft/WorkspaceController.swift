@@ -232,6 +232,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var homeToolbar = UserDefaults.standard.object(forKey: "SolidCraft.workspace.homeToolbar") as? Bool ?? true
     private var compactInspector = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactInspector") as? Bool ?? true
     private var compactToolControls = ModellingFormPresentation.compactToolControls(UserDefaults.standard.object(forKey: ModellingFormPresentation.compactToolControlsKey) as? Bool)
+    private var tuckExtrudeOptions = UserDefaults.standard.object(forKey: ModellingFormPresentation.tuckExtrudeOptionsKey) as? Bool ?? true
     private var useTopSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useTopSafeArea") as? Bool ?? true
     private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
     private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
@@ -2077,11 +2078,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.modellingToken = token
                 self.modellingFeature = model.feature; self.table.reloadData()
-                let form = ModellingInspector(state: model, compact: self.compactInspector, minimal: self.compactToolControls)
+                let tuck = fromSelection == .extrude && self.tuckExtrudeOptions && self.directHandles && self.compactChrome
+                let form = ModellingInspector(state: model, compact: self.compactInspector, minimal: self.compactToolControls,
+                                              tuckExtrudeOptions: tuck)
                 self.modellingInspector = form
                 form.onPreferredSizeChange = { [weak self] in self?.view.setNeedsLayout() }
                 self.inspectorPanel.setTitle(form.compact ? form.title : WorkspaceStyle.text("inspector"))
-                self.inspectorPanel.setFooter(form.compact ? form.footer : nil)
+                self.inspectorPanel.setToolHeader(form.extrusionBar)
+                self.inspectorPanel.setFooter(form.compact && form.extrusionBar == nil ? form.footer : nil)
                 self.inspectorScroll.setContentOffset(.zero, animated: false)
                 self.properties.arrangedSubviews.forEach { self.properties.removeArrangedSubview($0); $0.removeFromSuperview() }
                 self.properties.addArrangedSubview(form)
@@ -2376,6 +2380,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let editor = modelValueEditor { editor.dismiss(animated: false) { [weak self] in self?.updateAvailability() } }
         modelValueEditor = nil; modelValue = nil; modelValueButton.isHidden = true
         modellingInspector?.endEditing(true); modellingInspector = nil
+        inspectorPanel.setToolHeader(nil)
         inspectorPanel.setFooter(nil); inspectorPanel.setTitle(WorkspaceStyle.text("inspector"))
         previewStale = false
         modellingToken = nil; modellingFeature = nil; modellingContext = nil; modellingStarting = false
@@ -3985,11 +3990,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.automaticExtrudeDepth, forKey: ModellingFormPresentation.automaticExtrudeDepthKey)
             self.rebuildMenus()
         }
+        let tuckedOptions = UIAction(title: InspectorText.text("tuck_extrude_options"),
+            subtitle: InspectorText.text("tuck_extrude_options_help"), attributes: modellingEditing ? .disabled : [],
+            state: tuckExtrudeOptions ? .on : .off) { [weak self] _ in
+            guard let self, !self.modellingEditing else { return }
+            self.tuckExtrudeOptions.toggle()
+            UserDefaults.standard.set(self.tuckExtrudeOptions, forKey: ModellingFormPresentation.tuckExtrudeOptionsKey)
+            self.rebuildMenus()
+        }
         var moreActions: [UIMenuElement] = [
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -4274,6 +4287,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if planeChoosing { status.text = SketchText.text("tap_plane"); return }
         if modellingEditing {
             if previewStale { status.text = ModellingText.text("preview_stale"); return }
+            if let form = modellingInspector, form.extrusionBar != nil && form.selectionField == nil {
+                status.text = canvas.displayingPreview ? WorkspaceStyle.text("preview_ready") : NativeText.value("ui.ipados.extrude.enter_distance")
+                return
+            }
             status.text = ModellingText.text("draft_hint") + "\n" + (cancelToolsOnDismiss ? WorkspaceStyle.text("tool_dismiss_hint") : ModellingText.text("navigation_hint"))
             return
         }
@@ -4419,7 +4436,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 .placed(in: chrome, viewport: viewport, useTopSafeArea: topStripHeaderEnabled)
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
-        if compactToolControls, let frame = available.inspector {
+        let tucked = modellingInspector?.extrusionOptionsHidden == true && available.floating
+        inspectorPanel.setBodyHidden(tucked)
+        if compactToolControls, !tucked, let frame = available.inspector {
             let visible = properties.arrangedSubviews.filter { !$0.isHidden }
             let width = max(0, frame.width - 32)
             let measured = visible.reduce(CGFloat(0)) { height, child in
@@ -4437,8 +4456,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 $0 + max(WorkspaceStyle.touch, $1.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
             } + CGFloat(max(0, visible.count - 1)) * stack.spacing
         }
-        let resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
+        var resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
                                navHeight: contentHeight(navigationActions, width: available.navigation.width))
+        if tucked, let bar = modellingInspector?.extrusionBar {
+            resolved.fitInspectorHeader(bar.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize), railRight: railRight)
+        }
         if canvas.frame != resolved.canvas {
             canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true
             sketchInput = nil; endpointFinishButton.isHidden = true
@@ -5026,7 +5048,9 @@ private extension FoundationController {
     func checkCompactToolControlsOnDevice() {
         let expected = generation
         let savedControls = compactToolControls, savedCompact = compactInspector
+        let savedExtrude = (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles)
         compactToolControls = true; compactInspector = true
+        (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles) = (true, true, false, true)
         var issues: [String] = [], measurements: [[String: Any]] = []
         var finished = false
         func find(_ id: String, in root: UIView) -> UIView? {
@@ -5045,12 +5069,13 @@ private extension FoundationController {
             guard !finished else { return }; finished = true
             if let issue { issues.append(issue); capture("failed") }
             compactToolControls = savedControls; compactInspector = savedCompact
+            (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles) = savedExtrude
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "measurements": measurements,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
                     "at": ISO8601DateFormatter().string(from: Date()),
-                    "coverage": "Compact controls for Extrude, Fillet, Chamfer, Shell, Offset Face and Rectangular Pattern; More options preserves inputs; live text preview; pinned Apply/Cancel; previous presentation preference; synthetic actions"]
+                    "coverage": "Automatic face extrusion, tucked operation menu and expanded inputs, live depth, Cancel and restored card preference; compact modelling tools and numeric entry; synthetic contacts and actions"]
                 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("compact-tools-check.json"), options: .atomic)
             } catch { print("Compact controls report: \(error)") }
@@ -5134,9 +5159,56 @@ private extension FoundationController {
                 } else { cancelAndContinue() }
             }
         }
-        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("solid.box", ["body_name": "Compact stock", "length": "30 mm", "width": "25 mm", "height": "20 mm"]), ("view.fit", [:])]
+        func selectFace(_ tucked: Bool) {
+            tuckExtrudeOptions = tucked
+            session.developmentSelectionTap([10, 10, 20]) { result in
+                guard case .success = result else { finish("Face tap failed"); return }
+                wait("face Extrude", until: { self.modellingInspector?.handleEntryEnabled == true && !self.modelValueButton.isHidden }) {
+                    guard let form = self.modellingInspector else { finish("Missing Extrude"); return }
+                    if !tucked {
+                        guard form.extrusionBar == nil, self.inspectorPanel.frame.height > 180 else { finish("Previous face card unavailable"); return }
+                        self.cancelModelling()
+                        wait("card cancel", until: { !self.modellingEditing && self.pending.isEmpty }) { step(0) }
+                        return
+                    }
+                    guard let bar = form.extrusionBar, let button = find("workspace-extrude-options", in: bar) as? UIButton,
+                          let menu = button.menu, let operations = menu.children.first as? UIMenu, operations.children.count == 4,
+                          let more = menu.children.last as? UIAction, let cancel = find("workspace-model-cancel", in: bar) as? UIButton,
+                          let apply = find("workspace-model-apply", in: bar) as? UIButton, !apply.isEnabled,
+                          form.extrusionOptionsHidden, self.inspectorPanel.frame.height < 90 else { finish("Invalid selection controls"); return }
+                    capture("face-selected")
+                    more.performWithSender(button, target: nil); self.view.layoutIfNeeded()
+                    guard !form.extrusionOptionsHidden, self.inspectorPanel.frame.height > 180,
+                          let field = find("workspace-model-field-distance", in: form) as? UITextField else { finish("More options failed"); return }
+                    field.text = "5 mm"; field.sendActions(for: .editingChanged)
+                    wait("selected face preview", until: { form.handleEntryEnabled && self.modelValue?.value == 5 && self.canvas.displayingPreview }) {
+                        capture("face-options")
+                        let params = form.params
+                        button.sendActions(for: .touchUpInside); self.view.layoutIfNeeded()
+                        guard form.extrusionOptionsHidden, params == form.params, apply.isEnabled else { finish("Collapsing changed the draft"); return }
+                        capture("face-preview")
+                        guard let results = button.menu?.children.first as? UIMenu,
+                              let subtract = results.children.compactMap({ $0 as? UIAction }).first(where: {
+                                  $0.title == NativeText.value("ui.ipados.face_extrude.subtract")
+                              }) else { finish("Subtract missing from the Extrude menu"); return }
+                        subtract.performWithSender(button, target: nil)
+                        wait("on-model Subtract", until: { form.handleEntryEnabled && form.params["operation"] == .string("cut") && self.canvas.displayingPreview }) {
+                            guard form.extrusionOptionsHidden else { finish("Changing result opened Properties"); return }
+                            capture("face-subtract")
+                            cancel.sendActions(for: .touchUpInside)
+                            wait("cancel selected face", until: { !self.modellingEditing && self.pending.isEmpty }) {
+                                self.session.command("select.clear") { _ in
+                                    wait("clear selected face", until: { self.state?.selection.isEmpty == true }) { selectFace(false) }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let fixture: [(String, [String: Any])] = [("file.new", [:]), ("solid.box", ["body_name": "Compact stock", "length": "30 mm", "width": "25 mm", "height": "20 mm"]), ("view.tool_handles", ["enabled": true]), ("view.fit", [:])]
         func setup(_ index: Int) {
-            guard index < fixture.count else { step(0); return }
+            guard index < fixture.count else { selectFace(true); return }
             session.command(fixture[index].0, params: fixture[index].1) { result in
                 guard case .success = result else { finish("fixture failed"); return }; setup(index + 1)
             }
