@@ -5,8 +5,11 @@
 Press **Rectangle** once to start a normal two-point rectangle. Press the same
 button again while either rectangle mode is active to open its context menu.
 Choose **2-Point Rectangle** or **Center Rectangle**; the current mode has a
-checkmark. The normal rectangle icon keeps a small arrow in its bottom-right
-corner. Both modes also live under Rectangle in the sketch tools menu.
+checkmark. A small filled triangle sits in the normal rectangle button's
+bottom-right corner, with its short edges aligned to the button edges. Menu and
+choice buttons across the workspace share that indicator; More and Settings
+buttons are excluded. Both rectangle modes also live under Rectangle in the
+sketch tools menu.
 
 For Center Rectangle, place the center and then a corner, or drag from the center
 to a corner. The status readout shows the full width and height. The adapter

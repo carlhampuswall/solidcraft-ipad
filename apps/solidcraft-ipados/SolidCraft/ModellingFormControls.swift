@@ -82,7 +82,7 @@ final class ModellingFormRow: UIStackView {
 }
 
 /// A native menu button; no editable text or text-selection gesture recognizer.
-final class ModellingFormButton: UIButton {
+final class ModellingFormButton: MenuChoiceButton {
     init(title: String, symbol: String, label: String, identifier: String, accent: Bool = false, iconOnly: Bool = false) {
         super.init(frame: .zero)
         var style = UIButton.Configuration.plain()

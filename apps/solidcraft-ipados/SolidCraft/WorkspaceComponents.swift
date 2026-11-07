@@ -797,9 +797,71 @@ private final class RailButtonContent: UIView {
     }
 }
 
+/// The right angle and its two short edges point into the button's lower-right corner.
+private final class ToolVariantsIndicator: UIView {
+    private let triangle = CAShapeLayer()
+    init() {
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false; isAccessibilityElement = false
+        accessibilityIdentifier = "workspace-tool-variants"
+        tintColor = WorkspaceStyle.foreground
+        layer.addSublayer(triangle)
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (indicator: ToolVariantsIndicator, _: UITraitCollection) in
+            indicator.setNeedsLayout()
+        }
+    }
+    required init?(coder: NSCoder) { nil }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let path = UIBezierPath()
+        path.move(to: CGPoint(x: 0, y: bounds.height))
+        path.addLine(to: CGPoint(x: bounds.width, y: 0))
+        path.addLine(to: CGPoint(x: bounds.width, y: bounds.height))
+        path.close()
+        triangle.frame = bounds
+        triangle.path = path.cgPath
+        triangle.fillColor = tintColor.resolvedColor(with: traitCollection).cgColor
+    }
+}
+
+/// Standard menus and custom choice popovers share one corner disclosure mark.
+class MenuChoiceButton: UIButton {
+    private var variantsIndicator: ToolVariantsIndicator?
+    private var customChoices = false
+    var suppressesChoicesIndicator = false { didSet { refreshChoicesIndicator() } }
+    override var menu: UIMenu? { didSet { refreshChoicesIndicator() } }
+    override var isEnabled: Bool { didSet { variantsIndicator?.alpha = isEnabled ? 1 : 0.45 } }
+    var choicesIndicatorBounds: CGRect { bounds }
+
+    func toolVariants(_ visible: Bool) {
+        customChoices = visible
+        refreshChoicesIndicator()
+    }
+    private func refreshChoicesIndicator() {
+        let visible = !suppressesChoicesIndicator && (customChoices || menu?.children.isEmpty == false)
+        if visible && variantsIndicator == nil {
+            let indicator = ToolVariantsIndicator()
+            addSubview(indicator); variantsIndicator = indicator
+        }
+        variantsIndicator?.isHidden = !visible
+        setNeedsLayout()
+    }
+    func layoutChoicesIndicator() {
+        guard let indicator = variantsIndicator else { return }
+        let surface = choicesIndicatorBounds
+        indicator.frame = CGRect(x: surface.maxX - 10, y: surface.maxY - 10, width: 7, height: 7)
+        indicator.alpha = isEnabled ? 1 : 0.45
+        bringSubviewToFront(indicator)
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        layoutChoicesIndicator()
+    }
+}
+
 /// Icon-first chrome retains full labels for VoiceOver, pointer tooltips and
 /// menus. Forms continue to use text. Missing artwork keeps a readable title.
-final class WorkspaceButton: UIButton {
+final class WorkspaceButton: MenuChoiceButton {
     private var fullTitle: String
     private let isViewportPoint: Bool
     private var iconID: String?
@@ -821,7 +883,9 @@ final class WorkspaceButton: UIButton {
     private var verticallyCenteredContent = false
     private var railContent: RailButtonContent?
     private var choiceCheck: UIImageView?
-    private var variantsIndicator: UIImageView?
+    override var choicesIndicatorBounds: CGRect {
+        (toolCaption ?? railContent).map { $0.convert($0.iconFrame, to: self) } ?? bounds
+    }
     private var isHistoryAction: Bool {
         iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"
     }
@@ -873,19 +937,6 @@ final class WorkspaceButton: UIButton {
     }
     func textOnly() {
         iconID = nil; commandID = nil; systemIcon = nil; compactIcon = false; flippedArtwork = false; refreshIcon()
-    }
-    func toolVariants(_ visible: Bool) {
-        if visible && variantsIndicator == nil {
-            let indicator = UIImageView()
-            indicator.isUserInteractionEnabled = false
-            indicator.isAccessibilityElement = false
-            indicator.accessibilityIdentifier = "workspace-tool-variants"
-            indicator.contentMode = .scaleAspectFit
-            indicator.tintColor = WorkspaceStyle.foreground
-            addSubview(indicator); variantsIndicator = indicator
-        }
-        variantsIndicator?.isHidden = !visible
-        refreshIcon(); setNeedsLayout()
     }
     /// Retain compact artwork and accessibility names when captions are hidden.
     /// History actions stay icon-only; text-only actions and forms keep titles.
@@ -949,7 +1000,6 @@ final class WorkspaceButton: UIButton {
     private func refreshIcon() {
         // The Rust guide is the visible dot. Keep only its accessible touch target.
         guard !isViewportPoint else { return }
-        variantsIndicator?.image = WorkspaceIcon.image("chevron", traits: traitCollection, size: 8)?.withRenderingMode(.alwaysTemplate)
         let artwork = commandID.flatMap { WorkspaceIcon.command($0, traits: traitCollection) }
             ?? iconID.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
             ?? systemIcon.flatMap { UIImage(systemName: $0) }
@@ -984,14 +1034,7 @@ final class WorkspaceButton: UIButton {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        defer {
-            if let indicator = variantsIndicator {
-                let surface = (toolCaption ?? railContent).map { $0.convert($0.iconFrame, to: self) } ?? bounds
-                indicator.frame = CGRect(x: surface.maxX - 13, y: surface.maxY - 13, width: 8, height: 8)
-                indicator.alpha = isEnabled ? 1 : 0.45
-                bringSubviewToFront(indicator)
-            }
-        }
+        defer { layoutChoicesIndicator() }
         if let toolCaption {
             imageView?.isHidden = true
             let widthChanged = toolCaption.bounds.width != bounds.width
@@ -2239,6 +2282,7 @@ final class ModellingInspector: UIStackView {
             targetsButton.artwork("body")
             targetsButton.accessibilityIdentifier = "workspace-extrude-targets"
             otherOptionsButton.systemArtwork("ellipsis")
+            otherOptionsButton.suppressesChoicesIndicator = true
             otherOptionsButton.showsMenuAsPrimaryAction = true
             otherOptionsButton.accessibilityIdentifier = "workspace-extrude-more"
             let bar = UIStackView(arrangedSubviews: [apply, directionButton, targetsButton, otherOptionsButton, cancel])
@@ -2249,6 +2293,7 @@ final class ModellingInspector: UIStackView {
             for button in [directionButton, targetsButton, otherOptionsButton] { button.separateRailCaption() }
             extrusionBar = bar
             let result = WorkspaceButton(ModellingText.text("field.operation"), action: {})
+            result.toolVariants(true)
             result.accessibilityIdentifier = "workspace-extrude-result"
             result.addAction(UIAction { [weak self, weak result] _ in
                 guard let self, self.handleEntryEnabled, let result else { return }
@@ -2921,7 +2966,7 @@ final class WorkspaceSketchPicker: UIViewController {
 
 /// View-only controls: the tool menus and model browser keep their own chrome.
 /// This popover contains no text input and dispatches existing viewport commands.
-private final class ViewOptionButton: UIButton {
+private final class ViewOptionButton: MenuChoiceButton {
     private let label: String
     private let iconID: String
     private let disclosure: Bool
@@ -2930,6 +2975,7 @@ private final class ViewOptionButton: UIButton {
         label = title; iconID = icon; self.disclosure = disclosure
         super.init(frame: .zero)
         accessibilityIdentifier = "workspace-view-" + id
+        toolVariants(disclosure)
         accessibilityLabel = title
         titleLabel?.numberOfLines = 1
         titleLabel?.adjustsFontForContentSizeCategory = true

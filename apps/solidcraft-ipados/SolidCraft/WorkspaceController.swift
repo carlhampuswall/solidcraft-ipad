@@ -757,6 +757,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewButton.configuration?.imagePlacement = .trailing
         viewButton.configuration?.baseForegroundColor = WorkspaceStyle.foreground
         viewButton.accessibilityIdentifier = "workspace-view-menu"
+        for button in [viewButton, constraintsButton, dimensionsButton] { button.toolVariants(true) }
+        for button in [settingsButton, toolsMoreButton, navigationMoreButton] { button.suppressesChoicesIndicator = true }
         viewButton.showsLargeContentViewer = false
         for interaction in viewButton.interactions where interaction is UILargeContentViewerInteraction { viewButton.removeInteraction(interaction) }
         for (id, button) in sketchQuickTools {
@@ -6627,6 +6629,16 @@ private extension FoundationController {
                            !arrow.isHidden, button.bounds.contains(arrow.frame) {
                             if arrow.frame.midY <= button.bounds.midY { issues.append("rectangle arrow is not in the bottom corner") }
                         } else { issues.append("rectangle variants arrow missing") }
+                        for choice in [self.viewButton, self.constraintsButton, self.dimensionsButton, self.constructionButton, self.sketchToolsButton] {
+                            if !choice.subviews.contains(where: { $0.accessibilityIdentifier == "workspace-tool-variants" && !$0.isHidden }) {
+                                issues.append("choice button triangle missing: " + (choice.accessibilityLabel ?? "unknown"))
+                            }
+                        }
+                        for excluded in [self.settingsButton, self.toolsMoreButton, self.navigationMoreButton] {
+                            if excluded.subviews.contains(where: { $0.accessibilityIdentifier == "workspace-tool-variants" && !$0.isHidden }) {
+                                issues.append("More or Settings button has a triangle")
+                            }
+                        }
                         do {
                             let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                             let surface: UIView = self.view.window ?? self.view
