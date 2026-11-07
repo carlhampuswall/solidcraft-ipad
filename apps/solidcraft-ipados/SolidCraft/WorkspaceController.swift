@@ -2838,7 +2838,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
               presentedViewController == nil, pending.isEmpty else { return }
         projectsStartupHandled = true
         // Keep opt-in diagnostics on their disposable fixture and out of the library.
-        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--") && $0.contains("-check") && $0 != "--projects-check" }),
+        guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("--") && $0.contains("-check") && $0 != "--projects-check" && $0 != "--project-drag-check" }),
               ProjectLibrary.showsBrowserOnLaunch() else { return }
         if ProcessInfo.processInfo.arguments.contains("--projects-check"), session.currentProject == nil { return }
         showProjects()
