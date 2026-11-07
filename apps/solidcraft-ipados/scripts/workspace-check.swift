@@ -749,8 +749,6 @@ struct WorkspaceChecks {
                 }
             }
         }
-        // Only the floating header may enter the centre of the status strip.
-        // Its full touch target and all other chrome/viewport frames survive.
         for width: CGFloat in [600, 834, 1194, 1366] {
             for topInset: CGFloat in [0, 24, 50, 80] {
                 for largeText in [false, true] {
@@ -759,30 +757,12 @@ struct WorkspaceChecks {
                         let chrome = CGRect(x: 0, y: topInset, width: width, height: 700 - topInset)
                         let source = WorkspaceLayout.resolve(size: chrome.size, browser: browser, inspector: true,
                             railRight: false, largeText: largeText)
-                        let old = source.placed(in: chrome, viewport: viewport)
-                        let raised = source.placed(in: chrome, viewport: viewport, useTopSafeArea: true)
-                        let fits = !largeText && topInset >= 20 && topInset <= 64 &&
-                            old.topBar.minX >= 240 && old.topBar.maxX <= viewport.maxX - 240
-                        if fits {
-                            try require(raised.topBar.minY == 4 && raised.topBar.minY < chrome.minY,
-                                        "header did not use the available upper strip")
-                        } else {
-                            try require(raised.topBar == old.topBar, "crowded or accessibility header entered system UI")
+                        let layout = source.placed(in: chrome, viewport: viewport)
+                        try require(layout.topBar.minY == chrome.minY + 8,
+                                    "floating document header lost its top safe-area spacing")
+                        for frame in [layout.rail, layout.navigation, layout.browserAccess, layout.viewAccess] + [layout.browser, layout.inspector].compactMap({ $0 }) {
+                            try require(!layout.topBar.intersects(frame), "document header covers another control")
                         }
-                        try require(raised.topBar.size == old.topBar.size && raised.topBar.minX == old.topBar.minX,
-                                    "raising the header changed its content or touch bounds")
-                        try require(viewport.contains(raised.topBar), "raised header escaped the window")
-                        try require(raised.canvas == old.canvas && raised.status == old.status && raised.rail == old.rail &&
-                            raised.navigation == old.navigation && raised.browser == old.browser && raised.inspector == old.inspector &&
-                            raised.history == old.history && raised.featureHistory == old.featureHistory && raised.browserAccess == old.browserAccess,
-                                    "raising the header moved other controls or rebased rendering/picking")
-                        for frame in [raised.rail, raised.navigation, raised.browserAccess] + [raised.browser, raised.inspector].compactMap({ $0 }) {
-                            try require(!raised.topBar.intersects(frame), "raised header covers another control")
-                        }
-                        let legacy = WorkspaceLayout.resolve(size: chrome.size, browser: browser, inspector: true,
-                            railRight: false, largeText: largeText, compactChrome: false)
-                        try require(legacy.placed(in: chrome, viewport: viewport, useTopSafeArea: true).topBar ==
-                            legacy.placed(in: chrome, viewport: viewport).topBar, "top strip preference changed the docked toolbar")
                         cases += 1
                     }
                 }

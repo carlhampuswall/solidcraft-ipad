@@ -240,7 +240,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var compactInspector = UserDefaults.standard.object(forKey: "SolidCraft.workspace.compactInspector") as? Bool ?? true
     private var compactToolControls = ModellingFormPresentation.compactToolControls(UserDefaults.standard.object(forKey: ModellingFormPresentation.compactToolControlsKey) as? Bool)
     private var tuckExtrudeOptions = UserDefaults.standard.object(forKey: ModellingFormPresentation.tuckExtrudeOptionsKey) as? Bool ?? true
-    private var useTopSafeArea = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.useTopSafeArea")
     private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
     private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
     private var featuresInBrowser = BrowserFeatureVisibility.restored(UserDefaults.standard.object(forKey: BrowserFeatureVisibility.key) as? Bool)
@@ -280,11 +279,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var originExpanded = true
 
     private var numericEditing: Bool { numericStarting || numericToken != nil || referenceDimensionID != nil || transformDraft != nil }
-    private var topStripHeaderEnabled: Bool {
-        // Older iPadOS versions reserve the top centre for multitasking controls.
-        if #available(iOS 26.0, *) { return useTopSafeArea && traitCollection.userInterfaceIdiom == .pad }
-        return false
-    }
     private var modellingEditing: Bool { modellingStarting || modellingToken != nil }
     private var textEntryActive: Bool { browserSearchField.isFirstResponder || modelValueEditor?.editor.field.isFirstResponder == true || editor?.field.isFirstResponder == true || transformEditors.contains { $0.editor.field.isFirstResponder } || modellingInspector?.textEntryActive == true }
 
@@ -748,8 +742,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         rail.spacing = compactChrome ? 2 : 8
         if compactChrome {
-            // A single menu button needs no scroll view. In the top strip,
-            // UIKit's scroll-edge treatment can obscure this control.
             documentActionsButton.translatesAutoresizingMaskIntoConstraints = true
             top.addSubview(documentActionsButton)
             // Completion must remain visible while the drawing tools scroll.
@@ -4191,13 +4183,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.compactToolControls, forKey: ModellingFormPresentation.compactToolControlsKey)
             self.view.setNeedsLayout(); self.rebuildMenus()
         })
-        moreActions.append(UIAction(title: WorkspaceStyle.text("use_top_safe_area"),
-                                    subtitle: WorkspaceStyle.text("use_top_safe_area_help"),
-                                    state: useTopSafeArea ? .on : .off) { [weak self] _ in
-            guard let self else { return }; self.useTopSafeArea.toggle()
-            UserDefaults.standard.set(self.useTopSafeArea, forKey: "SolidCraft.workspace.useTopSafeArea")
-            self.view.setNeedsLayout(); self.rebuildMenus()
-        })
         moreActions.append(UIAction(title: WorkspaceStyle.text("use_bottom_safe_area"),
                                     subtitle: WorkspaceStyle.text("use_bottom_safe_area_help"),
                                     state: useBottomSafeArea ? .on : .off) { [weak self] _ in
@@ -4597,7 +4582,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                                inspectorPreferredWidth: modellingInspector?.compact == true && modellingInspector?.minimal != true ? 380 : 320,
                                                historyToggleWidth: featureHistory.preferredToggleWidth,
                                                viewButtonSize: viewButton.intrinsicContentSize)
-                .placed(in: chrome, viewport: viewport, useTopSafeArea: topStripHeaderEnabled)
+                .placed(in: chrome, viewport: viewport)
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
         if compactToolControls, let frame = available.inspector {
@@ -9338,16 +9323,11 @@ private extension FoundationController {
                     if canvas.minY != bounds.minY || canvas.maxY != bounds.maxY {
                         issues.append("viewport does not fill top/bottom system-indicator space")
                     }
-                    let headerBounds = self.topStripHeaderEnabled ? bounds : safe
-                    if !headerBounds.contains(self.top.frame) || !chrome.contains(self.status.frame) {
+                    if !safe.contains(self.top.frame) || !chrome.contains(self.status.frame) {
                         issues.append("floating chrome escaped its available bounds")
                     }
                     if self.top.frame != self.layout?.topBar {
                         issues.append("document header does not match its resolved placement")
-                    }
-                    if self.top.frame.minY < safe.minY &&
-                        (self.top.frame.minX < bounds.minX + 240 || self.top.frame.maxX > bounds.maxX - 240) {
-                        issues.append("raised document header overlaps the system-indicator margins")
                     }
                     for y in [bounds.minY + 1, bounds.maxY - 1] {
                         if self.workspace.hitTest(CGPoint(x: bounds.midX, y: y), with: nil) !== self.canvas {

@@ -496,26 +496,13 @@ extension WorkspaceLayout {
 
     /// Place controls in their available bounds while the floating viewport
     /// extends underneath indicators. A pinned browser reserves only its width.
-    func placed(in chrome: CGRect, viewport: CGRect, useTopSafeArea: Bool = false) -> WorkspaceLayout {
+    func placed(in chrome: CGRect, viewport: CGRect) -> WorkspaceLayout {
         func offset(_ frame: CGRect) -> CGRect { frame.offsetBy(dx: chrome.minX, dy: chrome.minY) }
-        var header = offset(topBar)
-        let topInset = chrome.minY - viewport.minY
-        // Leave room at both ends of iPad's status strip for system indicators.
-        // Crowded windows and enlarged headers retain their safe-area position.
-        let indicatorMargin: CGFloat = 240
-        if floating && useTopSafeArea && (20...64).contains(topInset) && header.height <= 64 &&
-            header.minX >= viewport.minX + indicatorMargin && header.maxX <= viewport.maxX - indicatorMargin {
-            let candidate = CGRect(x: header.minX, y: viewport.minY + 4, width: header.width, height: header.height)
-            let obstacles = [rail, navigation, browserAccess, viewAccess] + [browser, inspector].compactMap { $0 }
-            if viewport.contains(candidate) && !obstacles.contains(where: { offset($0).intersects(candidate) }) {
-                header = candidate
-            }
-        }
         let insetCanvas = offset(canvas)
         let left = floating && canvas.minX <= 0 ? viewport.minX : insetCanvas.minX
         let right = floating && canvas.maxX >= chrome.width ? viewport.maxX : insetCanvas.maxX
         let modelFrame = floating ? CGRect(x: left, y: viewport.minY, width: max(0, right - left), height: viewport.height) : insetCanvas
-        var result = WorkspaceLayout(topBar: header, status: offset(status), rail: offset(rail),
+        var result = WorkspaceLayout(topBar: offset(topBar), status: offset(status), rail: offset(rail),
             canvas: modelFrame, browser: browser.map(offset), inspector: inspector.map(offset), compact: compact)
         result.navigation = offset(navigation)
         result.history = offset(history)

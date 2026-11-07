@@ -24,15 +24,8 @@ and opens the system share sheet with its named `.step` file for AirDrop and
 compatible apps. Temporary exports remain available until the activity finishes
 or is cancelled. See INTERFACES.md for ownership and limits.
 
-The floating document header sits eight points below the top safe-area boundary
-by default. On iPadOS 26 and later, **Tools → Use top strip for document header**
-restores the raised position when the header fits with 240 points at each end
-for system indicators and window controls. The app respects a saved choice
-(`SolidCraft.workspace.useTopSafeArea`).
-
-The floating header hosts its folder button directly, with a full 44-point
-touch target. It does not wrap that single control in a scroll view: UIKit's
-scroll-edge effect could blur the icon when the header occupied the top strip.
+The floating document header sits eight points below the top safe-area boundary.
+Its folder button has a 44-point touch target.
 The compact floating workspace is the only available layout. The opt-in `--chrome-check`
 also checks native hit testing across the visible controls and captures the
 floating header in Light and Dark appearances.
