@@ -180,6 +180,11 @@ struct ProjectPlacement: Codable, Equatable {
     var archived = false
 }
 
+enum ProjectLibraryItem: Equatable {
+    case folder(UUID)
+    case project(UUID)
+}
+
 /// Host library metadata only: no native design container or file path changes.
 struct ProjectOrganisation: Codable, Equatable {
     var version = 1
@@ -190,6 +195,21 @@ struct ProjectOrganisation: Codable, Equatable {
     func folder(_ id: UUID?) -> ProjectFolder? { folders.first { $0.id == id } }
     func placement(_ id: UUID) -> ProjectPlacement { placements[id.uuidString] ?? ProjectPlacement() }
     private var folderIndex: [UUID: ProjectFolder] { Dictionary(folders.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+
+    /// Recheck stable identities against the latest library before accepting a
+    /// local drop. Row positions can change during search, sorting or refresh.
+    func moveChange(for item: ProjectLibraryItem, to destination: UUID?, existingProjects: Set<UUID>) -> ProjectLibraryChange? {
+        guard destination == nil || folder(destination) != nil, !isArchived(folder: destination) else { return nil }
+        switch item {
+        case .project(let id):
+            guard existingProjects.contains(id), !isArchived(project: id), placement(id).folder != destination else { return nil }
+            return .moveProject(id, to: destination)
+        case .folder(let id):
+            guard let source = folder(id), !isArchived(folder: id), source.parent != destination,
+                  !ancestors(of: destination).contains(where: { $0.id == id }) else { return nil }
+            return .moveFolder(id, to: destination)
+        }
+    }
 
     func ancestors(of id: UUID?) -> [ProjectFolder] {
         ancestors(of: id, in: folderIndex)
@@ -266,7 +286,7 @@ struct ProjectOrganisation: Codable, Equatable {
     }
 }
 
-enum ProjectLibraryChange {
+enum ProjectLibraryChange: Equatable {
     case createFolder(String, parent: UUID?)
     case renameFolder(UUID, String)
     case folderIcon(UUID, ProjectFolderIcon)

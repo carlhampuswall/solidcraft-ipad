@@ -274,6 +274,15 @@ xcrun devicectl device process launch --device "$SOLIDCRAFT_DEVICE" com.solidcra
 Xcode-managed profiles require automatic signing. Keep signing overrides local;
 the checked-in build script remains the reproducible unsigned CI path.
 
+Add `--project-drag-check` to the Debug `--projects-check` launch to check project
+and folder drag delegates, folder drop proposals, persisted moves into a folder
+and back to Projects, busy/archive restrictions, local session ownership and
+Find focus dismissal on holds and drags. This uses a disposable browser-only
+library and restores the original browser contents and callbacks. It writes
+`project-drag-check.json` and `project-drag-*.png` UIKit captures to Documents.
+Reserve the physical iPad first. Synthetic drag sessions do not verify physical
+finger delivery; manually hold and drag a project over a folder to check that.
+
 Coverage levels are separate: source/configuration prepared; Rust iOS target
 compiled; native application linked; application launched; physical iPad verified.
 Current measured coverage and blockers are in [HANDOFF.md](HANDOFF.md).

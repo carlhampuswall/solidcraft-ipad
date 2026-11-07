@@ -1,0 +1,17 @@
+{
+  "en": {
+    "ui.ipados.projects.drop_to_folder": "Drop here to move to {folder}"
+  },
+  "de": {
+    "ui.ipados.projects.drop_to_folder": "Hier ablegen, um nach {folder} zu verschieben"
+  },
+  "ja": {
+    "ui.ipados.projects.drop_to_folder": "ここにドロップして {folder} に移動"
+  },
+  "ko": {
+    "ui.ipados.projects.drop_to_folder": "여기에 놓아 {folder}(으)로 이동"
+  },
+  "zh": {
+    "ui.ipados.projects.drop_to_folder": "拖放到此处以移至 {folder}"
+  }
+}

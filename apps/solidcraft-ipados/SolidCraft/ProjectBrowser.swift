@@ -7,7 +7,7 @@ enum ProjectText {
 
 /// A native library of design files, independent of the model's component tree.
 /// Callbacks reach the one serial Rust session; the browser owns no CAD state.
-final class ProjectBrowserController: UITableViewController, UISearchResultsUpdating {
+final class ProjectBrowserController: UITableViewController, UISearchResultsUpdating, UITableViewDragDelegate, UITableViewDropDelegate, UIDropInteractionDelegate {
     var onOpen: ((ProjectRecord) -> Void)?
     var onCreate: ((String, ProjectRecord?) -> Void)?
     var onOrganise: ((ProjectLibraryChange) -> Void)?
@@ -19,6 +19,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     var onDelete: ((ProjectRecord) -> Void)?
     var onClose: (() -> Void)?
     private var projects: [ProjectRecord] = []
+    private var projectIDs: Set<UUID> = []
     private var filtered: [ProjectRecord] = []
     private var folders: [ProjectFolder] = []
     private var organisation = ProjectOrganisation()
@@ -30,14 +31,48 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     private let search = UISearchController(searchResultsController: nil)
     private let message = UILabel()
     private var busy = false
+    private let dragOwner = UUID()
+    private let parentDropView = UIView()
+    private let parentDropLabel = UILabel()
+#if DEBUG
+    private var checkedDragging = false
+#endif
+
+    private struct DraggedItem {
+        let owner: UUID
+        let item: ProjectLibraryItem
+    }
 
     init() { super.init(style: .insetGrouped) }
     required init?(coder: NSCoder) { super.init(coder: coder) }
+
+#if DEBUG
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if !checkedDragging, ProcessInfo.processInfo.arguments.contains("--project-drag-check") {
+            checkedDragging = true
+            checkDraggingOnDevice()
+        }
+    }
+#endif
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = WorkspaceStyle.background
         tableView.accessibilityIdentifier = "project-browser"
+        tableView.dragDelegate = self
+        tableView.dropDelegate = self
+        tableView.dragInteractionEnabled = true
+        tableView.keyboardDismissMode = .onDrag
+        parentDropLabel.font = .preferredFont(forTextStyle: .body)
+        parentDropLabel.adjustsFontForContentSizeCategory = true
+        parentDropLabel.numberOfLines = 0
+        parentDropLabel.textColor = .secondaryLabel
+        parentDropLabel.textAlignment = .center
+        parentDropView.accessibilityIdentifier = "project-parent-drop"
+        parentDropView.isAccessibilityElement = true
+        parentDropView.addSubview(parentDropLabel)
+        parentDropView.addInteraction(UIDropInteraction(delegate: self))
         navigationItem.rightBarButtonItems = [
             UIBarButtonItem(title: ProjectText.text("new"), style: .plain, target: self, action: #selector(newProject)),
             UIBarButtonItem(title: ProjectText.text("import"), style: .plain, target: self, action: #selector(importFile)),
@@ -79,7 +114,8 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     }
 
     func display(_ contents: ProjectLibraryContents, current: UUID?) {
-        projects = contents.projects; organisation = contents.organisation; self.current = current
+        projects = contents.projects; projectIDs = Set(projects.map(\.id))
+        organisation = contents.organisation; self.current = current
         if let folder, organisation.folder(folder) == nil { self.folder = nil }
         if let folder { showingArchive = organisation.isArchived(folder: folder) }
         loadViewIfNeeded(); updateSearchResults(for: search)
@@ -95,6 +131,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     }
 
     private func updateActions() {
+        tableView.dragInteractionEnabled = !busy && !showingArchive
         navigationItem.leftBarButtonItems?.forEach { $0.isEnabled = !busy }
         navigationItem.rightBarButtonItems?.forEach { $0.isEnabled = !busy }
         navigationItem.rightBarButtonItems?.first?.isEnabled = !busy && !showingArchive
@@ -118,7 +155,33 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         message.text = ProjectText.text(!query.isEmpty ? "organisation_no_matches" : (showingArchive ? "archive_empty" : "folder_empty"))
         message.isHidden = !filtered.isEmpty || !folders.isEmpty
         updateNavigation()
+        updateParentDropTarget()
         tableView.reloadData()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        updateParentDropTarget()
+    }
+
+    private var parentDestination: UUID? { organisation.folder(folder)?.parent }
+
+    private func updateParentDropTarget() {
+        guard !showingArchive, folder != nil || !query.isEmpty else {
+            if tableView.tableHeaderView != nil { tableView.tableHeaderView = nil }
+            return
+        }
+        let text = ProjectText.text("drop_to_folder").replacingOccurrences(of: "{folder}", with: location(parentDestination))
+        parentDropLabel.text = text
+        parentDropView.accessibilityLabel = text
+        let width = tableView.bounds.width
+        let size = parentDropLabel.sizeThatFits(CGSize(width: max(1, width - 32), height: .greatestFiniteMagnitude))
+        let height = max(56, size.height + 24)
+        parentDropLabel.frame = CGRect(x: 16, y: 12, width: max(1, width - 32), height: height - 24)
+        if tableView.tableHeaderView !== parentDropView || parentDropView.frame.size != CGSize(width: width, height: height) {
+            parentDropView.frame = CGRect(x: 0, y: 0, width: width, height: height)
+            tableView.tableHeaderView = parentDropView
+        }
     }
 
     override func numberOfSections(in tableView: UITableView) -> Int { 2 }
@@ -163,7 +226,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard !busy else { return }
+        guard !busy, !tableView.hasActiveDrag else { return }
         if indexPath.section == 0 {
             guard folders.indices.contains(indexPath.row) else { return }
             folder = folders[indexPath.row].id
@@ -177,6 +240,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
 
     override func tableView(_ tableView: UITableView, contextMenuConfigurationForRowAt indexPath: IndexPath, point: CGPoint) -> UIContextMenuConfiguration? {
         guard !busy else { return nil }
+        endTextEntry()
         if indexPath.section == 0 {
             guard folders.indices.contains(indexPath.row) else { return nil }
             let value = folders[indexPath.row]
@@ -203,6 +267,96 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
             return UIMenu(children: [insert, rename, duplicate, self.moveMenu(project: project.id), archive, delete])
         }
     }
+
+    private func endTextEntry() {
+        // Keep the Find query, but never focus text entry for a hold or drag.
+        search.searchBar.resignFirstResponder()
+        view.endEditing(true)
+    }
+
+    private func draggedItem(at indexPath: IndexPath) -> UIDragItem? {
+        guard !busy, !showingArchive else { return nil }
+        let item: ProjectLibraryItem
+        let name: String
+        if indexPath.section == 0, folders.indices.contains(indexPath.row) {
+            let value = folders[indexPath.row]
+            item = .folder(value.id); name = value.name
+        } else if indexPath.section == 1, filtered.indices.contains(indexPath.row) {
+            let value = filtered[indexPath.row]
+            item = .project(value.id); name = value.name
+        } else { return nil }
+        endTextEntry()
+        let drag = UIDragItem(itemProvider: NSItemProvider(object: name as NSString))
+        drag.localObject = DraggedItem(owner: dragOwner, item: item)
+        return drag
+    }
+
+    func tableView(_ tableView: UITableView, itemsForBeginning session: UIDragSession, at indexPath: IndexPath) -> [UIDragItem] {
+        draggedItem(at: indexPath).map { [$0] } ?? []
+    }
+
+    func tableView(_ tableView: UITableView, itemsForAddingTo session: UIDragSession, at indexPath: IndexPath, point: CGPoint) -> [UIDragItem] { [] }
+    func tableView(_ tableView: UITableView, dragSessionAllowsMoveOperation session: UIDragSession) -> Bool { true }
+    func tableView(_ tableView: UITableView, dragSessionIsRestrictedToDraggingApplication session: UIDragSession) -> Bool { true }
+
+    private func moveForDrop(_ items: [UIDragItem], to destination: UUID?) -> ProjectLibraryChange? {
+        guard !busy, !showingArchive, items.count == 1,
+              let dragged = items.first?.localObject as? DraggedItem, dragged.owner == dragOwner else { return nil }
+        return organisation.moveChange(for: dragged.item, to: destination, existingProjects: projectIDs)
+    }
+
+    private func folderDrop(at point: CGPoint, items: [UIDragItem]) -> (IndexPath, ProjectLibraryChange)? {
+        guard let index = tableView.indexPathForRow(at: point), index.section == 0, folders.indices.contains(index.row),
+              let change = moveForDrop(items, to: folders[index.row].id) else { return nil }
+        return (index, change)
+    }
+
+    func tableView(_ tableView: UITableView, canHandle session: UIDropSession) -> Bool {
+        !busy && !showingArchive && session.localDragSession != nil && session.items.count == 1
+            && (session.items.first?.localObject as? DraggedItem)?.owner == dragOwner
+    }
+
+    func tableView(_ tableView: UITableView, dropSessionDidUpdate session: UIDropSession, withDestinationIndexPath destinationIndexPath: IndexPath?) -> UITableViewDropProposal {
+        guard self.tableView(tableView, canHandle: session), folderDrop(at: session.location(in: tableView), items: session.items) != nil else {
+            return UITableViewDropProposal(operation: .forbidden)
+        }
+        return UITableViewDropProposal(operation: .move, intent: .insertIntoDestinationIndexPath)
+    }
+
+    func tableView(_ tableView: UITableView, performDropWith coordinator: UITableViewDropCoordinator) {
+        guard self.tableView(tableView, canHandle: coordinator.session),
+              let item = coordinator.items.first else { return }
+        commitFolderDrop(coordinator.session.items, at: coordinator.session.location(in: tableView)) { index in
+            if let cell = tableView.cellForRow(at: index) {
+                coordinator.drop(item.dragItem, intoRowAt: index, rect: cell.bounds)
+            }
+        }
+    }
+
+    private func commitFolderDrop(_ items: [UIDragItem], at point: CGPoint, animate: (IndexPath) -> Void) {
+        guard let (index, move) = folderDrop(at: point, items: items) else { return }
+        animate(index)
+        change(move)
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, canHandle session: UIDropSession) -> Bool {
+        tableView(tableView, canHandle: session)
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidUpdate session: UIDropSession) -> UIDropProposal {
+        let allowed = tableView(tableView, canHandle: session) && moveForDrop(session.items, to: parentDestination) != nil
+        parentDropView.backgroundColor = allowed ? .tertiarySystemFill : .clear
+        return UIDropProposal(operation: allowed ? .move : .forbidden)
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, performDrop session: UIDropSession) {
+        parentDropView.backgroundColor = .clear
+        guard tableView(tableView, canHandle: session), let move = moveForDrop(session.items, to: parentDestination) else { return }
+        change(move)
+    }
+
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidExit session: UIDropSession) { parentDropView.backgroundColor = .clear }
+    func dropInteraction(_ interaction: UIDropInteraction, sessionDidEnd session: UIDropSession) { parentDropView.backgroundColor = .clear }
 
     override func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
         guard !busy else { return nil }
@@ -391,3 +545,133 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         present(alert, animated: true)
     }
 }
+
+#if DEBUG
+private extension ProjectBrowserController {
+    /// Synthetic sessions exercise the production delegates on physical UIKit.
+    /// They do not claim to deliver a physical finger's drag gesture.
+    final class CheckSession: NSObject, UIDragSession, UIDropSession {
+        var items: [UIDragItem] = []
+        var point = CGPoint.zero
+        var local = true
+        var localContext: Any?
+        var localDragSession: UIDragSession? { local ? self : nil }
+        var allowsMoveOperation: Bool { true }
+        var isRestrictedToDraggingApplication: Bool { true }
+        var progress = Progress(totalUnitCount: 0)
+        var progressIndicatorStyle: UIDropSessionProgressIndicatorStyle = .none
+        func location(in view: UIView) -> CGPoint { point }
+        func hasItemsConforming(toTypeIdentifiers typeIdentifiers: [String]) -> Bool { false }
+        func canLoadObjects(ofClass aClass: NSItemProviderReading.Type) -> Bool { false }
+        func loadObjects(ofClass aClass: NSItemProviderReading.Type, completion: @escaping ([NSItemProviderReading]) -> Void) -> Progress {
+            completion([]); return progress
+        }
+    }
+
+    func checkDraggingOnDevice() {
+        let savedContents = ProjectLibraryContents(projects: projects, organisation: organisation)
+        let savedCurrent = current, savedFolder = folder, savedArchive = showingArchive, savedBusy = busy
+        let savedQuery = search.searchBar.text, savedActive = search.isActive, savedOrganise = onOrganise
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("project-drag-" + UUID().uuidString)
+        var issues: [String] = []
+        var captures: [String] = []
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+        func check(_ condition: Bool, _ problem: String) { if !condition { issues.append(problem) } }
+        func capture(_ stage: String) throws {
+            guard let documents else { throw ProjectLibrary.failure("missing_documents") }
+            view.layoutIfNeeded(); tableView.layoutIfNeeded()
+            let surface: UIView = view.window ?? view
+            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+            guard let png = image.pngData() else { throw ProjectLibrary.failure("screenshot_failed") }
+            let filename = "project-drag-" + stage + ".png"
+            try png.write(to: documents.appendingPathComponent(filename), options: .atomic)
+            captures.append(filename)
+        }
+        defer {
+            endTextEntry(); search.isActive = savedActive; search.searchBar.text = savedQuery
+            folder = savedFolder; showingArchive = savedArchive; onOrganise = savedOrganise
+            display(savedContents, current: savedCurrent); setBusy(savedBusy)
+            try? FileManager.default.removeItem(at: root)
+        }
+        do {
+            let library = ProjectLibrary(root: root)
+            let first = try library.organise(.createFolder("Workshop", parent: nil))
+            guard let work = first.folders.first else { throw ProjectLibrary.failure("missing_test_folder") }
+            let nested = try library.organise(.createFolder("Parts", parent: work.id))
+            guard let parts = nested.folders.first(where: { $0.parent == work.id }) else { throw ProjectLibrary.failure("missing_test_folder") }
+            let project = try library.reserve(name: "Drag fixture")
+            try Data("browser-only fixture".utf8).write(to: project.file)
+            folder = nil; showingArchive = false; search.searchBar.text = nil; setBusy(false)
+            display(ProjectLibraryContents(projects: [project], organisation: nested), current: nil)
+            onOrganise = { [weak self] move in
+                do { self?.display(ProjectLibraryContents(projects: [project], organisation: try library.organise(move)), current: nil) }
+                catch { issues.append(error.localizedDescription) }
+            }
+            check(tableView.dragDelegate === self && tableView.dropDelegate === self && tableView.dragInteractionEnabled, "Drag delegates are not enabled")
+            let session = CheckSession()
+            let projectRow = IndexPath(row: 0, section: 1), folderRow = IndexPath(row: 0, section: 0)
+            // Start with text focused; a context menu must end it without clearing Find.
+            search.searchBar.text = "Drag"; updateSearchResults(for: search)
+            let field = search.searchBar.searchTextField
+            check(field.becomeFirstResponder(), "Could not focus Find for the hold regression")
+            check(tableView(tableView, contextMenuConfigurationForRowAt: projectRow, point: .zero) != nil, "Project hold lost its menu")
+            check(!field.isFirstResponder && query == "Drag" && presentedViewController == nil, "Project hold opened text entry or cleared Find")
+            search.searchBar.text = nil; updateSearchResults(for: search)
+            check(field.becomeFirstResponder(), "Could not focus Find for the folder hold regression")
+            check(tableView(tableView, contextMenuConfigurationForRowAt: folderRow, point: .zero) != nil, "Folder hold lost its menu")
+            check(!field.isFirstResponder && presentedViewController == nil, "Folder hold opened text entry")
+            check(field.becomeFirstResponder(), "Could not focus Find before dragging")
+            session.items = tableView(tableView, itemsForBeginning: session, at: projectRow)
+            check(session.items.count == 1 && !field.isFirstResponder && presentedViewController == nil, "Project drag opened text entry or failed to start")
+            tableView.layoutIfNeeded()
+            let rect = tableView.rectForRow(at: folderRow)
+            session.point = CGPoint(x: rect.midX, y: rect.midY)
+            let proposal = tableView(tableView, dropSessionDidUpdate: session, withDestinationIndexPath: folderRow)
+            check(proposal.operation == .move && proposal.intent == .insertIntoDestinationIndexPath, "Folder row did not accept a move")
+            var animated = false
+            commitFolderDrop(session.items, at: session.point) { animated = $0 == folderRow }
+            let moved = try library.organisation()
+            check(animated && moved.placement(project.id).folder == work.id, "Project drop was not persisted")
+            tableView(tableView, didSelectRowAt: folderRow)
+            check(folder == work.id && filtered.first?.id == project.id, "Moved project did not appear inside the folder")
+            try capture("inside-folder")
+            guard let interaction = parentDropView.interactions.compactMap({ $0 as? UIDropInteraction }).first else { throw ProjectLibrary.failure("missing_parent_drop") }
+            check(dropInteraction(interaction, sessionDidUpdate: session).operation == .move, "Parent target refused the project")
+            dropInteraction(interaction, performDrop: session)
+            check((try library.organisation()).placement(project.id).folder == nil, "Parent drop did not return the project to Projects")
+            back()
+            try capture("returned-to-projects")
+            session.items = tableView(tableView, itemsForBeginning: session, at: folderRow)
+            check(session.items.count == 1, "Folder drag failed to start")
+            tableView.layoutIfNeeded()
+            let folderRect = tableView.rectForRow(at: folderRow)
+            session.point = CGPoint(x: folderRect.midX, y: folderRect.midY)
+            check(tableView(tableView, dropSessionDidUpdate: session, withDestinationIndexPath: folderRow).operation == .forbidden, "Folder accepted itself")
+            session.items = tableView(tableView, itemsForBeginning: session, at: projectRow)
+            setBusy(true)
+            check(!tableView.dragInteractionEnabled && !tableView(tableView, canHandle: session), "Busy browser accepted a drag")
+            setBusy(false); session.local = false
+            check(!tableView(tableView, canHandle: session), "External session accepted")
+            session.local = true
+            let other = ProjectBrowserController()
+            other.display(ProjectLibraryContents(projects: [project], organisation: nested), current: nil)
+            check(!other.tableView(other.tableView, canHandle: session), "Another browser accepted the local identity")
+            session.items += session.items
+            check(!tableView(tableView, canHandle: session), "Multiple items accepted by a single-item move")
+            showingArchive = true; updateSearchResults(for: search)
+            check(!tableView.dragInteractionEnabled && tableView(tableView, itemsForBeginning: session, at: projectRow).isEmpty, "Archive enabled dragging")
+            check(try Data(contentsOf: project.file) == Data("browser-only fixture".utf8), "Dragging changed design bytes")
+            check((try library.organisation()).folder(parts.id)?.parent == work.id, "Dragging changed unrelated folder membership")
+        } catch { issues.append(error.localizedDescription) }
+        do {
+            guard let documents else { return }
+            let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "captures": captures,
+                "completed_at": Date().timeIntervalSince1970, "synthetic_drag_sessions": true, "physical_contacts": false,
+                "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"]
+            try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                .write(to: documents.appendingPathComponent("project-drag-check.json"), options: .atomic)
+        } catch { print("Project drag report failed: \(error)") }
+        print("Project drag check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+    }
+}
+#endif

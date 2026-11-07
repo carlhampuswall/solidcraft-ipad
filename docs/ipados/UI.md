@@ -24,6 +24,14 @@ and opens the system share sheet with its named `.step` file for AirDrop and
 compatible apps. Temporary exports remain available until the activity finishes
 or is cancelled. See INTERFACES.md for ownership and limits.
 
+Press and hold a project or folder, then drag it onto a folder row to move it.
+Inside a folder, the drop target above the list moves the item to the parent
+folder or back to Projects. Find results also offer a drop target for Projects.
+Moves retain project identity, design files and recovery files. Archived items,
+unchanged locations, and folder moves into themselves or their descendants are
+refused. Long presses and drags dismiss text entry while preserving the Find
+query; choosing Rename explicitly opens its name field.
+
 The floating document header sits eight points below the top safe-area boundary.
 Its folder button has a 44-point touch target.
 The compact floating workspace is the only available layout. The opt-in `--chrome-check`
