@@ -1,6 +1,6 @@
 {
   "en": {
     "ui.ipados.quick_access.hold_in_more": "Hold in More to add quick access",
-    "ui.ipados.quick_access.hold_in_more_help": "Hold a tool in the right-hand More list to reveal Add to quick access. Turn off to use the previous menu and its Add to quick access submenu."
+    "ui.ipados.quick_access.hold_in_more_help": "Hold a tool in the right-hand More list to open a context menu with Add to quick access. Turn off to use the previous menu and its Add to quick access submenu."
   }
 }

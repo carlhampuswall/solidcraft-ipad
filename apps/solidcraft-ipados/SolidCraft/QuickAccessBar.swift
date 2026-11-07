@@ -638,13 +638,15 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
 #endif
 }
 
-/// More stays open while a held row reveals its pin action. A hold never runs
-/// the tool; ordinary taps dismiss this list before using the original control.
-final class QuickAccessOverflowController: UITableViewController {
+/// A held tool opens a native contextual action without changing the More list.
+/// Ordinary taps dismiss this list before using the original control.
+final class QuickAccessOverflowController: UITableViewController, UIEditMenuInteractionDelegate {
     private let bar: QuickAccessBar
     private var items: [(id: String, button: WorkspaceButton)] = []
-    private var heldID: String?
     private var choosing = false
+    private lazy var pinMenu = UIEditMenuInteraction(delegate: self)
+    private var pinMenuConfiguration: UIEditMenuConfiguration?
+    private var pinMenuVisible: Bool { pinMenuConfiguration != nil }
 
     init(bar: QuickAccessBar) {
         self.bar = bar
@@ -662,6 +664,7 @@ final class QuickAccessOverflowController: UITableViewController {
         tableView.rowHeight = UITableView.automaticDimension
         tableView.estimatedRowHeight = 52
         tableView.tableFooterView = UIView()
+        tableView.addInteraction(pinMenu)
         let hold = UILongPressGestureRecognizer(target: self, action: #selector(hold(_:)))
         hold.minimumPressDuration = 0.4
         tableView.addGestureRecognizer(hold)
@@ -670,24 +673,17 @@ final class QuickAccessOverflowController: UITableViewController {
 
     func render() {
         items = bar.overflowButtons
-        if !items.contains(where: { $0.id == heldID }) { heldID = nil }
-        let count = items.count + (heldID == nil ? 0 : 1) + 1
+        let count = items.count + 1
         preferredContentSize = CGSize(width: 320, height: min(560, CGFloat(count) * 56))
         if isViewLoaded { tableView.reloadData() }
     }
 
-    private var additionRow: Int? {
-        items.firstIndex(where: { $0.id == heldID }).map { $0 + 1 }
-    }
-
     private func item(at row: Int) -> (id: String, button: WorkspaceButton)? {
-        if row == additionRow { return nil }
-        let index = row - (additionRow.map { row > $0 ? 1 : 0 } ?? 0)
-        return items.indices.contains(index) ? items[index] : nil
+        items.indices.contains(row) ? items[row] : nil
     }
 
     override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        items.count + (heldID == nil ? 0 : 1) + 1
+        items.count + 1
     }
 
     override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -708,11 +704,6 @@ final class QuickAccessOverflowController: UITableViewController {
             cell.accessibilityCustomActions = [UIAccessibilityCustomAction(name: QuickAccessText.text("add")) { [weak self] _ in
                 self?.add(item.id); return self != nil
             }]
-        } else if indexPath.row == additionRow {
-            content.text = QuickAccessText.text("add")
-            content.image = UIImage(systemName: "plus")
-            content.textProperties.color = view.tintColor
-            cell.accessibilityIdentifier = "workspace-overflow-add"
         } else {
             content.text = QuickAccessText.text("reset")
             cell.accessibilityIdentifier = "workspace-overflow-reset"
@@ -724,39 +715,71 @@ final class QuickAccessOverflowController: UITableViewController {
     @objc private func hold(_ gesture: UILongPressGestureRecognizer) {
         guard gesture.state == .began,
               let path = tableView.indexPathForRow(at: gesture.location(in: tableView)) else { return }
-        revealAddition(at: path)
+        showPinMenu(at: path)
     }
 
-    private func revealAddition(at path: IndexPath) {
+    private func showPinMenu(at path: IndexPath) {
         guard !choosing, let item = item(at: path.row) else { return }
-        heldID = item.id
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        render()
-        if let row = additionRow {
-            let path = IndexPath(row: row, section: 0)
-            tableView.scrollToRow(at: path, at: .none, animated: true)
-            UIAccessibility.post(notification: .layoutChanged, argument: tableView.cellForRow(at: path))
+        let rect = tableView.rectForRow(at: path)
+        pinMenu.presentEditMenu(with: UIEditMenuConfiguration(identifier: item.id as NSString,
+            sourcePoint: CGPoint(x: rect.midX, y: rect.midY)))
+    }
+
+    private func pinAction(_ id: String) -> UIAction? {
+        guard bar.overflowButtons.contains(where: { $0.id == id }) else { return nil }
+        return UIAction(title: QuickAccessText.text("add"), image: UIImage(systemName: "plus")) { [weak self] _ in
+            self?.add(id)
         }
     }
 
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, menuFor configuration: UIEditMenuConfiguration,
+                             suggestedActions: [UIMenuElement]) -> UIMenu? {
+        let action = (configuration.identifier as? String).flatMap(pinAction)
+        return UIMenu(children: action.map { [$0] } ?? [])
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, targetRectFor configuration: UIEditMenuConfiguration) -> CGRect {
+        guard let id = configuration.identifier as? String,
+              let index = items.firstIndex(where: { $0.id == id }) else { return .null }
+        return tableView.rectForRow(at: IndexPath(row: index, section: 0))
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, willPresentMenuFor configuration: UIEditMenuConfiguration,
+                             animator: UIEditMenuInteractionAnimating) {
+        pinMenuConfiguration = configuration
+    }
+
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction, willDismissMenuFor configuration: UIEditMenuConfiguration,
+                             animator: UIEditMenuInteractionAnimating) {
+        animator.addCompletion { [weak self] in
+            if self?.pinMenuConfiguration === configuration { self?.pinMenuConfiguration = nil }
+        }
+    }
+
+    override func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        pinMenu.dismissMenu()
+    }
+
+    override func viewWillDisappear(_ animated: Bool) {
+        pinMenu.dismissMenu()
+        super.viewWillDisappear(animated)
+    }
+
     private func add(_ id: String) {
-        guard items.contains(where: { $0.id == id }) else { return }
-        heldID = nil
+        guard bar.overflowButtons.contains(where: { $0.id == id }) else { return }
+        pinMenu.dismissMenu()
         bar.add(id)
         render()
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        guard !choosing else { return }
+        guard !choosing, !pinMenuVisible else { return }
         if let item = item(at: indexPath.row) {
             guard item.button.isEnabled else { return }
             choosing = true
             dismiss(animated: true) { [bar] in bar.activateOverflow(item.id) }
-        } else if indexPath.row == additionRow, let id = heldID {
-            add(id)
         } else {
-            heldID = nil
             bar.reset()
             render()
         }
@@ -777,36 +800,47 @@ final class QuickAccessOverflowController: UITableViewController {
         let restore = bar.developmentPreserveLayout()
         let button = items[index].button
         let enabled = button.isEnabled
+        let rows = tableView.numberOfRows(inSection: 0)
+        let size = preferredContentSize
+        let configuration = UIEditMenuConfiguration(identifier: "view.top" as NSString, sourcePoint: .zero)
+        func action() -> UIAction? {
+            editMenuInteraction(pinMenu, menuFor: configuration, suggestedActions: [])?.children.first as? UIAction
+        }
         capture("more-before")
-        revealAddition(at: IndexPath(row: index, section: 0))
+        showPinMenu(at: IndexPath(row: index, section: 0))
         check(!bar.contains("view.top"), "Holding Top pinned it without choosing Add")
-        check(additionRow == index + 1, "Add did not appear immediately below Top")
-        check(presentedViewController == nil, "Holding Top opened another popup")
+        check(tableView.numberOfRows(inSection: 0) == rows && preferredContentSize == size,
+              "Holding Top inserted a row or resized More")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
             capture("more-held")
-            if let row = additionRow {
-                check(tableView(tableView, cellForRowAt: IndexPath(row: row, section: 0)).accessibilityIdentifier == "workspace-overflow-add", "Held action is not accessible")
-                tableView(tableView, didSelectRowAt: IndexPath(row: row, section: 0))
-            }
+            check(pinMenuVisible, "Holding Top did not present its context menu")
+            check(action()?.title == QuickAccessText.text("add"), "Context menu lost its Add action")
+            action()?.performWithSender(tableView, target: nil)
             check(bar.contains("view.top") && button.superview != nil, "Add did not pin Top")
             check(!items.contains(where: { $0.id == "view.top" }), "Pinned Top remained duplicated in More")
             restore(); render()
-            // Camera-disabled commands can still be pinned, but tapping them
-            // must leave the popup open and must not dispatch their command.
-            button.isEnabled = false
-            if let index = items.firstIndex(where: { $0.id == "view.top" }) {
-                let path = IndexPath(row: index, section: 0)
-                tableView(tableView, didSelectRowAt: path)
-                check(!choosing, "A disabled view command was selected")
-                revealAddition(at: path)
-                check(additionRow == index + 1, "Disabled tool lost its hold action")
-                if let row = additionRow { tableView(tableView, didSelectRowAt: IndexPath(row: row, section: 0)) }
-                check(bar.contains("view.top"), "Disabled tool could not be pinned")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
+                check(!pinMenuVisible, "Choosing Add left its context menu open")
+                // Camera-disabled commands can still be pinned without running.
+                button.isEnabled = false
+                if let index = items.firstIndex(where: { $0.id == "view.top" }) {
+                    let path = IndexPath(row: index, section: 0)
+                    tableView(tableView, didSelectRowAt: path)
+                    check(!choosing, "A disabled view command was selected")
+                    showPinMenu(at: path)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
+                    check(pinMenuVisible && action() != nil, "Disabled tool lost its context menu")
+                    action()?.performWithSender(tableView, target: nil)
+                    check(bar.contains("view.top"), "Disabled tool could not be pinned")
+                    button.isEnabled = enabled
+                    restore(); render()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        capture("more-restored")
+                        completion(issues)
+                    }
+                }
             }
-            button.isEnabled = enabled
-            restore(); heldID = nil; render()
-            capture("more-restored")
-            completion(issues)
         }
     }
 #endif

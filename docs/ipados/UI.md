@@ -9,8 +9,9 @@ the source history and current verification scope.
 
 ## Current presentation
 
-In the right-hand **More tools** list, hold a view such as **Top** to reveal
-**Add to quick access** directly beneath it. Tap that action to pin the view;
+In the right-hand **More tools** list, hold a view such as **Top** to open a
+native context menu with **Add to quick access**. The list keeps the same rows
+and size while the context menu is open. Tap that action to pin the view;
 an ordinary tap on Top still selects that view. VoiceOver exposes the same Add
 action on each tool. Disabled tools can be pinned without running them.
 **Settings > Workspace > Hold in More to add quick access** restores the previous

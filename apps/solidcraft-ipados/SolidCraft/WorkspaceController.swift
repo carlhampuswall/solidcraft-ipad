@@ -6564,7 +6564,7 @@ private extension FoundationController {
                         do {
                             try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
                                 "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
-                                "coverage": "Synthetic production drag and More hold/add paths on physical iPad; no physical contacts"])
+                                "coverage": "Synthetic production drag and More context-menu/add paths on physical iPad; no physical contacts"])
                                 .write(to: directory.appendingPathComponent("quick-access-check.json"), options: .atomic)
                         } catch { print("Quick access report failed: \(error)") }
                         print("Quick access check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
