@@ -17,6 +17,14 @@ enum InspectorText {
     static func text(_ key: String) -> String { NativeText.value("ui.ipados.inspector." + key) }
 }
 
+extension UIView {
+    /// Captions share the action, but menus originate at the visible icon surface.
+    var popoverAnchorRect: CGRect {
+        layoutIfNeeded()
+        return (self as? WorkspaceButton)?.toolIconFrame ?? bounds
+    }
+}
+
 /// Native presentation tokens stay inside the approved UIKit boundary. Geometry,
 /// camera colours and highlights continue to come from the shared renderer.
 enum WorkspaceStyle {
@@ -882,7 +890,7 @@ final class WorkspaceButton: MenuChoiceButton {
     private var diagnosticSeverity: FeatureDiagnosticSeverity?
     var hasExternalToolCaption: Bool { toolCaption != nil }
     var toolIconFrame: CGRect {
-        toolCaption.map { $0.convert($0.iconFrame, to: self) } ?? bounds
+        (toolCaption ?? railContent).map { $0.convert($0.iconFrame, to: self) } ?? bounds
     }
     func sharedToolSurface(_ shared: Bool) {
         guard let toolCaption, toolCaption.sharedIconSurface != shared else { return }
@@ -893,7 +901,12 @@ final class WorkspaceButton: MenuChoiceButton {
     private var railContent: RailButtonContent?
     private var choiceCheck: UIImageView?
     override var choicesIndicatorBounds: CGRect {
-        (toolCaption ?? railContent).map { $0.convert($0.iconFrame, to: self) } ?? bounds
+        toolIconFrame
+    }
+    override func menuAttachmentPoint(for configuration: UIContextMenuConfiguration) -> CGPoint {
+        guard toolCaption != nil || railContent != nil else { return super.menuAttachmentPoint(for: configuration) }
+        let anchor = popoverAnchorRect
+        return CGPoint(x: anchor.midX, y: anchor.maxY)
     }
     private var isHistoryAction: Bool {
         iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"

@@ -744,7 +744,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         chromeIcons.forEach { $0.0.artwork($0.1, compact: compactChrome) }
         toolsMoreButton.systemArtwork("ellipsis", compact: compactChrome)
         documentActionsButton.artwork("folder", compact: true)
-        viewButton.artwork("chevron")
+        viewButton.artwork("view_isometric")
         viewButton.configuration?.imagePlacement = .trailing
         viewButton.configuration?.baseForegroundColor = WorkspaceStyle.foreground
         viewButton.accessibilityIdentifier = "workspace-view-menu"
@@ -1408,7 +1408,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         sheet.addAction(UIAlertAction(title: ModellingText.text("delete_feature"), style: .destructive) { _ in delete() })
         sheet.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
         sheet.popoverPresentationController?.sourceView = source
-        sheet.popoverPresentationController?.sourceRect = source.bounds
+        sheet.popoverPresentationController?.sourceRect = source.popoverAnchorRect
         present(sheet, animated: true)
     }
 
@@ -1508,7 +1508,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         navigation.overrideUserInterfaceStyle = workspaceInterfaceStyle
         navigation.preferredContentSize = picker.preferredContentSize
         if let popover = navigation.popoverPresentationController {
-            popover.sourceView = source; popover.sourceRect = source.bounds
+            popover.sourceView = source; popover.sourceRect = source.popoverAnchorRect
             popover.delegate = self
         }
         present(navigation, animated: true)
@@ -1769,7 +1769,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let safe = view.safeAreaLayoutGuide.layoutFrame
         navigation.preferredContentSize = CGSize(width: min(540, max(0, safe.width - 24)), height: min(640, max(0, safe.height - 32)))
         if let popover = navigation.popoverPresentationController {
-            popover.sourceView = settingsButton; popover.sourceRect = settingsButton.bounds
+            popover.sourceView = settingsButton; popover.sourceRect = settingsButton.popoverAnchorRect
             popover.backgroundColor = WorkspaceStyle.background
             popover.permittedArrowDirections = [.down, .right]; popover.delegate = self
         }
@@ -1800,7 +1800,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         panel.onOriginInModel = { [weak self] in self?.toggleOriginInModel() }
         if let popover = panel.popoverPresentationController {
-            popover.sourceView = viewButton; popover.sourceRect = viewButton.bounds
+            popover.sourceView = viewButton; popover.sourceRect = viewButton.popoverAnchorRect
             popover.permittedArrowDirections = .up; popover.delegate = self
         }
         viewControlsPopover = panel
@@ -2648,8 +2648,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         picker.overrideUserInterfaceStyle = workspaceInterfaceStyle
         picker.loadViewIfNeeded()
         if let popover = picker.popoverPresentationController {
-            popover.sourceView = source; popover.sourceRect = source.bounds
-            let frame = source.convert(source.bounds, to: workspace)
+            popover.sourceView = source; popover.sourceRect = source.popoverAnchorRect
+            let frame = source.convert(source.popoverAnchorRect, to: workspace)
             // UIKit may place an unrestricted menu directly on top of the grip.
             // Reserve room for its arrow and margins, then scroll shorter lists.
             let roomAbove = frame.minY - view.safeAreaLayoutGuide.layoutFrame.minY - 36
@@ -2705,7 +2705,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let popover = controller.popoverPresentationController {
             // The source field may be rebuilt as its form updates. Retain the
             // exact original on-screen anchor in the stable workspace instead.
-            popover.sourceView = workspace; popover.sourceRect = source.convert(source.bounds, to: workspace)
+            popover.sourceView = workspace; popover.sourceRect = source.convert(source.popoverAnchorRect, to: workspace)
             popover.permittedArrowDirections = [.up, .down, .left, .right]; popover.delegate = self
         }
         modelValueEditor = controller
@@ -2971,7 +2971,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         // launcher, with Tools as the compact-layout fallback.
         let source = documentActionsButton.isHidden ? toolsMoreButton : documentActionsButton
         controller.popoverPresentationController?.sourceView = source
-        controller.popoverPresentationController?.sourceRect = source.bounds
+        controller.popoverPresentationController?.sourceRect = source.popoverAnchorRect
         controller.completionWithItemsHandler = { [weak self] _, completed, _, error in
             DispatchQueue.main.async {
                 // The receiving activity must finish before its file is removed.
@@ -3049,7 +3049,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         chooser.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
         let source = createSketchButton.window == nil ? toolsMoreButton : createSketchButton
         chooser.popoverPresentationController?.sourceView = source
-        chooser.popoverPresentationController?.sourceRect = source.bounds
+        chooser.popoverPresentationController?.sourceRect = source.popoverAnchorRect
         present(chooser, animated: true)
     }
 
@@ -3540,7 +3540,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         editor.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.updateAvailability() }
         let anchor = source ?? inspectorButton
         if let popover = controller.popoverPresentationController {
-            popover.sourceView = workspace; popover.sourceRect = anchor.convert(anchor.bounds, to: workspace)
+            popover.sourceView = workspace; popover.sourceRect = anchor.convert(anchor.popoverAnchorRect, to: workspace)
             popover.permittedArrowDirections = [.up, .down, .left, .right]; popover.delegate = self
         }
         inlineNumericEditor = controller
@@ -3748,7 +3748,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if let popover = navigation.popoverPresentationController {
             let button = sketchQuickTools.first(where: { $0.0 == family.defaultTool })?.1
             let source = button.flatMap { $0.window == nil ? nil : $0 } ?? toolsMoreButton
-            popover.sourceView = source; popover.sourceRect = source.bounds
+            popover.sourceView = source; popover.sourceRect = source.popoverAnchorRect
             popover.delegate = self
         }
         present(navigation, animated: true)
@@ -3895,7 +3895,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let panel = QuickAccessOverflowController(bar: navigationQuickAccess)
         panel.overrideUserInterfaceStyle = workspaceInterfaceStyle
         if let popover = panel.popoverPresentationController {
-            popover.sourceView = navigationMoreButton; popover.sourceRect = navigationMoreButton.bounds
+            popover.sourceView = navigationMoreButton; popover.sourceRect = navigationMoreButton.popoverAnchorRect
             popover.permittedArrowDirections = [.left, .right]; popover.delegate = self
         }
         navigationOverflow = panel
@@ -4408,7 +4408,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
         if let popover = picker.popoverPresentationController {
             let source = dimensionsButton.window == nil ? navigationMoreButton : dimensionsButton
-            popover.sourceView = source; popover.sourceRect = source.bounds
+            popover.sourceView = source; popover.sourceRect = source.popoverAnchorRect
             popover.permittedArrowDirections = [.up, .down]; popover.delegate = self
         }
         present(picker, animated: true)
@@ -4439,7 +4439,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         picker.onChoose = { key in actions[key]?() }
         if let popover = picker.popoverPresentationController {
             let source = constraintsButton.window == nil ? navigationMoreButton : constraintsButton
-            popover.sourceView = source; popover.sourceRect = source.bounds
+            popover.sourceView = source; popover.sourceRect = source.popoverAnchorRect
             popover.permittedArrowDirections = [.up, .down]; popover.delegate = self
         }
         present(picker, animated: true)
@@ -7479,6 +7479,12 @@ private extension FoundationController {
             session.command("view.grid", params: ["visible": savedGrid, "integrated_axes": savedIntegratedAxes])
             failure = nil; updateStatus(); rebuildViewMenu()
             viewControlsPopover?.dismiss(animated: false); viewControlsPopover = nil
+            do {
+                let folder = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"])
+                    .write(to: folder.appendingPathComponent("view-controls-check.json"), options: .atomic)
+            } catch { issues.append("View controls report: \(error)") }
             print("View controls check " + (issues.isEmpty ? "PASS" : "FAIL: " + issues.joined(separator: "; ")))
         }
         func wait(_ condition: @escaping () -> Bool, remaining: Int = 100, then next: @escaping () -> Void) {
@@ -7566,6 +7572,13 @@ private extension FoundationController {
             self.showViewControls()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                 check(self.viewControlsPopover != nil, "View popup did not open")
+                if let popover = self.viewControlsPopover?.popoverPresentationController {
+                    check(popover.sourceView === self.viewButton && popover.sourceRect.width == WorkspaceStyle.touch,
+                          "View popup includes its caption in the anchor")
+                    check(abs(popover.sourceRect.midX - self.viewButton.toolIconFrame.midX) < 0.5,
+                          "View popup points between the caption and icon")
+                } else { issues.append("View popup has no anchor") }
+                check(self.viewButton.configuration?.image != nil, "View cube icon is missing")
                 check(self.viewPresentation == openingState && self.canvas.frame == openingFrame, "opening View changed the camera or viewport")
                 check(self.keyboardTop == nil, "opening View raised a keyboard")
                 capture("opened")
@@ -9921,6 +9934,15 @@ private extension FoundationController {
                 // Rendering flushes UIKit's deferred state updates. Inspect the
                 // displayed configuration, not an automatic style we disabled.
                 for (button, enabled, name) in checks {
+                    if let icon = descendants(button).first(where: { $0.accessibilityIdentifier == "workspace-tool-icon-surface" }) {
+                        let iconFrame = icon.convert(icon.bounds, to: button)
+                        if button.popoverAnchorRect != iconFrame { issues.append("Popover anchor includes a caption: " + name) }
+                        let menu = UIContextMenuConfiguration(identifier: nil, previewProvider: nil) { _ in UIMenu(children: []) }
+                        let point = button.menuAttachmentPoint(for: menu)
+                        if point.x < iconFrame.minX || point.x > iconFrame.maxX || point.y < iconFrame.minY || point.y > iconFrame.maxY {
+                            issues.append("System menu opens outside the icon surface: " + name)
+                        }
+                    } else { issues.append("Missing menu anchor surface: " + name) }
                     guard let configuration = button.configuration else { issues.append("Missing configuration: " + name); continue }
                     if configuration.background.resolvedBackgroundColor(for: button.tintColor).cgColor.alpha != 0 {
                         issues.append("Background spans icon and caption: " + name)
