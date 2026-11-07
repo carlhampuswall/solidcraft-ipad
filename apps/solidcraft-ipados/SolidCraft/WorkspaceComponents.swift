@@ -855,20 +855,20 @@ final class WorkspaceButton: UIButton {
         iconID = nil; commandID = nil; systemIcon = nil; compactIcon = false; flippedArtwork = false; refreshIcon()
     }
     /// Retain compact artwork and accessibility names when captions are hidden.
-    /// Text-only actions and existing form labels always keep their titles.
+    /// History actions stay icon-only; text-only actions and forms keep titles.
     func toolLabels(_ visible: Bool, mirrored: Bool = false) {
         automaticallyUpdatesConfiguration = false
         if toolCaption == nil {
             let caption = RailButtonContent(title: fullTitle, tint: WorkspaceStyle.foreground, separateIconSurface: true)
             addSubview(caption); toolCaption = caption
         }
-        toolCaption?.showCaption(visible, mirrored: mirrored)
+        toolCaption?.showCaption(visible && !isHistoryAction, mirrored: mirrored)
         backgroundColor = .clear; layer.borderWidth = 0; clipsToBounds = false
         refreshIcon()
     }
     func refreshExternalToolLabelPreference() {
         guard let content = toolCaption ?? railContent else { return }
-        content.updateCaptionVisibility(ToolLabels.current)
+        content.updateCaptionVisibility(ToolLabels.current && !isHistoryAction)
         invalidateIntrinsicContentSize(); setNeedsLayout()
     }
     func systemArtwork(_ name: String, compact: Bool = false) {
@@ -881,7 +881,7 @@ final class WorkspaceButton: UIButton {
     }
     func separateRailCaption(tint: UIColor = WorkspaceStyle.foreground) {
         let content = RailButtonContent(title: fullTitle, tint: tint)
-        content.showCaption(ToolLabels.current, mirrored: false)
+        content.showCaption(ToolLabels.current && !isHistoryAction, mirrored: false)
         railContent = content
         automaticallyUpdatesConfiguration = false
         var config = UIButton.Configuration.plain()

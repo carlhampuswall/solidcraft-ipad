@@ -4759,8 +4759,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                                inspectorPreferredWidth: modellingInspector?.compact == true && modellingInspector?.minimal != true ? 380 : 320,
                                                historyToggleWidth: featureHistory.preferredToggleWidth,
                                                viewButtonSize: viewButton.intrinsicContentSize,
-                                               toolLabels: showToolLabels,
-                                               historyActionsWidth: showToolLabels ? 2 * max(undoButton.intrinsicContentSize.width, redoButton.intrinsicContentSize.width) + 2 : 100)
+                                               toolLabels: showToolLabels)
                 .placed(in: chrome, viewport: viewport)
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
@@ -9614,7 +9613,7 @@ private extension FoundationController {
         let saved = UserDefaults.standard.object(forKey: ToolLabels.key)
         let original = showToolLabels
         var issues: [String] = []
-        let controls = [viewButton, browserButton, undoButton, redoButton]
+        let controls = [viewButton, browserButton]
             + Array(railQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(navigationQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
             + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
@@ -9660,7 +9659,7 @@ private extension FoundationController {
                 ["workspace-history-back", "workspace-history-play", "workspace-history-forward"].contains($0.accessibilityIdentifier ?? "")
             }
             if transport.count != 3 { issues.append("Missing history transport controls") }
-            for button in [documentActionsButton] + transport {
+            for button in [documentActionsButton, undoButton, redoButton] + transport {
                 if button.configuration?.title != nil || caption(button)?.isHidden == false {
                     issues.append("Unexpected caption: " + (button.accessibilityLabel ?? "button"))
                 }
