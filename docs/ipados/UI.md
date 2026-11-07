@@ -57,6 +57,11 @@ in the opposite rail only while sketching. Constraint menu eligibility and
 dimension types come from `eligible_constraints` / `eligible_dimensions`; the UI
 does not decide geometry compatibility or construct new constraint semantics.
 
+The rail's overflow menu omits commands already covered by Create, Modify, Pattern,
+Assemble, Draw or Parameters. Removing a category button moves that category's
+menu into overflow; its commands remain grouped there. Individual commands pinned
+to the rail stay out of their category menus.
+
 Selecting one or more edges of the same body in Select automatically opens a
 **Fillet / Chamfer** selector in Properties. Choose either icon to open the
 existing operation form with those edges; selection alone makes no document

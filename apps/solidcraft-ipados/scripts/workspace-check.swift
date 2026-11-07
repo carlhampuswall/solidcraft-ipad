@@ -62,6 +62,22 @@ struct WorkspaceChecks {
         let duplicateQuick = Data(#"{"order":["select","select","","circle"],"knownDefaults":["select","line","circle","modify"]}"#.utf8)
         try require(QuickAccessLayout(defaults: quickDefaults, saved: duplicateQuick).order == ["select", "circle"],
                     "saved quick access accepted empty or duplicate identities")
+        let groupedCommands: Set<String> = ["joint.create", "solid.fillet", "solid.pattern.circular", "solid.extrude", "parameters.add", "sketch.trim", "sketch.project"]
+        let menuDefaults = ["select", "assembly", "modify", "pattern", "modelling"]
+        let menuCatalog = menuDefaults + groupedCommands.sorted() + ["post_radius", "joint.create"]
+        var menuLayout = QuickAccessLayout(defaults: menuDefaults)
+        try require(menuLayout.overflow(from: menuCatalog, excluding: groupedCommands) == ["post_radius"],
+                    "Tools repeated commands already reachable in category menus")
+        menuLayout.remove("assembly"); menuLayout.remove("modify"); menuLayout.remove("select")
+        try require(menuLayout.overflow(from: menuCatalog, excluding: groupedCommands) == ["select", "assembly", "modify", "post_radius"],
+                    "removing a category lost its overflow menu or repeated its child commands")
+        menuLayout.add("joint.create")
+        try require(!menuLayout.overflow(from: menuCatalog, excluding: groupedCommands).contains("joint.create"),
+                    "pinning a category command duplicated it in Tools")
+        menuLayout.remove("joint.create")
+        let restoredMenus = QuickAccessLayout(defaults: menuDefaults, saved: menuLayout.saved)
+        try require(restoredMenus.overflow(from: menuCatalog, excluding: groupedCommands) == menuLayout.overflow(from: menuCatalog, excluding: groupedCommands),
+                    "relaunch restored duplicate category commands in Tools")
         try require(HistoryFeatureEmphasis.enabled(nil) && HistoryFeatureEmphasis.enabled(true) && !HistoryFeatureEmphasis.enabled(false),
                     "history selection preference lost its default or saved value")
         try require(HistoryFeatureEmphasis.resolve(selected: true, editing: false, enabled: true) == .selection &&

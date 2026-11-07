@@ -624,6 +624,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkSketchToolbarOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--quick-access-check") {
                     self.developmentCheckStarted = true; self.checkQuickAccessOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--tool-menus-check") {
+                    self.developmentCheckStarted = true; self.checkToolMenusOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--sketch-fillet-check") {
                     self.developmentCheckStarted = true; self.checkSketchFilletOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--compact-tool-controls-check") {
@@ -4490,7 +4492,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ModellingText.text("parameters"), children: modelActions { $0.hasPrefix("parameters.") }),
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions())
         ]
-        toolsMoreButton.menu = UIMenu(children: (customizeToolbars ? [railQuickAccess?.overflowMenu()].compactMap { $0 } : []) + commands)
+        let groupedCommands = Set(tools.map(\.id) + (state?.assembly?.tools ?? []).map(\.id) + sketchTools.map(\.0) + ["sketch.project"])
+        toolsMoreButton.menu = UIMenu(children: (customizeToolbars ? [railQuickAccess?.overflowMenu(excluding: groupedCommands)].compactMap { $0 } : []) + commands)
         toolsMoreButton.showsMenuAsPrimaryAction = true
         navigationMoreButton.menu = navigationQuickAccess?.overflowMenu()
         navigationMoreButton.availability(enabled: settingsButton.isEnabled)
@@ -6269,6 +6272,61 @@ private extension FoundationController {
             }
         }
         prepare(0)
+    }
+
+    func checkToolMenusOnDevice() {
+        var issues: [String] = []
+        func titles(_ menu: UIMenu) -> [String] {
+            guard menu.title != QuickAccessText.text("add") else { return [] }
+            return menu.children.flatMap { child -> [String] in
+                if let submenu = child as? UIMenu { return titles(submenu) }
+                return [child.title]
+            }
+        }
+        func ready(_ remaining: Int = 100) {
+            guard projectsStartupReady, pending.isEmpty, state?.assembly?.tools.isEmpty == false else {
+                guard remaining > 0 else { print("Tool menus check FAIL: startup timeout"); return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { ready(remaining - 1) }; return
+            }
+            rebuildMenus(); view.layoutIfNeeded()
+            let controls = rail.arrangedSubviews.compactMap { $0 as? WorkspaceButton }.filter { !$0.isHidden }
+            let actual = controls.flatMap { button in button.menu.map(titles) ?? [button.accessibilityLabel ?? ""] }
+            let tools = (state?.modelling?.tools ?? []) + (state?.assembly?.tools ?? [])
+            let expected = Dictionary(grouping: tools, by: { ModellingText.label($0.label) })
+            for (title, entries) in expected where actual.filter({ $0 == title }).count != entries.count {
+                issues.append(title + ": expected \(entries.count), found \(actual.filter { $0 == title }.count)")
+            }
+            let menus = controls.compactMap { button -> [String: Any]? in
+                guard let menu = button.menu else { return nil }
+                return ["title": button.accessibilityLabel ?? "", "commands": titles(menu)]
+            }
+            guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+            let captures = [("assemble", assemblyButton), ("modify", modifyButton), ("pattern", patternButton), ("create", modellingButton), ("overflow", toolsMoreButton)]
+                .filter { controls.contains($0.1) }
+            func capture(_ index: Int) {
+                guard index < captures.count else {
+                    do {
+                        try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues, "menus": menus,
+                            "coverage": "Production UIKit menus on physical iPad; synthetic primary actions"], options: [.prettyPrinted, .sortedKeys])
+                            .write(to: directory.appendingPathComponent("tool-menus-check.json"), options: .atomic)
+                    } catch { issues.append("Report: \(error)") }
+                    print("Tool menus check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)"); return
+                }
+                let (name, button) = captures[index]
+                if #available(iOS 17.4, *) { button.performPrimaryAction() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    if !button.isHeld { issues.append(name + ": menu did not present") }
+                    let surface: UIView = self.view.window ?? self.view
+                    let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
+                    do { try image.pngData()?.write(to: directory.appendingPathComponent("tool-menus-" + name + ".png"), options: .atomic) }
+                    catch { issues.append("Capture: \(error)") }
+                    button.contextMenuInteraction?.dismissMenu()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { capture(index + 1) }
+                }
+            }
+            capture(0)
+        }
+        ready()
     }
 
     func checkQuickAccessOnDevice() {

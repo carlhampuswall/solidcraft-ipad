@@ -127,8 +127,8 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
     /// with the same reason and remain customizable.
     private var visible: [String] { layout.order.filter { buttons[$0]?.isHidden == false } }
 
-    func overflowMenu() -> UIMenu {
-        let ids = layout.overflow(from: catalog.filter { buttons[$0]?.isHidden == false })
+    func overflowMenu(excluding groupedCommands: Set<String> = []) -> UIMenu {
+        let ids = layout.overflow(from: catalog.filter { buttons[$0]?.isHidden == false }, excluding: groupedCommands)
         let actions: [UIMenuElement] = ids.compactMap { id in
             guard let button = buttons[id] else { return nil }
             if let menu = button.menu, button.showsMenuAsPrimaryAction {

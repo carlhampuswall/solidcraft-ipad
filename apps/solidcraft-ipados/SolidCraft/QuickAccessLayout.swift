@@ -32,8 +32,10 @@ struct QuickAccessLayout: Codable, Equatable {
         order.insert(id, at: index + (after ? 1 : 0))
     }
 
-    func overflow(from available: [String]) -> [String] {
+    /// Commands covered by a category menu stay there, even when that menu's
+    /// button is removed from the bar and moves into overflow itself.
+    func overflow(from available: [String], excluding groupedCommands: Set<String> = []) -> [String] {
         var seen = Set<String>()
-        return available.filter { !contains($0) && seen.insert($0).inserted }
+        return available.filter { !contains($0) && !groupedCommands.contains($0) && seen.insert($0).inserted }
     }
 }
