@@ -9410,7 +9410,7 @@ private extension FoundationController {
                 if button.accessibilityLabel?.isEmpty != false { issues.append("Missing accessibility name") }
                 let caption = button.subviews.flatMap(\.subviews).first { $0.accessibilityIdentifier == "workspace-rail-caption" }
                 if caption?.isHidden != !visible { issues.append("Caption visibility: " + (button.accessibilityLabel ?? "button")) }
-                if visible, let caption, let icon = caption.superview?.subviews.first(where: {
+                if visible, button.window != nil, !button.isHidden, let caption, let icon = caption.superview?.subviews.first(where: {
                     $0.accessibilityIdentifier == "workspace-tool-icon-surface"
                 }), caption.frame.intersects(icon.frame) {
                     issues.append("Caption overlaps its icon surface: " + (button.accessibilityLabel ?? "button"))
