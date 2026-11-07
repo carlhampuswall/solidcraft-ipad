@@ -11,6 +11,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let session = NativeSession()
     private let workspace = UIView()
     private let top = UIView()
+    private lazy var documentHeaderHold: UILongPressGestureRecognizer = {
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(documentHeaderHeld(_:)))
+        hold.cancelsTouchesInView = true
+        hold.delegate = self
+        return hold
+    }()
     private let titleLabel = WorkspaceStyle.label(.headline)
     private let subtitle = WorkspaceStyle.label(.caption2, secondary: true)
     private let status = WorkspaceStatusLabel()
@@ -311,6 +317,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         scrim.accessibilityLabel = WorkspaceStyle.text("close")
         scrim.accessibilityIdentifier = "workspace-modal-scrim"
         top.addSubview(titleLabel); top.addSubview(subtitle); top.addSubview(topScroll)
+        top.addGestureRecognizer(documentHeaderHold)
         titleLabel.numberOfLines = 1
         titleLabel.accessibilityTraits = .header
         subtitle.numberOfLines = 2
@@ -802,6 +809,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         homeButton.accessibilityIdentifier = homeToolbar ? "workspace-home" : "workspace-fit"
         projectionButton.accessibilityIdentifier = "workspace-projection"
         documentActionsButton.accessibilityIdentifier = "workspace-document-actions"
+        documentActionsButton.showsLargeContentViewer = false
+        for interaction in documentActionsButton.interactions where interaction is UILargeContentViewerInteraction {
+            documentActionsButton.removeInteraction(interaction)
+        }
         constraintsButton.accessibilityIdentifier = "workspace-constraints"
         dimensionsButton.accessibilityIdentifier = "workspace-dimensions"
         constructionButton.accessibilityIdentifier = "workspace-construction"
@@ -2238,6 +2249,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     // Canvas taps are classified by Rust against the displayed scene. UIKit
     // handles taps on surrounding chrome and leaves the tool's controls interactive.
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        if gestureRecognizer === documentHeaderHold {
+            guard active, documentActionsButton.isEnabled, let target = touch.view else { return false }
+            return target === top || target === titleLabel || target === subtitle ||
+                target === documentActionsButton || target.isDescendant(of: documentActionsButton)
+        }
         guard draftAppliesOnTapAway, modellingInspector != nil, presentedViewController == nil,
               let target = touch.view else { return false }
         let toolViews: [UIView?] = [canvas, extrusionRailScroll, modelValueButton, modellingInspector?.resultButton, inspectorPanel]
@@ -2726,6 +2742,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
               ProjectLibrary.showsBrowserOnLaunch() else { return }
         if ProcessInfo.processInfo.arguments.contains("--projects-check"), session.currentProject == nil { return }
         showProjects()
+    }
+
+    @objc private func documentHeaderHeld(_ gesture: UILongPressGestureRecognizer) {
+        guard active, gesture.state == .began else { return }
+        exportProject(format: "step", share: true)
     }
 
     private func showProjects() {
@@ -5002,7 +5023,33 @@ private extension FoundationController {
             let share = index < 2
             let statusBefore = documentStatus
             let revision = state?.geometry_revision
-            exportProject(format: "step", share: share)
+            if index == 0 {
+                final class HeaderHold: UILongPressGestureRecognizer {
+                    var phase: UIGestureRecognizer.State = .possible
+                    override var state: UIGestureRecognizer.State {
+                        get { phase }
+                        set { phase = newValue }
+                    }
+                }
+                guard documentHeaderHold.view === top, documentHeaderHold.delegate === self,
+                      documentHeaderHold.cancelsTouchesInView, documentHeaderHold.isEnabled,
+                      !documentActionsButton.showsLargeContentViewer,
+                      !documentActionsButton.interactions.contains(where: { $0 is UILargeContentViewerInteraction }) else {
+                    report("Document header hold is missing or conflicts with the large content viewer"); return
+                }
+                let hold = HeaderHold()
+                for phase: UIGestureRecognizer.State in [.possible, .changed, .ended, .cancelled, .failed] {
+                    hold.phase = phase; documentHeaderHeld(hold)
+                    if preparingExport || pendingExport != nil || presentedViewController != nil {
+                        report("Document header shared before the hold began"); return
+                    }
+                }
+                hold.phase = .began; documentHeaderHeld(hold)
+                if !preparingExport { report("Document header did not start sharing when the hold began"); return }
+                // Releasing the hold must not open Projects while export runs.
+                hold.phase = .ended; documentHeaderHeld(hold)
+                documentActionsButton.sendActions(for: .touchUpInside)
+            } else { exportProject(format: "step", share: share) }
             wait({ !self.preparingExport && self.pendingExport != nil && self.presentedViewController != nil }) {
                 guard let file = self.pendingExport, let controller = self.presentedViewController else { report("Missing export"); return }
                 do {
