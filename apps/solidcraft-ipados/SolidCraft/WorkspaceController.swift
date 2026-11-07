@@ -5204,6 +5204,52 @@ private extension FoundationController {
                 }
             }
         }
+        func checkIcons(_ browser: ProjectBrowserController, project: UUID, folder: UUID, then next: @escaping () -> Void) {
+            guard let navigation = browser.navigationController, let car = ProjectLibraryIcon.emoji("🚗"),
+                  let unicorn = ProjectLibraryIcon.emoji("🦄"),
+                  let picker = browser.developmentOpenIconPicker(for: .project(project)) else { report("Missing project icon picker"); return }
+            let savedStyle = navigation.overrideUserInterfaceStyle
+            wait({ navigation.topViewController === picker && navigation.transitionCoordinator == nil && picker.view.window != nil }) {
+                if ProjectIconPickerController.choices.count <= 45 { issues.append("Icon picker still has only a few choices") }
+                if picker.presentedViewController != nil { issues.append("Opening the icon picker opened text entry") }
+                navigation.overrideUserInterfaceStyle = .dark
+                picker.view.layoutIfNeeded(); capture("project-icons-dark")
+                navigation.overrideUserInterfaceStyle = .light
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    picker.view.layoutIfNeeded(); capture("project-icons-light")
+                    navigation.overrideUserInterfaceStyle = savedStyle
+                    guard picker.developmentSelect(car) else { report("Project emoji is not selectable"); return }
+                    wait({ navigation.topViewController === browser && navigation.transitionCoordinator == nil && browser.developmentIcon(for: .project(project)) == car }) {
+                        guard let folderPicker = browser.developmentOpenIconPicker(for: .folder(folder)) else { report("Missing folder icon picker"); return }
+                        wait({ navigation.topViewController === folderPicker && navigation.transitionCoordinator == nil }) {
+                            folderPicker.developmentEnterEmoji()
+                            wait({ folderPicker.presentedViewController is UIAlertController && folderPicker.presentedViewController?.isBeingPresented == false }) {
+                                guard let alert = folderPicker.presentedViewController as? UIAlertController,
+                                      let field = alert.textFields?.first, let apply = alert.actions.last else { report("Missing custom emoji entry"); return }
+                                field.text = "🚗🏠"; field.sendActions(for: .editingChanged)
+                                if apply.isEnabled { issues.append("Emoji entry accepted two emojis") }
+                                field.text = "🦄"; field.sendActions(for: .editingChanged)
+                                if !apply.isEnabled { issues.append("Emoji entry refused a custom emoji") }
+                                capture("project-custom-emoji-entry")
+                                folderPicker.developmentApplyEmoji(field.text ?? "")
+                                wait({ navigation.topViewController === browser && navigation.transitionCoordinator == nil && browser.developmentIcon(for: .folder(folder)) == unicorn }) {
+                                    if browser.developmentIcon(for: .project(project)) != car { issues.append("Folder emoji changed the project icon") }
+                                    guard let resetPicker = browser.developmentOpenIconPicker(for: .project(project)) else { report("Missing default icon action"); return }
+                                    wait({ navigation.topViewController === resetPicker && navigation.transitionCoordinator == nil }) {
+                                        guard let button = resetPicker.navigationItem.rightBarButtonItems?.first, let action = button.action else { report("Missing default icon button"); return }
+                                        UIApplication.shared.sendAction(action, to: button.target, from: button, for: nil)
+                                        wait({ navigation.topViewController === browser && navigation.transitionCoordinator == nil && browser.developmentIcon(for: .project(project)) == .project }) {
+                                            browser.onOrganise?(.projectIcon(project, car))
+                                            wait({ browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true && browser.developmentIcon(for: .project(project)) == car }) { next() }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         func checkOrganisation(_ browser: ProjectBrowserController, then next: @escaping () -> Void) {
             guard let project = self.session.currentProject else { report("Missing organisation fixture"); return }
             let document = self.state?.document_id, undo = self.state?.can_undo, rows = self.state?.rows.count
@@ -5219,6 +5265,7 @@ private extension FoundationController {
                 wait({ browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
                     browser.onOrganise?(.moveProject(project.id, to: folder))
                     wait({ browser.tableView.numberOfRows(inSection: 1) == 1 && browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
+                        checkIcons(browser, project: project.id, folder: folder) {
                         browser.onOrganise?(.sort(.nameAscending, folder: folder, archive: false))
                         wait({ browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true }) {
                             capture("projects-folder")
@@ -5238,10 +5285,14 @@ private extension FoundationController {
                                             issues.append("Project organisation replaced the active document/history")
                                         }
                                         capture("projects-folders")
+                                        if browser.developmentIcon(for: .project(project.id))?.emojiText != "🚗" || browser.developmentIcon(for: .folder(folder))?.emojiText != "🦄" {
+                                            issues.append("Archiving, moving or refreshing lost custom emoji")
+                                        }
                                         next()
                                     }
                                 }
                             }
+                        }
                         }
                     }
                 }

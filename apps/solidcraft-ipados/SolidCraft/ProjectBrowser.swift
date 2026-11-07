@@ -205,7 +205,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
             var content = cell.defaultContentConfiguration()
             content.text = value.name
             content.secondaryText = query.isEmpty ? nil : location(value.parent)
-            content.image = WorkspaceIcon.image(value.icon.rawValue, traits: traitCollection)
+            content.image = iconImage(value.icon, fallback: .folder)
             cell.contentConfiguration = content
             cell.accessoryType = .disclosureIndicator
             cell.accessibilityIdentifier = "project-folder-" + value.id.uuidString
@@ -217,7 +217,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         content.text = project.name
         content.secondaryText = DateFormatter.localizedString(from: project.modified, dateStyle: .medium, timeStyle: .short)
             + (query.isEmpty ? "" : " · " + location(organisation.placement(project.id).folder))
-        content.image = WorkspaceIcon.image("project", traits: traitCollection)
+        content.image = iconImage(organisation.placement(project.id).icon, fallback: .project)
         cell.contentConfiguration = content
         cell.accessoryType = project.id == current ? .checkmark : .disclosureIndicator
         cell.accessibilityIdentifier = "project-" + project.id.uuidString
@@ -264,7 +264,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
                 alert.addAction(UIAlertAction(title: ProjectText.text("delete"), style: .destructive) { [weak self] _ in self?.onDelete?(project) })
                 self.present(alert, animated: true)
             }
-            return UIMenu(children: [insert, rename, duplicate, self.moveMenu(project: project.id), archive, delete])
+            return UIMenu(children: [insert, rename, self.iconAction(for: .project(project.id)), duplicate, self.moveMenu(project: project.id), archive, delete])
         }
     }
 
@@ -461,12 +461,50 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
 
     private func folderMenu(_ value: ProjectFolder) -> UIMenu {
         let rename = UIAction(title: ProjectText.text("rename_folder")) { [weak self] _ in self?.askFolderName(renaming: value) }
-        let icons = UIMenu(title: ProjectText.text("folder_icon"), children: ProjectFolderIcon.allCases.map { icon in
-            UIAction(title: ProjectText.text("icon_" + icon.rawValue), image: WorkspaceIcon.image(icon.rawValue, traits: traitCollection),
-                     state: value.icon == icon ? .on : .off) { [weak self] _ in self?.change(.folderIcon(value.id, icon)) }
-        })
-        return UIMenu(title: value.name, children: [rename, icons, moveMenu(folder: value.id), archiveAction(folder: value.id)])
+        return UIMenu(title: value.name, children: [rename, iconAction(for: .folder(value.id)), moveMenu(folder: value.id), archiveAction(folder: value.id)])
     }
+
+    private func iconImage(_ icon: ProjectLibraryIcon, fallback: ProjectLibraryIcon) -> UIImage? {
+        ProjectIconImage.image(icon, fallback: fallback, traits: traitCollection)
+    }
+
+    private func selectedIcon(for item: ProjectLibraryItem) -> ProjectLibraryIcon? {
+        switch item {
+        case .folder(let id): return organisation.folder(id)?.icon
+        case .project(let id): return projectIDs.contains(id) ? organisation.placement(id).icon : nil
+        }
+    }
+
+    private func iconAction(for item: ProjectLibraryItem) -> UIAction {
+        let isFolder: Bool
+        if case .folder = item { isFolder = true } else { isFolder = false }
+        return UIAction(title: ProjectText.text(isFolder ? "folder_icon" : "project_icon")) { [weak self] _ in
+            self?.showIconPicker(for: item)
+        }
+    }
+
+    @discardableResult
+    private func showIconPicker(for item: ProjectLibraryItem) -> ProjectIconPickerController? {
+        guard !busy, let selected = selectedIcon(for: item), let navigationController else { return nil }
+        endTextEntry()
+        let isFolder: Bool
+        if case .folder = item { isFolder = true } else { isFolder = false }
+        let picker = ProjectIconPickerController(selected: selected, defaultIcon: isFolder ? .folder : .project)
+        picker.title = ProjectText.text(isFolder ? "folder_icon" : "project_icon")
+        picker.onChoose = { [weak self] icon in
+            switch item {
+            case .folder(let id): self?.change(.folderIcon(id, icon))
+            case .project(let id): self?.change(.projectIcon(id, icon))
+            }
+        }
+        navigationController.pushViewController(picker, animated: true)
+        return picker
+    }
+
+#if DEBUG
+    func developmentOpenIconPicker(for item: ProjectLibraryItem) -> ProjectIconPickerController? { showIconPicker(for: item) }
+    func developmentIcon(for item: ProjectLibraryItem) -> ProjectLibraryIcon? { selectedIcon(for: item) }
+#endif
 
     private func archiveAction(project: UUID? = nil, folder: UUID? = nil) -> UIAction {
         UIAction(title: ProjectText.text(showingArchive ? "restore" : "archive")) { [weak self] _ in
@@ -486,7 +524,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
             !organisation.isArchived(folder: value.id) && !organisation.ancestors(of: value.id).contains { $0.id == folder }
         }.sorted { organisation.path($0.id).localizedStandardCompare(organisation.path($1.id)) == .orderedAscending }
         let actions = destinations.map { value in
-            UIAction(title: organisation.path(value.id), image: WorkspaceIcon.image(value.icon.rawValue, traits: traitCollection),
+            UIAction(title: organisation.path(value.id), image: iconImage(value.icon, fallback: .folder),
                      attributes: showingArchive || currentParent == value.id ? .disabled : []) { [weak self] _ in
                 if let project { self?.change(.moveProject(project, to: value.id)) }
                 else if let folder { self?.change(.moveFolder(folder, to: value.id)) }
@@ -544,6 +582,191 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
         }, for: .editingChanged)
         alert.addAction(create)
         present(alert, animated: true)
+    }
+}
+
+/// Emoji are rendered by the platform font; no third-party artwork is bundled.
+private enum ProjectIconImage {
+    private static let cache = NSCache<NSString, UIImage>()
+
+    static func image(_ icon: ProjectLibraryIcon, fallback: ProjectLibraryIcon, traits: UITraitCollection, size: CGFloat = 28) -> UIImage? {
+        guard let emoji = icon.emojiText, icon.isValid else {
+            return WorkspaceIcon.image(icon.rawValue, traits: traits, size: size)
+                ?? WorkspaceIcon.image(fallback.rawValue, traits: traits, size: size)
+        }
+        cache.countLimit = 256
+        let key = "\(icon.rawValue):\(traits.userInterfaceStyle.rawValue):\(traits.displayScale):\(size)" as NSString
+        if let cached = cache.object(forKey: key) { return cached }
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = max(1, traits.displayScale)
+        let attributes: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: size * 0.85), .foregroundColor: UIColor.label.resolvedColor(with: traits)]
+        let text = emoji as NSString
+        let bounds = text.size(withAttributes: attributes)
+        let result = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format).image { _ in
+            text.draw(at: CGPoint(x: (size - bounds.width) / 2, y: (size - bounds.height) / 2), withAttributes: attributes)
+        }.withRenderingMode(.alwaysOriginal)
+        cache.setObject(result, forKey: key)
+        return result
+    }
+}
+
+/// Opening this picker never focuses a text field. Emoji entry is explicit.
+final class ProjectIconPickerController: UICollectionViewController, UICollectionViewDelegateFlowLayout {
+    static let choices = ProjectLibraryIcon.common + ProjectLibraryIcon.emojiChoices
+    var onChoose: ((ProjectLibraryIcon) -> Void)?
+    private let selected: ProjectLibraryIcon
+    private let defaultIcon: ProjectLibraryIcon
+    private var items: [ProjectLibraryIcon]
+    private var layoutWidth: CGFloat = 0
+
+    init(selected: ProjectLibraryIcon, defaultIcon: ProjectLibraryIcon) {
+        self.selected = selected; self.defaultIcon = defaultIcon
+        items = Self.choices
+        if selected.emojiText != nil, !items.contains(selected) { items.insert(selected, at: ProjectLibraryIcon.common.count) }
+        let layout = UICollectionViewFlowLayout()
+        layout.minimumInteritemSpacing = 12; layout.minimumLineSpacing = 12
+        layout.sectionInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        super.init(collectionViewLayout: layout)
+    }
+    required init?(coder: NSCoder) { return nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        collectionView.backgroundColor = .systemGroupedBackground
+        collectionView.accessibilityIdentifier = "project-icon-picker"
+        collectionView.register(ProjectIconCell.self, forCellWithReuseIdentifier: "icon")
+        collectionView.keyboardDismissMode = .onDrag
+        let reset = UIBarButtonItem(title: ProjectText.text("default_icon"), style: .plain, target: self, action: #selector(restoreDefault))
+        reset.accessibilityIdentifier = "project-icon-default"
+        let emoji = UIBarButtonItem(title: ProjectText.text("enter_emoji"), style: .plain, target: self, action: #selector(enterEmoji))
+        emoji.accessibilityIdentifier = "project-icon-enter-emoji"
+        navigationItem.rightBarButtonItems = [reset, emoji]
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitUserInterfaceStyle.self]) { (picker: ProjectIconPickerController, _: UITraitCollection) in
+            picker.collectionView.collectionViewLayout.invalidateLayout()
+            picker.collectionView.reloadData()
+        }
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if layoutWidth != collectionView.bounds.width {
+            layoutWidth = collectionView.bounds.width
+            collectionView.collectionViewLayout.invalidateLayout()
+        }
+    }
+
+    override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { items.count }
+    override func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+        let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "icon", for: indexPath)
+        if let iconCell = cell as? ProjectIconCell, items.indices.contains(indexPath.item) {
+            iconCell.display(items[indexPath.item], selected: selected == items[indexPath.item])
+        }
+        return cell
+    }
+
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
+        let available = max(1, collectionView.bounds.width - collectionView.adjustedContentInset.left - collectionView.adjustedContentInset.right - 32)
+        let minimum = UIFontMetrics(forTextStyle: .footnote).scaledValue(for: 100)
+        let columns = max(1, floor((available + 12) / (minimum + 12)))
+        let width = max(1, floor((available - (columns - 1) * 12) / columns))
+        return CGSize(width: width, height: 72 + UIFont.preferredFont(forTextStyle: .footnote).lineHeight * 2)
+    }
+
+    override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        guard items.indices.contains(indexPath.item) else { return }
+        choose(items[indexPath.item])
+    }
+
+    @objc private func restoreDefault() { choose(defaultIcon) }
+    @objc private func enterEmoji() {
+        let alert = UIAlertController(title: ProjectText.text("enter_emoji"), message: ProjectText.text("emoji_hint"), preferredStyle: .alert)
+        alert.addTextField { [selected] field in
+            field.placeholder = ProjectText.text("emoji")
+            field.text = selected.emojiText
+            field.accessibilityIdentifier = "project-emoji-entry"
+            field.autocapitalizationType = .none; field.autocorrectionType = .no; field.spellCheckingType = .no
+            field.font = .systemFont(ofSize: 32)
+        }
+        alert.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
+        let apply = UIAlertAction(title: WorkspaceStyle.text("apply"), style: .default) { [weak self, weak alert] _ in
+            self?.submitEmoji(alert?.textFields?.first?.text ?? "")
+        }
+        apply.isEnabled = ProjectLibraryIcon.emoji(selected.emojiText ?? "") != nil
+        alert.textFields?.first?.addAction(UIAction { [weak apply] action in
+            guard let field = action.sender as? UITextField else { return }
+            apply?.isEnabled = ProjectLibraryIcon.emoji(field.text ?? "") != nil
+        }, for: .editingChanged)
+        alert.addAction(apply)
+        present(alert, animated: true)
+    }
+
+    private func submitEmoji(_ text: String) {
+        guard let icon = ProjectLibraryIcon.emoji(text) else { return }
+        if let alert = presentedViewController {
+            alert.dismiss(animated: true) { [weak self] in self?.choose(icon) }
+        } else { choose(icon) }
+    }
+
+    private func choose(_ icon: ProjectLibraryIcon) {
+        view.endEditing(true)
+        navigationController?.popViewController(animated: true)
+        onChoose?(icon)
+    }
+
+#if DEBUG
+    @discardableResult
+    func developmentSelect(_ icon: ProjectLibraryIcon) -> Bool {
+        guard let index = items.firstIndex(of: icon) else { return false }
+        collectionView(collectionView, didSelectItemAt: IndexPath(item: index, section: 0))
+        return true
+    }
+    func developmentEnterEmoji() { enterEmoji() }
+    func developmentApplyEmoji(_ text: String) { submitEmoji(text) }
+#endif
+}
+
+private final class ProjectIconCell: UICollectionViewCell {
+    private let artwork = UIImageView()
+    private let name = UILabel()
+    private let check = UIImageView(image: UIImage(systemName: "checkmark.circle.fill"))
+    private var artworkTop: NSLayoutConstraint?
+    private var artworkCentre: NSLayoutConstraint?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        contentView.layer.cornerRadius = 12
+        artwork.contentMode = .scaleAspectFit
+        name.font = .preferredFont(forTextStyle: .footnote); name.adjustsFontForContentSizeCategory = true
+        name.textColor = .label; name.numberOfLines = 2; name.textAlignment = .center
+        [artwork, name, check].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; contentView.addSubview($0) }
+        artworkTop = artwork.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
+        artworkCentre = artwork.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
+        artworkTop?.isActive = true
+        NSLayoutConstraint.activate([
+            artwork.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
+            artwork.widthAnchor.constraint(equalToConstant: 40), artwork.heightAnchor.constraint(equalToConstant: 40),
+            name.topAnchor.constraint(equalTo: artwork.bottomAnchor, constant: 8), name.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
+            name.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -8), name.bottomAnchor.constraint(lessThanOrEqualTo: contentView.bottomAnchor, constant: -12),
+            check.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6), check.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -6),
+            check.widthAnchor.constraint(equalToConstant: 18), check.heightAnchor.constraint(equalToConstant: 18)
+        ])
+        isAccessibilityElement = true
+    }
+    required init?(coder: NSCoder) { return nil }
+
+    func display(_ icon: ProjectLibraryIcon, selected: Bool) {
+        let emoji = icon.emojiText
+        name.isHidden = emoji != nil
+        name.text = emoji == nil ? ProjectText.text("icon_" + icon.rawValue) : nil
+        artworkTop?.isActive = emoji == nil; artworkCentre?.isActive = emoji != nil
+        accessibilityLabel = emoji ?? name.text
+        accessibilityIdentifier = "project-icon-" + icon.rawValue
+        accessibilityTraits = selected ? [.button, .selected] : [.button]
+        artwork.image = ProjectIconImage.image(icon, fallback: .project, traits: traitCollection, size: 40)
+        check.isHidden = !selected; check.tintColor = tintColor
+        contentView.backgroundColor = .secondarySystemGroupedBackground
+        contentView.layer.borderWidth = selected ? 2 : 0
+        contentView.layer.borderColor = tintColor.resolvedColor(with: traitCollection).cgColor
     }
 }
 

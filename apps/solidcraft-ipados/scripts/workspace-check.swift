@@ -1348,6 +1348,30 @@ struct WorkspaceChecks {
         let organisedLibrary = ProjectLibrary(root: libraryRoot.appendingPathComponent("Organisation"))
         let emptyOrganisation = try organisedLibrary.organisation()
         try require(emptyOrganisation == ProjectOrganisation(), "existing flat libraries need no migration")
+        let oldPlacement = try JSONDecoder().decode(ProjectPlacement.self, from: Data("{\"archived\":false}".utf8))
+        try require(oldPlacement.icon == .project, "old project placements lost their default icon")
+        for icon in ProjectLibraryIcon.common {
+            let encoded = try JSONEncoder().encode(icon)
+            let decoded = try JSONDecoder().decode(ProjectLibraryIcon.self, from: encoded)
+            try require(decoded == icon && String(data: encoded, encoding: .utf8) == "\"" + icon.rawValue + "\"", "legacy icon encoding changed")
+        }
+        let emojiExamples = ["🚗", "🏠", "❤️", "👩🏽‍🔧", "👨‍👩‍👧‍👦", "🇸🇪", "1️⃣", "🏳️‍🌈", "🦄"]
+        for value in emojiExamples {
+            guard let icon = ProjectLibraryIcon.emoji(value) else { throw ProjectLibrary.failure("rejected_valid_emoji") }
+            let decoded = try JSONDecoder().decode(ProjectLibraryIcon.self, from: JSONEncoder().encode(icon))
+            try require(icon.isValid && icon.emojiText == value && decoded == icon, "emoji sequence did not round trip intact")
+        }
+        try require(ProjectLibraryIcon.emojiChoices.count > 40 && Set(ProjectLibraryIcon.emojiChoices).count == ProjectLibraryIcon.emojiChoices.count, "emoji palette lost its variety or contains duplicates")
+        for value in ["", "text", "1", "#", "🚗🏠", "a🏠", "../icon.png", String(repeating: "🚗", count: 1000)] {
+            try require(ProjectLibraryIcon.emoji(value) == nil, "emoji entry accepted text, multiple symbols or an oversized input")
+        }
+        for value in ["", "../outside", "Icon", "emoji:text", "emoji:🚗🏠", String(repeating: "x", count: 97)] {
+            let bytes = try JSONEncoder().encode(value)
+            do {
+                _ = try JSONDecoder().decode(ProjectLibraryIcon.self, from: bytes)
+                throw ProjectLibrary.failure("accepted_bad_icon")
+            } catch { try require((error as NSError).localizedDescription != "ui.ipados.projects.accepted_bad_icon", "unsafe icon identifier decoded") }
+        }
         var organisation = try organisedLibrary.organise(.createFolder("Work", parent: nil))
         guard let work = organisation.folders.first else { throw ProjectLibrary.failure("missing_test_folder") }
         organisation = try organisedLibrary.organise(.createFolder("Parts", parent: work.id))
@@ -1364,6 +1388,21 @@ struct WorkspaceChecks {
         let sortingRecords = [ProjectRecord(id: design.id, file: design.file, modified: recent), ProjectRecord(id: secondDesign.id, file: secondDesign.file, modified: old)]
         organisation = try organisedLibrary.organisation()
         try require(organisation.folder(work.id)?.icon == .component && organisation.path(parts.id) == "Work / Fasteners", "folder icon or nested path was not persisted")
+        guard let car = ProjectLibraryIcon.emoji("🚗"), let house = ProjectLibraryIcon.emoji("🏠") else { throw ProjectLibrary.failure("missing_emoji_fixture") }
+        organisation = try organisedLibrary.organise(.projectIcon(design.id, car))
+        organisation = try organisedLibrary.organise(.folderIcon(work.id, house))
+        try require(organisation.placement(design.id).icon == car && organisation.placement(design.id).folder == parts.id && !organisation.placement(design.id).archived, "setting a project emoji changed its folder or archive state")
+        try require(organisation.folder(work.id)?.icon == house && organisation.placement(secondDesign.id).icon == .project, "project and folder emoji choices leaked between items")
+        do {
+            _ = try organisedLibrary.organise(.projectIcon(design.id, ProjectLibraryIcon("../outside")))
+            throw ProjectLibrary.failure("accepted_bad_icon")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.invalid_organisation", "invalid icon was accepted") }
+        let iconAfterFailure = try organisedLibrary.organisation()
+        try require(iconAfterFailure == organisation, "invalid icon changed saved organisation")
+        do {
+            _ = try organisedLibrary.organise(.projectIcon(UUID(), car))
+            throw ProjectLibrary.failure("accepted_missing_project")
+        } catch { try require((error as NSError).localizedDescription == "ui.ipados.projects.invalid_project", "icon was assigned to a missing project") }
         try require(organisation.visibleProjects(sortingRecords, in: nil, archive: false).isEmpty, "nested projects leaked into the root")
         try require(organisation.visibleProjects(sortingRecords, in: parts.id, archive: false).map(\.id) == [design.id, secondDesign.id], "default modification sorting changed")
         let tiedRecords = sortingRecords.map { ProjectRecord(id: $0.id, file: $0.file, modified: old) }
@@ -1421,6 +1460,7 @@ struct WorkspaceChecks {
         try require(organisation.placement(secondDesign.id).folder == parts.id, "restore lost the original active folder")
         organisation = try organisedLibrary.organise(.moveProject(design.id, to: work.id))
         organisation = try organisedLibrary.organise(.moveFolder(parts.id, to: nil))
+        try require(organisation.placement(design.id).icon == car && organisation.folder(work.id)?.icon == house, "moves, sorting or archiving lost custom emoji")
         try require(organisation.folder(parts.id)?.parent == nil && organisation.placement(secondDesign.id).folder == parts.id, "moving a folder lost its project membership")
         let restartedLibrary = ProjectLibrary(root: organisedLibrary.root)
         let restartedOrganisation = try restartedLibrary.organisation()

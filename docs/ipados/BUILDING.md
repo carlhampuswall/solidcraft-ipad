@@ -274,6 +274,14 @@ xcrun devicectl device process launch --device "$SOLIDCRAFT_DEVICE" com.solidcra
 Xcode-managed profiles require automatic signing. Keep signing overrides local;
 the checked-in build script remains the reproducible unsigned CI path.
 
+The Debug `--projects-check` diagnostic also opens the project and folder icon
+pickers, captures the emoji palette in Light and Dark, chooses a project emoji,
+enters a custom folder emoji, checks invalid input and the default reset, and
+checks that moves and archiving preserve both choices. These are synthetic UIKit
+actions on the reserved physical iPad. The existing `step-share-check.json` report
+and `step-share-project-*.png` captures include the icon checks. No design or
+recovery file format changes are involved.
+
 Add `--project-drag-check` to the Debug `--projects-check` launch to check project
 and folder drag delegates, folder drop proposals, persisted moves into a folder
 and back to Projects, busy/archive restrictions, local session ownership and

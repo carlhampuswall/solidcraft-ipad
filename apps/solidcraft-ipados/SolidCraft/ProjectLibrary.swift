@@ -162,22 +162,85 @@ enum ProjectSort: String, Codable, CaseIterable {
     }
 }
 
-/// References to existing, original SolidCraft artwork, never user-supplied paths.
-enum ProjectFolderIcon: String, Codable, CaseIterable {
-    case folder, project, library, box, component
+/// Original artwork identifiers and user-selected Unicode emoji. Neither form
+/// references files; existing folder identifiers keep their saved representation.
+struct ProjectLibraryIcon: Codable, Hashable {
+    let rawValue: String
+    init(_ rawValue: String) { self.rawValue = rawValue }
+    static let folder = Self("folder"), project = Self("project"), library = Self("library")
+    static let box = Self("box"), component = Self("component")
+    static let common: [Self] = [.folder, .project, .library, .box, .component]
+    static let emojiChoices: [Self] = [
+        "📁", "📂", "🗂️", "🗃️", "📦", "🏠", "🏗️", "🛠️", "🔧", "⚙️", "🔩", "🧰",
+        "🚗", "🚲", "✈️", "🚀", "⛵️", "🤖", "💡", "🔌", "🔋", "💻", "📱", "🎮",
+        "🎨", "📐", "✏️", "🧪", "🔬", "🌱", "🌳", "🌍", "☀️", "⭐️", "❤️", "🔥",
+        "💧", "🪑", "🛏️", "💍", "🎁", "🎵", "🧩", "🏆", "📚", "🍽️", "☕️", "🐱", "🐶", "🔒", "✅"
+    ].compactMap { emoji($0) }
+
+    var emojiText: String? {
+        guard rawValue.hasPrefix("emoji:") else { return nil }
+        return String(rawValue.dropFirst(6))
+    }
+
+    static func emoji(_ input: String) -> Self? {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        return validEmoji(value) ? Self("emoji:" + value) : nil
+    }
+
+    private static func validEmoji(_ value: String) -> Bool {
+        guard value.count == 1, value.utf8.count <= 128 else { return false }
+        let scalars = value.unicodeScalars
+        let hasBase = scalars.contains { ($0.properties.isEmoji && $0.value > 127) || $0.value == 0x20E3 }
+        return hasBase && scalars.allSatisfy {
+            $0.properties.isEmoji || $0.value == 0x200D || $0.value == 0xFE0F || $0.value == 0x20E3
+                || (0xE0020...0xE007F).contains($0.value)
+        }
+    }
+
+    var isValid: Bool {
+        if let emojiText { return Self.validEmoji(emojiText) }
+        let bytes = Array(rawValue.utf8)
+        return !bytes.isEmpty && bytes.count <= 96 && bytes.first != 95 && bytes.allSatisfy {
+            (97...122).contains($0) || (48...57).contains($0) || $0 == 95
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        self.init(try container.decode(String.self))
+        guard isValid else { throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid icon identifier") }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 struct ProjectFolder: Codable, Equatable {
     let id: UUID
     var name: String
     var parent: UUID?
-    var icon: ProjectFolderIcon = .folder
+    var icon: ProjectLibraryIcon = .folder
     var archived = false
 }
 
 struct ProjectPlacement: Codable, Equatable {
     var folder: UUID?
     var archived = false
+    var icon: ProjectLibraryIcon = .project
+
+    init(folder: UUID? = nil, archived: Bool = false, icon: ProjectLibraryIcon = .project) {
+        self.folder = folder; self.archived = archived; self.icon = icon
+    }
+
+    private enum CodingKeys: String, CodingKey { case folder, archived, icon }
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        folder = try values.decodeIfPresent(UUID.self, forKey: .folder)
+        archived = try values.decodeIfPresent(Bool.self, forKey: .archived) ?? false
+        icon = try values.decodeIfPresent(ProjectLibraryIcon.self, forKey: .icon) ?? .project
+    }
 }
 
 enum ProjectLibraryItem: Equatable {
@@ -270,7 +333,7 @@ struct ProjectOrganisation: Codable, Equatable {
         let ids = Set(folders.map(\.id))
         let index = folderIndex
         for value in folders {
-            guard try ProjectLibrary.validName(value.name) == value.name,
+            guard try ProjectLibrary.validName(value.name) == value.name, value.icon.isValid,
                   value.parent.map({ ids.contains($0) }) ?? true else { throw ProjectLibrary.failure("invalid_organisation") }
             var visited: Set<UUID> = [value.id]
             var next = value.parent
@@ -279,7 +342,7 @@ struct ProjectOrganisation: Codable, Equatable {
                 next = index[id]?.parent
             }
         }
-        guard placements.allSatisfy({ UUID(uuidString: $0.key)?.uuidString == $0.key && ($0.value.folder.map { ids.contains($0) } ?? true) }),
+        guard placements.allSatisfy({ UUID(uuidString: $0.key)?.uuidString == $0.key && $0.value.icon.isValid && ($0.value.folder.map { ids.contains($0) } ?? true) }),
               sorts.keys.allSatisfy({ $0 == "root" || $0 == "archive" || UUID(uuidString: $0).map { ids.contains($0) } == true }) else {
             throw ProjectLibrary.failure("invalid_organisation")
         }
@@ -289,7 +352,8 @@ struct ProjectOrganisation: Codable, Equatable {
 enum ProjectLibraryChange: Equatable {
     case createFolder(String, parent: UUID?)
     case renameFolder(UUID, String)
-    case folderIcon(UUID, ProjectFolderIcon)
+    case folderIcon(UUID, ProjectLibraryIcon)
+    case projectIcon(UUID, ProjectLibraryIcon)
     case moveFolder(UUID, to: UUID?)
     case moveProject(UUID, to: UUID?)
     case archiveFolder(UUID, Bool)
@@ -370,6 +434,10 @@ struct ProjectLibrary {
         case .folderIcon(let id, let icon):
             let index = try folderIndex(id)
             value.folders[index].icon = icon
+        case .projectIcon(let id, let icon):
+            var placement = try projectPlacement(id)
+            placement.icon = icon
+            value.placements[id.uuidString] = placement
         case .moveFolder(let id, let parent):
             let index = try folderIndex(id)
             try destination(parent)

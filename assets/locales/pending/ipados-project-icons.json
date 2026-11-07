@@ -1,0 +1,37 @@
+{
+  "en": {
+    "ui.ipados.projects.default_icon": "Default icon",
+    "ui.ipados.projects.emoji": "Emoji",
+    "ui.ipados.projects.emoji_hint": "Choose or paste one emoji.",
+    "ui.ipados.projects.enter_emoji": "Enter emoji",
+    "ui.ipados.projects.project_icon": "Project icon"
+  },
+  "de": {
+    "ui.ipados.projects.default_icon": "Standardsymbol",
+    "ui.ipados.projects.emoji": "Emoji",
+    "ui.ipados.projects.emoji_hint": "Ein Emoji auswählen oder einfügen.",
+    "ui.ipados.projects.enter_emoji": "Emoji eingeben",
+    "ui.ipados.projects.project_icon": "Projektsymbol"
+  },
+  "ja": {
+    "ui.ipados.projects.default_icon": "既定のアイコン",
+    "ui.ipados.projects.emoji": "絵文字",
+    "ui.ipados.projects.emoji_hint": "絵文字を1つ選択するか貼り付けてください。",
+    "ui.ipados.projects.enter_emoji": "絵文字を入力",
+    "ui.ipados.projects.project_icon": "プロジェクトのアイコン"
+  },
+  "ko": {
+    "ui.ipados.projects.default_icon": "기본 아이콘",
+    "ui.ipados.projects.emoji": "이모지",
+    "ui.ipados.projects.emoji_hint": "이모지 하나를 선택하거나 붙여넣으세요.",
+    "ui.ipados.projects.enter_emoji": "이모지 입력",
+    "ui.ipados.projects.project_icon": "프로젝트 아이콘"
+  },
+  "zh": {
+    "ui.ipados.projects.default_icon": "默认图标",
+    "ui.ipados.projects.emoji": "表情符号",
+    "ui.ipados.projects.emoji_hint": "选择或粘贴一个表情符号。",
+    "ui.ipados.projects.enter_emoji": "输入表情符号",
+    "ui.ipados.projects.project_icon": "项目图标"
+  }
+}
