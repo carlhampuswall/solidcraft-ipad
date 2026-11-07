@@ -18,7 +18,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let topActions = UIStackView()
     private let railScroll = UIScrollView()
     private let rail = UIStackView()
-    private let extrusionRailScroll = UIScrollView()
+    private let extrusionRailScroll = ContextualRailScrollView()
     private var pendingTapAwayApply = false
     private var draftAppliesOnTapAway = false
     private var applySolidOnTapAway = UserDefaults.standard.object(forKey: "SolidCraft.workspace.applySolidOnTapAway") as? Bool ?? true
@@ -302,7 +302,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         workspace.addSubview(extrusionRailScroll)
         extrusionRailScroll.isHidden = true
         extrusionRailScroll.contentInsetAdjustmentBehavior = .never
-        WorkspaceStyle.floatingSurface(extrusionRailScroll)
+        extrusionRailScroll.backgroundColor = .clear
+        extrusionRailScroll.showsVerticalScrollIndicator = false
         workspace.addSubview(featureHistory)
         workspace.addSubview(scrim)
         workspace.addSubview(browserPanel)
@@ -2583,7 +2584,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             guard let self, self.modellingGeneration == expected, self.modellingToken == token, let form else { return }
             form.editExpression(parameter, expression: expression)
             controller?.editor.setBusy(true, committing: commit)
-            self.evaluateModelling(form.params, commit: commit)
+            if commit && self.draftAppliesOnTapAway { self.requestDraftApply() }
+            else { self.evaluateModelling(form.params, commit: commit) }
         }
         controller.editor.onPreview = { submit($0, false) }
         controller.editor.onApply = { submit($0, true) }
@@ -2603,7 +2605,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func updateModelValueChoices() {
         guard let controller = modelValueEditor, let form = modellingInspector else { return }
-        let field = form.fields.first { $0.kind == "inline_choice" }
+        let field = form.extrusionBar == nil ? form.fields.first { $0.kind == "inline_choice" } : nil
         let selected = field.flatMap { PresentationJSON.parameter($0.key, in: form.params) }
         controller.setInlineChoices(field, selected: selected, enabled: form.handleEntryEnabled) { [weak form, weak controller] value in
             guard let form, let controller, let field, form.handleEntryEnabled else { return }
@@ -2625,7 +2627,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             cancelNumeric()
             return
         }
+        let finishedValueEntry = modelValueEditor != nil && presentationController.presentedViewController === modelValueEditor
         modelValueEditor = nil; updateAvailability(); layoutModelValue()
+        if finishedValueEntry && draftAppliesOnTapAway { requestDraftApply() }
     }
 
     func popoverPresentationControllerDidDismissPopover(_ popoverPresentationController: UIPopoverPresentationController) {
@@ -5332,6 +5336,13 @@ private extension FoundationController {
                           let initialCount = self.state?.modelling?.timeline.count,
                           let source = (form.params["profile"]?.value as? [String: Any])?["faces"] as? [[Double]],
                           let origin = source.first, origin.count == 3 else { finish("Missing left actions or above-handle Boolean control"); return }
+                    for control in [apply, direction, cancel] {
+                        guard let tile = find("workspace-rail-tile", in: control), let chip = find("workspace-rail-caption", in: control),
+                              tile.convert(tile.bounds, to: control).maxX + 4 <= chip.convert(chip.bounds, to: control).minX,
+                              tile.bounds.width >= WorkspaceStyle.touch, !chip.bounds.isEmpty else {
+                            finish("Rail icon tile and caption are not visibly separate"); return
+                        }
+                    }
                     if finishMode == 0 { capture("face-selected") }
                     self.session.developmentSurfaceDrag(from: origin, to: [origin[0], origin[1], origin[2] + 5], source: .pencil) { drag in
                         if case .failure(let error) = drag { finish("Handle drag failed: " + error.description) }
@@ -5348,7 +5359,12 @@ private extension FoundationController {
                         }
                         if finishMode > 0 {
                             if finishMode == 1 { self.session.developmentSelectionTap(nil) { _ in } }
-                            else if finishMode == 2 { apply.sendActions(for: .touchUpInside) }
+                            else if finishMode == 2 {
+                                guard let chip = find("workspace-rail-caption", in: apply),
+                                      self.workspace.hitTest(chip.convert(CGPoint(x: chip.bounds.midX, y: chip.bounds.midY), to: self.workspace), with: nil) === apply
+                                else { finish("Apply caption does not activate the same rail action"); return }
+                                apply.sendActions(for: .touchUpInside)
+                            }
                             else { self.browserButton.sendActions(for: .touchUpInside) }
                             wait("single accepted extrusion " + String(finishMode), until: {
                                 !self.modellingEditing && self.state?.modelling?.timeline.count == initialCount + 1 && self.pending.isEmpty
@@ -5391,7 +5407,11 @@ private extension FoundationController {
                             picker.dismiss(animated: false) {
                                 self.session.command("view.navigate", params: ["motion": "zoom", "factor": 1.9]) { result in
                                     guard case .success = result else { finish("Could not reframe fixture"); return }
-                                    wait("menu follows camera", until: { !button.isHidden && self.modelValue?.valid == true }) { chooseResult() }
+                                    self.session.command("view.navigate", params: ["motion": "pan", "delta": [0, 80],
+                                        "viewport": [self.canvas.bounds.width, self.canvas.bounds.height]]) { result in
+                                        guard case .success = result else { finish("Could not centre fixture"); return }
+                                        wait("menu follows camera", until: { !button.isHidden && self.modelValue?.valid == true }) { chooseResult() }
+                                    }
                                 }
                             }
                         }

@@ -628,6 +628,74 @@ final class WorkspaceStatusLabel: UILabel {
     }
 }
 
+final class ContextualRailScrollView: UIScrollView {
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard super.point(inside: point, with: event), let bar = subviews.compactMap({ $0 as? UIStackView }).first else { return false }
+        return bar.arrangedSubviews.contains { !$0.isHidden && $0.point(inside: convert(point, to: $0), with: event) }
+    }
+}
+
+/// Two independent surfaces share one interaction and accessibility element.
+private final class RailButtonContent: UIView {
+    private let tile = UIView()
+    private let glyph = UIImageView()
+    private let chip = UIView()
+    private let caption = WorkspaceStyle.label(.subheadline)
+    private let detail = WorkspaceStyle.label(.caption1, secondary: true)
+    private let gap: CGFloat = 6
+    private let inset: CGFloat = 9
+
+    init(title: String, tint: UIColor) {
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false; accessibilityElementsHidden = true
+        for surface in [tile, chip] {
+            WorkspaceStyle.floatingSurface(surface)
+            surface.layer.cornerRadius = 9
+            addSubview(surface)
+        }
+        tile.accessibilityIdentifier = "workspace-rail-tile"
+        chip.accessibilityIdentifier = "workspace-rail-caption"
+        tile.addSubview(glyph)
+        glyph.contentMode = .scaleAspectFit; glyph.tintColor = tint
+        chip.addSubview(caption); chip.addSubview(detail)
+        caption.text = title
+    }
+    required init?(coder: NSCoder) { nil }
+
+    var detailText: String? { detail.text }
+    func containsAction(_ point: CGPoint) -> Bool {
+        point.x >= 0 && point.x <= chip.frame.maxX && bounds.contains(point)
+    }
+    func setImage(_ image: UIImage?) { glyph.image = image }
+    func setDetail(_ value: String?) { detail.text = value; setNeedsLayout() }
+
+    private func textSize(_ label: UILabel, width: CGFloat) -> CGSize {
+        guard label.text?.isEmpty == false else { return .zero }
+        let size = label.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        return CGSize(width: ceil(size.width), height: ceil(size.height))
+    }
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        let width = max(1, size.width - WorkspaceStyle.touch - gap - 2 * inset)
+        let title = textSize(caption, width: width), sub = textSize(detail, width: width)
+        return CGSize(width: WorkspaceStyle.touch + gap + 2 * inset + max(title.width, sub.width),
+                      height: max(WorkspaceStyle.touch, title.height + sub.height + 10))
+    }
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let side = WorkspaceStyle.touch
+        tile.frame = CGRect(x: 0, y: (bounds.height - side) / 2, width: side, height: side)
+        glyph.frame = tile.bounds.insetBy(dx: 11, dy: 11)
+        let textWidth = max(1, bounds.width - side - gap - 2 * inset)
+        let title = textSize(caption, width: textWidth), sub = textSize(detail, width: textWidth)
+        let chipHeight = max(32, title.height + sub.height + 10)
+        chip.frame = CGRect(x: side + gap, y: (bounds.height - chipHeight) / 2,
+                            width: min(textWidth, max(title.width, sub.width)) + 2 * inset, height: chipHeight)
+        caption.frame = CGRect(x: inset, y: (chipHeight - title.height - sub.height) / 2,
+                               width: chip.bounds.width - 2 * inset, height: title.height)
+        detail.frame = CGRect(x: inset, y: caption.frame.maxY, width: caption.frame.width, height: sub.height)
+    }
+}
+
 /// Icon-first chrome retains full labels for VoiceOver, pointer tooltips and
 /// menus. Forms continue to use text. Missing artwork keeps a readable title.
 final class WorkspaceButton: UIButton {
@@ -638,6 +706,7 @@ final class WorkspaceButton: UIButton {
     private var systemIcon: String?
     private var compactIcon = false
     private var verticallyCenteredContent = false
+    private var railContent: RailButtonContent?
     private var choiceCheck: UIImageView?
     private var isHistoryAction: Bool {
         iconID == "undo" || iconID == "redo" || commandID == "edit.undo" || commandID == "edit.redo"
@@ -697,12 +766,48 @@ final class WorkspaceButton: UIButton {
         contentVerticalAlignment = .center
         refreshIcon()
     }
+    func separateRailCaption(tint: UIColor = WorkspaceStyle.foreground) {
+        let content = RailButtonContent(title: fullTitle, tint: tint)
+        railContent = content
+        var config = UIButton.Configuration.plain()
+        config.background = .clear()
+        configuration = config
+        addSubview(content); refreshIcon()
+        invalidateIntrinsicContentSize()
+    }
+
+    func railDetail(_ text: String?) {
+        railContent?.setDetail(text)
+        accessibilityValue = text
+        invalidateIntrinsicContentSize()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        guard let railContent else { return super.intrinsicContentSize }
+        var size = railContent.sizeThatFits(UIView.layoutFittingExpandedSize)
+        if bounds.width > 0 { size.height = railContent.sizeThatFits(bounds.size).height }
+        return size
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        railContent?.containsAction(point) ?? super.point(inside: point, with: event)
+    }
+
+    override func sizeThatFits(_ size: CGSize) -> CGSize {
+        railContent?.sizeThatFits(size) ?? super.sizeThatFits(size)
+    }
+
     private func refreshIcon() {
         // The Rust guide is the visible dot. Keep only its accessible touch target.
         guard !isViewportPoint else { return }
         let image = commandID.flatMap { WorkspaceIcon.command($0, traits: traitCollection) }
             ?? iconID.flatMap { WorkspaceIcon.image($0, traits: traitCollection) }
             ?? systemIcon.flatMap { UIImage(systemName: $0) }
+        if let railContent {
+            railContent.setImage(image); largeContentImage = image
+            setNeedsLayout(); setNeedsUpdateConfiguration()
+            return
+        }
         var config = configuration
         // History arrows are monochrome artwork. Template rendering lets their
         // colour follow availability instead of retaining an always-original ink.
@@ -720,6 +825,12 @@ final class WorkspaceButton: UIButton {
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        if let railContent {
+            let widthChanged = railContent.bounds.width != bounds.width
+            railContent.frame = bounds
+            if widthChanged { invalidateIntrinsicContentSize() }
+            return
+        }
         guard verticallyCenteredContent else { return }
         let middle = CGPoint(x: bounds.midX, y: bounds.midY)
         if let image = imageView, let parent = image.superview {
@@ -738,6 +849,10 @@ final class WorkspaceButton: UIButton {
 
     override func updateConfiguration() {
         super.updateConfiguration()
+        if let railContent {
+            railContent.alpha = isEnabled ? (isHighlighted ? 0.72 : 1) : 0.45
+            return
+        }
         guard isHistoryAction else { return }
         var config = configuration
         config?.baseForegroundColor = isEnabled ? WorkspaceStyle.accent : .tertiaryLabel
@@ -788,7 +903,7 @@ final class WorkspaceButton: UIButton {
         isEnabled = enabled
         let visibleReason = isHistoryAction && enabled ? nil : reason
         accessibilityHint = visibleReason
-        accessibilityValue = visibleReason
+        accessibilityValue = visibleReason ?? railContent?.detailText
         toolTip = visibleReason.map { fullTitle + " · " + $0 } ?? fullTitle
     }
     func active(_ value: Bool) {
@@ -1712,7 +1827,7 @@ final class ExtrudeResultPicker: UITableViewController {
         tableView.rowHeight = max(44, ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 20)
         let labels = options.map { ModellingText.label($0.label) as NSString }
         let width = labels.map { $0.size(withAttributes: [.font: UIFont.preferredFont(forTextStyle: .body)]).width }.max() ?? 0
-        preferredContentSize = CGSize(width: min(320, max(184, ceil(width) + 96)), height: tableView.rowHeight * CGFloat(options.count))
+        preferredContentSize = CGSize(width: min(320, max(184, ceil(width) + 96)), height: tableView.rowHeight * CGFloat(options.count) + 24)
         tableView.accessibilityLabel = ModellingText.label(field.label)
         tableView.accessibilityIdentifier = "workspace-extrude-result-list"
     }
@@ -1933,7 +2048,6 @@ final class ModellingInspector: UIStackView {
         }
         if self.minimal && tuckExtrudeOptions && state.operation == "solid.extrude" {
             apply.systemArtwork("checkmark", compact: true)
-            cancel.artwork("close", compact: true)
             directionButton.systemArtwork("arrow.up.and.down")
             directionButton.showsMenuAsPrimaryAction = true
             directionButton.accessibilityIdentifier = "workspace-extrude-direction"
@@ -1943,10 +2057,11 @@ final class ModellingInspector: UIStackView {
             otherOptionsButton.showsMenuAsPrimaryAction = true
             otherOptionsButton.accessibilityIdentifier = "workspace-extrude-more"
             let bar = UIStackView(arrangedSubviews: [apply, directionButton, targetsButton, otherOptionsButton, cancel])
-            bar.axis = .vertical; bar.alignment = .leading; bar.spacing = 2
-            for case let button as WorkspaceButton in bar.arrangedSubviews {
-                button.contentHorizontalAlignment = .leading
-            }
+            bar.axis = .vertical; bar.alignment = .fill; bar.spacing = 5
+            apply.separateRailCaption(tint: WorkspaceStyle.accent)
+            cancel.systemArtwork("xmark")
+            cancel.separateRailCaption(tint: WorkspaceStyle.error)
+            for button in [directionButton, targetsButton, otherOptionsButton] { button.separateRailCaption() }
             extrusionBar = bar
             let result = WorkspaceButton(ModellingText.text("field.operation"), action: {})
             result.accessibilityIdentifier = "workspace-extrude-result"
@@ -1999,6 +2114,8 @@ final class ModellingInspector: UIStackView {
 
         var directionItems: [UIMenuElement] = []
         if let field = fields.first(where: { $0.key == "direction" }) {
+            let selected = field.options?.first { $0.value == parameter(field.key) }
+            directionButton.railDetail(selected.map { ModellingFormText.choice($0.label) })
             let actions = (field.options ?? []).map { option in
                 UIAction(title: ModellingFormText.choice(option.label), state: option.value == parameter(field.key) ? .on : .off) { [weak self] _ in
                     self?.selectInlineChoice(field.key, value: option.value)
