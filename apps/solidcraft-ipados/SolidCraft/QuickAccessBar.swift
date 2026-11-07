@@ -34,7 +34,7 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
     private var displayLink: CADisplayLink?
     private var scrollWasEnabled = true
     private var lastTick: CFTimeInterval = 0
-    private let removal = UILabel()
+    private let removal = UIButton(type: .custom)
 
     init(stack: UIStackView, scroll: UIScrollView, container: UIView,
          preferenceKey: String, defaults: [String]) {
@@ -42,14 +42,27 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
         self.preferenceKey = preferenceKey; self.defaults = defaults
         layout = QuickAccessLayout(defaults: defaults, saved: UserDefaults.standard.data(forKey: preferenceKey))
         super.init()
-        removal.text = QuickAccessText.text("remove")
-        removal.font = .preferredFont(forTextStyle: .subheadline)
-        removal.adjustsFontForContentSizeCategory = true
-        removal.textAlignment = .center; removal.numberOfLines = 0
-        removal.textColor = WorkspaceStyle.foreground
-        removal.backgroundColor = WorkspaceStyle.surface
-        removal.layer.cornerRadius = WorkspaceStyle.radius; removal.clipsToBounds = true
+        var target = UIButton.Configuration.plain()
+        target.title = QuickAccessText.text("remove")
+        target.image = WorkspaceIcon.image("delete", traits: container.traitCollection)
+        target.imagePadding = 8
+        target.titleLineBreakMode = .byWordWrapping
+        target.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = .preferredFont(forTextStyle: .subheadline)
+            return attributes
+        }
+        target.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12)
+        target.cornerStyle = .fixed
+        target.background.cornerRadius = WorkspaceStyle.radius
+        target.background.strokeWidth = 1
+        target.background.strokeColor = WorkspaceStyle.separator
+        removal.configuration = target
+        removal.titleLabel?.adjustsFontForContentSizeCategory = true
+        removal.titleLabel?.numberOfLines = 0
+        updateRemovalTarget(removing: false)
         removal.isUserInteractionEnabled = false
+        removal.accessibilityTraits = .staticText
         removal.accessibilityIdentifier = preferenceKey + ".remove"
         // Resigning active also cancels an unfinished edit and releases the timer.
         NotificationCenter.default.addObserver(self, selector: #selector(cancelDrag),
@@ -223,9 +236,14 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
         guard held == nil, let id = buttons.first(where: { $0.value === button })?.key,
               layout.contains(id), !button.bounds.isEmpty else { return }
         onBegin?(); container.layoutIfNeeded()
+        button.isHighlighted = false
+        button.updateConfiguration(); button.layoutIfNeeded()
         // A render-server snapshot can lose UIButton configuration artwork in
         // hierarchy captures. A local image keeps the lifted icon visible too.
-        let preview = UIGraphicsImageRenderer(bounds: button.bounds).image { context in
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = button.traitCollection.displayScale
+        format.opaque = false
+        let preview = UIGraphicsImageRenderer(bounds: button.bounds, format: format).image { context in
             button.layer.render(in: context.cgContext)
         }
         let snapshot = UIImageView(image: preview)
@@ -234,12 +252,12 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
         grabOffset = CGPoint(x: point.x - snapshot.center.x, y: point.y - snapshot.center.y)
         contact = point; lifted = snapshot
         snapshot.isUserInteractionEnabled = false
-        snapshot.backgroundColor = WorkspaceStyle.surface
-        snapshot.layer.cornerRadius = WorkspaceStyle.radius
+        // Keep the icon and caption's own surfaces, including the transparent
+        // gap between them, rather than adding a card around the whole control.
+        snapshot.backgroundColor = .clear
         snapshot.layer.shadowColor = UIColor.label.cgColor
         snapshot.layer.shadowOpacity = 0.2; snapshot.layer.shadowRadius = 8
         container.addSubview(snapshot); button.alpha = 0.18
-        button.isHighlighted = false
         scrollWasEnabled = scroll.isScrollEnabled; scroll.isScrollEnabled = false
         showRemovalTarget()
         animate { snapshot.transform = CGAffineTransform(scaleX: 1.12, y: 1.12) }
@@ -250,23 +268,30 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
     }
 
     private func showRemovalTarget() {
-        let bar = scroll.convert(scroll.bounds, to: container)
-        let width = min(230, max(120, container.bounds.width - bar.width - 36))
-        let x = bar.midX < container.bounds.midX ? bar.maxX + 12 : bar.minX - width - 12
-        let height = max(60, removal.sizeThatFits(CGSize(width: width - 16, height: .greatestFiniteMagnitude)).height + 20)
-        removal.frame = CGRect(x: max(8, min(x, container.bounds.width - width - 8)),
-                               y: max(8, min(contact.y - height / 2, container.bounds.height - height - 8)),
-                               width: width, height: height)
+        updateRemovalTarget(removing: false)
+        let safe = container.safeAreaLayoutGuide.layoutFrame.insetBy(dx: WorkspaceStyle.inset, dy: WorkspaceStyle.inset)
+        let width = min(230, max(0, safe.width))
+        let height = min(max(0, safe.height), max(60, removal.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height))
+        // Both bars share one destination, independent of the held tool and
+        // contact position. Stay above the home indicator in either orientation.
+        removal.frame = CGRect(x: safe.midX - width / 2, y: safe.maxY - height, width: width, height: height)
         removal.alpha = 0; container.addSubview(removal)
         animate { self.removal.alpha = 1 }
+    }
+
+    private func updateRemovalTarget(removing: Bool) {
+        var target = removal.configuration
+        target?.image = WorkspaceIcon.image("delete", traits: container.traitCollection)
+        target?.background.backgroundColor = removing ? WorkspaceStyle.error : WorkspaceStyle.surface
+        target?.baseForegroundColor = removing ? WorkspaceStyle.selectedForeground : WorkspaceStyle.foreground
+        removal.configuration = target
     }
 
     private func updateDrag() {
         guard let id = held, let snapshot = lifted, let button = buttons[id] else { return }
         snapshot.center = CGPoint(x: contact.x - grabOffset.x, y: contact.y - grabOffset.y)
         let removing = removal.frame.contains(contact)
-        removal.backgroundColor = removing ? WorkspaceStyle.error : WorkspaceStyle.surface
-        removal.textColor = removing ? WorkspaceStyle.selectedForeground : WorkspaceStyle.foreground
+        updateRemovalTarget(removing: removing)
         guard !removing else { return }
         let bar = scroll.convert(scroll.bounds, to: container).insetBy(dx: -24, dy: -30)
         guard bar.contains(contact) else { return }
@@ -363,6 +388,29 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
             check(abs(self.scroll.contentSize.height - height) < 0.5,
                   stage + ": scroll content height does not match the buttons")
         }
+        func checkRemovalTargets(_ done: @escaping () -> Void) {
+            let ids = self.visible
+            var destination: CGRect?
+            func next(_ index: Int) {
+                guard ids.indices.contains(index), let control = self.buttons[ids[index]] else { done(); return }
+                let point = control.convert(CGPoint(x: control.bounds.midX, y: control.bounds.midY), to: self.container)
+                self.beginDrag(control, at: point)
+                if let destination {
+                    check(self.removal.frame == destination, "Removal target moved for " + ids[index])
+                } else { destination = self.removal.frame }
+                let safe = self.container.safeAreaLayoutGuide.layoutFrame
+                check(safe.contains(self.removal.frame) && abs(self.removal.frame.midX - safe.midX) < 0.5,
+                      "Removal target left the bottom center of the safe area")
+                check(self.removal.configuration?.image != nil, "Removal target lost its trash artwork")
+                check(self.lifted?.backgroundColor == .clear, "Lifted tool added a surface behind its caption")
+                pause {
+                    if index == ids.count - 1 { capture("last-tool-lifted") }
+                    self.cancelDrag()
+                    pause { next(index + 1) }
+                }
+            }
+            next(0)
+        }
         func checkAdditions(_ done: @escaping () -> Void) {
             let additions = self.catalog.filter { !self.defaults.contains($0) && self.buttons[$0]?.isHidden == false }
             guard !additions.isEmpty else { done(); return }
@@ -429,7 +477,7 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
                                         self.applyOrder(); self.onLayout?(); self.onChange?()
                                         pause {
                                             checkGeometry("restored"); capture("restored")
-                                            completion(issues)
+                                            checkRemovalTargets { completion(issues) }
                                         }
                                     }
                                 }
