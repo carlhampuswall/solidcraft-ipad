@@ -1,0 +1,22 @@
+{
+  "de": {
+    "ui.ipados.view.two_finger_rotation": "Drehung mit zwei Fingern",
+    "ui.ipados.view.two_finger_rotation_help": "Ausschalten, um mit zwei Fingern nur zu verschieben und zu zoomen."
+  },
+  "en": {
+    "ui.ipados.view.two_finger_rotation": "Two-finger rotation",
+    "ui.ipados.view.two_finger_rotation_help": "Turn off to pan and pinch with two fingers without rotating the view."
+  },
+  "ja": {
+    "ui.ipados.view.two_finger_rotation": "2本指で回転",
+    "ui.ipados.view.two_finger_rotation_help": "オフにすると、2本指では移動とピンチズームのみを行い、ビューは回転しません。"
+  },
+  "ko": {
+    "ui.ipados.view.two_finger_rotation": "두 손가락 회전",
+    "ui.ipados.view.two_finger_rotation_help": "끄면 두 손가락으로 화면을 회전하지 않고 이동 및 확대/축소만 합니다."
+  },
+  "zh": {
+    "ui.ipados.view.two_finger_rotation": "双指旋转",
+    "ui.ipados.view.two_finger_rotation_help": "关闭后，双指仅用于平移和缩放，不会旋转视图。"
+  }
+}

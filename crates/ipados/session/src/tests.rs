@@ -2907,6 +2907,58 @@ fn one_finger_turns_the_object_in_screen_direction_from_every_view() {
 }
 
 #[test]
+fn one_finger_returning_to_drag_origin_restores_view_independent_of_path() {
+    let (engine, fixture) = proof();
+    let model = fixture.model.clone().unwrap();
+    let document = engine.session.doc.clone();
+    let history = (engine.session.undo.len(), engine.session.redo.len());
+    for fov in [0.0, 0.6] {
+        for roll in [0.0, 0.7] {
+            for circular in [false, true] {
+                for steps in [16, 64] {
+                    let mut view = Viewport::default();
+                    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+                    view.begin_update(1);
+                    view.install(1, model.clone());
+                    view.camera.fov = fov;
+                    view.camera.roll = roll;
+                    view.command("view.navigate", &json!({"motion":"pan","delta":[70,35],"viewport":[800,600]})).unwrap();
+                    let before = view.camera;
+                    let pivot = model.bounds.center();
+                    let start = point(&view, pivot);
+                    feed(&mut view, InputSource::Finger, InputPhase::Began, 1, start, 1.);
+                    // Cover both a final Moved and a return delivered only on lift.
+                    let last_step = if steps == 16 { steps - 1 } else { steps };
+                    for step in 1..=last_step {
+                        let t = f64::from(step) / f64::from(steps);
+                        let angle = t * std::f64::consts::TAU;
+                        let delta = if circular { [90. * angle.sin(), 90. * (1. - angle.cos())] } else { [160. * (1. - (2. * t - 1.).abs()), 0.] };
+                        let end = if step == steps { start } else { [start[0] + delta[0], start[1] + delta[1]] };
+                        feed(&mut view, InputSource::Finger, InputPhase::Moved, 1, end, 1. + t);
+                        let projected = point(&view, pivot);
+                        assert!((projected[0] - start[0]).hypot(projected[1] - start[1]) < 1e-6, "orbit pivot drifted");
+                    }
+                    feed(&mut view, InputSource::Finger, InputPhase::Ended, 1, start, 3.);
+                    let (right, up, back) = before.basis();
+                    let (after_right, after_up, after_back) = view.camera.basis();
+                    let context = (fov, roll, circular, steps);
+                    assert!(
+                        after_right.dist(right) < 1e-8 && after_up.dist(up) < 1e-8 && after_back.dist(back) < 1e-8,
+                        "closed drag changed orientation: {context:?}"
+                    );
+                    assert!(view.camera.eye().dist(before.eye()) < 1e-6, "closed drag changed viewpoint: {context:?}");
+                    assert!((view.camera.distance - before.distance).abs() < 1e-8);
+                    assert!(view.selection.is_empty());
+                    assert!(Arc::ptr_eq(view.model.as_ref().unwrap(), &model));
+                }
+            }
+        }
+    }
+    assert!(Arc::ptr_eq(&document, &engine.session.doc));
+    assert_eq!(history, (engine.session.undo.len(), engine.session.redo.len()));
+}
+
+#[test]
 fn one_finger_orbits_the_off_centre_object_without_screen_drift() {
     for fov in [0.0, 0.6] {
         for over_object in [true, false] {

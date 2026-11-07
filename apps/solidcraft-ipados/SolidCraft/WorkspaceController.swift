@@ -1688,6 +1688,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         panel.overrideUserInterfaceStyle = workspaceInterfaceStyle
         panel.onCommand = { [weak self] command in self?.runViewCommand(command) }
         panel.onPerspective = { [weak self] in self?.togglePerspective() }
+        panel.onTwoFingerRotation = { [weak self] in self?.toggleTwoFingerRotation() }
         panel.onGrid = { [weak self] in self?.toggleGrid() }
         panel.onVerticalGrid = { [weak self] in self?.toggleVerticalGrid() }
         panel.onIntegratedAxes = { [weak self] in self?.toggleIntegratedGridAxes() }
@@ -1745,6 +1746,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func toggleTwoFingerRotation() {
+        guard !viewCameraLocked else { return }
+        let enabled = !twoFingerTwist
+        canvas.cancelInput()
+        viewControlPending = true; rebuildViewMenu()
+        session.command("view.touch_twist", params: ["enabled": enabled]) { [weak self] result in
+            guard let self else { return }
+            self.viewControlPending = false
+            if case .success = result {
+                self.twoFingerTwist = enabled
+                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.twoFingerTwist")
+            }
+            self.rebuildMenus()
+        }
+    }
+
     private func rebuildViewMenu() {
         // Only View uses this panel. The native tool/browser menus are untouched.
         viewButton.menu = nil; viewButton.showsMenuAsPrimaryAction = false
@@ -1755,7 +1772,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
             referencesEnabled: !referencesLocked, inSketch: state?.sketch != nil,
             automatic: originVisibility.isEmpty, originInModel: originInBrowser, legacyPlanes: legacyOriginPlanes,
-            axisLabels: axisLabelsVisible,
+            axisLabels: axisLabelsVisible, twoFingerRotation: twoFingerTwist,
             quickCommands: Set(additionalNavigationTools.keys.filter { navigationQuickAccess?.contains($0) == true })
                 .union(!homeToolbar && navigationQuickAccess?.contains("navigation.home") == true ? ["view.fit"] : []),
             quickPerspective: navigationQuickAccess?.contains("navigation.projection") == true)
@@ -3876,15 +3893,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.rebuildMenus()
         }
         let twist = UIAction(title: WorkspaceStyle.text("two_finger_twist"), attributes: numericEditing || modellingEditing ? .disabled : [], state: twoFingerTwist ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            let enabled = !self.twoFingerTwist
-            self.canvas.cancelInput()
-            self.session.command("view.touch_twist", params: ["enabled": enabled]) { [weak self] result in
-                guard let self, case .success = result else { return }
-                self.twoFingerTwist = enabled
-                UserDefaults.standard.set(enabled, forKey: "SolidCraft.workspace.twoFingerTwist")
-                self.rebuildMenus()
-            }
+            self?.toggleTwoFingerRotation()
         }
         let rotationSnap = UIAction(title: WorkspaceStyle.text("sketch_rotation_snap"), attributes: numericEditing || modellingEditing ? .disabled : [], state: sketchRotationSnap ? .on : .off) { [weak self] _ in
             guard let self else { return }

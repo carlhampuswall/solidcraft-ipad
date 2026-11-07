@@ -835,6 +835,35 @@ fn orbit_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("{label}: object centre drift {drift:.6} points");
         capture(&view, label)?;
+        if follows_viewpoint {
+            let before = view.snapshot().ok_or("missing closed-orbit scene")?.camera;
+            capture(&view, "circle-start")?;
+            let origin = [480., 320.];
+            for step in 0..=32 {
+                let angle = f64::from(step) * std::f64::consts::TAU / 32.;
+                let point = if step == 32 { origin } else { [origin[0] + 90. * angle.sin(), origin[1] + 90. * (1. - angle.cos())] };
+                let report = view.diagnostic();
+                view.input(serde_json::from_value(json!({
+                    "source":"finger","phase":if step == 0 {"began"} else {"moved"},"id":2,
+                    "x_points":point[0],"y_points":point[1],"x_pixels":point[0],"y_pixels":point[1],
+                    "scale":1.,"timestamp":4.+f64::from(step)/32.,
+                    "document_id":report["document_id"],"geometry_revision":report["geometry_revision"],
+                    "viewport_epoch":report["viewport_epoch"],"camera_epoch":report["camera_epoch"]
+                }))?)?;
+                if step == 16 {
+                    capture(&view, "circle-halfway")?;
+                }
+            }
+            capture(&view, "circle-restored")?;
+            let after = view.snapshot().ok_or("missing restored orbit scene")?.camera;
+            let (right, up, back) = before.basis();
+            let (after_right, after_up, after_back) = after.basis();
+            let error = after_right.dist(right).max(after_up.dist(up)).max(after_back.dist(back));
+            println!("closed circle: orientation error {error:.12}; viewpoint error {:.12}", after.eye().dist(before.eye()));
+            if error > 1e-8 || after.eye().dist(before.eye()) > 1e-6 {
+                return Err("closed finger circle did not restore its starting view".into());
+            }
+        }
     }
     Ok(())
 }

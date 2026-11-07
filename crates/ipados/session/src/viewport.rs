@@ -672,12 +672,18 @@ impl Viewport {
             }
             return Ok(());
         }
+        self.navigate_from(self.camera, params)
+    }
+
+    /// Reuse the shared navigation path from a gesture's starting camera, so
+    /// the current finger position determines the view independently of its path.
+    pub(crate) fn navigate_from(&mut self, camera: Camera, params: &Value) -> Result<(), AdapterError> {
         let mut p = params.clone();
         let obj = p.as_object_mut().ok_or_else(|| error("bad_params", "navigation parameters must be an object"))?;
         if self.planar && obj.get("motion").and_then(Value::as_str) == Some("orbit") {
             obj.insert("motion".into(), json!("pan"));
         }
-        obj.insert("camera".into(), json!(self.camera));
+        obj.insert("camera".into(), json!(camera));
         let value = solidcraft_engine::navigate_camera(&p)?;
         self.camera = serde_json::from_value(value["camera"].clone()).map_err(|e| error("camera", e.to_string()))?;
         if value["fit"] == true {

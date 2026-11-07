@@ -120,8 +120,12 @@ with no new engine command, document field, or ABI symbol.
 `{"follows_viewpoint": boolean}`; the viewport diagnostic reply includes the same
 `touch_orbit` object. The default is `true`: finger deltas retain their direction
 for the shared screen-relative `view.navigate` orbit, with a fixed object-centre
-pivot, so the visible object follows the finger. The existing `follows_viewpoint`
-wire key and `SolidCraft.workspace.viewpointOrbit` preference key are retained.
+pivot, so the visible object follows the finger. One-finger gestures retain their
+starting camera and use total finger displacement rather than accumulating
+rotations. Returning to the starting point restores the camera, including after
+a circular drag. Finger-count transitions discard this anchor and rebase.
+The existing `follows_viewpoint` wire key and
+`SolidCraft.workspace.viewpointOrbit` preference key are retained.
 `false` restores the original world-axis, view-centred finger orbit. Changing it
 cancels current contacts and leaves the camera, document and history unchanged.
 UIKit persists and reapplies it at session startup; the Rust adapter owns routing

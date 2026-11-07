@@ -8,6 +8,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use solidcraft_engine::Sel;
+use solidcraft_render::Camera;
 
 use crate::{AdapterError, PreparedTool, RadiusHandle, SceneSnapshot, ToolEvent, ToolOperation, ToolPhase, ToolWork, Viewport, error};
 
@@ -127,6 +128,7 @@ pub(crate) struct Contacts {
     items: BTreeMap<u64, Contact>,
     pub(crate) navigating: bool,
     orbit_pivot: Option<Vec3>,
+    orbit_camera: Option<Camera>,
     twist_snap_offset: f64,
     twist_snapped: bool,
     sequence: u64,
@@ -168,12 +170,14 @@ impl Contacts {
         self.items.clear();
         self.navigating = false;
         self.orbit_pivot = None;
+        self.orbit_camera = None;
         self.twist_snap_offset = 0.0;
         self.twist_snapped = false;
     }
     fn rebase_fingers(&mut self) {
         // Count transitions have no camera delta; subsequent movement starts here.
         self.orbit_pivot = None;
+        self.orbit_camera = None;
         self.twist_snap_offset = 0.0;
         self.twist_snapped = false;
         for c in self.items.values_mut().filter(|c| c.owner == Owner::Navigation) {
@@ -304,6 +308,19 @@ impl InputEvent {
 }
 
 impl Viewport {
+    fn orbit_finger(&mut self, start: [f64; 2], point: [f64; 2]) -> Result<(), AdapterError> {
+        let pivot = self.contacts.orbit_pivot.unwrap_or_else(|| self.finger_orbit_pivot(start));
+        self.contacts.orbit_pivot = Some(pivot);
+        // Recompute from touch-down rather than composing rotations about
+        // changing screen axes. Closed paths restore their starting viewpoint.
+        let camera = *self.contacts.orbit_camera.get_or_insert(self.camera);
+        self.navigate_from(
+            camera,
+            &json!({"motion":"orbit","delta":[point[0]-start[0],point[1]-start[1]],
+            "viewport":[self.metrics.width_points,self.metrics.height_points],"free_orbit":true,"pivot":pivot}),
+        )
+    }
+
     /// Choose an object centre once per one-finger gesture, independent of the
     /// panned camera target and selection filter. Camera maths remains shared.
     fn finger_orbit_pivot(&self, start: [f64; 2]) -> Vec3 {
@@ -984,6 +1001,15 @@ impl Viewport {
             c.moved = moved;
         }
         if matches!(e.phase, InputPhase::Ended | InputPhase::Cancelled) {
+            if e.phase == InputPhase::Ended
+                && owner == Owner::Navigation
+                && self.contacts.orbit_camera.is_some()
+                && self.contacts.fingers().len() == 1
+            {
+                // The lift position is an actual sample too; UIKit need not
+                // deliver a separate Moved callback at that final position.
+                self.orbit_finger(start, point)?;
+            }
             // A handle gets first refusal for dragging, but a stationary Pencil
             // or pointer tap still selects the visible source underneath it.
             // Live edge tools resolve the visible preview back to source inputs.
@@ -1146,17 +1172,12 @@ impl Viewport {
                     }
                     let delta = [point[0] - old[0], point[1] - old[1]];
                     if fingers.len() == 1 {
-                        let mut params = json!({"motion":if self.planar {"pan"} else {"orbit"},"delta":delta,
-                            "viewport":[self.metrics.width_points,self.metrics.height_points]});
                         if !self.planar && self.touch_orbit_follows_viewpoint {
-                            let pivot = self.contacts.orbit_pivot.unwrap_or_else(|| self.finger_orbit_pivot(start));
-                            self.contacts.orbit_pivot = Some(pivot);
-                            // Keep the shared drag direction so the visible
-                            // object follows the finger around its fixed centre.
-                            params["free_orbit"] = json!(true);
-                            params["pivot"] = json!(pivot);
+                            self.orbit_finger(start, point)?;
+                        } else {
+                            self.navigate(&json!({"motion":if self.planar {"pan"} else {"orbit"},"delta":delta,
+                                "viewport":[self.metrics.width_points,self.metrics.height_points]}))?;
                         }
-                        self.navigate(&params)?;
                     } else if let Some((_, other)) = fingers.iter().find(|(id, _)| *id != e.id) {
                         self.navigate(&json!({"motion":"pan","delta":[delta[0]*0.5,delta[1]*0.5],"viewport":[self.metrics.width_points,self.metrics.height_points]}))?;
                         let before = (old[0] - other[0]).hypot(old[1] - other[1]);

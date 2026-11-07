@@ -151,8 +151,10 @@ adapter/rendering evidence; physical Pencil and UIKit verification remain separa
 
 One-finger orbit follows the screen axes, including rolled, top and bottom views,
 and passes smoothly through the poles. Drag right to turn the visible object
-right; drag down to turn it down. The viewpoint moves in the opposite direction. The orbit
-pivot is the centre of the body under the initial contact, or the visible model
+right; drag down to turn it down. Each gesture measures displacement from its
+starting finger position and camera, so completing a circle or retracing a
+straight drag restores the starting view. The viewpoint moves in the opposite
+direction. The orbit pivot is the centre of the body under the initial contact, or the visible model
 centre over empty space. It is fixed for the gesture and stays in place on screen,
 even after panning, so the object turns around itself rather than circling an
 off-centre camera target. One/two-finger transitions choose a fresh pivot without
@@ -171,14 +173,17 @@ cargo +1.95.0 run --locked --offline --profile ci -p solidcraft-ipados-bridge \
 
 It writes `-before.png`, `-previous.png` and `-fixed.png` using the real input
 router and shared renderer, and checks that the corrected object's centre does
-not drift. This is macOS GPU evidence, separate from physical iPad verification.
+not drift. The `-circle-start.png`, `-circle-halfway.png` and
+`-circle-restored.png` captures also verify that a closed circular drag restores
+the starting camera. This is macOS GPU evidence, separate from physical iPad verification.
 
 Two-finger twisting turns the view in the same screen direction as the fingers,
 including in a sketch plane, without tilting that plane. Pan and pinch remain
 available during the same gesture. Rotation uses the shortest signed angle
 between successive contact vectors, so crossing ±180° does not jump. The current
-finger midpoint stays fixed during the rotation component. Disable **Tools →
-Rotate view with two-finger twist** to restore pan/pinch without rotation; the
+finger midpoint stays fixed during the rotation component. Disable **View →
+Two-finger rotation** to use pan/pinch without rotation. The existing **Tools →
+Rotate view with two-finger twist** toggle controls the same setting; the
 choice persists in `SolidCraft.workspace.twoFingerTwist` and never edits a design.
 The native navigation adapter delegates rotation and anchor preservation to the
 shared `Camera::roll_by`, `frame_coords` and `place` methods; no camera math is

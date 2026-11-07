@@ -2708,6 +2708,7 @@ private final class ViewSwitchRow: UIButton {
 final class WorkspaceViewPopover: UIViewController {
     var onCommand: ((String) -> Void)?
     var onPerspective: (() -> Void)?
+    var onTwoFingerRotation: (() -> Void)?
     var onGrid: (() -> Void)?
     var onVerticalGrid: (() -> Void)?
     var onIntegratedAxes: (() -> Void)?
@@ -2726,6 +2727,7 @@ final class WorkspaceViewPopover: UIViewController {
     private lazy var fit = ViewOptionButton(WorkspaceStyle.text("fit"), id: "fit", icon: "fit") { [weak self] in self?.onCommand?("view.fit") }
     private lazy var exitPlanar = ViewOptionButton(NativeText.value("ui.ipados.exit_planar"), id: "exit-planar", icon: "finish") { [weak self] in self?.onCommand?("view.exit_planar") }
     private lazy var perspective = ViewSwitchRow(NativeText.value("ui.ipados.perspective"), id: "perspective", icon: "perspective") { [weak self] in self?.onPerspective?() }
+    private lazy var twoFingerRotation = ViewSwitchRow(ViewText.text("two_finger_rotation"), subtitle: ViewText.text("two_finger_rotation_help"), id: "two-finger-rotation", icon: "view_isometric") { [weak self] in self?.onTwoFingerRotation?() }
     private lazy var grid = ViewSwitchRow(ViewText.text("grid"), id: "grid", icon: "grid") { [weak self] in self?.onGrid?() }
     private lazy var verticalGrid = ViewSwitchRow(ViewText.text("vertical_grid"), subtitle: ViewText.text("vertical_grid_help"), showsSubtitle: false, id: "vertical-grid", icon: "grid") { [weak self] in self?.onVerticalGrid?() }
     private lazy var integratedAxes = ViewSwitchRow(ViewText.text("integrated_axes"), subtitle: ViewText.text("integrated_axes_help"), showsSubtitle: false, id: "integrated-axes", icon: "axis") { [weak self] in self?.onIntegratedAxes?() }
@@ -2786,7 +2788,7 @@ final class WorkspaceViewPopover: UIViewController {
         separator.backgroundColor = WorkspaceStyle.separator
         separator.heightAnchor.constraint(equalToConstant: 0.5).isActive = true
         main.addArrangedSubview(separator); main.setCustomSpacing(8, after: separator)
-        [perspective, grid, verticalGrid, integratedAxes, origin, individualButton].forEach(main.addArrangedSubview)
+        [perspective, twoFingerRotation, grid, verticalGrid, integratedAxes, origin, individualButton].forEach(main.addArrangedSubview)
         let back = ViewOptionButton(WorkspaceStyle.text("view"), id: "back", icon: "chevron_right") { [weak self] in self?.showIndividuals(false) }
         back.imageView?.transform = CGAffineTransform(rotationAngle: .pi)
         individuals.addArrangedSubview(back)
@@ -2838,7 +2840,7 @@ final class WorkspaceViewPopover: UIViewController {
         if view.window != nil { UIAccessibility.post(notification: .layoutChanged, argument: visible ? individuals : main) }
     }
     func render(_ state: ViewControlsPresentation?, cameraEnabled: Bool, referencesEnabled: Bool,
-                inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool, axisLabels: Bool,
+                inSketch: Bool, automatic: Bool, originInModel: Bool, legacyPlanes: Bool, axisLabels: Bool, twoFingerRotation: Bool,
                 quickCommands: Set<String> = [], quickPerspective: Bool = false) {
         loadViewIfNeeded(); current = state
         fit.render(selected: false, enabled: cameraEnabled)
@@ -2847,7 +2849,7 @@ final class WorkspaceViewPopover: UIViewController {
         if !inSketch && state?.planar == true { arranged.append(exitPlanar) }
         arranged.append(separator)
         if !inSketch && !quickPerspective { arranged.append(perspective) }
-        arranged += [grid, integratedAxes, origin, individualButton]
+        arranged += [self.twoFingerRotation, grid, integratedAxes, origin, individualButton]
         if !inSketch, let index = arranged.firstIndex(of: grid) { arranged.insert(verticalGrid, at: index + 1) }
         if main.arrangedSubviews.count != arranged.count || !zip(main.arrangedSubviews, arranged).allSatisfy({ $0 === $1 }) {
             for child in main.arrangedSubviews { main.removeArrangedSubview(child); child.removeFromSuperview() }
@@ -2865,6 +2867,7 @@ final class WorkspaceViewPopover: UIViewController {
         }
         views.isHidden = viewButtons.values.allSatisfy(\.isHidden)
         perspective.render(on: (state?.camera.fov ?? 0) > 0, enabled: cameraEnabled)
+        self.twoFingerRotation.render(on: twoFingerRotation, enabled: cameraEnabled)
         grid.render(on: state?.grid.visible == true, enabled: referencesEnabled)
         verticalGrid.render(on: state?.grid.vertical == true, enabled: referencesEnabled)
         integratedAxes.render(on: state?.grid.integrated_axes == true, enabled: referencesEnabled)
