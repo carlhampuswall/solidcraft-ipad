@@ -1,0 +1,17 @@
+{
+  "de": {
+    "ui.ipados.handles.follow_appearance": "Griffschaltflächen an Arbeitsbereich anpassen"
+  },
+  "en": {
+    "ui.ipados.handles.follow_appearance": "Match handle buttons to workspace appearance"
+  },
+  "ja": {
+    "ui.ipados.handles.follow_appearance": "ハンドルボタンの外観をワークスペースに合わせる"
+  },
+  "ko": {
+    "ui.ipados.handles.follow_appearance": "핸들 버튼을 작업 공간 테마에 맞추기"
+  },
+  "zh": {
+    "ui.ipados.handles.follow_appearance": "控制柄按钮跟随工作区外观"
+  }
+}
