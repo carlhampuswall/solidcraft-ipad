@@ -112,8 +112,13 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
         for view in stack.arrangedSubviews where !desired.contains(view) {
             stack.removeArrangedSubview(view); view.removeFromSuperview()
         }
+        // UIKit can retain stale spacing around hidden arranged controls when
+        // a new view is inserted between them. Append new controls first, then
+        // move the existing arranged views without detaching their gestures.
+        for view in desired where !stack.arrangedSubviews.contains(view) {
+            stack.addArrangedSubview(view)
+        }
         for (index, view) in desired.enumerated() where stack.arrangedSubviews.firstIndex(of: view) != index {
-            stack.removeArrangedSubview(view)
             stack.insertArrangedSubview(view, at: index)
         }
     }
@@ -341,6 +346,50 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
                 return child.title == title
             }
         }
+        func checkGeometry(_ stage: String) {
+            self.container.layoutIfNeeded(); self.scroll.layoutIfNeeded(); self.stack.layoutIfNeeded()
+            let controls = self.stack.arrangedSubviews.filter { !$0.isHidden }
+            var bottom: CGFloat = 0
+            for control in controls {
+                let name = control.accessibilityIdentifier ?? control.accessibilityLabel ?? "control"
+                let frame = control.frame
+                check(frame.width >= WorkspaceStyle.touch - 0.5 && frame.height >= WorkspaceStyle.touch - 0.5,
+                      stage + ": " + name + " lost its touch target: \(frame)")
+                check(abs(frame.minY - bottom) < 0.5,
+                      stage + ": " + name + " overlaps or leaves a gap: \(frame), expected y=\(bottom)")
+                bottom = frame.maxY + self.stack.spacing
+            }
+            let height = max(0, bottom - self.stack.spacing)
+            check(abs(self.scroll.contentSize.height - height) < 0.5,
+                  stage + ": scroll content height does not match the buttons")
+        }
+        func checkAdditions(_ done: @escaping () -> Void) {
+            let additions = self.catalog.filter { !self.defaults.contains($0) && self.buttons[$0]?.isHidden == false }
+            guard !additions.isEmpty else { done(); return }
+            for id in additions { self.remove(id) }
+            func addNext(_ index: Int) {
+                guard additions.indices.contains(index) else {
+                    capture("expanded")
+                    for id in additions.reversed() { _ = self.step(id, down: false) }
+                    pause {
+                        checkGeometry("reordered additions"); capture("expanded-reordered")
+                        for id in additions { self.remove(id) }
+                        pause {
+                            checkGeometry("removed additions"); capture("expanded-removed"); done()
+                        }
+                    }
+                    return
+                }
+                let id = additions[index]
+                self.add(id)
+                pause {
+                    check(self.buttons[id]?.superview === self.stack, "Added tool missing from the stack: " + id)
+                    checkGeometry("added " + id)
+                    addNext(index + 1)
+                }
+            }
+            pause { addNext(0) }
+        }
         container.layoutIfNeeded(); capture("before")
         beginDrag(button, at: button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: container))
         check(held == first && !scroll.isScrollEnabled && button.alpha < 1, "Hold did not lift/cancel the control")
@@ -374,10 +423,15 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
                                 self.cancelDrag()
                                 pause {
                                     check(self.layout == beforeCancel && self.lifted == nil && button.alpha == 1, "Cancellation lost placement or cleanup")
-                                    self.layout = original
-                                    UserDefaults.standard.set(saved, forKey: self.preferenceKey)
-                                    self.applyOrder(); self.onLayout?(); self.onChange?()
-                                    completion(issues)
+                                    checkAdditions {
+                                        self.layout = original
+                                        UserDefaults.standard.set(saved, forKey: self.preferenceKey)
+                                        self.applyOrder(); self.onLayout?(); self.onChange?()
+                                        pause {
+                                            checkGeometry("restored"); capture("restored")
+                                            completion(issues)
+                                        }
+                                    }
                                 }
                             }
                         }
