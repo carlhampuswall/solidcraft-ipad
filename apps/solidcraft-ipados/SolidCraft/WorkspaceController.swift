@@ -9686,6 +9686,7 @@ private extension FoundationController {
                 samples.backgroundColor = WorkspaceStyle.background
                 view.addSubview(samples)
                 defer { samples.removeFromSuperview() }
+                var checks: [(button: WorkspaceButton, enabled: Bool, name: String)] = []
                 for (row, state) in [(false, false, true), (true, false, true),
                                      (true, true, true), (true, false, false)].enumerated() {
                     for (column, presentation) in [(true, false), (true, true), (false, false), (false, true)].enumerated() {
@@ -9699,28 +9700,32 @@ private extension FoundationController {
                         button.availability(enabled: state.2)
                         button.setNeedsUpdateConfiguration(); button.layoutIfNeeded()
                         let name = "\(appearance.rawValue)/\(row)/\(column)"
-                        guard let configuration = button.configuration else { issues.append("Missing configuration: " + name); continue }
-                        let updated = configuration.updated(for: button)
-                        if updated.background.resolvedBackgroundColor(for: button.tintColor).cgColor.alpha != 0 {
-                            issues.append("Background spans icon and caption: " + name)
-                        }
-                        for surface in descendants(button).filter({ ["workspace-tool-icon-surface", "workspace-rail-caption"].contains($0.accessibilityIdentifier ?? "") }) {
-                            if surface.backgroundColor?.resolvedColor(with: button.traitCollection).cgColor.alpha != 1 {
-                                issues.append("Translucent tool surface: " + name)
-                            }
-                            var ancestor: UIView? = surface
-                            while let current = ancestor, current !== button {
-                                if current.alpha != 1 { issues.append("Faded tool surface: " + name); break }
-                                ancestor = current.superview
-                            }
-                        }
-                        if let glyph = descendants(button).first(where: { $0.accessibilityIdentifier == "workspace-rail-glyph" }),
-                           glyph.alpha != (state.2 ? 1 : 0.45) { issues.append("Incorrect glyph availability: " + name) }
+                        checks.append((button, state.2, name))
                     }
                 }
                 samples.layoutIfNeeded()
                 let image = UIGraphicsImageRenderer(bounds: samples.bounds).image { _ in
                     samples.drawHierarchy(in: samples.bounds, afterScreenUpdates: true)
+                }
+                // Rendering flushes UIKit's deferred state updates. Inspect the
+                // displayed configuration, not an automatic style we disabled.
+                for (button, enabled, name) in checks {
+                    guard let configuration = button.configuration else { issues.append("Missing configuration: " + name); continue }
+                    if configuration.background.resolvedBackgroundColor(for: button.tintColor).cgColor.alpha != 0 {
+                        issues.append("Background spans icon and caption: " + name)
+                    }
+                    for surface in descendants(button).filter({ ["workspace-tool-icon-surface", "workspace-rail-caption"].contains($0.accessibilityIdentifier ?? "") }) {
+                        if surface.backgroundColor?.resolvedColor(with: button.traitCollection).cgColor.alpha != 1 {
+                            issues.append("Translucent tool surface: " + name)
+                        }
+                        var ancestor: UIView? = surface
+                        while let current = ancestor, current !== button {
+                            if current.alpha != 1 { issues.append("Faded tool surface: " + name); break }
+                            ancestor = current.superview
+                        }
+                    }
+                    if let glyph = descendants(button).first(where: { $0.accessibilityIdentifier == "workspace-rail-glyph" }),
+                       glyph.alpha != (enabled ? 1 : 0.45) { issues.append("Incorrect glyph availability: " + name) }
                 }
                 do { try image.pngData()?.write(to: directory.appendingPathComponent("tool-labels-surfaces-\(appearance.rawValue).png"), options: .atomic) }
                 catch { issues.append("Surface capture: \(error)") }
