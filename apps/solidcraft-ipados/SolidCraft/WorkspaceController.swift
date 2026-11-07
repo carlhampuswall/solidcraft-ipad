@@ -5371,11 +5371,20 @@ private extension FoundationController {
                           self.modelValueButton.traitCollection.userInterfaceStyle == buttonStyle else {
                         finish("Handle button appearance"); return
                     }
-                    for control in [apply, direction, cancel] {
-                        guard let tile = find("workspace-rail-tile", in: control), let chip = find("workspace-rail-caption", in: control),
-                              tile.convert(tile.bounds, to: control).maxX + 4 <= chip.convert(chip.bounds, to: control).minX,
-                              tile.bounds.width >= WorkspaceStyle.touch, !chip.bounds.isEmpty else {
-                            finish("Rail icon tile and caption are not visibly separate"); return
+                    let scroll = self.extrusionRailScroll
+                    guard let column = find("workspace-rail-column", in: scroll), column.frame.height == scroll.bounds.height,
+                          column.frame.width == WorkspaceStyle.touch else { finish("Missing shared icon column"); return }
+                    for control in bar.arrangedSubviews where !control.isHidden {
+                        guard let glyph = find("workspace-rail-glyph", in: control), let chip = find("workspace-rail-caption", in: control),
+                              column.frame.contains(glyph.convert(glyph.bounds, to: scroll)),
+                              column.frame.maxX + 4 <= chip.convert(chip.bounds, to: scroll).minX, !chip.bounds.isEmpty else {
+                            finish("Contextual glyph or caption is outside its column"); return
+                        }
+                        if control.isUserInteractionEnabled, (control as? UIButton)?.isEnabled == true {
+                            for part in [glyph, chip] {
+                                let center = part.convert(CGPoint(x: part.bounds.midX, y: part.bounds.midY), to: self.workspace)
+                                guard self.workspace.hitTest(center, with: nil) === control else { finish("Contextual action hit target missing"); return }
+                            }
                         }
                     }
                     if finishMode == 0 { capture("face-selected") }

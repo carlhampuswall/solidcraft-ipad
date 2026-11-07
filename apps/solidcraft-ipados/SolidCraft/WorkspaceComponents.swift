@@ -629,15 +629,30 @@ final class WorkspaceStatusLabel: UILabel {
 }
 
 final class ContextualRailScrollView: UIScrollView {
+    private let iconColumn = UIView()
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        WorkspaceStyle.floatingSurface(iconColumn)
+        iconColumn.isUserInteractionEnabled = false
+        iconColumn.accessibilityIdentifier = "workspace-rail-column"
+        addSubview(iconColumn)
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        iconColumn.frame = CGRect(origin: bounds.origin, size: CGSize(width: min(WorkspaceStyle.touch, bounds.width), height: bounds.height))
+    }
+
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard super.point(inside: point, with: event), let bar = subviews.compactMap({ $0 as? UIStackView }).first else { return false }
-        return bar.arrangedSubviews.contains { !$0.isHidden && $0.point(inside: convert(point, to: $0), with: event) }
+        return iconColumn.frame.contains(point) || bar.arrangedSubviews.contains { !$0.isHidden && $0.point(inside: convert(point, to: $0), with: event) }
     }
 }
 
-/// Two independent surfaces share one interaction and accessibility element.
+/// The glyph in the shared column and its adjacent caption activate the same button.
 private final class RailButtonContent: UIView {
-    private let tile = UIView()
     private let glyph = UIImageView()
     private let chip = UIView()
     private let caption = WorkspaceStyle.label(.subheadline)
@@ -648,14 +663,12 @@ private final class RailButtonContent: UIView {
     init(title: String, tint: UIColor) {
         super.init(frame: .zero)
         isUserInteractionEnabled = false; accessibilityElementsHidden = true
-        for surface in [tile, chip] {
-            WorkspaceStyle.floatingSurface(surface)
-            surface.layer.cornerRadius = 9
-            addSubview(surface)
-        }
-        tile.accessibilityIdentifier = "workspace-rail-tile"
+        WorkspaceStyle.floatingSurface(chip)
+        chip.layer.cornerRadius = 9
+        addSubview(chip)
         chip.accessibilityIdentifier = "workspace-rail-caption"
-        tile.addSubview(glyph)
+        addSubview(glyph)
+        glyph.accessibilityIdentifier = "workspace-rail-glyph"
         glyph.contentMode = .scaleAspectFit; glyph.tintColor = tint
         chip.addSubview(caption); chip.addSubview(detail)
         caption.text = title
@@ -683,8 +696,7 @@ private final class RailButtonContent: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let side = WorkspaceStyle.touch
-        tile.frame = CGRect(x: 0, y: (bounds.height - side) / 2, width: side, height: side)
-        glyph.frame = tile.bounds.insetBy(dx: 11, dy: 11)
+        glyph.frame = CGRect(x: 0, y: (bounds.height - side) / 2, width: side, height: side).insetBy(dx: 11, dy: 11)
         let textWidth = max(1, bounds.width - side - gap - 2 * inset)
         let title = textSize(caption, width: textWidth), sub = textSize(detail, width: textWidth)
         let chipHeight = max(32, title.height + sub.height + 10)
@@ -2057,7 +2069,7 @@ final class ModellingInspector: UIStackView {
             otherOptionsButton.showsMenuAsPrimaryAction = true
             otherOptionsButton.accessibilityIdentifier = "workspace-extrude-more"
             let bar = UIStackView(arrangedSubviews: [apply, directionButton, targetsButton, otherOptionsButton, cancel])
-            bar.axis = .vertical; bar.alignment = .fill; bar.spacing = 5
+            bar.axis = .vertical; bar.alignment = .fill; bar.spacing = 2
             apply.separateRailCaption(tint: WorkspaceStyle.accent)
             cancel.systemArtwork("xmark")
             cancel.separateRailCaption(tint: WorkspaceStyle.error)
