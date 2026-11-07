@@ -8588,11 +8588,36 @@ fn modelling_empty_tap_cancels_source_and_preview_without_changing_history() {
 }
 
 #[test]
+fn modelling_tap_away_requests_one_apply_per_tap_and_preserves_the_draft() {
+    for source in [InputSource::Finger, InputSource::Pencil, InputSource::Indirect] {
+        let (adapter, mut viewport, _) = modelling_input_fixture();
+        let edit = viewport.modelling.as_mut().unwrap();
+        edit.apply_on_tap_away = true;
+        let refreshed = adapter.refresh_model(edit, &[], None).unwrap();
+        assert!(refreshed.apply_on_tap_away);
+        let prepared = adapter.prepare_model(&refreshed, refreshed.params.clone(), false).unwrap();
+        viewport.publish_model(750, &prepared).unwrap();
+        let history = adapter.session.undo.len();
+        for sequence in 1..=2 {
+            for phase in [InputPhase::Began, InputPhase::Ended] {
+                let mut event = sample(&viewport, source, phase, 92, [5., 5.], (sequence * 2) as f64 + f64::from(phase == InputPhase::Ended));
+                event.display_preview = true;
+                viewport.input(event).unwrap();
+            }
+            assert_eq!(viewport.diagnostic()["input"]["requested_model_apply"], json!([750, sequence]));
+            assert!(viewport.model_edit(750).unwrap().preview.is_some());
+            assert_eq!(adapter.session.undo.len(), history);
+        }
+    }
+}
+
+#[test]
 fn modelling_dismissal_preserves_navigation_geometry_hits_and_legacy_preference() {
     for source in [InputSource::Finger, InputSource::Pencil, InputSource::Indirect] {
         for case in ["legacy", "navigation", "navigation_during_tap", "geometry", "cancelled", "consumed", "stale_camera", "new_edit"] {
             let (adapter, mut viewport, _) = modelling_input_fixture();
             viewport.command("view.tool_handles", &json!({"enabled":false})).unwrap();
+            viewport.modelling.as_mut().unwrap().apply_on_tap_away = case != "legacy";
             let edit = viewport.model_edit(750).unwrap();
             let prepared = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
             viewport.publish_model(750, &prepared).unwrap();
@@ -8639,6 +8664,7 @@ fn modelling_dismissal_preserves_navigation_geometry_hits_and_legacy_preference(
             viewport.input(ended).unwrap();
             assert!(viewport.model_active(), "{source:?} {case} incorrectly dismissed the edit");
             assert!(viewport.diagnostic()["input"]["dismissed_model_token"].is_null());
+            assert!(viewport.diagnostic()["input"]["requested_model_apply"].is_null(), "{source:?} {case} requested Apply");
         }
     }
     let (_, mut viewport, _) = modelling_input_fixture();

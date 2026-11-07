@@ -78,6 +78,19 @@ fn with_entry(id: u64, lane: usize, cleanup: bool, operation: impl FnOnce(&Entry
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelRequest {
+    action: String,
+    token: Option<u64>,
+    operation: Option<String>,
+    feature: Option<u64>,
+    rollback: Option<bool>,
+    #[serde(default)]
+    apply_on_tap_away: bool,
+    params: Option<Value>,
+}
+
+#[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum Request {
     Proof,
@@ -115,14 +128,7 @@ enum Request {
         expression: Option<String>,
         dimension: Option<String>,
     },
-    Model {
-        action: String,
-        token: Option<u64>,
-        operation: Option<String>,
-        feature: Option<u64>,
-        rollback: Option<bool>,
-        params: Option<Value>,
-    },
+    Model(ModelRequest),
     SketchPlane {
         plane: Value,
     },
@@ -295,15 +301,9 @@ impl Entry {
 
     /// Native modelling drafts use the same engine ownership and short acceptance
     /// lock as numeric editing. No speculative geometry enters the live session.
-    fn model(
-        &self,
-        action: &str,
-        token: Option<u64>,
-        operation: Option<String>,
-        feature: Option<u64>,
-        rollback: Option<bool>,
-        params: Option<Value>,
-    ) -> Result<Value, AdapterError> {
+    fn model(&self, request: ModelRequest) -> Result<Value, AdapterError> {
+        let ModelRequest { action, token, operation, feature, rollback, apply_on_tap_away, params } = request;
+        let action = action.as_str();
         let mut adapter = self.adapter.lock().map_err(|_| error("lock", "engine lock poisoned"))?;
         let mut valid = false;
         // Completion consumes the draft. Retain native solve/drive diagnostics
@@ -348,6 +348,7 @@ impl Entry {
             {
                 return Err(error("stale_edit", "The modelling edit was cancelled or its inputs changed."));
             }
+            edit.apply_on_tap_away = apply_on_tap_away;
             viewport.begin_model(edit)?;
         } else {
             let token = token.ok_or_else(|| error("bad_params", "A modelling edit token is required."))?;
@@ -463,8 +464,8 @@ impl Entry {
         if let Request::Numeric { action, token, expression, dimension } = request {
             return self.numeric(&action, token, expression, dimension);
         }
-        if let Request::Model { action, token, operation, feature, rollback, params } = request {
-            return self.model(&action, token, operation, feature, rollback, params);
+        if let Request::Model(model) = request {
+            return self.model(model);
         }
         if let Request::SketchPlane { plane } = request {
             let scene = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.diagnostic()["scene_revision"].clone();

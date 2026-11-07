@@ -245,6 +245,8 @@ final class NativeSession {
     var onModelValue: ((ModelValuePresentation?) -> Void)?
     var onToolWorkCompleted: (() -> Void)?
     var onModelDismissed: ((UInt64) -> Void)?
+    var onModelApplyRequested: ((UInt64) -> Void)?
+    private var lastModelApplyRequest: [UInt64]?
     private let engine = DispatchQueue(label: "SolidCraft.engine", qos: .userInitiated, autoreleaseFrequency: .workItem)
     private let display = DispatchQueue(label: "SolidCraft.viewport", qos: .userInteractive, autoreleaseFrequency: .workItem)
     private let state = BridgeState()
@@ -351,6 +353,7 @@ final class NativeSession {
     // Main-thread presentation only. One delayed reveal avoids flashing status
     // during a fast Pencil preview; no progress callback requests a render frame.
     private var commandActivities: Set<UUID> = []
+    var toolActivityInFlight: Bool { toolActivityTicket != nil }
     private var toolActivityTicket: UInt64?
     private var toolActivityToken: UUID?
     private var toolActivityVisible = false
@@ -747,7 +750,7 @@ final class NativeSession {
     }
 
     func requestModelling(action: String, token: UInt64? = nil, operation: String? = nil, feature: UInt64? = nil,
-                          rollback: Bool? = nil,
+                          rollback: Bool? = nil, applyOnTapAway: Bool = false,
                           params: [String: PresentationJSON]? = nil,
                           completion: @escaping (Result<ModellingState, BridgeError>) -> Void) {
         guard alive, let ticket = lifecycle.ticket else { return }
@@ -758,6 +761,7 @@ final class NativeSession {
         if let operation { request["operation"] = operation }
         if let feature { request["feature"] = feature }
         if let rollback { request["rollback"] = rollback }
+        if applyOnTapAway { request["apply_on_tap_away"] = true }
         if let params { request["params"] = params.mapValues(\.value) }
         do {
             let data = try JSONSerialization.data(withJSONObject: request)
@@ -789,6 +793,10 @@ final class NativeSession {
 
     private func observeWorkspaceContext(_ viewport: BridgeState.ViewportReport) {
         if let view = viewport.viewPresentation { onViewPresentation?(view) }
+        if let request = viewport.input?.requested_model_apply, request.count == 2, request != lastModelApplyRequest {
+            lastModelApplyRequest = request
+            onModelApplyRequested?(request[0])
+        }
         if let token = viewport.input?.dismissed_model_token { onModelDismissed?(token) }
         onSketchInput?(viewport.input?.sketch)
         let changed = lastWorkspaceDocument != viewport.document_id
@@ -1127,7 +1135,7 @@ final class NativeSession {
         onFrame = nil
         onStatus = nil
         onWorkspace = nil; onProjectChange = nil; onCommandWillBegin = nil
-        onModelDismissed = nil
+        onModelDismissed = nil; onModelApplyRequested = nil
         onSketchInput = nil; onSketchAnnotations = nil; onConstraintIndicators = nil; onReferenceLabels = nil; onViewPresentation = nil; onModelValue = nil
         // Engine work finishes before the display queue releases the retained layer/handle.
         engine.async { [state, lifecycle, display] in
@@ -1861,7 +1869,7 @@ private final class BridgeState {
     }
     struct ViewportReport: Decodable {
         typealias Entity = WorkspaceEntity
-        struct Input: Decodable { let tool: String; let edit: String?; let sketch: SketchInputPresentation?; let dismissed_model_token: UInt64? }
+        struct Input: Decodable { let tool: String; let edit: String?; let sketch: SketchInputPresentation?; let dismissed_model_token: UInt64?; let requested_model_apply: [UInt64]? }
         let input: Input?
         let annotations: [SketchAnnotationPresentation]?
         let constraint_indicators: [SketchConstraintIndicator]?

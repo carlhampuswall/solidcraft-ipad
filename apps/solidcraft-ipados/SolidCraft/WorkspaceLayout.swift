@@ -341,13 +341,14 @@ struct ModelValuePresentation: Decodable {
 }
 
 enum ModelValuePlacement {
-    static func resolve(anchor: CGPoint, size: CGSize, bounds: CGRect, obstacles: [CGRect]) -> CGRect? {
+    static func resolve(anchor: CGPoint, size: CGSize, bounds: CGRect, obstacles: [CGRect], preferAbove: Bool = false) -> CGRect? {
         guard anchor.x.isFinite, anchor.y.isFinite, size.width.isFinite, size.height.isFinite,
               bounds.minX.isFinite, bounds.minY.isFinite, bounds.maxX.isFinite, bounds.maxY.isFinite,
               size.width > 0, size.height > 0, bounds.width >= size.width, bounds.height >= size.height else { return nil }
         let grip = CGRect(x: anchor.x - 26, y: anchor.y - 26, width: 52, height: 52)
-        let candidates = [CGPoint(x: anchor.x + 34, y: anchor.y - size.height / 2),
-                          CGPoint(x: anchor.x - size.width / 2, y: anchor.y - 34 - size.height),
+        let right = CGPoint(x: anchor.x + 34, y: anchor.y - size.height / 2)
+        let above = CGPoint(x: anchor.x - size.width / 2, y: anchor.y - 34 - size.height)
+        let candidates = [preferAbove ? above : right, preferAbove ? right : above,
                           CGPoint(x: anchor.x - 34 - size.width, y: anchor.y - size.height / 2),
                           CGPoint(x: anchor.x - size.width / 2, y: anchor.y + 34)]
         return candidates.map { origin in
@@ -365,7 +366,7 @@ struct WorkspaceLayout {
     let rail: CGRect
     var canvas: CGRect
     var browser: CGRect?
-    var inspector: CGRect?
+    let inspector: CGRect?
     let compact: Bool
     var navigation: CGRect = .zero
     var history: CGRect = .zero
@@ -373,14 +374,6 @@ struct WorkspaceLayout {
     var browserAccess: CGRect = .zero
     var viewAccess: CGRect = .zero
     var floating = false
-
-    /// Keep a collapsed tool beside the navigation rail, clear of the model grip.
-    mutating func fitInspectorHeader(_ size: CGSize, railRight: Bool) {
-        guard floating, let panel = inspector else { return }
-        let width = min(panel.width, ceil(size.width) + 8)
-        let height = min(panel.height, max(54, ceil(size.height) + 8))
-        inspector = CGRect(x: railRight ? panel.minX : panel.maxX - width, y: panel.minY, width: width, height: height)
-    }
 
     static func resolve(size: CGSize, browser: Bool, inspector: Bool,
                         railRight: Bool, largeText: Bool,

@@ -895,7 +895,6 @@ final class WorkspacePanel: UIView {
     private let heading = WorkspaceStyle.label(.headline)
     private let close: WorkspaceButton
     private let headerActions = UIStackView()
-    private weak var toolHeader: UIView?
     init(title: String, onClose: @escaping () -> Void) {
         close = WorkspaceButton(WorkspaceStyle.text("close_short"), action: onClose)
         super.init(frame: .zero)
@@ -953,27 +952,8 @@ final class WorkspacePanel: UIView {
         action.widthAnchor.constraint(equalToConstant: 44).isActive = true
     }
     func setTitle(_ title: String) { heading.text = title }
-    func setToolHeader(_ view: UIView?) {
-        toolHeader?.removeFromSuperview()
-        toolHeader = view
-        heading.isHidden = view != nil
-        close.isHidden = view != nil
-        body.isHidden = false
-        guard let view else { return }
-        view.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(view)
-        NSLayoutConstraint.activate([
-            view.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            view.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
-            view.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
-            body.topAnchor.constraint(greaterThanOrEqualTo: view.bottomAnchor, constant: 4)
-        ])
-    }
-    func setBodyHidden(_ hidden: Bool) { body.isHidden = hidden }
     func fittingHeight(contentHeight: CGFloat, width: CGFloat) -> CGFloat {
-        let headerHeight = max(54, toolHeader.map { $0.systemLayoutSizeFitting(
-            CGSize(width: max(0, width - 8), height: 0), withHorizontalFittingPriority: .required,
-            verticalFittingPriority: .fittingSizeLevel).height + 8 } ?? (ceil(heading.font.lineHeight) + 20))
+        let headerHeight = max(54, ceil(heading.font.lineHeight) + 20)
         let footerHeight = footer.isHidden ? 0 : footer.systemLayoutSizeFitting(
             CGSize(width: width, height: 0), withHorizontalFittingPriority: .required,
             verticalFittingPriority: .fittingSizeLevel).height
@@ -1714,6 +1694,49 @@ private final class InspectorReferenceHeading: UIStackView {
     }
 }
 
+/// A result picker attached to a projected extrusion handle.
+final class ExtrudeResultPicker: UITableViewController {
+    private let field: ModellingState.Field
+    private let options: [ModellingState.Field.Option]
+    private let selected: PresentationJSON?
+    var onChoose: ((PresentationJSON) -> Void)?
+
+    init(field: ModellingState.Field, selected: PresentationJSON?) {
+        self.field = field; self.options = field.options ?? []; self.selected = selected
+        super.init(style: .plain)
+        modalPresentationStyle = .popover
+    }
+    required init?(coder: NSCoder) { nil }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tableView.rowHeight = max(44, ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 20)
+        let labels = options.map { ModellingText.label($0.label) as NSString }
+        let width = labels.map { $0.size(withAttributes: [.font: UIFont.preferredFont(forTextStyle: .body)]).width }.max() ?? 0
+        preferredContentSize = CGSize(width: min(320, max(184, ceil(width) + 96)), height: tableView.rowHeight * CGFloat(options.count))
+        tableView.accessibilityLabel = ModellingText.label(field.label)
+        tableView.accessibilityIdentifier = "workspace-extrude-result-list"
+    }
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { options.count }
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "result") ?? UITableViewCell(style: .default, reuseIdentifier: "result")
+        guard options.indices.contains(indexPath.row) else { return cell }
+        let option = options[indexPath.row]
+        var content = cell.defaultContentConfiguration()
+        content.text = ModellingText.label(option.label)
+        content.image = InspectorPresentation.choiceIcon(field: field.key, value: option.value).flatMap {
+            WorkspaceIcon.image($0, traits: traitCollection, size: 24)
+        }
+        cell.contentConfiguration = content
+        cell.accessoryType = option.value == selected ? .checkmark : .none
+        cell.accessibilityTraits = option.value == selected ? [.button, .selected] : .button
+        return cell
+    }
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        guard options.indices.contains(indexPath.row) else { return }
+        onChoose?(options[indexPath.row].value)
+    }
+}
+
 final class ModellingInlineChoices: UIStackView {
     init(field: ModellingState.Field, selected: PresentationJSON?, illustrated: Bool = false, compactMenu: Bool = false,
          action: @escaping (PresentationJSON) -> Void) {
@@ -1774,8 +1797,12 @@ final class ModellingInspector: UIStackView {
     let compact: Bool
     let minimal: Bool
     private(set) var extrusionBar: UIStackView?
-    private(set) var extrusionOptionsHidden = false
-    private lazy var extrusionOptions = WorkspaceButton(title, action: {})
+    private(set) var resultButton: WorkspaceButton?
+    private lazy var directionButton = WorkspaceButton(ModellingText.text("field.direction"), action: {})
+    private lazy var targetsButton = WorkspaceButton(ModellingFormText.text("target_bodies")) { [weak self] in self?.onSelect?("targets") }
+    private lazy var otherOptionsButton = WorkspaceButton(InspectorText.text("more_options"), action: {})
+    var onResultPicker: ((UIView) -> Void)?
+    var onExtrusionError: ((BridgeError) -> Void)?
     private let operation: String?
     private(set) var params: [String: PresentationJSON]
     private(set) var fields: [ModellingState.Field]
@@ -1905,22 +1932,30 @@ final class ModellingInspector: UIStackView {
             footer.addArrangedSubview(divider)
         }
         if self.minimal && tuckExtrudeOptions && state.operation == "solid.extrude" {
-            // Keep the same transaction buttons and their enablement in both presentations.
-            for (button, icon) in [(cancel, "close"), (apply, "finish")] {
-                button.artwork(icon, compact: true)
-                button.widthAnchor.constraint(equalToConstant: WorkspaceStyle.touch).isActive = true
+            apply.systemArtwork("checkmark", compact: true)
+            cancel.artwork("close", compact: true)
+            directionButton.systemArtwork("arrow.up.and.down")
+            directionButton.showsMenuAsPrimaryAction = true
+            directionButton.accessibilityIdentifier = "workspace-extrude-direction"
+            targetsButton.artwork("body")
+            targetsButton.accessibilityIdentifier = "workspace-extrude-targets"
+            otherOptionsButton.systemArtwork("ellipsis")
+            otherOptionsButton.showsMenuAsPrimaryAction = true
+            otherOptionsButton.accessibilityIdentifier = "workspace-extrude-more"
+            let bar = UIStackView(arrangedSubviews: [apply, directionButton, targetsButton, otherOptionsButton, cancel])
+            bar.axis = .vertical; bar.alignment = .leading; bar.spacing = 2
+            for case let button as WorkspaceButton in bar.arrangedSubviews {
+                button.contentHorizontalAlignment = .leading
             }
-            extrusionOptions.contentHorizontalAlignment = .leading
-            extrusionOptions.titleLabel?.numberOfLines = 1
-            extrusionOptions.configuration?.titleLineBreakMode = .byTruncatingTail
-            extrusionOptions.accessibilityIdentifier = "workspace-extrude-options"
-            extrusionOptions.addAction(UIAction { [weak self] _ in
-                guard let self, !self.extrusionOptionsHidden else { return }
-                self.setExtrusionOptionsHidden(true)
+            extrusionBar = bar
+            let result = WorkspaceButton(ModellingText.text("field.operation"), action: {})
+            result.accessibilityIdentifier = "workspace-extrude-result"
+            result.addAction(UIAction { [weak self, weak result] _ in
+                guard let self, self.handleEntryEnabled, let result else { return }
+                self.onResultPicker?(result)
             }, for: .touchUpInside)
-            extrusionBar = UIStackView(arrangedSubviews: [extrusionOptions, cancel, apply])
-            extrusionBar?.spacing = 4
-            extrusionOptionsHidden = true
+            WorkspaceStyle.floatingSurface(result)
+            resultButton = result
             addArrangedSubview(message)
         } else {
             footer.addArrangedSubview(message)
@@ -1952,36 +1987,49 @@ final class ModellingInspector: UIStackView {
         super.init(coder: coder)
     }
 
-    private func setExtrusionOptionsHidden(_ hidden: Bool) {
-        endEditing(true)
-        extrusionOptionsHidden = hidden
-        updateExtrusionMenu()
-        onPreferredSizeChange?()
-    }
-
     private func updateExtrusionMenu() {
-        guard extrusionBar != nil else { return }
-        extrusionOptions.systemArtwork(extrusionOptionsHidden ? "chevron.down" : "chevron.up")
-        extrusionOptions.configuration?.imagePlacement = .trailing
-        let field = fields.first { $0.key == "operation" }
-        let selected = parameter("operation")
-        let options = field?.options ?? []
-        let current = options.first { $0.value == selected }.map { ModellingText.label($0.label) }
-        extrusionOptions.configuration?.subtitle = current
-        extrusionOptions.accessibilityValue = current
-        extrusionOptions.showsMenuAsPrimaryAction = extrusionOptionsHidden
-        guard extrusionOptionsHidden else { extrusionOptions.menu = nil; return }
-        let operations = options.map { option in
-            UIAction(title: ModellingText.label(option.label), state: option.value == selected ? .on : .off) { [weak self] _ in
-                guard let self, self.extrusionBar?.window != nil else { return }
-                self.selectInlineChoice("operation", value: option.value)
+        guard let resultButton else { return }
+        let operation = parameter("operation")
+        let selected = fields.first { $0.key == "operation" }?.options?.first { $0.value == operation }
+        let operationTitle = selected.map { ModellingText.label($0.label) } ?? title
+        resultButton.updateTitle(operationTitle)
+        resultButton.artwork(operation.flatMap { InspectorPresentation.choiceIcon(field: "operation", value: $0) } ?? "body", compact: true)
+        resultButton.accessibilityLabel = ModellingText.text("field.operation")
+        resultButton.accessibilityValue = operationTitle
+
+        var directionItems: [UIMenuElement] = []
+        if let field = fields.first(where: { $0.key == "direction" }) {
+            let actions = (field.options ?? []).map { option in
+                UIAction(title: ModellingFormText.choice(option.label), state: option.value == parameter(field.key) ? .on : .off) { [weak self] _ in
+                    self?.selectInlineChoice(field.key, value: option.value)
+                }
             }
+            directionItems.append(UIMenu(title: ModellingText.label(field.label), options: .displayInline, children: actions))
         }
-        let more = UIAction(title: InspectorText.text("more_options")) { [weak self] _ in
-            guard let self, self.extrusionBar?.window != nil, self.handleEntryEnabled else { return }
-            self.setExtrusionOptionsHidden(false)
+        if let extent = fields.first(where: { $0.key == "through_all" }) {
+            let through = parameter(extent.key) == .bool(true)
+            directionItems.append(UIAction(title: ModellingText.label(extent.label), state: through ? .on : .off) { [weak self] _ in
+                self?.selectInlineChoice(extent.key, value: .bool(!through))
+            })
         }
-        extrusionOptions.menu = UIMenu(children: [UIMenu(options: .displayInline, children: operations), more])
+        directionButton.menu = UIMenu(children: directionItems)
+        targetsButton.isHidden = operation == .string("new") || operation == .string("new_body") || !fields.contains { $0.key == "targets" }
+        var more: [UIMenuElement] = []
+        if let source = fields.first(where: { $0.key == "profile" }) {
+            more.append(UIAction(title: ModellingText.label(source.label)) { [weak self] _ in self?.onSelect?(source.key) })
+        }
+        if let distance = fields.first(where: { $0.key == "distance" }), parameter("through_all") != .bool(true) {
+            more.append(UIAction(title: ModellingText.label(distance.label)) { [weak self] _ in
+                guard let self, self.handleEntryEnabled else { return }
+                let expression = self.parameter(distance.key).map(self.display) ?? ""
+                self.onEditValue?(distance, expression, self.otherOptionsButton)
+            })
+        }
+        more.append(UIAction(title: ModellingText.text("field.operation")) { [weak self] _ in
+            guard let self, self.handleEntryEnabled else { return }
+            self.onResultPicker?(self.otherOptionsButton)
+        })
+        otherOptionsButton.menu = UIMenu(children: more)
     }
 
     func evaluated(_ state: ModellingState) {
@@ -2037,7 +2085,7 @@ final class ModellingInspector: UIStackView {
     func failed(_ error: BridgeError) {
         busy = false; committing = false; inputWhileBusy = false; contextRefreshing = false; validated = nil
         editors.forEach { $0.setBusy(false) }
-        if extrusionOptionsHidden { setExtrusionOptionsHidden(false) }
+        if extrusionBar != nil { onExtrusionError?(error) }
         updateAvailability(); message.show(error.message, error: true); onPreferredSizeChange?()
     }
     func setBusy(committing: Bool, allowInput: Bool = false) {
@@ -2050,7 +2098,11 @@ final class ModellingInspector: UIStackView {
         if !busy { message.show(minimal ? nil : entryHint); onPreferredSizeChange?() }
     }
     private func updateAvailability() {
-        if extrusionBar != nil { extrusionOptions.availability(enabled: handleEntryEnabled) }
+        if let resultButton {
+            for button in [resultButton, directionButton, targetsButton, otherOptionsButton] {
+                button.availability(enabled: handleEntryEnabled)
+            }
+        }
         apply.availability(enabled: !busy && !contextRefreshing && attachmentReady && !ModellingFormPresentation.needsExtrusionDistance(params)
             && !ModellingFormPresentation.needsCombineBodies(params))
         cancel.availability(enabled: !committing)
@@ -2080,6 +2132,7 @@ final class ModellingInspector: UIStackView {
         additionalFields.arrangedSubviews.forEach { additionalFields.removeArrangedSubview($0); $0.removeFromSuperview() }
         discreteFieldViews.removeAll(); fieldGeneration &+= 1
         let generation = fieldGeneration
+        if extrusionBar != nil { updateAvailability(); return }
         var choiceGroup: ModellingFormGroup?
         var choiceStack: UIStackView?
         let compactExtrude = compact && fields.contains { $0.key == "operation" && $0.kind == "inline_choice" }
@@ -2182,9 +2235,7 @@ final class ModellingInspector: UIStackView {
             }
             if stack === fieldsStack { fieldsStack.setCustomSpacing(compact ? 12 : 16, after: stack.arrangedSubviews.last ?? heading) }
         }
-        if extrusionBar != nil && !additionalFields.arrangedSubviews.isEmpty {
-            fieldsStack.addArrangedSubview(additionalFields)
-        } else if !additionalFields.arrangedSubviews.isEmpty {
+        if !additionalFields.arrangedSubviews.isEmpty {
             let options = InspectorDisclosure(title: InspectorText.text("more_options"), expanded: optionsExpanded,
                                               identifier: "workspace-model-more-options") { [weak self] expanded in
                 self?.optionsExpanded = expanded; self?.onPreferredSizeChange?()

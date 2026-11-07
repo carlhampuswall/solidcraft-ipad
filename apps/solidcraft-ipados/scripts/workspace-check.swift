@@ -464,16 +464,14 @@ struct WorkspaceChecks {
         mailbox.clear()
         if let staleInputToken { try require(mailbox.take(token: staleInputToken) == nil, "cancelled input batch survived a context change") }
         // On-model value chips stay readable, clear of both the grip and chrome.
-        for railRight in [false, true] {
-            for width: CGFloat in [390, 834, 1194] {
-                var layout = WorkspaceLayout.resolve(size: CGSize(width: width, height: 800), browser: false, inspector: true,
-                                                     railRight: railRight, largeText: false)
-                let panel = layout.inspector, canvas = layout.canvas
-                layout.fitInspectorHeader(CGSize(width: 198, height: 44), railRight: railRight)
-                guard let panel, let bar = layout.inspector else { throw NSError(domain: "ExtrudeHeader", code: 1) }
-                try require(panel.contains(bar) && bar.height == 54 && layout.canvas == canvas, "tucked Extrude moved or covered the viewport")
-                try require(railRight ? bar.minX == panel.minX : bar.maxX == panel.maxX, "Extrude controls moved away from navigation")
-            }
+        let grip = CGPoint(x: 200, y: 200)
+        let viewport = CGRect(x: 0, y: 0, width: 390, height: 400)
+        let size = CGSize(width: 44, height: 44)
+        let above = ModelValuePlacement.resolve(anchor: grip, size: size, bounds: viewport, obstacles: [], preferAbove: true)
+        try require(above?.midX == grip.x && (above?.maxY ?? grip.y) <= grip.y - 26, "Boolean control must clear the grip above its centre")
+        if let above {
+            let alternate = ModelValuePlacement.resolve(anchor: grip, size: size, bounds: viewport, obstacles: [above], preferAbove: true)
+            try require(alternate != nil && alternate?.intersects(above) == false, "Obstructed Boolean control needs a reachable position")
         }
         for bounds in [CGRect(x: 0, y: 0, width: 1194, height: 790), CGRect(x: 0, y: 0, width: 390, height: 420)] {
             for anchor in [CGPoint(x: bounds.midX, y: bounds.midY), CGPoint(x: bounds.maxX - 5, y: bounds.midY), CGPoint(x: 5, y: 5)] {

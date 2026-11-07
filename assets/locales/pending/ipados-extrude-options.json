@@ -1,22 +1,32 @@
 {
   "de": {
+    "ui.ipados.inspector.apply_on_tap_away": "Volumenwerkzeuge durch Tippen außerhalb anwenden",
+    "ui.ipados.inspector.apply_on_tap_away_help": "Zum Anwenden auf eine freie Stelle oder ein Bedienelement des Arbeitsbereichs tippen.",
     "ui.ipados.inspector.tuck_extrude_options": "Extrusionsoptionen einklappen",
-    "ui.ipados.inspector.tuck_extrude_options_help": "Beim Auswählen einer Fläche oder eines Profils mit dem Griff am Modell beginnen. Das Menü Extrudieren enthält die Optionen."
+    "ui.ipados.inspector.tuck_extrude_options_help": "Den Griff auf der Fläche ziehen. Das Ergebnis darüber wählen, weitere Optionen links."
   },
   "en": {
+    "ui.ipados.inspector.apply_on_tap_away": "Apply solid tools on tap away",
+    "ui.ipados.inspector.apply_on_tap_away_help": "Tap empty space or a workspace control to apply.",
     "ui.ipados.inspector.tuck_extrude_options": "Collapse Extrude options",
-    "ui.ipados.inspector.tuck_extrude_options_help": "Start with the on-model handle when selecting a face or profile. Open the Extrude menu for options."
+    "ui.ipados.inspector.tuck_extrude_options_help": "Drag the face handle. Choose the result above it and other options on the left."
   },
   "ja": {
+    "ui.ipados.inspector.apply_on_tap_away": "外側をタップしてソリッド操作を適用",
+    "ui.ipados.inspector.apply_on_tap_away_help": "空いている場所またはワークスペースのコントロールをタップすると適用されます。",
     "ui.ipados.inspector.tuck_extrude_options": "押し出しオプションを折りたたむ",
-    "ui.ipados.inspector.tuck_extrude_options_help": "面やプロファイルを選択すると、モデル上のハンドルで押し出しを開始できます。オプションは押し出しメニューから開けます。"
+    "ui.ipados.inspector.tuck_extrude_options_help": "面のハンドルをドラッグします。結果はハンドルの上、その他のオプションは左側で選べます。"
   },
   "ko": {
+    "ui.ipados.inspector.apply_on_tap_away": "바깥을 탭하여 솔리드 작업 적용",
+    "ui.ipados.inspector.apply_on_tap_away_help": "빈 공간이나 작업 공간의 컨트롤을 탭하여 적용합니다.",
     "ui.ipados.inspector.tuck_extrude_options": "돌출 옵션 접기",
-    "ui.ipados.inspector.tuck_extrude_options_help": "면이나 프로파일을 선택하면 모델의 핸들로 돌출을 시작합니다. 돌출 메뉴에서 옵션을 열 수 있습니다."
+    "ui.ipados.inspector.tuck_extrude_options_help": "면의 핸들을 드래그하세요. 결과는 핸들 위에서, 다른 옵션은 왼쪽에서 선택하세요."
   },
   "zh": {
+    "ui.ipados.inspector.apply_on_tap_away": "轻点空白处以应用实体操作",
+    "ui.ipados.inspector.apply_on_tap_away_help": "轻点空白处或工作区控件即可应用。",
     "ui.ipados.inspector.tuck_extrude_options": "折叠拉伸选项",
-    "ui.ipados.inspector.tuck_extrude_options_help": "选择面或轮廓后，使用模型上的手柄开始拉伸。打开拉伸菜单可查看选项。"
+    "ui.ipados.inspector.tuck_extrude_options_help": "拖动面上的手柄。在手柄上方选择结果，在左侧选择其他选项。"
   }
 }

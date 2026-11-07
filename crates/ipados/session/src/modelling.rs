@@ -38,6 +38,7 @@ pub struct ModelEdit {
     pub operation: String,
     pub feature: Option<u64>,
     pub(crate) rollback: bool,
+    pub apply_on_tap_away: bool,
     pub params: Value,
     pub(crate) selection_field: Option<String>,
     pub(crate) source_selection_changed: bool,
@@ -555,6 +556,7 @@ impl SessionAdapter {
             operation: operation.into(),
             feature,
             rollback: rollback && feature.is_some(),
+            apply_on_tap_away: false,
             params,
             selection_field: None,
             source_selection_changed: false,
@@ -1027,6 +1029,7 @@ impl SessionAdapter {
         // Rebuilding a creation form must not reset the live handle's version.
         // Inspection runs after previews, including while its contact is down.
         refreshed.version = edit.version;
+        refreshed.apply_on_tap_away = edit.apply_on_tap_away;
         refreshed.selection_field = edit.selection_field.clone();
         let canvas_profile = if params.is_none()
             && edit.feature.is_none()

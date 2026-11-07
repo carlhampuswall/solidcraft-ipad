@@ -6,7 +6,7 @@ import Darwin
 
 /// One adaptive native workspace around the existing Metal view and Rust session.
 /// Panels change the actual canvas frame; they never invent a second pick origin.
-final class FoundationController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentPickerDelegate, UIPopoverPresentationControllerDelegate {
+final class FoundationController: UIViewController, UITableViewDataSource, UITableViewDelegate, UIDocumentPickerDelegate, UIPopoverPresentationControllerDelegate, UIGestureRecognizerDelegate {
     private let canvas = MetalCanvas()
     private let session = NativeSession()
     private let workspace = UIView()
@@ -18,6 +18,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let topActions = UIStackView()
     private let railScroll = UIScrollView()
     private let rail = UIStackView()
+    private let extrusionRailScroll = UIScrollView()
+    private var pendingTapAwayApply = false
+    private var draftAppliesOnTapAway = false
+    private var applySolidOnTapAway = UserDefaults.standard.object(forKey: "SolidCraft.workspace.applySolidOnTapAway") as? Bool ?? true
+    private weak var resultPicker: ExtrudeResultPicker?
     private let navigationScroll = UIScrollView()
     private let navigationActions = UIStackView()
     private var railQuickAccess: QuickAccessBar?
@@ -287,9 +292,17 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         applyAppearance()
         view.addSubview(workspace)
         workspace.addSubview(canvas)
+        let tapAway = UITapGestureRecognizer(target: self, action: #selector(applyDraftFromChrome))
+        tapAway.delegate = self
+        tapAway.delaysTouchesEnded = true
+        workspace.addGestureRecognizer(tapAway)
         workspace.addSubview(top)
         workspace.addSubview(status)
         workspace.addSubview(railScroll)
+        workspace.addSubview(extrusionRailScroll)
+        extrusionRailScroll.isHidden = true
+        extrusionRailScroll.contentInsetAdjustmentBehavior = .never
+        WorkspaceStyle.floatingSurface(extrusionRailScroll)
         workspace.addSubview(featureHistory)
         workspace.addSubview(scrim)
         workspace.addSubview(browserPanel)
@@ -533,6 +546,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.layoutModelValue()
         }
         session.onToolWorkCompleted = { [weak self] in self?.inspectModelling() }
+        session.onModelApplyRequested = { [weak self] token in
+            guard let self, self.modellingToken == token else { return }
+            self.requestDraftApply()
+        }
         session.onModelDismissed = { [weak self] token in
             guard let self, self.modellingToken == token else { return }
             // Rust already invalidated the token and any pending preview. Drop
@@ -2084,7 +2101,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         updateAvailability()
         let params = ModellingFormPresentation.initialParameters(operation: operation, feature: feature,
             automatic: fromSelection != nil, legacyDepth: automaticExtrudeDepth, supplied: initialParams)
-        session.requestModelling(action: "begin", operation: operation, feature: feature, rollback: rollbackFeatureEditing, params: params) { [weak self] result in
+        let contextualExtrude = operation == "solid.extrude" && feature == nil &&
+            (fromSelection == .extrude || context.selection.contains { extrudeSelectionSource($0) != nil }) &&
+            tuckExtrudeOptions && directHandles && compactChrome && compactInspector && compactToolControls
+        draftAppliesOnTapAway = applySolidOnTapAway && feature == nil && operation?.hasPrefix("solid.") == true
+        session.requestModelling(action: "begin", operation: operation, feature: feature, rollback: rollbackFeatureEditing,
+                                 applyOnTapAway: draftAppliesOnTapAway, params: params) { [weak self] result in
             guard let self, self.modellingGeneration == expected else { return }
             self.modellingStarting = false
             switch result {
@@ -2095,13 +2117,27 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.modellingToken = token
                 self.modellingFeature = model.feature; self.table.reloadData()
-                let tuck = fromSelection == .extrude && self.tuckExtrudeOptions && self.directHandles && self.compactChrome
                 let form = ModellingInspector(state: model, compact: self.compactInspector, minimal: self.compactToolControls,
-                                              tuckExtrudeOptions: tuck)
+                                              tuckExtrudeOptions: contextualExtrude)
                 self.modellingInspector = form
                 form.onPreferredSizeChange = { [weak self] in self?.view.setNeedsLayout() }
                 self.inspectorPanel.setTitle(form.compact ? form.title : WorkspaceStyle.text("inspector"))
-                self.inspectorPanel.setToolHeader(form.extrusionBar)
+                if let bar = form.extrusionBar, let resultButton = form.resultButton {
+                    self.extrusionRailScroll.addSubview(bar)
+                    bar.translatesAutoresizingMaskIntoConstraints = false
+                    let scroll = self.extrusionRailScroll
+                    NSLayoutConstraint.activate([
+                        bar.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+                        bar.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+                        bar.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+                        bar.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+                        bar.widthAnchor.constraint(equalTo: scroll.frameLayoutGuide.widthAnchor)
+                    ])
+                    resultButton.isHidden = true
+                    self.workspace.insertSubview(resultButton, aboveSubview: self.modelValueButton)
+                    form.onResultPicker = { [weak self] source in self?.showExtrudeResults(from: source) }
+                    form.onExtrusionError = { [weak self] error in self?.showFailure(error) }
+                }
                 self.inspectorPanel.setFooter(form.compact && form.extrusionBar == nil ? form.footer : nil)
                 self.inspectorScroll.setContentOffset(.zero, animated: false)
                 self.properties.arrangedSubviews.forEach { self.properties.removeArrangedSubview($0); $0.removeFromSuperview() }
@@ -2110,10 +2146,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 form.onLivePreview = { [weak self] params in self?.evaluateModelling(params, commit: false, live: true) }
                 form.onContextChange = { [weak self] params in self?.refreshModellingContext(params, submitAfter: .preview) }
                 form.onInlineChoice = { [weak self] params in self?.refreshModellingContext(params, submitAfter: .preview) }
-                form.onApply = { [weak self] params in self?.evaluateModelling(params, commit: true) }
+                form.onApply = { [weak self] params in
+                    if self?.draftAppliesOnTapAway == true { self?.requestDraftApply() }
+                    else { self?.evaluateModelling(params, commit: true) }
+                }
                 form.onCancel = { [weak self] in self?.cancelModelling() }
                 form.onFocus = { [weak self] in self?.canvas.cancelInput(); self?.revealField(); self?.updateAvailability() }
-                form.onEditValue = form.compact && !form.minimal ? { [weak self] field, expression, source in
+                form.onEditValue = form.compact && (!form.minimal || form.extrusionBar != nil) ? { [weak self] field, expression, source in
                     self?.presentModelValue(parameter: field.key, expression: expression, units: field.units ?? "",
                         name: ModellingText.label(field.label), source: source)
                 } : nil
@@ -2151,13 +2190,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                     self.showFailure(error); return
                                 }
                                 if case .success(let model) = result { form?.contextRefreshed(model) }
-                                self.inspectorOpen = form?.minimal == true || form?.hasBodyPicks == true || form?.compact == true && (field == "edges" || field == "faces")
+                                self.inspectorOpen = form?.extrusionBar == nil && (form?.minimal == true || form?.hasBodyPicks == true || form?.compact == true && (field == "edges" || field == "faces"))
                                 self.browserOpen = false; self.relayoutPanels()
                             }
                         }
                     }
                 }
-                self.inspectorOpen = true; self.browserOpen = false; self.failure = nil
+                self.inspectorOpen = form.extrusionBar == nil; self.browserOpen = false; self.failure = nil
                 self.relayoutPanels()
                 self.scheduleModellingPreview()
 #if DEBUG
@@ -2176,6 +2215,36 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let check = self.assemblyCheckBegan; self.assemblyCheckBegan = nil; check?(result)
 #endif
         }
+    }
+
+    // Canvas taps are classified by Rust against the displayed scene. UIKit
+    // handles taps on surrounding chrome and leaves the tool's controls interactive.
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        guard draftAppliesOnTapAway, modellingInspector != nil, presentedViewController == nil,
+              let target = touch.view else { return false }
+        let toolViews: [UIView?] = [canvas, extrusionRailScroll, modelValueButton, modellingInspector?.resultButton, inspectorPanel]
+        return !toolViews.compactMap { $0 }.contains { target === $0 || target.isDescendant(of: $0) }
+    }
+
+    @objc private func applyDraftFromChrome() { requestDraftApply() }
+
+    private func requestDraftApply() {
+        guard draftAppliesOnTapAway, let form = modellingInspector, !modellingCommitting else { return }
+        form.endEditing(true)
+        pendingTapAwayApply = true
+        drainDraftApply()
+    }
+
+    private func drainDraftApply() {
+        guard pendingTapAwayApply, let form = modellingInspector, !session.toolActivityInFlight,
+              !modellingInspectPending, !modellingContextInspectInFlight, modellingPreviewQueue.active == nil,
+              form.handleEntryEnabled else { return }
+        pendingTapAwayApply = false
+        guard !ModellingFormPresentation.needsExtrusionDistance(form.params), !ModellingFormPresentation.needsCombineBodies(form.params) else {
+            updateStatus()
+            return
+        }
+        evaluateModelling(form.params, commit: true)
     }
 
     private func scheduleModellingPreview() {
@@ -2243,6 +2312,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.updateModelValueChoices()
             }
             if let next = queuedPreview, !commit { self.evaluateModelling(next, commit: false, live: true) }
+            self.drainDraftApply()
 #if DEBUG
             let check = self.assemblyCheckEvaluated; self.assemblyCheckEvaluated = nil; check?(result, commit)
 #endif
@@ -2266,6 +2336,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         session.requestModelling(action: "inspect", token: token) { [weak self, weak form] result in
             guard let self, self.modellingGeneration == expected else { return }
             self.modellingInspectPending = false
+            defer { self.drainDraftApply() }
             guard self.modellingFormVersion == expectedForm, form?.params == expectedParams else { return }
             switch result {
             case .success(let model): form?.inspected(model); self.scheduleModellingPreview()
@@ -2308,6 +2379,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         session.requestModelling(action: "inspect", token: token) { [weak self, weak form] result in
             guard let self, self.modellingGeneration == expected, self.modellingToken == token else { return }
             self.modellingInspectPending = false
+            defer { self.drainDraftApply() }
             if self.modellingFormVersion == expectedForm {
                 switch result {
                 case .success(let model):
@@ -2372,6 +2444,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             }
             if self.pendingModellingContext != nil { self.drainModellingContext() }
             self.drainModellingSelection()
+            self.drainDraftApply()
             self.updateAvailability()
         }
     }
@@ -2393,11 +2466,15 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if modellingInspector?.minimal == true { inspectorOpen = false; view.setNeedsLayout() }
         modellingAutomaticPreview.cancel()
         modellingSelectionSource = nil
+        draftAppliesOnTapAway = false; pendingTapAwayApply = false
         modellingGeneration &+= 1
         if let editor = modelValueEditor { editor.dismiss(animated: false) { [weak self] in self?.updateAvailability() } }
         modelValueEditor = nil; modelValue = nil; modelValueButton.isHidden = true
+        resultPicker?.dismiss(animated: false); resultPicker = nil
+        modellingInspector?.resultButton?.removeFromSuperview()
+        modellingInspector?.extrusionBar?.removeFromSuperview()
+        extrusionRailScroll.isHidden = true; railScroll.isHidden = false
         modellingInspector?.endEditing(true); modellingInspector = nil
-        inspectorPanel.setToolHeader(nil)
         inspectorPanel.setFooter(nil); inspectorPanel.setTitle(WorkspaceStyle.text("inspector"))
         previewStale = false
         modellingToken = nil; modellingFeature = nil; modellingContext = nil; modellingStarting = false
@@ -2411,7 +2488,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func layoutModelValue() {
         guard directHandles, active, let value = modelValue, value.token == modellingToken,
               value.position.count == 2, value.position.allSatisfy(\.isFinite), value.value.isFinite,
-              let form = modellingInspector else { modelValueButton.isHidden = true; return }
+              let form = modellingInspector else {
+            modelValueButton.isHidden = true; modellingInspector?.resultButton?.isHidden = true
+            return
+        }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal; formatter.maximumFractionDigits = 4
         formatter.usesGroupingSeparator = false
@@ -2427,17 +2507,48 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let anchor = CGPoint(x: canvas.frame.minX + value.position[0], y: canvas.frame.minY + value.position[1])
         let fitting = modelValueButton.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize)
         let size = CGSize(width: min(220, max(80, fitting.width)), height: max(44, fitting.height))
-        let obstacles = [top, railScroll, navigationScroll, historyActions, featureHistory, browserButton, status, browserPanel, inspectorPanel]
+        var obstacles = [top, railScroll, extrusionRailScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton, status, browserPanel, inspectorPanel]
             .filter { !$0.isHidden }.map { $0.frame.insetBy(dx: -6, dy: -6) }
         let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
         let bounds = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: canvas.frame, useBottomSafeArea: useBottomSafeArea)
             .intersection(canvas.frame).insetBy(dx: 8, dy: 8)
-        guard let frame = ModelValuePlacement.resolve(anchor: anchor, size: size, bounds: bounds, obstacles: obstacles) else {
-            modelValueButton.isHidden = true; return
+        if let frame = ModelValuePlacement.resolve(anchor: anchor, size: size, bounds: bounds, obstacles: obstacles) {
+            modelValueButton.frame = frame
+            modelValueButton.isHidden = false
+            modelValueButton.isEnabled = form.handleEntryEnabled && !form.hasLocalChanges && presentedViewController == nil
+            obstacles.append(frame.insetBy(dx: -4, dy: -4))
+        } else { modelValueButton.isHidden = true }
+        if let button = form.resultButton {
+            let size = CGSize(width: WorkspaceStyle.touch, height: WorkspaceStyle.touch)
+            let frame = bounds.contains(anchor) ? ModelValuePlacement.resolve(anchor: anchor, size: size, bounds: bounds,
+                                                                               obstacles: obstacles, preferAbove: true) : nil
+            if let frame { button.frame = frame }
+            button.isHidden = frame == nil
         }
-        modelValueButton.frame = frame
-        modelValueButton.isHidden = false
-        modelValueButton.isEnabled = form.handleEntryEnabled && !form.hasLocalChanges && presentedViewController == nil
+    }
+
+    private func showExtrudeResults(from source: UIView) {
+        guard presentedViewController == nil, source.window != nil, let form = modellingInspector,
+              form.handleEntryEnabled, let field = form.fields.first(where: { $0.key == "operation" }),
+              field.options?.isEmpty == false else { return }
+        let picker = ExtrudeResultPicker(field: field, selected: form.params[field.key])
+        picker.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        picker.loadViewIfNeeded()
+        if let popover = picker.popoverPresentationController {
+            popover.sourceView = source; popover.sourceRect = source.bounds
+            let frame = source.convert(source.bounds, to: workspace)
+            let roomAbove = frame.minY - view.safeAreaLayoutGuide.layoutFrame.minY
+            popover.permittedArrowDirections = roomAbove > picker.preferredContentSize.height + 24 ? .down : [.left, .right, .up]
+            popover.delegate = self
+        }
+        picker.onChoose = { [weak self, weak form, weak picker] value in
+            picker?.dismiss(animated: true) {
+                guard let self, let form, self.modellingInspector === form, form.handleEntryEnabled else { return }
+                form.selectInlineChoice(field.key, value: value)
+            }
+        }
+        resultPicker = picker
+        present(picker, animated: true)
     }
 
     private func editModelValue() {
@@ -3524,21 +3635,22 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func toggleBrowser() {
         guard !numericEditing, !modellingCommitting else { return }
         if edgeSelectorContext != nil { edgeSelectorContext = nil; rebuildInspector() }
-        if inspectorOpen && cancelToolsOnDismiss { cancelModelling() }
+        if draftAppliesOnTapAway { requestDraftApply(); return }
+        if (inspectorOpen || modellingInspector?.extrusionBar != nil) && cancelToolsOnDismiss { cancelModelling() }
         modellingInspector?.endEditing(true)
         canvas.cancelInput(); browserOpen.toggle(); inspectorOpen = false
         relayoutPanels()
     }
     private func toggleInspector() {
         guard !numericEditing, !modellingCommitting else { return }
+        if draftAppliesOnTapAway { requestDraftApply(); return }
         if inspectorOpen { closePanels(); return }
         modellingInspector?.endEditing(true)
         canvas.cancelInput(); inspectorOpen.toggle(); browserOpen = false
         relayoutPanels()
     }
     private func closePanels() {
-        // Closing or tapping outside a form discards its provisional operation.
-        // An Apply already being accepted must finish before dismissal.
+        if draftAppliesOnTapAway { requestDraftApply(); return }
         if sketchInput?.projection != nil { projectionAction("cancel") }
         guard !numericEditing else { editor?.message.show(WorkspaceStyle.text("editing_lock")); return }
         guard !modellingCommitting else { return }
@@ -3726,7 +3838,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         cancelToolButton.updateTitle(cancelTitle)
         table.allowsSelection = !numericEditing && !modellingCommitting && pending.isEmpty
         let modal = sketchInput?.projection == nil && layout?.compact == true && (browserOpen || inspectorOpen)
-        let textBlocksViewport = textEntryActive && !(cancelToolsOnDismiss && modellingEditing)
+        let textBlocksViewport = textEntryActive && !((cancelToolsOnDismiss || draftAppliesOnTapAway) && modellingEditing)
         canvas.isUserInteractionEnabled = !numericEditing && WorkspaceFocusPolicy.viewportInputEnabled(modalPresented: modal, textEntryActive: textBlocksViewport)
         canvas.accessibilityElementsHidden = modal || numericEditing
         layoutEndpointFinish()
@@ -3941,6 +4053,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
             }
         })
+        let acceptOnTap = UIAction(title: InspectorText.text("apply_on_tap_away"), subtitle: InspectorText.text("apply_on_tap_away_help"),
+                                   attributes: modellingEditing ? .disabled : [], state: applySolidOnTapAway ? .on : .off) { [weak self] _ in
+            guard let self, !self.modellingEditing else { return }
+            self.applySolidOnTapAway.toggle()
+            UserDefaults.standard.set(self.applySolidOnTapAway, forKey: "SolidCraft.workspace.applySolidOnTapAway")
+            self.rebuildMenus()
+        }
         let dismissal = UIAction(title: WorkspaceStyle.text("cancel_tools_on_dismiss"), subtitle: WorkspaceStyle.text("cancel_tools_on_dismiss_help"), attributes: modellingEditing ? .disabled : [], state: cancelToolsOnDismiss ? .on : .off) { [weak self] _ in
             guard let self, !self.modellingEditing else { return }
             let enabled = !self.cancelToolsOnDismiss
@@ -4011,7 +4130,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -4300,6 +4419,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 status.text = canvas.displayingPreview ? WorkspaceStyle.text("preview_ready") : NativeText.value("ui.ipados.extrude.enter_distance")
                 return
             }
+            if draftAppliesOnTapAway && modellingInspector?.selectionField == nil {
+                status.text = InspectorText.text("apply_on_tap_away_help")
+                return
+            }
             status.text = ModellingText.text("draft_hint") + "\n" + (cancelToolsOnDismiss ? WorkspaceStyle.text("tool_dismiss_hint") : ModellingText.text("navigation_hint"))
             return
         }
@@ -4432,9 +4555,10 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
         var inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
             (modellingEditing ? (modellingInspector?.compact == true ? 620 : min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84)) : 640))
+        let placeRailRight = railRight && modellingInspector?.extrusionBar == nil
         func resolve(railHeight: CGFloat, navHeight: CGFloat) -> WorkspaceLayout {
             WorkspaceLayout.resolve(size: chrome.size, browser: browserOpen, inspector: inspectorOpen,
-                                               railRight: railRight, largeText: largeText,
+                                               railRight: placeRailRight, largeText: largeText,
                                                minimumHeaderHeight: headingHeight, minimumStatusHeight: 2 * ceil(status.font.lineHeight) + 8,
                                                compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railHeight,
                                                inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight, leftBrowser: leftBrowser,
@@ -4445,9 +4569,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 .placed(in: chrome, viewport: viewport, useTopSafeArea: topStripHeaderEnabled)
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
-        let tucked = modellingInspector?.extrusionOptionsHidden == true && available.floating
-        inspectorPanel.setBodyHidden(tucked)
-        if compactToolControls, !tucked, let frame = available.inspector {
+        if compactToolControls, let frame = available.inspector {
             let visible = properties.arrangedSubviews.filter { !$0.isHidden }
             let width = max(0, frame.width - 32)
             let measured = visible.reduce(CGFloat(0)) { height, child in
@@ -4465,11 +4587,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 $0 + max(WorkspaceStyle.touch, $1.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
             } + CGFloat(max(0, visible.count - 1)) * stack.spacing
         }
-        var resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
+        let resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
                                navHeight: contentHeight(navigationActions, width: available.navigation.width))
-        if tucked, let bar = modellingInspector?.extrusionBar {
-            resolved.fitInspectorHeader(bar.systemLayoutSizeFitting(UIView.layoutFittingCompressedSize), railRight: railRight)
-        }
         if canvas.frame != resolved.canvas {
             canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true
             sketchInput = nil; endpointFinishButton.isHidden = true
@@ -4477,6 +4596,18 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
         railScroll.frame = resolved.rail
+        let contextualRail = modellingInspector?.extrusionBar
+        extrusionRailScroll.isHidden = contextualRail == nil
+        railScroll.isHidden = contextualRail != nil
+        if let contextualRail {
+            let controls = contextualRail.arrangedSubviews.filter { !$0.isHidden }
+            let idealWidth = controls.map { $0.intrinsicContentSize.width }.max() ?? 0
+            let width = max(44, min(180, chrome.width * 0.4, ceil(idealWidth)))
+            let railLayout = resolve(railHeight: contentHeight(contextualRail, width: width), navHeight: available.navigation.height)
+            var frame = railLayout.rail
+            frame.size.width = width
+            extrusionRailScroll.frame = frame
+        }
         featureHistory.frame = resolved.featureHistory
         let compact = resolved.compact
         if resolved.floating {
@@ -4516,7 +4647,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorScroll.frame = inspectorPanel.content.bounds
         browserPanel.accessibilityViewIsModal = compact && browserOpen
         inspectorPanel.accessibilityViewIsModal = sketchInput?.projection == nil && compact && inspectorOpen
-        workspace.accessibilityElements = resolved.floating ? [top, browserButton, railScroll, browserPanel, navigationScroll, inspectorPanel, modelValueButton, endpointFinishButton, canvas, historyActions, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointFinishButton, canvas, inspectorPanel, featureHistory, status]
+        let modelControls: [UIView] = [modellingInspector?.resultButton, modelValueButton, endpointFinishButton].compactMap { $0 }
+        workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointFinishButton, canvas, inspectorPanel, featureHistory, status]
         if resetChromeOffsets {
             // Reparenting the same controls changes scroll content dimensions.
             // Discard the old text-toolbar offsets once, after the new frames
@@ -5056,9 +5188,9 @@ private extension FoundationController {
 
     func checkCompactToolControlsOnDevice() {
         let expected = generation
-        let savedControls = compactToolControls, savedCompact = compactInspector
+        let savedControls = compactToolControls, savedCompact = compactInspector, savedApply = applySolidOnTapAway
         let savedExtrude = (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles)
-        compactToolControls = true; compactInspector = true
+        compactToolControls = true; compactInspector = true; applySolidOnTapAway = true
         (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles) = (true, true, false, true)
         var issues: [String] = [], measurements: [[String: Any]] = []
         var finished = false
@@ -5070,21 +5202,22 @@ private extension FoundationController {
             view.layoutIfNeeded()
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-                let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+                let surface: UIView = view.window ?? view
+                let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
                 if let png = image.pngData() { try png.write(to: directory.appendingPathComponent("compact-tools-" + name + ".png"), options: .atomic) }
             } catch { issues.append("capture: \(error)") }
         }
         func finish(_ issue: String? = nil) {
             guard !finished else { return }; finished = true
             if let issue { issues.append(issue); capture("failed") }
-            compactToolControls = savedControls; compactInspector = savedCompact
+            compactToolControls = savedControls; compactInspector = savedCompact; applySolidOnTapAway = savedApply
             (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles) = savedExtrude
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
                 let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "measurements": measurements,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
                     "at": ISO8601DateFormatter().string(from: Date()),
-                    "coverage": "Automatic face extrusion, tucked operation menu and expanded inputs, live depth, Cancel and restored card preference; compact modelling tools and numeric entry; synthetic contacts and actions"]
+                    "coverage": "Face selection, left actions, anchored Boolean list, handle drag, Cancel, checkmark, canvas and chrome acceptance with Undo, restored card preference; compact modelling tools and numeric entry; synthetic contacts and actions"]
                 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("compact-tools-check.json"), options: .atomic)
             } catch { print("Compact controls report: \(error)") }
@@ -5168,6 +5301,7 @@ private extension FoundationController {
                 } else { cancelAndContinue() }
             }
         }
+        var finishMode = 0
         func selectFace(_ tucked: Bool) {
             tuckExtrudeOptions = tucked
             session.developmentSelectionTap([10, 10, 20]) { result in
@@ -5180,34 +5314,60 @@ private extension FoundationController {
                         wait("card cancel", until: { !self.modellingEditing && self.pending.isEmpty }) { step(0) }
                         return
                     }
-                    guard let bar = form.extrusionBar, let button = find("workspace-extrude-options", in: bar) as? UIButton,
-                          let menu = button.menu, let operations = menu.children.first as? UIMenu, operations.children.count == 4,
-                          let more = menu.children.last as? UIAction, let cancel = find("workspace-model-cancel", in: bar) as? UIButton,
+                    guard let bar = form.extrusionBar, let button = form.resultButton, !button.isHidden,
+                          let value = self.modelValue, value.position.count == 2,
+                          self.inspectorPanel.isHidden, self.extrusionRailScroll.frame.maxX < self.workspace.bounds.midX,
+                          button.frame.maxY < self.canvas.frame.minY + value.position[1],
+                          let cancel = find("workspace-model-cancel", in: bar) as? UIButton,
                           let apply = find("workspace-model-apply", in: bar) as? UIButton, !apply.isEnabled,
-                          form.extrusionOptionsHidden, self.inspectorPanel.frame.height < 90 else { finish("Invalid selection controls"); return }
-                    capture("face-selected")
-                    more.performWithSender(button, target: nil); self.view.layoutIfNeeded()
-                    guard !form.extrusionOptionsHidden, self.inspectorPanel.frame.height > 180,
-                          let field = find("workspace-model-field-distance", in: form) as? UITextField else { finish("More options failed"); return }
-                    field.text = "5 mm"; field.sendActions(for: .editingChanged)
-                    wait("selected face preview", until: { form.handleEntryEnabled && self.modelValue?.value == 5 && self.canvas.displayingPreview }) {
-                        capture("face-options")
-                        let params = form.params
-                        button.sendActions(for: .touchUpInside); self.view.layoutIfNeeded()
-                        guard form.extrusionOptionsHidden, params == form.params, apply.isEnabled else { finish("Collapsing changed the draft"); return }
+                          let direction = find("workspace-extrude-direction", in: bar) as? UIButton,
+                          direction.menu?.children.isEmpty == false,
+                          let initialCount = self.state?.modelling?.timeline.count,
+                          let source = (form.params["profile"]?.value as? [String: Any])?["faces"] as? [[Double]],
+                          let origin = source.first, origin.count == 3 else { finish("Missing left actions or above-handle Boolean control"); return }
+                    if finishMode == 0 { capture("face-selected") }
+                    self.session.developmentSurfaceDrag(from: origin, to: [origin[0], origin[1], origin[2] + 5], source: .pencil) { drag in
+                        if case .failure(let error) = drag { finish("Handle drag failed: " + error.description) }
+                    }
+                    wait("face handle drag", until: { form.handleEntryEnabled && self.modelValue?.valid == true &&
+                        abs(self.modelValue?.value ?? 0) > 1 && self.canvas.displayingPreview && apply.isEnabled && !self.modellingInspectPending }) {
+                        func nextFace() {
+                            self.session.command("select.clear") { _ in
+                                wait("clear face", until: { self.state?.selection.isEmpty == true && self.pending.isEmpty }) {
+                                    finishMode += 1
+                                    selectFace(finishMode < 4)
+                                }
+                            }
+                        }
+                        if finishMode > 0 {
+                            if finishMode == 1 { self.session.developmentSelectionTap(nil) { _ in } }
+                            else if finishMode == 2 { apply.sendActions(for: .touchUpInside) }
+                            else { self.browserButton.sendActions(for: .touchUpInside) }
+                            wait("single accepted extrusion " + String(finishMode), until: {
+                                !self.modellingEditing && self.state?.modelling?.timeline.count == initialCount + 1 && self.pending.isEmpty
+                            }) {
+                                self.session.command("edit.undo") { result in
+                                    guard case .success = result else { finish("Undo rejected"); return }
+                                    wait("one undo restores stock", until: { self.state?.modelling?.timeline.count == initialCount && self.pending.isEmpty }) { nextFace() }
+                                }
+                            }
+                            return
+                        }
                         capture("face-preview")
-                        guard let results = button.menu?.children.first as? UIMenu,
-                              let subtract = results.children.compactMap({ $0 as? UIAction }).first(where: {
-                                  $0.title == NativeText.value("ui.ipados.face_extrude.subtract")
-                              }) else { finish("Subtract missing from the Extrude menu"); return }
-                        subtract.performWithSender(button, target: nil)
-                        wait("on-model Subtract", until: { form.handleEntryEnabled && form.params["operation"] == .string("cut") && self.canvas.displayingPreview }) {
-                            guard form.extrusionOptionsHidden else { finish("Changing result opened Properties"); return }
-                            capture("face-subtract")
-                            cancel.sendActions(for: .touchUpInside)
-                            wait("cancel selected face", until: { !self.modellingEditing && self.pending.isEmpty }) {
-                                self.session.command("select.clear") { _ in
-                                    wait("clear selected face", until: { self.state?.selection.isEmpty == true }) { selectFace(false) }
+                        button.sendActions(for: .touchUpInside)
+                        wait("above-handle result menu", until: { self.resultPicker?.view.window != nil }) {
+                            guard let picker = self.resultPicker, picker.tableView.numberOfRows(inSection: 0) == 4,
+                                  picker.view.convert(picker.view.bounds, to: self.workspace).maxY <= button.frame.maxY,
+                                  let options = form.fields.first(where: { $0.key == "operation" })?.options,
+                                  let row = options.firstIndex(where: { $0.value == .string("cut") }) else { finish("Boolean result list misplaced or incomplete"); return }
+                            capture("face-options")
+                            picker.tableView(picker.tableView, didSelectRowAt: IndexPath(row: row, section: 0))
+                            wait("Subtract preview", until: { form.handleEntryEnabled && form.params["operation"] == .string("cut") && self.canvas.displayingPreview }) {
+                                capture("face-subtract")
+                                cancel.sendActions(for: .touchUpInside)
+                                wait("cancel selected face", until: { !self.modellingEditing && self.pending.isEmpty && !self.canvas.displayingPreview }) {
+                                    guard self.state?.modelling?.timeline.count == initialCount else { finish("Cancel changed stock"); return }
+                                    nextFace()
                                 }
                             }
                         }

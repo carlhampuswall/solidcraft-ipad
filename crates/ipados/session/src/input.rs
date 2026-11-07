@@ -142,6 +142,8 @@ pub(crate) struct Contacts {
     pub tool_revision: u64,
     pub radius_tool: bool,
     dismissed_model_token: Option<u64>,
+    // Token and tap sequence allow native code to consume each request once.
+    requested_model_apply: Option<[u64; 2]>,
 }
 
 impl Contacts {
@@ -223,7 +225,7 @@ impl Contacts {
             "navigation":self.navigating,"edit":self.drag.as_ref().map(|d|d.state),
             "radius":self.drag.as_ref().and_then(|d|match &d.work.operation {ToolOperation::Radius{radius,..}=>Some(*radius),_=>None}),"tool_pending":self.pending.is_some(),
             "tool":if self.sketch.active() {self.sketch.tool.as_str()} else if self.radius_tool {"post_radius"} else {"select"},"tool_event":self.tool_event,
-            "sketch":self.sketch.diagnostic(),"dismissed_model_token":self.dismissed_model_token})
+            "sketch":self.sketch.diagnostic(),"dismissed_model_token":self.dismissed_model_token,"requested_model_apply":self.requested_model_apply})
     }
 }
 
@@ -862,6 +864,7 @@ impl Viewport {
                 && !self.updating
                 && e.geometry_revision.is_some()
                 && self.model.as_ref().is_some_and(|m| Some(m.geometry_revision) == e.geometry_revision);
+            let allow_dismissal = self.cancel_tools_on_dismiss || self.modelling.as_ref().is_some_and(|edit| edit.apply_on_tap_away);
             let mut owner = if e.consumed || self.metrics.pixel(point).is_none() {
                 Owner::Ui
             } else {
@@ -870,8 +873,7 @@ impl Viewport {
                     InputSource::Pencil if valid => Owner::PencilCandidate,
                     InputSource::Indirect
                         if (!self.numeric_active()
-                            && (!e.display_preview
-                                || valid && self.modelling.is_some() && (self.direct_handles || self.cancel_tools_on_dismiss)))
+                            && (!e.display_preview || valid && self.modelling.is_some() && (self.direct_handles || allow_dismissal)))
                             || e.button != 0 =>
                     {
                         Owner::Pointer
@@ -896,7 +898,7 @@ impl Viewport {
                 && self.modelling.as_ref().is_some_and(|e| e.preview.is_some() || e.last_preview.is_some())
                 && self.modelling.as_ref().is_none_or(|edit| !edit.live_edge_picking())
             {
-                owner = if self.cancel_tools_on_dismiss { Owner::ModelDismiss } else { Owner::Suppressed };
+                owner = if allow_dismissal { Owner::ModelDismiss } else { Owner::Suppressed };
             }
             // A second finger turns a direct geometry grab into ordinary two-finger
             // navigation. Reject any in-flight sketch preview before rebasing both.
@@ -1056,11 +1058,11 @@ impl Viewport {
             // provisional form. Use body picking independent of the selection
             // filter, and the visible preview rather than hidden source faces.
             // Stale/consumed contacts and navigation never dismiss an edit.
-            if self.cancel_tools_on_dismiss
-                && self.model_active()
-                && self.modelling.as_ref().is_none_or(|edit| edit.body_pick_field().is_none())
-                && model_token.is_some()
-                && model_token == self.modelling.as_ref().map(|edit| edit.token)
+            if let Some(edit) = self.modelling.as_ref()
+                && (self.cancel_tools_on_dismiss || edit.apply_on_tap_away)
+                && (!edit.apply_on_tap_away || edit.selection_field.is_none())
+                && edit.body_pick_field().is_none()
+                && model_token == Some(edit.token)
                 && e.phase == InputPhase::Ended
                 && !e.consumed
                 && !moved
@@ -1080,10 +1082,15 @@ impl Viewport {
                 && self.pick_sketch_unfiltered(tap_point).is_none()
                 && self.pick_reference(tap_point).is_none()
             {
-                let token = self.modelling.as_ref().map(|edit| edit.token);
-                self.cancel_model();
-                self.select(None, false);
-                self.contacts.dismissed_model_token = token;
+                let token = edit.token;
+                if edit.apply_on_tap_away {
+                    let sequence = self.contacts.requested_model_apply.map_or(1, |[_, n]| n.wrapping_add(1));
+                    self.contacts.requested_model_apply = Some([token, sequence]);
+                } else {
+                    self.cancel_model();
+                    self.select(None, false);
+                    self.contacts.dismissed_model_token = Some(token);
+                }
                 self.changed();
                 return Ok(true);
             }

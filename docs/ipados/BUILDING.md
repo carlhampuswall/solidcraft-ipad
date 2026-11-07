@@ -12,11 +12,15 @@ the full-gate examples below are for a later explicit full-test request.
 
 Selecting a face or sketch region starts Extrude immediately. With compact
 controls and on-model handles enabled in the floating workspace, drag the arrow
-or tap its distance to edit the depth. The small Extrude menu shows the current
-operation and offers New Body, Union, Intersect and Subtract. **More options**
-opens the full inputs for the same draft. Tap the menu title to collapse them.
-The checkmark applies the draft and the cross cancels it. Turn off **Tools >
-Collapse Extrude options** to start with the previous tool card.
+or tap its distance to edit the depth. The result button follows the handle.
+Tap it to choose New Body, Union, Intersect or Subtract. Direction, applicable
+targets and additional inputs are on the left, alongside the checkmark and Cancel.
+Turn off **Tools > Collapse Extrude options** to use the previous tool card.
+
+A tap on empty canvas or surrounding workspace controls applies a valid new
+solid operation. The checkmark also applies it. Cancel discards the draft and
+camera gestures keep it open. Disable **Tools > Apply solid tools on tap away**
+to restore the previous dismissal behavior.
 
 **Tools > Compact tool controls** is on by default. Fillet uses a small radius
 input with pinned Apply and Cancel actions; selecting edges and dragging the
