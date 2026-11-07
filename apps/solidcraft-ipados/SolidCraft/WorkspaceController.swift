@@ -9423,6 +9423,10 @@ private extension FoundationController {
         }
         if !showToolLabels { toggle() }
         verify(true); capture("shown")
+        let wasExpanded = historyExpanded
+        if !wasExpanded { featureHistory.onToggle?(); view.layoutIfNeeded() }
+        verify(true); capture("history-expanded")
+        if !wasExpanded { featureHistory.onToggle?(); view.layoutIfNeeded() }
         toggle(); verify(false); capture("hidden")
         toggle(); verify(true); capture("restored")
         showToolLabels = original

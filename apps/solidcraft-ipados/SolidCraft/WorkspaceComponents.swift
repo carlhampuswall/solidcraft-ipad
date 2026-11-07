@@ -278,11 +278,13 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         toggle.active(value)
         // Keep the original compact toggle's neutral selected surface; only its
         // label and measured width change, not the timeline's presentation.
-        var toggleStyle = toggle.configuration
-        toggleStyle?.baseBackgroundColor = value ? WorkspaceStyle.selectionFill : .clear
-        toggleStyle?.baseForegroundColor = WorkspaceStyle.foreground
-        toggleStyle?.background.backgroundColor = value ? WorkspaceStyle.selectionFill : .clear
-        toggle.configuration = toggleStyle
+        if !toggle.hasExternalToolCaption {
+            var toggleStyle = toggle.configuration
+            toggleStyle?.baseBackgroundColor = value ? WorkspaceStyle.selectionFill : .clear
+            toggleStyle?.baseForegroundColor = WorkspaceStyle.foreground
+            toggleStyle?.background.backgroundColor = value ? WorkspaceStyle.selectionFill : .clear
+            toggle.configuration = toggleStyle
+        }
         toggle.accessibilityHint = HistoryText.text(value ? "collapse" : "expand")
         toggle.toolTip = toggle.accessibilityHint
         updateAttention()
@@ -1018,6 +1020,9 @@ final class WorkspaceButton: UIButton {
     }
     func active(_ value: Bool) {
         isSelected = value
+        if value { accessibilityTraits.insert(.selected) }
+        else { accessibilityTraits.remove(.selected) }
+        if toolCaption != nil { setNeedsUpdateConfiguration(); return }
         var config = configuration
         let fill = isViewportPoint ? UIColor.clear : (compactIcon ? WorkspaceStyle.selectionFill : WorkspaceStyle.accent)
         config?.baseBackgroundColor = value ? fill : .clear
@@ -1025,8 +1030,6 @@ final class WorkspaceButton: UIButton {
         if value { config?.background.backgroundColor = fill }
         else { config?.background.backgroundColor = .clear }
         configuration = config
-        if value { accessibilityTraits.insert(.selected) }
-        else { accessibilityTraits.remove(.selected) }
         if choiceCheck != nil { styleChoice() }
     }
 
