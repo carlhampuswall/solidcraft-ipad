@@ -552,6 +552,24 @@ captures the actual shared-GPU arrows above and right of a 40 × 30 rectangle,
 checks the projected helper positions, and tests hiding/restoring them. UIKit
 labels and physical iPad interaction are not covered by the Mac GPU capture.
 
+## Editing an applied edge offset
+
+After applying **Offset edges**, choose **Select** and tap the gap's numeric
+label to edit its distance or length expression. The existing dimension editor
+previews the change; Apply records one undo step and Cancel restores the gap.
+The same driving parameter and offset association remain in place.
+
+The shared sketch measurement function now reports the absolute distance of an
+offset association. Previously the dimension frame drew gap arrows but its
+missing measurement prevented the native numeric label from appearing. This
+small shared change is suitable for upstream; it adds no platform dependency,
+format or solver behavior. The `sketch_offset` adapter regressions cover label
+picking, both sides, all principal planes, line/rectangle/circle offsets,
+expression edits, preview/cancel and undo/redo. The existing `render_proof
+OUTPUT.png --sketch-offset` example also captures a gap edit from 7 to 10 mm and
+exports its annotation descriptors. Its macOS GPU captures show model feedback;
+UIKit labels and physical iPad interaction require device verification.
+
 ## Applying constraints before picking
 
 The Constraints sheet allows choosing a constraint with an empty selection. The

@@ -6336,6 +6336,76 @@ fn sketch_offset_round_curve_drag_cancel_and_zero_distance_leave_history_untouch
 }
 
 #[test]
+fn sketch_offset_gap_annotation_reopens_its_driving_expression_with_preview_and_history() {
+    for plane in ["XY", "XZ", "YZ"] {
+        for shape in ["line", "rectangle", "circle"] {
+            for flip in [false, true] {
+                let (mut engine, mut view) = sketch_input_fixture(json!(plane), "select");
+                engine.execute("parameters.add", json!({"name":"gap","expression":"3 mm"})).unwrap();
+                let source = match shape {
+                    "line" => engine.execute("sketch.line", json!({"points":[[0,0],[40,0]],"infer":false})),
+                    "rectangle" => engine.execute("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30],"connect":false})),
+                    _ => engine.execute("sketch.circle.center", json!({"center":[0,0],"radius":20})),
+                }
+                .unwrap();
+                view.begin_update(2);
+                view.install(2, engine.snapshot().unwrap());
+                view.command(
+                    "tool.propose",
+                    &json!({"command":"sketch.offset","params":{"curves":source.value["curves"],"distance":"gap","flip":flip},"commit":true}),
+                )
+                .unwrap();
+                assert!(run_tool(&mut engine, &mut view));
+                let original = engine.sketch_snapshot().unwrap().sketch;
+                let dimension =
+                    original.constraints.iter().find(|c| matches!(c.kind, solidcraft_engine::sketch::ConstraintKind::OffsetDistance { .. })).unwrap();
+                let annotation = view.sketch_annotations().as_array().unwrap().iter().find(|a| a["id"] == dimension.id).cloned();
+                let annotation = annotation.expect("an applied offset needs a tappable gap value, not just arrows");
+                assert_eq!(annotation["value"], 3.);
+                assert_eq!(annotation["units"], "mm");
+                assert_eq!(annotation["driven"], false);
+                assert!(annotation["dimension_type"].is_null(), "edit the existing offset instead of creating another dimension");
+                let position = &annotation["points"];
+                let screen = [position[0].as_f64().unwrap(), position[1].as_f64().unwrap()];
+                let entity: Sel = serde_json::from_value(annotation["entity"].clone()).unwrap();
+                assert_eq!(view.pick_sketch(screen), Some(entity.clone()));
+                view.command("select.entity", &json!({"entity":entity})).unwrap();
+                let selection = [entity];
+                let history = engine.session.undo.len();
+                let edit = engine.begin_numeric(501, &selection).unwrap();
+                assert_eq!(edit.expression, "gap");
+                view.begin_numeric(edit.clone()).unwrap();
+                let preview = engine.prepare_numeric(&edit, "gap * 2", false).unwrap();
+                view.publish_numeric(501, &preview).unwrap();
+                assert_eq!(view.sketch_annotations().as_array().unwrap().iter().find(|a| a["id"] == dimension.id).unwrap()["value"], 6.);
+                view.finish_numeric(501, None).unwrap();
+                assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+                assert_eq!(engine.session.undo.len(), history);
+                let prepared = engine.prepare_numeric(&edit, "gap * 2", true).unwrap();
+                let model = engine.accept_numeric(&edit, prepared).unwrap();
+                view.begin_update(3);
+                view.install(3, model);
+                let edited = engine.sketch_snapshot().unwrap().sketch;
+                assert_eq!(edited.constraints.len(), original.constraints.len());
+                assert_eq!(engine.session.undo.len(), history + 1);
+                assert_eq!(edited.offsets[0].distance.abs(), 6.);
+                assert_ne!(
+                    edited.polyline(source.value["curves"].as_array().unwrap().len()),
+                    original.polyline(source.value["curves"].as_array().unwrap().len())
+                );
+                let reopened = engine.begin_numeric(502, &selection).unwrap();
+                assert_eq!(reopened.expression, "gap * 2");
+                assert_eq!(reopened.value, 6.);
+                engine.execute("edit.undo", json!({})).unwrap();
+                assert_eq!(engine.sketch_snapshot().unwrap().sketch, original);
+                engine.execute("edit.redo", json!({})).unwrap();
+                assert_eq!(engine.sketch_snapshot().unwrap().sketch, edited);
+            }
+        }
+    }
+}
+
+#[test]
 fn sketch_offset_exact_expression_preview_cancel_flip_invalid_and_single_edge() {
     let (mut engine, mut view) = sketch_input_fixture(json!("XY"), "sketch.offset");
     engine.execute("parameters.add", json!({"name":"gap","expression":"3 mm"})).unwrap();

@@ -2596,8 +2596,51 @@ fn sketch_offset_proof(destination: &str) -> Result<(), Box<dyn std::error::Erro
     view.begin_update(3);
     view.install(3, engine.snapshot()?);
     capture(&view, "redo")?;
+    view.command("tool.set", &json!({"tool":"select"}))?;
+    let dimension = offset
+        .sketch
+        .as_ref()
+        .and_then(|s| s.sketch.constraints.iter().find(|c| c.kind.name() == "OffsetDimension"))
+        .ok_or("missing offset dimension")?;
+    let annotations = view.diagnostic()["annotations"].clone();
+    let annotation =
+        annotations.as_array().and_then(|rows| rows.iter().find(|row| row["id"] == dimension.id)).ok_or("missing editable offset value")?;
+    if annotation["value"] != 7. || annotation["driven"] != false {
+        return Err("offset annotation is not a driving 7 mm gap".into());
+    }
+    view.command("select.entity", &json!({"entity":annotation["entity"]}))?;
+    let selection = [serde_json::from_value(annotation["entity"].clone())?];
+    let edit = engine.begin_numeric(1, &selection)?;
+    view.begin_numeric(edit.clone())?;
+    let preview = engine.prepare_numeric(&edit, "10 mm", false)?;
+    view.publish_numeric(1, &preview)?;
+    capture(&view, "gap-preview")?;
+    view.finish_numeric(1, None)?;
+    capture(&view, "gap-cancel")?;
+    let prepared = engine.prepare_numeric(&edit, "10 mm", true)?;
+    let edited = engine.accept_numeric(&edit, prepared)?;
+    view.begin_update(4);
+    view.install(4, edited);
+    let edited_annotations = view.diagnostic()["annotations"].clone();
+    if edited_annotations.as_array().and_then(|rows| rows.iter().find(|row| row["id"] == dimension.id)).map(|row| &row["value"]) != Some(&json!(10.))
+    {
+        return Err("offset gap edit did not update the annotation".into());
+    }
+    capture(&view, "gap-edited")?;
+    engine.execute("edit.undo", json!({}))?;
+    view.begin_update(5);
+    view.install(5, engine.snapshot()?);
+    capture(&view, "gap-undo")?;
+    engine.execute("edit.redo", json!({}))?;
+    view.begin_update(6);
+    view.install(6, engine.snapshot()?);
+    capture(&view, "gap-redo")?;
+    std::fs::write(
+        destination.replace(".png", "-annotations.json"),
+        serde_json::to_vec_pretty(&json!({"before":annotations,"after":edited_annotations}))?,
+    )?;
     println!(
-        "PASS: 7 mm outward connected rectangle offset, actual scratch preview and one-step undo/redo; synthetic Pencil/macOS GPU, physical iPad unverified."
+        "PASS: 7 mm outward connected rectangle offset, editable gap to 10 mm, preview/cancel and one-step undo/redo; synthetic Pencil/macOS GPU, physical iPad unverified."
     );
     Ok(())
 }

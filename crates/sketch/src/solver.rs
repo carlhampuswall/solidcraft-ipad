@@ -679,6 +679,7 @@ fn residuals(s: &State, k: &ConstraintKind, out: &mut Vec<f64>) {
 fn measure(s: &State, k: &ConstraintKind) -> Option<f64> {
     use ConstraintKind::*;
     Some(match *k {
+        OffsetDistance { ref output, .. } => s.sk.offset_distance(output)?.abs(),
         Distance { p, q, .. } => s.p(p).dist(s.p(q)),
         DistanceX { p, q, .. } => (s.p(q).x - s.p(p).x).abs(),
         DistanceY { p, q, .. } => (s.p(q).y - s.p(p).y).abs(),
