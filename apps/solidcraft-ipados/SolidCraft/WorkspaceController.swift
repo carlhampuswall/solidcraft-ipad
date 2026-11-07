@@ -231,6 +231,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var documentStatus = WorkspaceStyle.text("unsaved_session")
     private var keyboardTop: CGFloat?
     private var railRight = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.railRight")
+    private static let numericAppearanceKey = "SolidCraft.workspace.numericMenusFollowAppearance"
+    private var numericMenusFollowAppearance = UserDefaults.standard.bool(forKey: numericAppearanceKey)
     private var appearance = (UserDefaults.standard.object(forKey: "SolidCraft.workspace.appearance") as? Int) ?? 2
     // The floating workspace is the only supported presentation; ignore saved legacy values.
     private let compactChrome = true
@@ -2573,7 +2575,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modellingAutomaticPreview.cancel(); modellingPreviewQueue.discardPending()
         let controller = NumericValueEditorController(expression: expression, units: units, name: name,
             context: form.numericContext, parameter: parameter)
-        controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        applyNumericAppearance(to: controller)
         let expected = modellingGeneration
         controller.editor.onChange = { [weak self, weak controller, weak form] in
             guard let self, self.modellingGeneration == expected, self.modellingToken == token,
@@ -3417,7 +3419,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let readOnly = dimension?.driven == true
         let name = readOnly ? SketchText.text("reference_dimension") : (state?.sketch == nil ? WorkspaceStyle.text("radius") : SketchText.text("dimension"))
         let controller = NumericValueEditorController(expression: expression, units: units, name: name, readOnly: readOnly)
-        controller.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        applyNumericAppearance(to: controller)
         let editor = controller.editor
         self.editor = editor
         editor.onPreview = { [weak self] expression in self?.evaluateNumeric(expression, commit: false) }
@@ -3966,6 +3968,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.applyAppearance(); self.rebuildMenus()
             }
         }
+        let followAppearance = UIAction(title: NumericText.text("follow_appearance"), state: numericMenusFollowAppearance ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.numericMenusFollowAppearance.toggle()
+            UserDefaults.standard.set(self.numericMenusFollowAppearance, forKey: Self.numericAppearanceKey)
+            self.applyAppearance(); self.rebuildMenus()
+        }
         let homeToolbar = UIAction(title: WorkspaceStyle.text("home_toolbar"), state: homeToolbar ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.homeToolbar.toggle()
@@ -4141,7 +4149,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances)
+            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances + [UIMenu(options: .displayInline, children: [followAppearance])])
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -4379,12 +4387,24 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var workspaceInterfaceStyle: UIUserInterfaceStyle {
         appearance == 1 ? .light : (appearance == 2 ? .dark : .unspecified)
     }
+    private var numericInterfaceStyle: UIUserInterfaceStyle {
+        numericMenusFollowAppearance ? workspaceInterfaceStyle : .light
+    }
+    private func applyNumericAppearance(to controller: NumericValueEditorController) {
+        controller.overrideUserInterfaceStyle = numericInterfaceStyle
+        controller.popoverPresentationController?.traitOverrides.userInterfaceStyle = numericInterfaceStyle
+    }
     private func applyAppearance() {
         overrideUserInterfaceStyle = workspaceInterfaceStyle
         // UIKit presents popovers/sheets beside the root view hierarchy. Give
         // their presentation environment the saved preference, including System.
         viewIfLoaded?.window?.overrideUserInterfaceStyle = workspaceInterfaceStyle
-        presentedViewController?.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        modelValueButton.overrideUserInterfaceStyle = numericInterfaceStyle
+        if let numeric = presentedViewController as? NumericValueEditorController {
+            applyNumericAppearance(to: numeric)
+        } else {
+            presentedViewController?.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        }
     }
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -8905,6 +8925,8 @@ private extension FoundationController {
     /// Layout variants below are synthetic UIKit sizes, not hardware gestures.
     func checkNumericEntryOnDevice() {
         let savedAppearance = appearance, savedCompact = compactInspector
+        let savedNumericAppearance = numericMenusFollowAppearance
+        numericMenusFollowAppearance = false
         compactInspector = true
         var issues: [String] = []
         var finished = false
@@ -8915,6 +8937,7 @@ private extension FoundationController {
         func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
         func finish() {
             guard !finished else { return }; finished = true
+            numericMenusFollowAppearance = savedNumericAppearance
             appearance = savedAppearance; compactInspector = savedCompact; applyAppearance()
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -9101,8 +9124,9 @@ private extension FoundationController {
             }
         }
         func runStyle(_ style: Int) {
-            guard style < 3 else { inspectorEntry(); return }
-            appearance = style; applyAppearance()
+            guard style < 4 else { inspectorEntry(); return }
+            numericMenusFollowAppearance = style == 3
+            appearance = min(style, 2); applyAppearance()
             let originalCanvas = self.canvas.frame
             beginNumeric(source: browserButton)
             wait("editor and embedded number pad", {
@@ -9113,7 +9137,9 @@ private extension FoundationController {
                 guard let controller = self.inlineNumericEditor else { issues.append("missing editor"); finish(); return }
                 let editor = controller.editor, field = editor.field
                 let revision = self.state?.geometry_revision
-                let expectedStyle = style == 1 ? UIUserInterfaceStyle.light : (style == 2 ? .dark : self.traitCollection.userInterfaceStyle)
+                let expectedStyle: UIUserInterfaceStyle = style == 3 ? .dark : .light
+                check(self.modelValueButton.traitCollection.userInterfaceStyle == expectedStyle, "handle value appearance \(style)")
+                if style >= 2 { check(self.canvas.traitCollection.userInterfaceStyle == .dark, "canvas appearance \(style)") }
                 check(controller.traitCollection.userInterfaceStyle == expectedStyle, "popover appearance \(style)")
                 check(find("workspace-embedded-keypad", in: controller.view)?.traitCollection.userInterfaceStyle == expectedStyle, "embedded pad appearance \(style)")
                 check((field.inputView?.bounds.height ?? 0) == 0 && field.inputAccessoryView == nil, "numeric entry opened a separate keyboard")
