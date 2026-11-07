@@ -375,6 +375,21 @@ impl Entry {
                     completed = Some((edit.reply.clone(), edit.feedback.clone()));
                     self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.finish_model(token, None)?;
                 }
+                "preview" if params.as_ref().is_some_and(|params| edit.waiting_for_selection(params)) => {
+                    let selection = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.selection().to_vec();
+                    let updated = adapter.refresh_model(&edit, &selection, params)?;
+                    let mut viewport = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?;
+                    if viewport.model_edit(token)?.version != edit.version {
+                        return Err(error("stale_preview", "A newer modelling proposal replaced this result."));
+                    }
+                    if self.closed.load(Ordering::Acquire) || viewport.selection() != selection {
+                        return Err(error("stale_edit", "The modelling interaction or its selection changed."));
+                    }
+                    // Drop a previous preview when its last source is removed,
+                    // but keep the draft open and its selection controls usable.
+                    viewport.update_model(updated)?;
+                    viewport.fail_model(token)?;
+                }
                 "preview" | "commit" => {
                     // The previous result ceases to validate this proposal before
                     // evaluation starts, including malformed or missing parameters.

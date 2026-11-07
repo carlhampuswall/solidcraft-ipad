@@ -1229,6 +1229,66 @@ fn modelling_sketch_attachment_uses_exact_face_form_preview_cancel_and_single_co
 }
 
 #[test]
+fn modelling_unselected_sources_wait_for_picks_without_preview_errors() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    engine_command(id, "solid.box", json!({"length":10,"width":10,"height":10,"body_name":"Stock"}));
+    let entry = lookup(id).unwrap();
+    let original = engine_command(id, "document.inspect", json!({}));
+    for operation in [
+        "solid.extrude",
+        "solid.revolve",
+        "solid.sweep",
+        "solid.loft",
+        "solid.fillet",
+        "solid.chamfer",
+        "solid.offset_face",
+        "solid.hole",
+        "solid.combine",
+        "solid.pattern.rectangular",
+        "solid.pattern.circular",
+        "solid.pattern.path",
+        "solid.mirror",
+    ] {
+        assert_eq!(request(id, &json!({"kind":"model","action":"begin","operation":operation}).to_string()), 0, "{operation}: {}", response(id));
+        let draft = response(id)["result"].clone();
+        let token = draft["token"].as_u64().unwrap();
+        let proposal = |action| json!({"kind":"model","action":action,"token":token,"params":draft["params"]}).to_string();
+        assert_eq!(request(id, &proposal("preview")), 0, "{operation}: {}", response(id));
+        let waiting = response(id)["result"].clone();
+        assert_eq!(waiting["valid"], false, "{operation}");
+        assert_eq!(waiting["viewport"]["preview"], false, "{operation}");
+        assert_eq!(waiting["token"], token);
+        assert_eq!(waiting["params"], draft["params"]);
+        assert_eq!(request(id, &proposal("commit")), -1, "explicit Apply must still validate {operation}");
+        assert_eq!(request(id, &json!({"kind":"model","action":"cancel","token":token}).to_string()), 0);
+    }
+    assert_eq!(engine_command(id, "document.inspect", json!({})), original);
+
+    assert_eq!(request(id, r#"{"kind":"model","action":"begin","operation":"solid.extrude"}"#), 0);
+    let draft = response(id)["result"].clone();
+    let token = draft["token"].as_u64().unwrap();
+    let mut params = draft["params"].clone();
+    params["profile"] = json!({"faces":[[5,5,10]],"face_body":"Stock"});
+    let proposal = |params: &Value| json!({"kind":"model","action":"preview","token":token,"params":params}).to_string();
+    assert_eq!(request(id, &proposal(&params)), 0, "{}", response(id));
+    assert_eq!(response(id)["result"]["valid"], true, "picking a source must resume previews");
+    params["distance"] = json!("-");
+    assert_eq!(request(id, &proposal(&params)), -1, "invalid expressions must still report errors");
+    params["distance"] = json!("10 mm");
+    assert_eq!(request(id, &proposal(&params)), 0);
+    assert_eq!(response(id)["result"]["valid"], true);
+    params["profile"] = Value::Null;
+    assert_eq!(request(id, &proposal(&params)), 0, "removing the last source must return to picking");
+    assert_eq!(response(id)["result"]["valid"], false);
+    assert_eq!(response(id)["result"]["viewport"]["preview"], false, "removed sources must discard the old preview");
+    assert!((entry.adapter.lock().unwrap().snapshot().unwrap().volume_mm3 - 1000.).abs() < 1e-8);
+    assert_eq!(request(id, &json!({"kind":"model","action":"cancel","token":token}).to_string()), 0);
+    assert_eq!(engine_command(id, "document.inspect", json!({})), original);
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
 fn modelling_boundary_previews_real_sketch_then_commits_once_and_cancels_cleanly() {
     let _serial = isolated_registry();
     let id = sc_session_create();

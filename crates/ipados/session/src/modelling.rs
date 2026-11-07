@@ -58,6 +58,39 @@ pub struct ModelEdit {
 }
 
 impl ModelEdit {
+    /// An interactive preview waits for unfilled picks. Explicit Apply still
+    /// goes through prepare_model and the shared command's full validation.
+    pub fn waiting_for_selection(&self, params: &Value) -> bool {
+        if self.feature.is_some() || !params.is_object() || params.to_string().len() > 65536 {
+            return false;
+        }
+        let empty = |key: &str| match params.get(key) {
+            None | Some(Value::Null) => true,
+            Some(Value::String(value)) => value.trim().is_empty(),
+            Some(Value::Array(values)) => values.is_empty(),
+            _ => false,
+        };
+        let source_missing = match self.operation.as_str() {
+            "solid.extrude" | "solid.revolve" | "solid.sweep" => empty("profile") && empty("sketch") && empty("faces") && empty("face"),
+            "solid.fillet" | "solid.chamfer" | "sketch.fillet" => empty("edges"),
+            "solid.offset_face" => empty("faces"),
+            "solid.hole" => empty("sketch"),
+            "solid.combine" => empty("target") || empty("tools"),
+            "solid.loft" => empty("sections"),
+            "solid.pattern.rectangular" | "solid.pattern.circular" | "solid.pattern.path" | "solid.mirror" => match params["source_mode"].as_str() {
+                Some("bodies") => empty("bodies"),
+                Some("features") => empty("features"),
+                _ => false,
+            },
+            _ => false,
+        };
+        let path_missing = matches!(self.operation.as_str(), "solid.sweep" | "solid.pattern.path") && empty("path_curves") && empty("path");
+        let targets_missing = matches!(self.operation.as_str(), "solid.extrude" | "solid.revolve" | "solid.sweep" | "solid.loft" | "solid.hole")
+            && (self.operation == "solid.hole" || matches!(params["operation"].as_str(), Some("join" | "cut" | "intersect")))
+            && empty("targets");
+        source_missing || path_missing || targets_missing
+    }
+
     pub(crate) fn live_edge_picking(&self) -> bool {
         self.selection_field.as_deref() == Some("edges") && (self.params.get("radius").is_some() || self.params.get("distance").is_some())
     }
