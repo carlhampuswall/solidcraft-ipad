@@ -75,6 +75,7 @@ The CLI still supports arbitrary PNG/ICO exports with `solidcraft-cli icon`.
 | Platform | Resources and output paths |
 | --- | --- |
 | macOS | Composer master and paired exports; bundle installs `Assets.car` and `SolidCraft.icns` |
+| iPadOS | Xcode compiles the same Composer master directly for the native app icon |
 | Windows executable | `solidcraft-executable.ico`: original DIB/mask representations at 16/24/32/48/64/128/256 px |
 | Windows installer | `solidcraft.ico`: PNG representations at 16/20/24/32/40/48/64/128/256 px; `SOLIDCRAFT_ICONS` override retained |
 | Linux, Nix, deb/rpm, tar, Flatpak, Snap | Copy canonical hicolor images; icon name stays `io.tangencylabs.solidcraft` |

@@ -3,6 +3,11 @@
 Native UIKit lifecycle and Metal-layer host for the shared SolidCraft Rust engine.
 The application target is iPad only, with an iPadOS 17.0 deployment target.
 
+The app icon references the original SolidCraft Icon Composer project in
+`assets/icons/app/macos/source/SolidCraft.icon`. Xcode compiles that shared source
+for iPadOS, including appearance variants and icons for older supported systems.
+Icon Composer support is required; no separate iPad artwork or exports are kept.
+
 The interactive viewport runs the existing engine registry, evaluates real
 parametric geometry and draws through the shared Rust GPU renderer. Start with
 [building](../../docs/ipados/BUILDING.md), [architecture](../../docs/ipados/ARCHITECTURE.md) and the
