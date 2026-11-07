@@ -277,7 +277,9 @@ the checked-in build script remains the reproducible unsigned CI path.
 Add `--project-drag-check` to the Debug `--projects-check` launch to check project
 and folder drag delegates, folder drop proposals, persisted moves into a folder
 and back to Projects, busy/archive restrictions, local session ownership and
-Find focus dismissal on holds and drags. This uses a disposable browser-only
+text focus dismissal on holds and drags while preserving Find. The keyboard
+check uses a visible UIKit text field because iPadOS can collapse Search to an
+icon. This uses a disposable browser-only
 library and restores the original browser contents and callbacks. It writes
 `project-drag-check.json` and `project-drag-*.png` UIKit captures to Documents.
 Reserve the physical iPad first. Synthetic drag sessions do not verify physical

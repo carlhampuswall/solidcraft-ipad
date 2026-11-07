@@ -270,6 +270,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
 
     private func endTextEntry() {
         // Keep the Find query, but never focus text entry for a hold or drag.
+        search.searchBar.searchTextField.resignFirstResponder()
         search.searchBar.resignFirstResponder()
         view.endEditing(true)
     }
@@ -572,6 +573,15 @@ private extension ProjectBrowserController {
         let savedContents = ProjectLibraryContents(projects: projects, organisation: organisation)
         let savedCurrent = current, savedFolder = folder, savedArchive = showingArchive, savedBusy = busy
         let savedQuery = search.searchBar.text, savedActive = search.isActive, savedOrganise = onOrganise
+        // iPadOS can collapse the navigation search field to a magnifier. Use
+        // a visible UIKit field to exercise keyboard dismissal independently
+        // of that presentation, while checking the real Find query survives.
+        let focusField = UITextField(frame: CGRect(x: 16, y: 16, width: 220, height: 44))
+        focusField.accessibilityIdentifier = "project-drag-focus-fixture"
+        func focusTextEntry() -> Bool {
+            view.addSubview(focusField)
+            return focusField.becomeFirstResponder()
+        }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("project-drag-" + UUID().uuidString)
         var issues: [String] = []
         var captures: [String] = []
@@ -589,6 +599,7 @@ private extension ProjectBrowserController {
         }
         defer {
             endTextEntry(); search.isActive = savedActive; search.searchBar.text = savedQuery
+            focusField.removeFromSuperview()
             folder = savedFolder; showingArchive = savedArchive; onOrganise = savedOrganise
             display(savedContents, current: savedCurrent); setBusy(savedBusy)
             try? FileManager.default.removeItem(at: root)
@@ -612,17 +623,18 @@ private extension ProjectBrowserController {
             let projectRow = IndexPath(row: 0, section: 1), folderRow = IndexPath(row: 0, section: 0)
             // Start with text focused; a context menu must end it without clearing Find.
             search.searchBar.text = "Drag"; updateSearchResults(for: search)
-            let field = search.searchBar.searchTextField
-            check(field.becomeFirstResponder(), "Could not focus Find for the hold regression")
+            let field = focusField
+            check(focusTextEntry(), "Could not focus the hold regression's text field")
             check(tableView(tableView, contextMenuConfigurationForRowAt: projectRow, point: .zero) != nil, "Project hold lost its menu")
             check(!field.isFirstResponder && query == "Drag" && presentedViewController == nil, "Project hold opened text entry or cleared Find")
             search.searchBar.text = nil; updateSearchResults(for: search)
-            check(field.becomeFirstResponder(), "Could not focus Find for the folder hold regression")
+            check(focusTextEntry(), "Could not focus the folder hold regression's text field")
             check(tableView(tableView, contextMenuConfigurationForRowAt: folderRow, point: .zero) != nil, "Folder hold lost its menu")
             check(!field.isFirstResponder && presentedViewController == nil, "Folder hold opened text entry")
-            check(field.becomeFirstResponder(), "Could not focus Find before dragging")
+            check(focusTextEntry(), "Could not focus the drag regression's text field")
             session.items = tableView(tableView, itemsForBeginning: session, at: projectRow)
             check(session.items.count == 1 && !field.isFirstResponder && presentedViewController == nil, "Project drag opened text entry or failed to start")
+            focusField.removeFromSuperview()
             tableView.layoutIfNeeded()
             let rect = tableView.rectForRow(at: folderRow)
             session.point = CGPoint(x: rect.midX, y: rect.midY)
@@ -667,6 +679,7 @@ private extension ProjectBrowserController {
             guard let documents else { return }
             let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "captures": captures,
                 "completed_at": Date().timeIntervalSince1970, "synthetic_drag_sessions": true, "physical_contacts": false,
+                "keyboard_focus_fixture": "visible UITextField; real Find query preserved",
                 "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped"]
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                 .write(to: documents.appendingPathComponent("project-drag-check.json"), options: .atomic)
