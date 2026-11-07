@@ -1,0 +1,37 @@
+{
+  "en": {
+    "ui.ipados.projects.favorite_add": "Add to favorites",
+    "ui.ipados.projects.favorite_remove": "Remove from favorites",
+    "ui.ipados.projects.favorites": "Favorites",
+    "ui.ipados.projects.icons": "Icons"
+  },
+  "en-GB": {
+    "ui.ipados.projects.favorite_add": "Add to favourites",
+    "ui.ipados.projects.favorite_remove": "Remove from favourites",
+    "ui.ipados.projects.favorites": "Favourites"
+  },
+  "de": {
+    "ui.ipados.projects.favorite_add": "Zu Favoriten hinzufügen",
+    "ui.ipados.projects.favorite_remove": "Aus Favoriten entfernen",
+    "ui.ipados.projects.favorites": "Favoriten",
+    "ui.ipados.projects.icons": "Symbole"
+  },
+  "ja": {
+    "ui.ipados.projects.favorite_add": "お気に入りに追加",
+    "ui.ipados.projects.favorite_remove": "お気に入りから削除",
+    "ui.ipados.projects.favorites": "お気に入り",
+    "ui.ipados.projects.icons": "アイコン"
+  },
+  "ko": {
+    "ui.ipados.projects.favorite_add": "즐겨찾기에 추가",
+    "ui.ipados.projects.favorite_remove": "즐겨찾기에서 제거",
+    "ui.ipados.projects.favorites": "즐겨찾기",
+    "ui.ipados.projects.icons": "아이콘"
+  },
+  "zh": {
+    "ui.ipados.projects.favorite_add": "添加到收藏夹",
+    "ui.ipados.projects.favorite_remove": "从收藏夹移除",
+    "ui.ipados.projects.favorites": "收藏夹",
+    "ui.ipados.projects.icons": "图标"
+  }
+}

@@ -616,13 +616,16 @@ final class ProjectIconPickerController: UICollectionViewController, UICollectio
     var onChoose: ((ProjectLibraryIcon) -> Void)?
     private let selected: ProjectLibraryIcon
     private let defaultIcon: ProjectLibraryIcon
-    private var items: [ProjectLibraryIcon]
+    private let preferences: ProjectIconPreferences
+    private var favoriteItems: [ProjectLibraryIcon]
+    private var normalItems: [ProjectLibraryIcon]
     private var layoutWidth: CGFloat = 0
 
-    init(selected: ProjectLibraryIcon, defaultIcon: ProjectLibraryIcon) {
+    init(selected: ProjectLibraryIcon, defaultIcon: ProjectLibraryIcon, preferences: ProjectIconPreferences = ProjectIconPreferences()) {
         self.selected = selected; self.defaultIcon = defaultIcon
-        items = Self.choices
-        if selected.emojiText != nil, !items.contains(selected) { items.insert(selected, at: ProjectLibraryIcon.common.count) }
+        self.preferences = preferences
+        let sections = preferences.sections(base: Self.choices, selected: selected)
+        favoriteItems = sections.favorites; normalItems = sections.icons
         let layout = UICollectionViewFlowLayout()
         layout.minimumInteritemSpacing = 12; layout.minimumLineSpacing = 12
         layout.sectionInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
@@ -635,6 +638,7 @@ final class ProjectIconPickerController: UICollectionViewController, UICollectio
         collectionView.backgroundColor = .systemGroupedBackground
         collectionView.accessibilityIdentifier = "project-icon-picker"
         collectionView.register(ProjectIconCell.self, forCellWithReuseIdentifier: "icon")
+        collectionView.register(ProjectIconSectionHeader.self, forSupplementaryViewOfKind: UICollectionView.elementKindSectionHeader, withReuseIdentifier: "section")
         collectionView.keyboardDismissMode = .onDrag
         let reset = UIBarButtonItem(title: ProjectText.text("default_icon"), style: .plain, target: self, action: #selector(restoreDefault))
         reset.accessibilityIdentifier = "project-icon-default"
@@ -655,13 +659,48 @@ final class ProjectIconPickerController: UICollectionViewController, UICollectio
         }
     }
 
-    override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { items.count }
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        refreshSections()
+    }
+
+    private func refreshSections() {
+        let sections = preferences.sections(base: Self.choices, selected: selected)
+        favoriteItems = sections.favorites; normalItems = sections.icons
+        collectionView.reloadData()
+    }
+
+    private func items(in section: Int) -> [ProjectLibraryIcon] {
+        !favoriteItems.isEmpty && section == 0 ? favoriteItems : normalItems
+    }
+
+    override func numberOfSections(in collectionView: UICollectionView) -> Int { favoriteItems.isEmpty || normalItems.isEmpty ? 1 : 2 }
+    override func collectionView(_ collectionView: UICollectionView, numberOfItemsInSection section: Int) -> Int { items(in: section).count }
     override func collectionView(_ collectionView: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
         let cell = collectionView.dequeueReusableCell(withReuseIdentifier: "icon", for: indexPath)
+        let items = items(in: indexPath.section)
         if let iconCell = cell as? ProjectIconCell, items.indices.contains(indexPath.item) {
-            iconCell.display(items[indexPath.item], selected: selected == items[indexPath.item])
+            let icon = items[indexPath.item]
+            iconCell.display(icon, selected: selected == icon, favorite: favoriteItems.contains(icon))
+            iconCell.onChoose = { [weak self] in self?.choose(icon) }
+            iconCell.onToggleFavorite = { [weak self] in
+                guard let self else { return }
+                self.preferences.toggleFavorite(icon)
+                self.refreshSections()
+                self.scrollToTop()
+            }
         }
         return cell
+    }
+
+    override func collectionView(_ collectionView: UICollectionView, viewForSupplementaryElementOfKind kind: String, at indexPath: IndexPath) -> UICollectionReusableView {
+        let header = collectionView.dequeueReusableSupplementaryView(ofKind: kind, withReuseIdentifier: "section", for: indexPath)
+        (header as? ProjectIconSectionHeader)?.display(ProjectText.text(indexPath.section == 0 ? "favorites" : "icons"))
+        return header
+    }
+
+    func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, referenceSizeForHeaderInSection section: Int) -> CGSize {
+        favoriteItems.isEmpty ? .zero : CGSize(width: collectionView.bounds.width, height: UIFont.preferredFont(forTextStyle: .headline).lineHeight + 24)
     }
 
     func collectionView(_ collectionView: UICollectionView, layout collectionViewLayout: UICollectionViewLayout, sizeForItemAt indexPath: IndexPath) -> CGSize {
@@ -673,11 +712,16 @@ final class ProjectIconPickerController: UICollectionViewController, UICollectio
     }
 
     override func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        let items = items(in: indexPath.section)
         guard items.indices.contains(indexPath.item) else { return }
         choose(items[indexPath.item])
     }
 
     @objc private func restoreDefault() { choose(defaultIcon) }
+    private func scrollToTop() {
+        collectionView.setContentOffset(CGPoint(x: -collectionView.adjustedContentInset.left, y: -collectionView.adjustedContentInset.top), animated: false)
+    }
+
     @objc private func enterEmoji() {
         let alert = UIAlertController(title: ProjectText.text("enter_emoji"), message: ProjectText.text("emoji_hint"), preferredStyle: .alert)
         alert.addTextField { [selected] field in
@@ -688,15 +732,22 @@ final class ProjectIconPickerController: UICollectionViewController, UICollectio
             field.font = .systemFont(ofSize: 32)
         }
         alert.addAction(UIAlertAction(title: WorkspaceStyle.text("cancel"), style: .cancel))
+        let favorite = UIAlertAction(title: ProjectText.text("favorite_add"), style: .default) { [weak self, weak alert] _ in
+            self?.saveEmojiFavorite(alert?.textFields?.first?.text ?? "")
+        }
         let apply = UIAlertAction(title: WorkspaceStyle.text("apply"), style: .default) { [weak self, weak alert] _ in
             self?.submitEmoji(alert?.textFields?.first?.text ?? "")
         }
         apply.isEnabled = ProjectLibraryIcon.emoji(selected.emojiText ?? "") != nil
-        alert.textFields?.first?.addAction(UIAction { [weak apply] action in
+        favorite.isEnabled = apply.isEnabled
+        alert.textFields?.first?.addAction(UIAction { [weak apply, weak favorite] action in
             guard let field = action.sender as? UITextField else { return }
-            apply?.isEnabled = ProjectLibraryIcon.emoji(field.text ?? "") != nil
+            let valid = ProjectLibraryIcon.emoji(field.text ?? "") != nil
+            apply?.isEnabled = valid; favorite?.isEnabled = valid
         }, for: .editingChanged)
+        alert.addAction(favorite)
         alert.addAction(apply)
+        alert.preferredAction = apply
         present(alert, animated: true)
     }
 
@@ -707,6 +758,14 @@ final class ProjectIconPickerController: UICollectionViewController, UICollectio
         } else { choose(icon) }
     }
 
+    private func saveEmojiFavorite(_ text: String) {
+        guard let icon = ProjectLibraryIcon.emoji(text) else { return }
+        preferences.addFavorite(icon)
+        let finish: () -> Void = { [weak self] in self?.refreshSections(); self?.scrollToTop() }
+        if let alert = presentedViewController { alert.dismiss(animated: true, completion: finish) }
+        else { finish() }
+    }
+
     private func choose(_ icon: ProjectLibraryIcon) {
         view.endEditing(true)
         navigationController?.popViewController(animated: true)
@@ -714,35 +773,85 @@ final class ProjectIconPickerController: UICollectionViewController, UICollectio
     }
 
 #if DEBUG
+    private func developmentCell(_ icon: ProjectLibraryIcon) -> ProjectIconCell? {
+        collectionView.layoutIfNeeded()
+        for section in 0..<numberOfSections(in: collectionView) {
+            guard let item = items(in: section).firstIndex(of: icon) else { continue }
+            let index = IndexPath(item: item, section: section)
+            collectionView.scrollToItem(at: index, at: .centeredVertically, animated: false)
+            collectionView.layoutIfNeeded()
+            return collectionView.cellForItem(at: index) as? ProjectIconCell
+        }
+        return nil
+    }
     @discardableResult
     func developmentSelect(_ icon: ProjectLibraryIcon) -> Bool {
-        guard let index = items.firstIndex(of: icon) else { return false }
-        collectionView(collectionView, didSelectItemAt: IndexPath(item: index, section: 0))
+        guard let cell = developmentCell(icon) else { return false }
+        cell.developmentChoose()
         return true
     }
+    @discardableResult
+    func developmentToggleFavorite(_ icon: ProjectLibraryIcon) -> Bool {
+        guard let cell = developmentCell(icon) else { return false }
+        cell.developmentToggleFavorite()
+        return true
+    }
+    var developmentFavorites: [ProjectLibraryIcon] { favoriteItems }
+    var developmentNormalIcons: [ProjectLibraryIcon] { normalItems }
     func developmentEnterEmoji() { enterEmoji() }
     func developmentApplyEmoji(_ text: String) { submitEmoji(text) }
+    func developmentFavoriteEmoji(_ text: String) { saveEmojiFavorite(text) }
 #endif
+}
+
+private final class ProjectIconSectionHeader: UICollectionReusableView {
+    private let title = UILabel()
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.font = .preferredFont(forTextStyle: .headline); title.adjustsFontForContentSizeCategory = true
+        title.textColor = .label; title.accessibilityTraits = .header
+        addSubview(title)
+        NSLayoutConstraint.activate([
+            title.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            title.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            title.centerYAnchor.constraint(equalTo: centerYAnchor)
+        ])
+    }
+    required init?(coder: NSCoder) { return nil }
+    func display(_ text: String) { title.text = text }
 }
 
 private final class ProjectIconCell: UICollectionViewCell {
     private let artwork = UIImageView()
     private let name = UILabel()
     private let check = UIImageView(image: UIImage(systemName: "checkmark.circle.fill"))
+    private let choose = UIButton(type: .custom)
+    private let favorite = UIButton(type: .system)
+    var onChoose: (() -> Void)?
+    var onToggleFavorite: (() -> Void)?
     private var artworkTop: NSLayoutConstraint?
     private var artworkCentre: NSLayoutConstraint?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
         contentView.layer.cornerRadius = 12
+        choose.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(choose)
+        choose.addAction(UIAction { [weak self] _ in self?.onChoose?() }, for: .touchUpInside)
+        favorite.addAction(UIAction { [weak self] _ in self?.onToggleFavorite?() }, for: .touchUpInside)
         artwork.contentMode = .scaleAspectFit
         name.font = .preferredFont(forTextStyle: .footnote); name.adjustsFontForContentSizeCategory = true
         name.textColor = .label; name.numberOfLines = 2; name.textAlignment = .center
-        [artwork, name, check].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; contentView.addSubview($0) }
+        [artwork, name, check, favorite].forEach { $0.translatesAutoresizingMaskIntoConstraints = false; contentView.addSubview($0) }
         artworkTop = artwork.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12)
         artworkCentre = artwork.centerYAnchor.constraint(equalTo: contentView.centerYAnchor)
         artworkTop?.isActive = true
         NSLayoutConstraint.activate([
+            choose.leadingAnchor.constraint(equalTo: contentView.leadingAnchor), choose.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            choose.topAnchor.constraint(equalTo: contentView.topAnchor), choose.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
+            favorite.leadingAnchor.constraint(equalTo: contentView.leadingAnchor), favorite.topAnchor.constraint(equalTo: contentView.topAnchor),
+            favorite.widthAnchor.constraint(equalToConstant: 44), favorite.heightAnchor.constraint(equalToConstant: 44),
             artwork.centerXAnchor.constraint(equalTo: contentView.centerXAnchor),
             artwork.widthAnchor.constraint(equalToConstant: 40), artwork.heightAnchor.constraint(equalToConstant: 40),
             name.topAnchor.constraint(equalTo: artwork.bottomAnchor, constant: 8), name.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
@@ -750,24 +859,36 @@ private final class ProjectIconCell: UICollectionViewCell {
             check.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 6), check.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -6),
             check.widthAnchor.constraint(equalToConstant: 18), check.heightAnchor.constraint(equalToConstant: 18)
         ])
-        isAccessibilityElement = true
+        isAccessibilityElement = false
+        accessibilityElements = [choose, favorite]
     }
     required init?(coder: NSCoder) { return nil }
 
-    func display(_ icon: ProjectLibraryIcon, selected: Bool) {
+    func display(_ icon: ProjectLibraryIcon, selected: Bool, favorite isFavorite: Bool) {
         let emoji = icon.emojiText
         name.isHidden = emoji != nil
         name.text = emoji == nil ? ProjectText.text("icon_" + icon.rawValue) : nil
+        artworkTop?.isActive = false; artworkCentre?.isActive = false
         artworkTop?.isActive = emoji == nil; artworkCentre?.isActive = emoji != nil
-        accessibilityLabel = emoji ?? name.text
+        choose.accessibilityLabel = emoji ?? name.text
         accessibilityIdentifier = "project-icon-" + icon.rawValue
-        accessibilityTraits = selected ? [.button, .selected] : [.button]
+        choose.accessibilityTraits = selected ? [.button, .selected] : [.button]
+        favorite.setImage(UIImage(systemName: isFavorite ? "star.fill" : "star"), for: .normal)
+        favorite.tintColor = isFavorite ? tintColor : .secondaryLabel
+        favorite.accessibilityLabel = ProjectText.text(isFavorite ? "favorite_remove" : "favorite_add")
+        favorite.accessibilityValue = choose.accessibilityLabel
+        favorite.accessibilityIdentifier = "project-icon-favorite-" + icon.rawValue
         artwork.image = ProjectIconImage.image(icon, fallback: .project, traits: traitCollection, size: 40)
         check.isHidden = !selected; check.tintColor = tintColor
         contentView.backgroundColor = .secondarySystemGroupedBackground
         contentView.layer.borderWidth = selected ? 2 : 0
         contentView.layer.borderColor = tintColor.resolvedColor(with: traitCollection).cgColor
     }
+
+#if DEBUG
+    func developmentChoose() { choose.sendActions(for: .touchUpInside) }
+    func developmentToggleFavorite() { favorite.sendActions(for: .touchUpInside) }
+#endif
 }
 
 #if DEBUG

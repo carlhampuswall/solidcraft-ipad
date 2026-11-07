@@ -281,6 +281,10 @@ checks that moves and archiving preserve both choices. These are synthetic UIKit
 actions on the reserved physical iPad. The existing `step-share-check.json` report
 and `step-share-project-*.png` captures include the icon checks. No design or
 recovery file format changes are involved.
+It also activates the star buttons, verifies that pinning does not select an
+icon or increment its count, checks the normal grid's frequency order, and checks
+that favorites and used custom emojis survive reopening the picker. The
+diagnostic saves and restores the user's icon preferences around its fixture.
 
 Add `--project-drag-check` to the Debug `--projects-check` launch to check project
 and folder drag delegates, folder drop proposals, persisted moves into a folder

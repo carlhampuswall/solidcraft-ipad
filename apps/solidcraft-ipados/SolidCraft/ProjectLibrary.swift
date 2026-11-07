@@ -217,6 +217,86 @@ struct ProjectLibraryIcon: Codable, Hashable {
     }
 }
 
+/// App-local picker preferences, shared by projects and folders. Counts record
+/// successful applications, independently of the design's current membership.
+struct ProjectIconPreferences {
+    static let key = "SolidCraft.projects.iconPreferences"
+    private let defaults: UserDefaults
+    private struct State: Codable {
+        var version = 1
+        var favorites: [ProjectLibraryIcon] = []
+        var uses: [String: Int] = [:]
+    }
+
+    init(defaults: UserDefaults = .standard) { self.defaults = defaults }
+
+    private static func supported(_ icon: ProjectLibraryIcon) -> Bool {
+        icon.isValid && (icon.emojiText != nil || ProjectLibraryIcon.common.contains(icon))
+    }
+
+    private func load() -> State {
+        guard let data = defaults.data(forKey: Self.key), data.count <= 2 * 1024 * 1024,
+              let decoded = try? JSONDecoder().decode(State.self, from: data), decoded.version == 1 else { return State() }
+        var result = State()
+        var seen: Set<ProjectLibraryIcon> = []
+        result.favorites = Array(decoded.favorites.filter { Self.supported($0) && seen.insert($0).inserted }.prefix(4096))
+        let counts = decoded.uses.filter { $0.value > 0 && Self.supported(ProjectLibraryIcon($0.key)) }
+            .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(4096)
+        for (key, count) in counts { result.uses[key] = min(count, 1_000_000) }
+        return result
+    }
+
+    private func save(_ state: State) {
+        guard let data = try? JSONEncoder().encode(state), data.count <= 2 * 1024 * 1024 else { return }
+        defaults.set(data, forKey: Self.key)
+    }
+
+    var favorites: [ProjectLibraryIcon] { load().favorites }
+    func useCount(_ icon: ProjectLibraryIcon) -> Int { load().uses[icon.rawValue] ?? 0 }
+
+    func toggleFavorite(_ icon: ProjectLibraryIcon) {
+        guard Self.supported(icon) else { return }
+        var state = load()
+        if let index = state.favorites.firstIndex(of: icon) { state.favorites.remove(at: index) }
+        else if state.favorites.count < 4096 { state.favorites.append(icon) }
+        save(state)
+    }
+
+    func addFavorite(_ icon: ProjectLibraryIcon) {
+        guard Self.supported(icon) else { return }
+        var state = load()
+        guard !state.favorites.contains(icon), state.favorites.count < 4096 else { return }
+        state.favorites.append(icon)
+        save(state)
+    }
+
+    func recordUse(_ icon: ProjectLibraryIcon) {
+        guard Self.supported(icon) else { return }
+        var state = load()
+        state.uses[icon.rawValue] = min((state.uses[icon.rawValue] ?? 0) + 1, 1_000_000)
+        if state.uses.count > 4096 {
+            let leastUsed = state.uses.sorted { $0.value == $1.value ? $0.key > $1.key : $0.value < $1.value }.first
+            if let leastUsed { state.uses.removeValue(forKey: leastUsed.key) }
+        }
+        save(state)
+    }
+
+    func sections(base: [ProjectLibraryIcon], selected: ProjectLibraryIcon? = nil) -> (favorites: [ProjectLibraryIcon], icons: [ProjectLibraryIcon]) {
+        let state = load()
+        var candidates = base
+        candidates += state.uses.keys.sorted().map(ProjectLibraryIcon.init)
+        if let selected { candidates.append(selected) }
+        var seen: Set<ProjectLibraryIcon> = []
+        let pinned = Set(state.favorites)
+        let icons = candidates.filter { Self.supported($0) && !pinned.contains($0) && seen.insert($0).inserted }
+            .enumerated().sorted { a, b in
+                let first = state.uses[a.element.rawValue] ?? 0, second = state.uses[b.element.rawValue] ?? 0
+                return first == second ? a.offset < b.offset : first > second
+            }.map(\.element)
+        return (state.favorites, icons)
+    }
+}
+
 struct ProjectFolder: Codable, Equatable {
     let id: UUID
     var name: String

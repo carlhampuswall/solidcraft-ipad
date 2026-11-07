@@ -2877,7 +2877,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 guard let self, let browser else { return }
                 switch result {
                 case .failure(let error): browser.showError(error)
-                case .success: self.loadProjects(browser)
+                case .success:
+                    switch change {
+                    case .folderIcon(_, let icon), .projectIcon(_, let icon): ProjectIconPreferences().recordUse(icon)
+                    default: break
+                    }
+                    self.loadProjects(browser)
                 }
             }
         }
@@ -5091,7 +5096,11 @@ private extension FoundationController {
         let defaults = UserDefaults.standard
         let savedLaunchPreference = defaults.object(forKey: ProjectLibrary.showBrowserOnLaunchKey)
         let savedProjectSelection = defaults.string(forKey: "SolidCraft.projects.selected")
-        if checksProjects { defaults.set(true, forKey: ProjectLibrary.showBrowserOnLaunchKey) }
+        let savedIconPreferences = defaults.object(forKey: ProjectIconPreferences.key)
+        if checksProjects {
+            defaults.set(true, forKey: ProjectLibrary.showBrowserOnLaunchKey)
+            defaults.removeObject(forKey: ProjectIconPreferences.key)
+        }
         var finished = false
         var fixture: URL?
         var issues: [String] = []
@@ -5104,6 +5113,8 @@ private extension FoundationController {
                 appearance = savedAppearance; applyAppearance()
                 if let savedLaunchPreference { defaults.set(savedLaunchPreference, forKey: ProjectLibrary.showBrowserOnLaunchKey) }
                 else { defaults.removeObject(forKey: ProjectLibrary.showBrowserOnLaunchKey) }
+                if let savedIconPreferences { defaults.set(savedIconPreferences, forKey: ProjectIconPreferences.key) }
+                else { defaults.removeObject(forKey: ProjectIconPreferences.key) }
                 if defaults.string(forKey: "SolidCraft.projects.selected") != savedProjectSelection { issues.append("Diagnostic changed saved project selection") }
             }
             if let fixture { session.developmentClearExportFixture(fixture) }
@@ -5212,6 +5223,14 @@ private extension FoundationController {
             wait({ navigation.topViewController === picker && navigation.transitionCoordinator == nil && picker.view.window != nil }) {
                 if ProjectIconPickerController.choices.count <= 45 { issues.append("Icon picker still has only a few choices") }
                 if picker.presentedViewController != nil { issues.append("Opening the icon picker opened text entry") }
+                if picker.developmentNormalIcons.first != .component { issues.append("Normal icons are not sorted by successful usage") }
+                guard picker.developmentToggleFavorite(car), picker.developmentFavorites == [car],
+                      !picker.developmentNormalIcons.contains(car) else { report("Favorite did not pin above normal icons"); return }
+                if navigation.topViewController !== picker || browser.developmentIcon(for: .project(project)) != .project || ProjectIconPreferences().useCount(car) != 0 {
+                    issues.append("Starring an icon selected it or changed its usage count")
+                }
+                guard picker.developmentToggleFavorite(car), picker.developmentFavorites.isEmpty,
+                      picker.developmentToggleFavorite(car), picker.developmentFavorites == [car] else { report("Favorite toggle did not remove and restore the pin"); return }
                 navigation.overrideUserInterfaceStyle = .dark
                 picker.view.layoutIfNeeded(); capture("project-icons-dark")
                 navigation.overrideUserInterfaceStyle = .light
@@ -5220,6 +5239,7 @@ private extension FoundationController {
                     navigation.overrideUserInterfaceStyle = savedStyle
                     guard picker.developmentSelect(car) else { report("Project emoji is not selectable"); return }
                     wait({ navigation.topViewController === browser && navigation.transitionCoordinator == nil && browser.developmentIcon(for: .project(project)) == car }) {
+                        if ProjectIconPreferences().useCount(car) != 1 { issues.append("Successful project selection was not counted once") }
                         guard let folderPicker = browser.developmentOpenIconPicker(for: .folder(folder)) else { report("Missing folder icon picker"); return }
                         wait({ navigation.topViewController === folderPicker && navigation.transitionCoordinator == nil }) {
                             folderPicker.developmentEnterEmoji()
@@ -5231,11 +5251,21 @@ private extension FoundationController {
                                 field.text = "🦄"; field.sendActions(for: .editingChanged)
                                 if !apply.isEnabled { issues.append("Emoji entry refused a custom emoji") }
                                 capture("project-custom-emoji-entry")
-                                folderPicker.developmentApplyEmoji(field.text ?? "")
+                                folderPicker.developmentFavoriteEmoji(field.text ?? "")
+                                wait({ folderPicker.presentedViewController == nil && folderPicker.developmentFavorites == [car, unicorn] }) {
+                                    if navigation.topViewController !== folderPicker || browser.developmentIcon(for: .folder(folder)) != .component || ProjectIconPreferences().useCount(unicorn) != 0 {
+                                        issues.append("Adding a custom favorite applied it or increased its usage")
+                                    }
+                                    guard folderPicker.developmentSelect(unicorn) else { report("Custom favorite could not be applied"); return }
                                 wait({ navigation.topViewController === browser && navigation.transitionCoordinator == nil && browser.developmentIcon(for: .folder(folder)) == unicorn }) {
                                     if browser.developmentIcon(for: .project(project)) != car { issues.append("Folder emoji changed the project icon") }
                                     guard let resetPicker = browser.developmentOpenIconPicker(for: .project(project)) else { report("Missing default icon action"); return }
                                     wait({ navigation.topViewController === resetPicker && navigation.transitionCoordinator == nil }) {
+                                        if resetPicker.developmentFavorites != [car, unicorn] { issues.append("Favorites were lost between pickers") }
+                                        guard resetPicker.developmentToggleFavorite(unicorn), resetPicker.developmentNormalIcons.contains(unicorn) else { report("Used custom emoji disappeared after unpinning"); return }
+                                        guard resetPicker.developmentToggleFavorite(unicorn), resetPicker.developmentFavorites == [car, unicorn] else { report("Custom emoji could not be favorited"); return }
+                                        resetPicker.view.layoutIfNeeded()
+                                        capture("project-icon-favorites")
                                         guard let button = resetPicker.navigationItem.rightBarButtonItems?.first, let action = button.action else { report("Missing default icon button"); return }
                                         UIApplication.shared.sendAction(action, to: button.target, from: button, for: nil)
                                         wait({ navigation.topViewController === browser && navigation.transitionCoordinator == nil && browser.developmentIcon(for: .project(project)) == .project }) {
@@ -5243,6 +5273,7 @@ private extension FoundationController {
                                             wait({ browser.navigationItem.rightBarButtonItems?.last?.isEnabled == true && browser.developmentIcon(for: .project(project)) == car }) { next() }
                                         }
                                     }
+                                }
                                 }
                             }
                         }

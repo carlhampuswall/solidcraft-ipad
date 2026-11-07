@@ -1236,6 +1236,43 @@ struct WorkspaceChecks {
         defaults.set(false, forKey: ProjectLibrary.showBrowserOnLaunchKey)
         try require(!ProjectLibrary.showsBrowserOnLaunch(defaults: defaults), "previous launch behaviour is not reachable")
         defaults.removeObject(forKey: ProjectLibrary.showBrowserOnLaunchKey)
+        defer { defaults.removeObject(forKey: ProjectIconPreferences.key) }
+        let iconPreferences = ProjectIconPreferences(defaults: defaults)
+        let baseIcons = ProjectLibraryIcon.common + ProjectLibraryIcon.emojiChoices
+        try require(iconPreferences.sections(base: baseIcons).icons == baseIcons && iconPreferences.favorites.isEmpty, "empty icon preferences changed the original palette order")
+        guard let favoriteCar = ProjectLibraryIcon.emoji("🚗"), let favoriteCustom = ProjectLibraryIcon.emoji("🦄") else { throw ProjectLibrary.failure("missing_favorite_fixture") }
+        iconPreferences.addFavorite(favoriteCustom)
+        iconPreferences.addFavorite(favoriteCustom)
+        try require(iconPreferences.favorites == [favoriteCustom] && iconPreferences.useCount(favoriteCustom) == 0, "favoriting applied an icon or changed its usage")
+        for _ in 0..<3 { iconPreferences.recordUse(.box) }
+        for _ in 0..<2 { iconPreferences.recordUse(favoriteCar) }
+        iconPreferences.recordUse(.component)
+        iconPreferences.recordUse(favoriteCustom)
+        let frequentlyUsed = iconPreferences.sections(base: baseIcons)
+        try require(frequentlyUsed.favorites == [favoriteCustom] && Array(frequentlyUsed.icons.prefix(3)) == [.box, favoriteCar, .component], "normal icons are not sorted by descending use count")
+        try require(!frequentlyUsed.icons.contains(favoriteCustom), "pinned icon was duplicated in the normal grid")
+        iconPreferences.toggleFavorite(.box)
+        try require(iconPreferences.favorites == [favoriteCustom, .box] && iconPreferences.sections(base: baseIcons).icons.first == favoriteCar, "new favorite did not leave the normal grid")
+        iconPreferences.toggleFavorite(.box)
+        try require(iconPreferences.sections(base: baseIcons).icons.first == .box, "unfavoriting lost the icon's frequency")
+        iconPreferences.toggleFavorite(favoriteCustom)
+        try require(iconPreferences.sections(base: baseIcons).icons.contains(favoriteCustom), "used custom emoji disappeared after unpinning")
+        iconPreferences.toggleFavorite(favoriteCustom)
+        let reopenedIconPreferences = ProjectIconPreferences(defaults: defaults)
+        try require(reopenedIconPreferences.favorites == [favoriteCustom] && reopenedIconPreferences.useCount(.box) == 3, "favorites or counts did not survive reopening")
+        let zeroUseIcons = reopenedIconPreferences.sections(base: baseIcons).icons.filter { reopenedIconPreferences.useCount($0) == 0 }
+        try require(zeroUseIcons == baseIcons.filter { $0 != .box && $0 != favoriteCar && $0 != .component }, "tied usage counts changed the stable base order")
+        let malformedPreferences: [String: Any] = ["version": 1, "favorites": [favoriteCustom.rawValue, favoriteCustom.rawValue, "unknown_icon"],
+            "uses": ["box": Int.max, favoriteCar.rawValue: -5, "unknown_icon": 20]]
+        defaults.set(try JSONSerialization.data(withJSONObject: malformedPreferences), forKey: ProjectIconPreferences.key)
+        try require(iconPreferences.favorites == [favoriteCustom] && iconPreferences.useCount(.box) == 1_000_000 && iconPreferences.useCount(favoriteCar) == 0, "malformed icon preferences were not bounded and normalized")
+        iconPreferences.recordUse(.box)
+        try require(iconPreferences.useCount(.box) == 1_000_000, "usage counter overflowed its maximum")
+        defaults.set(Data(repeating: 0, count: 2 * 1024 * 1024 + 1), forKey: ProjectIconPreferences.key)
+        try require(iconPreferences.favorites.isEmpty && iconPreferences.sections(base: baseIcons).icons == baseIcons, "oversized icon preferences did not recover defaults")
+        iconPreferences.recordUse(favoriteCar)
+        try require(iconPreferences.useCount(favoriteCar) == 1 && (defaults.data(forKey: ProjectIconPreferences.key)?.count ?? 0) < 1024, "successful use did not repair malformed preferences")
+        defaults.removeObject(forKey: ProjectIconPreferences.key)
         let emptyProjects = try library.projects()
         try require(emptyProjects.isEmpty, "new library is not empty")
         let projectA = try library.reserve(name: "  Bracket  ")

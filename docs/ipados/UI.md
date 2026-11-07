@@ -38,6 +38,13 @@ to choose or paste any single emoji, including flags, skin tones and joined
 sequences. Opening the picker leaves the keyboard closed; emoji entry explicitly
 opens it. **Default icon** restores the standard project or folder icon. Choices
 persist in library metadata without changing design or recovery file bytes.
+Tap an icon's star to add or remove it from **Favorites** above the main grid.
+Favorites are shared across the project and folder pickers. The remaining icons
+are sorted by how often they have been successfully applied, with the original
+palette order breaking ties. Used custom emojis remain available for reuse.
+Favorites and usage counts are saved locally and survive app relaunches; opening
+or starring an icon does not count as using it.
+**Enter emoji → Add to favorites** saves a custom emoji without assigning it.
 
 The floating document header sits eight points below the top safe-area boundary.
 Its folder button has a 44-point touch target.
