@@ -41,6 +41,16 @@ enum HistoryFeatureEmphasis {
     }
 }
 
+/// Native chrome only; no document or command semantics depend on this setting.
+enum ToolLabels {
+    static let key = "SolidCraft.workspace.showToolLabels"
+    static func restored(_ value: Bool?) -> Bool { value ?? true }
+    static var current: Bool { restored(UserDefaults.standard.object(forKey: key) as? Bool) }
+    static func railWidth(enabled: Bool, largeText: Bool) -> CGFloat {
+        enabled ? (largeText ? 220 : 164) : (largeText ? 56 : 52)
+    }
+}
+
 enum EdgeLengthReadout {
     static let key = "SolidCraft.workspace.edgeLengthReadout"
     static func restored(_ value: Bool?) -> Bool { value ?? true }
@@ -363,7 +373,7 @@ enum ModelValuePlacement {
 struct WorkspaceLayout {
     let topBar: CGRect
     var status: CGRect
-    let rail: CGRect
+    var rail: CGRect
     var canvas: CGRect
     var browser: CGRect?
     let inspector: CGRect?
@@ -381,9 +391,11 @@ struct WorkspaceLayout {
                         compactChrome: Bool = true, pinnedBrowser: Bool = false, railContentHeight: CGFloat = 460,
                         inspectorContentHeight: CGFloat = 640, navigationContentHeight: CGFloat = 192,
                         leftBrowser: Bool = true, historyExpanded: Bool = false, inspectorPreferredWidth: CGFloat = 320,
-                        historyToggleWidth: CGFloat = 112, viewButtonSize: CGSize = CGSize(width: 96, height: 52)) -> WorkspaceLayout {
+                        historyToggleWidth: CGFloat = 112, viewButtonSize: CGSize = CGSize(width: 96, height: 52),
+                        toolLabels: Bool = false, historyActionsWidth: CGFloat = 100) -> WorkspaceLayout {
         let width = size.width.isFinite ? max(0, size.width) : 0
         let height = size.height.isFinite ? max(0, size.height) : 0
+        let historyActionsWidth = historyActionsWidth.isFinite ? max(88, historyActionsWidth) : 100
         let gap = min(8, width / 8, height / 8)
         let barHeight = min(max(0, height - 2 * gap), largeText ? 76 : 52)
         let reserved = historyExpanded ? min(height, barHeight + gap) : 0
@@ -392,7 +404,8 @@ struct WorkspaceLayout {
             minimumHeaderHeight: minimumHeaderHeight,
             minimumStatusHeight: historyExpanded ? minimumStatusHeight : max(minimumStatusHeight, barHeight + gap),
             compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railContentHeight,
-            inspectorContentHeight: inspectorContentHeight, navigationContentHeight: navigationContentHeight, leftBrowser: leftBrowser, inspectorPreferredWidth: inspectorPreferredWidth, viewButtonSize: viewButtonSize)
+            inspectorContentHeight: inspectorContentHeight, navigationContentHeight: navigationContentHeight, leftBrowser: leftBrowser, inspectorPreferredWidth: inspectorPreferredWidth, viewButtonSize: viewButtonSize,
+            toolLabels: toolLabels, historyActionsWidth: historyActionsWidth)
         let toggleWidth = historyToggleWidth.isFinite ? max(52, historyToggleWidth) : 112
         let barWidth = historyExpanded ? max(0, width - 2 * gap) : min(toggleWidth, max(0, width - 2 * gap))
         result.featureHistory = CGRect(x: historyExpanded ? gap : max(gap, width - gap - barWidth),
@@ -402,7 +415,14 @@ struct WorkspaceLayout {
                 // The bottom row belongs to the workspace, including when a
                 // left browser leaves only a narrow strip for the side rails.
                 result.history = CGRect(x: gap, y: result.featureHistory.minY,
-                    width: min(100, max(0, result.featureHistory.minX - 2 * gap)), height: barHeight)
+                    width: min(historyActionsWidth, max(0, result.featureHistory.minX - 2 * gap)), height: barHeight)
+                if toolLabels && result.history.width < historyActionsWidth {
+                    result.history = CGRect(x: gap, y: max(gap, result.featureHistory.minY - barHeight - gap),
+                        width: min(historyActionsWidth, max(0, width - 2 * gap)), height: barHeight)
+                    let bottom = max(0, result.history.minY - gap)
+                    result.rail.size.height = min(result.rail.height, max(0, bottom - result.rail.minY))
+                    result.navigation.size.height = min(result.navigation.height, max(0, bottom - result.navigation.minY))
+                }
                 result.status.origin = CGPoint(x: min(width, result.history.maxX + gap), y: result.featureHistory.minY)
                 result.status.size.height = barHeight
                 if var panel = result.browser {
@@ -421,12 +441,14 @@ struct WorkspaceLayout {
                         minimumHeaderHeight: CGFloat, minimumStatusHeight: CGFloat,
                         compactChrome: Bool, pinnedBrowser: Bool, railContentHeight: CGFloat,
                         inspectorContentHeight: CGFloat, navigationContentHeight: CGFloat,
-                        leftBrowser: Bool, inspectorPreferredWidth: CGFloat, viewButtonSize: CGSize) -> WorkspaceLayout {
+                        leftBrowser: Bool, inspectorPreferredWidth: CGFloat, viewButtonSize: CGSize,
+                        toolLabels: Bool, historyActionsWidth: CGFloat) -> WorkspaceLayout {
         if compactChrome {
             return floatingLayout(size: size, browser: browser, inspector: inspector, railRight: railRight,
                                   largeText: largeText, header: minimumHeaderHeight, status: minimumStatusHeight,
                                   pinnedBrowser: pinnedBrowser, railContentHeight: railContentHeight, inspectorContentHeight: inspectorContentHeight,
-                                  navigationContentHeight: navigationContentHeight, leftBrowser: leftBrowser, inspectorPreferredWidth: inspectorPreferredWidth, viewButtonSize: viewButtonSize)
+                                  navigationContentHeight: navigationContentHeight, leftBrowser: leftBrowser, inspectorPreferredWidth: inspectorPreferredWidth, viewButtonSize: viewButtonSize,
+                                  toolLabels: toolLabels, historyActionsWidth: historyActionsWidth)
         }
         let width = size.width.isFinite ? max(0, size.width) : 0
         let height = size.height.isFinite ? max(0, size.height) : 0
@@ -519,18 +541,20 @@ extension WorkspaceLayout {
                                        railRight: Bool, largeText: Bool, header: CGFloat, status: CGFloat,
                                        pinnedBrowser: Bool, railContentHeight: CGFloat, inspectorContentHeight: CGFloat,
                                        navigationContentHeight: CGFloat, leftBrowser: Bool, inspectorPreferredWidth: CGFloat, viewButtonSize: CGSize,
-                                       viewSharesBrowserColumn: Bool = false) -> WorkspaceLayout {
+                                       viewSharesBrowserColumn: Bool = false, toolLabels: Bool = false,
+                                       historyActionsWidth: CGFloat = 100) -> WorkspaceLayout {
         let w = size.width.isFinite ? max(0, size.width) : 0
         let h = size.height.isFinite ? max(0, size.height) : 0
         let gap = min(8, w / 8, h / 8)
-        let railWidth = min(largeText ? 56 : 52, max(0, w - 2 * gap))
+        let railWidth = min(ToolLabels.railWidth(enabled: toolLabels, largeText: largeText), max(0, w - 2 * gap))
         if leftBrowser && browser {
             let panelWidth = min(largeText ? 380 : 320, max(0, w - railWidth - 3 * gap))
             let inset = min(w, panelWidth + gap)
             let remaining = floatingLayout(size: CGSize(width: max(0, w - inset), height: h), browser: false, inspector: inspector,
                 railRight: railRight, largeText: largeText, header: header, status: status, pinnedBrowser: false,
                 railContentHeight: railContentHeight, inspectorContentHeight: inspectorContentHeight,
-                navigationContentHeight: navigationContentHeight, leftBrowser: false, inspectorPreferredWidth: inspectorPreferredWidth, viewButtonSize: viewButtonSize, viewSharesBrowserColumn: true)
+                navigationContentHeight: navigationContentHeight, leftBrowser: false, inspectorPreferredWidth: inspectorPreferredWidth, viewButtonSize: viewButtonSize, viewSharesBrowserColumn: true,
+                toolLabels: toolLabels, historyActionsWidth: historyActionsWidth)
             func shifted(_ frame: CGRect) -> CGRect { frame.offsetBy(dx: inset, dy: 0) }
             let dock = pinnedBrowser && w >= (largeText ? 1180 : 1000)
             var result = WorkspaceLayout(topBar: shifted(remaining.topBar), status: shifted(remaining.status), rail: shifted(remaining.rail),
@@ -545,26 +569,31 @@ extension WorkspaceLayout {
             return result
         }
         let viewWidth = min(max(44, viewButtonSize.width.isFinite ? viewButtonSize.width : 96), max(0, w - 2 * gap))
-        let headerHeight = min(max(0, h - 2 * gap), max(largeText ? 76 : 52, header))
+        let viewHeight = min(max(44, viewButtonSize.height.isFinite ? viewButtonSize.height : 52), max(0, h - 2 * gap))
         // Reserve the View column even in narrow windows so a taller sketch
         // header cannot push View and its navigation controls down.
-        let headerWidth = min(largeText ? 420 : 340, max(0, w - 2 * (max(railWidth, viewWidth) + 2 * gap)))
-        let top = CGRect(x: (w - headerWidth) / 2, y: gap, width: headerWidth, height: headerHeight)
+        let betweenColumns = max(0, w - 2 * (max(railWidth, viewWidth) + 2 * gap))
+        let stackedHeader = toolLabels && betweenColumns < min(180, max(0, w - 2 * gap))
+        let headerWidth = min(largeText ? 420 : 340, stackedHeader ? max(0, w - 2 * gap) : betweenColumns)
+        let headerY = stackedHeader ? min(h, 2 * gap + max(viewHeight, min(largeText ? 76 : 52, max(0, h - 2 * gap)))) : gap
+        let headerHeight = min(max(0, h - headerY - gap), max(largeText ? 76 : 52, header))
+        let top = CGRect(x: (w - headerWidth) / 2, y: headerY, width: headerWidth, height: headerHeight)
         let bottomHeight = min(max(0, h - top.maxY - 2 * gap), max(48, status))
         let controlsY = min(h, top.maxY + gap)
         let railX = railRight ? max(gap, w - gap - railWidth) : gap
         let navX = railRight ? gap : max(gap, w - gap - railWidth)
-        let viewHeight = min(max(44, viewButtonSize.height.isFinite ? viewButtonSize.height : 52), max(0, h - bottomHeight - 2 * gap))
         var viewAccess = CGRect(x: railRight ? gap : max(gap, w - gap - viewWidth), y: gap,
                                 width: viewWidth, height: viewHeight)
         let browserAccess = CGRect(x: leftBrowser || viewSharesBrowserColumn ? gap : railX, y: gap, width: railWidth, height: min(headerHeight, 52))
         // Only the browser button can share View's column in a crowded window.
         if viewAccess.intersects(browserAccess) { viewAccess.origin.y = browserAccess.maxY + gap }
         viewAccess.origin.y = min(viewAccess.minY, max(gap, h - gap - viewAccess.height))
-        let navigationY = min(h, viewAccess.maxY + gap)
+        let overlapsHeader = navX < top.maxX && navX + railWidth > top.minX
+        let navigationY = min(h, toolLabels && overlapsHeader ? max(viewAccess.maxY, top.maxY) + gap : viewAccess.maxY + gap)
         // The tool rail stays centred in the available workspace, clamped only
         // to the side controls and bottom row when its content needs scrolling.
-        let railTop = min(h, [browserAccess, viewAccess].reduce(gap) { y, frame in
+        let railObstacles = [browserAccess, viewAccess] + (toolLabels ? [top] : [])
+        let railTop = min(h, railObstacles.reduce(gap) { y, frame in
             railX < frame.maxX && railX + railWidth > frame.minX ? max(y, frame.maxY + gap) : y
         })
         let railBottom = max(railTop, h - bottomHeight - 2 * gap)
@@ -597,7 +626,7 @@ extension WorkspaceLayout {
             inspectorFrame = CGRect(x: x, y: inspectorY, width: panelWidth,
                                     height: min(panelHeight, max(0, h - bottomHeight - gap - inspectorY), max(180, inspectorContentHeight)))
         }
-        let historyWidth = min(100, max(0, w - 2 * gap))
+        let historyWidth = min(historyActionsWidth, max(0, w - 2 * gap))
         let statusX = min(w, historyWidth + 2 * gap)
         let statusWidth = max(0, min(560, w - statusX - railWidth - 2 * gap))
         var result = WorkspaceLayout(topBar: top,

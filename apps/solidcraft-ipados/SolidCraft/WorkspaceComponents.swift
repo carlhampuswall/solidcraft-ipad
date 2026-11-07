@@ -145,6 +145,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     }
     private lazy var play = WorkspaceButton(HistoryText.text("play")) { [weak self] in self?.togglePlayback() }
     private let transport = UIStackView()
+    private let transportScroll = UIScrollView()
     private let marker = HistoryMarkerView()
     private lazy var markerPan = UIPanGestureRecognizer(target: self, action: #selector(dragMarker(_:)))
     private let scroll = UIScrollView()
@@ -173,6 +174,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private var dragScrollTimer: Timer?
     private var lastLayoutSize: CGSize = .zero
     var preferredToggleWidth: CGFloat {
+        if toggle.hasExternalToolCaption { return max(52, ceil(toggle.intrinsicContentSize.width) + 8) }
         let config = toggle.configuration
         let insets = config?.contentInsets ?? .zero
         let font = toggle.titleLabel?.font ?? .preferredFont(forTextStyle: .body)
@@ -193,7 +195,8 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         toggle.centerIconAndTitleVertically()
         toggle.titleLabel?.numberOfLines = 1
         toggle.accessibilityIdentifier = "workspace-feature-history-toggle"
-        addSubview(toggle); addSubview(transport); addSubview(scroll)
+        addSubview(toggle); addSubview(transportScroll); transportScroll.addSubview(transport); addSubview(scroll)
+        transportScroll.contentInsetAdjustmentBehavior = .never
         transport.axis = .horizontal; transport.spacing = 0; transport.distribution = .fillEqually
         for (control, id) in [(back, "back"), (play, "play"), (forward, "forward")] {
             if control === play { control.systemArtwork("play.fill", compact: true) }
@@ -243,7 +246,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         empty.numberOfLines = 1
         setExpanded(false)
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (bar: FeatureHistoryBar, _: UITraitCollection) in
-            WorkspaceStyle.floatingSurface(bar)
+            bar.styleSurface()
         }
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (bar: FeatureHistoryBar, _: UITraitCollection) in
             bar.needsRebuild = true
@@ -256,10 +259,22 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     required init?(coder: NSCoder) { nil }
     deinit { dragScrollTimer?.invalidate(); playbackTimer?.invalidate() }
 
+    func toolLabels(_ visible: Bool) {
+        toggle.toolLabels(visible, mirrored: true)
+        [back, play, forward].forEach { $0.toolLabels(visible) }
+        styleSurface()
+        setNeedsLayout(); onPreferredSizeChange?()
+    }
+
+    private func styleSurface() {
+        if expanded { WorkspaceStyle.floatingSurface(self) }
+        else { backgroundColor = .clear; layer.borderWidth = 0; clipsToBounds = false }
+    }
+
     func setExpanded(_ value: Bool) {
         if !value { cancelScrub(); cancelPlayback() }
-        expanded = value; scroll.isHidden = !value; transport.isHidden = !value
-        accessibilityElements = value ? [transport, scroll, toggle] : [toggle]
+        expanded = value; scroll.isHidden = !value; transportScroll.isHidden = !value
+        accessibilityElements = value ? [transportScroll, scroll, toggle] : [toggle]
         toggle.active(value)
         // Keep the original compact toggle's neutral selected surface; only its
         // label and measured width change, not the timeline's presentation.
@@ -271,7 +286,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         toggle.accessibilityHint = HistoryText.text(value ? "collapse" : "expand")
         toggle.toolTip = toggle.accessibilityHint
         updateAttention()
-        WorkspaceStyle.floatingSurface(self)
+        styleSurface()
         if value { rebuildIfNeeded(); revealSelection() }
         setNeedsLayout()
     }
@@ -559,9 +574,13 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         let toggleWidth = min(preferredToggleWidth - 2 * inset, max(0, bounds.width - 2 * inset))
         toggle.frame = CGRect(x: max(inset, bounds.width - inset - toggleWidth), y: inset,
             width: toggleWidth, height: max(0, bounds.height - 2 * inset))
-        transport.frame = CGRect(x: inset, y: inset, width: 132, height: max(0, bounds.height - 2 * inset))
-        scroll.frame = CGRect(x: min(bounds.width, transport.frame.maxX + inset), y: inset,
-            width: max(0, toggle.frame.minX - transport.frame.maxX - 2 * inset), height: max(0, bounds.height - 2 * inset))
+        let transportWidth = 3 * max(44, back.intrinsicContentSize.width, play.intrinsicContentSize.width, forward.intrinsicContentSize.width)
+        transportScroll.frame = CGRect(x: inset, y: inset,
+            width: min(transportWidth, max(0, toggle.frame.minX - 2 * inset), bounds.width * 0.5), height: max(0, bounds.height - 2 * inset))
+        transport.frame = CGRect(x: 0, y: 0, width: transportWidth, height: transportScroll.bounds.height)
+        transportScroll.contentSize = transport.bounds.size
+        scroll.frame = CGRect(x: min(bounds.width, transportScroll.frame.maxX + inset), y: inset,
+            width: max(0, toggle.frame.minX - transportScroll.frame.maxX - 2 * inset), height: max(0, bounds.height - 2 * inset))
         scroll.layoutIfNeeded(); layoutMarker()
         if needsReveal && expanded && scroll.bounds.width > 0 {
             needsReveal = false
@@ -654,19 +673,30 @@ final class ContextualRailScrollView: UIScrollView {
 /// The glyph in the shared column and its adjacent caption activate the same button.
 private final class RailButtonContent: UIView {
     private let glyph = UIImageView()
+    private let iconSurface = UIView()
     private let chip = UIView()
     private let caption = WorkspaceStyle.label(.subheadline)
     private let detail = WorkspaceStyle.label(.caption1, secondary: true)
     private let gap: CGFloat = 6
     private let inset: CGFloat = 9
+    private let separateIconSurface: Bool
+    private var captionVisible = true
+    private var requestedCaptionVisible = true
+    private var mirrored = false
 
-    init(title: String, tint: UIColor) {
+    init(title: String, tint: UIColor, separateIconSurface: Bool = false) {
+        self.separateIconSurface = separateIconSurface
         super.init(frame: .zero)
         isUserInteractionEnabled = false; accessibilityElementsHidden = true
         WorkspaceStyle.floatingSurface(chip)
         chip.layer.cornerRadius = 9
         addSubview(chip)
         chip.accessibilityIdentifier = "workspace-rail-caption"
+        if separateIconSurface {
+            WorkspaceStyle.floatingSurface(iconSurface)
+            iconSurface.accessibilityIdentifier = "workspace-tool-icon-surface"
+            addSubview(iconSurface)
+        }
         addSubview(glyph)
         glyph.accessibilityIdentifier = "workspace-rail-glyph"
         glyph.contentMode = .scaleAspectFit; glyph.tintColor = tint
@@ -679,8 +709,28 @@ private final class RailButtonContent: UIView {
     func containsAction(_ point: CGPoint) -> Bool {
         point.x >= 0 && point.x <= chip.frame.maxX && bounds.contains(point)
     }
-    func setImage(_ image: UIImage?) { glyph.image = image }
+    func setImage(_ image: UIImage?) {
+        glyph.image = image
+        captionVisible = requestedCaptionVisible || image == nil
+        chip.isHidden = !captionVisible
+    }
     func setDetail(_ value: String?) { detail.text = value; setNeedsLayout() }
+    func setTitle(_ title: String) { caption.text = title; setNeedsLayout() }
+    func showCaption(_ visible: Bool, mirrored: Bool) {
+        requestedCaptionVisible = visible
+        captionVisible = visible || glyph.image == nil; self.mirrored = mirrored
+        chip.isHidden = !captionVisible; setNeedsLayout()
+    }
+    func updateCaptionVisibility(_ visible: Bool) { showCaption(visible, mirrored: mirrored) }
+    func render(selected: Bool, enabled: Bool, highlighted: Bool, history: Bool) {
+        alpha = enabled ? (highlighted ? 0.72 : 1) : 0.45
+        guard separateIconSurface else { return }
+        WorkspaceStyle.floatingSurface(iconSurface)
+        WorkspaceStyle.floatingSurface(chip)
+        iconSurface.backgroundColor = selected ? WorkspaceStyle.selectionFill : WorkspaceStyle.surface
+        iconSurface.layer.borderColor = (selected || history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.separator).cgColor
+        glyph.tintColor = history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.foreground
+    }
 
     private func textSize(_ label: UILabel, width: CGFloat) -> CGSize {
         guard label.text?.isEmpty == false else { return .zero }
@@ -688,6 +738,7 @@ private final class RailButtonContent: UIView {
         return CGSize(width: ceil(size.width), height: ceil(size.height))
     }
     override func sizeThatFits(_ size: CGSize) -> CGSize {
+        guard captionVisible else { return CGSize(width: WorkspaceStyle.touch, height: WorkspaceStyle.touch) }
         let width = max(1, size.width - WorkspaceStyle.touch - gap - 2 * inset)
         let title = textSize(caption, width: width), sub = textSize(detail, width: width)
         return CGSize(width: WorkspaceStyle.touch + gap + 2 * inset + max(title.width, sub.width),
@@ -696,12 +747,15 @@ private final class RailButtonContent: UIView {
     override func layoutSubviews() {
         super.layoutSubviews()
         let side = WorkspaceStyle.touch
-        glyph.frame = CGRect(x: 0, y: (bounds.height - side) / 2, width: side, height: side).insetBy(dx: 11, dy: 11)
+        let iconFrame = CGRect(x: mirrored ? max(0, bounds.width - side) : 0, y: (bounds.height - side) / 2, width: side, height: side)
+        iconSurface.frame = iconFrame
+        glyph.frame = iconFrame.insetBy(dx: 11, dy: 11)
         let textWidth = max(1, bounds.width - side - gap - 2 * inset)
         let title = textSize(caption, width: textWidth), sub = textSize(detail, width: textWidth)
         let chipHeight = max(32, title.height + sub.height + 10)
-        chip.frame = CGRect(x: side + gap, y: (bounds.height - chipHeight) / 2,
-                            width: min(textWidth, max(title.width, sub.width)) + 2 * inset, height: chipHeight)
+        let chipWidth = min(textWidth, max(title.width, sub.width)) + 2 * inset
+        chip.frame = CGRect(x: mirrored ? max(0, iconFrame.minX - gap - chipWidth) : side + gap, y: (bounds.height - chipHeight) / 2,
+                            width: chipWidth, height: chipHeight)
         caption.frame = CGRect(x: inset, y: (chipHeight - title.height - sub.height) / 2,
                                width: chip.bounds.width - 2 * inset, height: title.height)
         detail.frame = CGRect(x: inset, y: caption.frame.maxY, width: caption.frame.width, height: sub.height)
@@ -717,6 +771,8 @@ final class WorkspaceButton: UIButton {
     private var commandID: String?
     private var systemIcon: String?
     private var compactIcon = false
+    private var toolCaption: RailButtonContent?
+    var hasExternalToolCaption: Bool { toolCaption != nil }
     private var verticallyCenteredContent = false
     private var railContent: RailButtonContent?
     private var choiceCheck: UIImageView?
@@ -747,7 +803,7 @@ final class WorkspaceButton: UIButton {
         showsLargeContentViewer = true
         largeContentTitle = title
         addInteraction(UILargeContentViewerInteraction())
-        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (button: WorkspaceButton, _: UITraitCollection) in
+        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self, UITraitPreferredContentSizeCategory.self]) { (button: WorkspaceButton, _: UITraitCollection) in
             button.refreshIcon()
         }
         addAction(UIAction { _ in action() }, for: activationEvent)
@@ -770,6 +826,22 @@ final class WorkspaceButton: UIButton {
     func textOnly() {
         iconID = nil; commandID = nil; systemIcon = nil; compactIcon = false; refreshIcon()
     }
+    /// Retain compact artwork and accessibility names when captions are hidden.
+    /// Text-only actions and existing form labels always keep their titles.
+    func toolLabels(_ visible: Bool, mirrored: Bool = false) {
+        if toolCaption == nil {
+            let caption = RailButtonContent(title: fullTitle, tint: WorkspaceStyle.foreground, separateIconSurface: true)
+            addSubview(caption); toolCaption = caption
+        }
+        toolCaption?.showCaption(visible, mirrored: mirrored)
+        backgroundColor = .clear; layer.borderWidth = 0; clipsToBounds = false
+        refreshIcon()
+    }
+    func refreshExternalToolLabelPreference() {
+        guard let content = toolCaption ?? railContent else { return }
+        content.updateCaptionVisibility(ToolLabels.current)
+        invalidateIntrinsicContentSize(); setNeedsLayout()
+    }
     func systemArtwork(_ name: String, compact: Bool = false) {
         iconID = nil; commandID = nil; systemIcon = name; compactIcon = compact; refreshIcon()
     }
@@ -780,6 +852,7 @@ final class WorkspaceButton: UIButton {
     }
     func separateRailCaption(tint: UIColor = WorkspaceStyle.foreground) {
         let content = RailButtonContent(title: fullTitle, tint: tint)
+        content.showCaption(ToolLabels.current, mirrored: false)
         railContent = content
         var config = UIButton.Configuration.plain()
         config.background = .clear()
@@ -795,9 +868,9 @@ final class WorkspaceButton: UIButton {
     }
 
     override var intrinsicContentSize: CGSize {
-        guard let railContent else { return super.intrinsicContentSize }
-        var size = railContent.sizeThatFits(UIView.layoutFittingExpandedSize)
-        if bounds.width > 0 { size.height = railContent.sizeThatFits(bounds.size).height }
+        guard let content = toolCaption ?? railContent else { return super.intrinsicContentSize }
+        var size = content.sizeThatFits(UIView.layoutFittingExpandedSize)
+        if bounds.width > 0 { size.height = content.sizeThatFits(bounds.size).height }
         return size
     }
 
@@ -806,7 +879,7 @@ final class WorkspaceButton: UIButton {
     }
 
     override func sizeThatFits(_ size: CGSize) -> CGSize {
-        railContent?.sizeThatFits(size) ?? super.sizeThatFits(size)
+        (toolCaption ?? railContent)?.sizeThatFits(size) ?? super.sizeThatFits(size)
     }
 
     private func refreshIcon() {
@@ -825,18 +898,31 @@ final class WorkspaceButton: UIButton {
         // colour follow availability instead of retaining an always-original ink.
         config?.image = isHistoryAction ? image?.withRenderingMode(.alwaysTemplate) : image
         config?.imagePadding = compactIcon ? 0 : 8
-        config?.title = compactIcon && image != nil ? nil : fullTitle
+        config?.title = toolCaption != nil || compactIcon && image != nil ? nil : fullTitle
+        if let toolCaption {
+            toolCaption.setImage(config?.image); toolCaption.setTitle(fullTitle)
+            config?.background = .clear()
+            config?.baseBackgroundColor = .clear
+        }
         let verticalInset: CGFloat = compactIcon || verticallyCenteredContent ? 8 : 10
         config?.contentInsets = NSDirectionalEdgeInsets(top: verticalInset, leading: 8, bottom: verticalInset, trailing: 8)
         configuration = config
         accessibilityLabel = fullTitle
         largeContentImage = image
         if choiceCheck != nil { styleChoice() }
+        invalidateIntrinsicContentSize()
         setNeedsUpdateConfiguration()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        if let toolCaption {
+            imageView?.isHidden = true
+            let widthChanged = toolCaption.bounds.width != bounds.width
+            toolCaption.frame = bounds
+            if widthChanged { invalidateIntrinsicContentSize() }
+            return
+        }
         if let railContent {
             let widthChanged = railContent.bounds.width != bounds.width
             railContent.frame = bounds
@@ -861,6 +947,14 @@ final class WorkspaceButton: UIButton {
 
     override func updateConfiguration() {
         super.updateConfiguration()
+        if let toolCaption {
+            imageView?.isHidden = true
+            toolCaption.render(selected: isSelected, enabled: isEnabled, highlighted: isHighlighted, history: isHistoryAction)
+            var config = configuration
+            config?.background = .clear(); config?.baseBackgroundColor = .clear
+            configuration = config
+            return
+        }
         if let railContent {
             railContent.alpha = isEnabled ? (isHighlighted ? 0.72 : 1) : 0.45
             return

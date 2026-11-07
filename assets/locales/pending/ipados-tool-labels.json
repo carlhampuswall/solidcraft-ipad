@@ -1,0 +1,34 @@
+{
+  "ar": {
+    "ui.ipados.workspace.show_tool_labels": "إظهار أسماء الأدوات",
+    "ui.ipados.workspace.show_tool_labels_help": "عرض الأسماء بجانب أزرار الأدوات والقوائم. أوقفه لعرض الأيقونات فقط."
+  },
+  "de": {
+    "ui.ipados.workspace.show_tool_labels": "Werkzeugbeschriftungen anzeigen",
+    "ui.ipados.workspace.show_tool_labels_help": "Namen neben Werkzeug- und Menüschaltflächen anzeigen. Für reine Symbole ausschalten."
+  },
+  "en": {
+    "ui.ipados.workspace.show_tool_labels": "Show tool labels",
+    "ui.ipados.workspace.show_tool_labels_help": "Show names beside tool and menu buttons. Turn off for icons only."
+  },
+  "he": {
+    "ui.ipados.workspace.show_tool_labels": "הצגת שמות כלים",
+    "ui.ipados.workspace.show_tool_labels_help": "הצגת שמות לצד כפתורי כלים ותפריטים. ניתן לכבות להצגת סמלים בלבד."
+  },
+  "ja": {
+    "ui.ipados.workspace.show_tool_labels": "ツール名を表示",
+    "ui.ipados.workspace.show_tool_labels_help": "ツールとメニューボタンの横に名前を表示します。オフにするとアイコンのみになります。"
+  },
+  "ko": {
+    "ui.ipados.workspace.show_tool_labels": "도구 이름 표시",
+    "ui.ipados.workspace.show_tool_labels_help": "도구 및 메뉴 버튼 옆에 이름을 표시합니다. 끄면 아이콘만 표시됩니다."
+  },
+  "vi": {
+    "ui.ipados.workspace.show_tool_labels": "Hiện tên công cụ",
+    "ui.ipados.workspace.show_tool_labels_help": "Hiện tên bên cạnh nút công cụ và trình đơn. Tắt để chỉ hiện biểu tượng."
+  },
+  "zh": {
+    "ui.ipados.workspace.show_tool_labels": "显示工具名称",
+    "ui.ipados.workspace.show_tool_labels_help": "在工具和菜单按钮旁显示名称。关闭后仅显示图标。"
+  }
+}

@@ -8,6 +8,31 @@ struct WorkspaceChecks {
     }
 
     static func main() throws {
+        try require(ToolLabels.restored(nil) && ToolLabels.restored(true) && !ToolLabels.restored(false),
+                    "tool labels lost their visible default or saved icon-only setting")
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 834, height: 1140), CGSize(width: 390, height: 700)] {
+            for largeText in [false, true] {
+                for right in [false, true] {
+                    for browser in [false, true] {
+                        let labelled = WorkspaceLayout.resolve(size: size, browser: browser, inspector: false,
+                            railRight: right, largeText: largeText, minimumHeaderHeight: 112,
+                            historyToggleWidth: 150, viewButtonSize: CGSize(width: 130, height: 52),
+                            toolLabels: true, historyActionsWidth: 220)
+                        try require(labelled.canvas == CGRect(origin: .zero, size: size), "labels rebased the floating Metal view")
+                        try require(labelled.rail.width == ToolLabels.railWidth(enabled: true, largeText: largeText),
+                                    "tool captions were squeezed into the icon column")
+                        for bar in [labelled.rail, labelled.navigation] where bar.height > 0 {
+                            try require(!bar.intersects(labelled.topBar) && !bar.intersects(labelled.history),
+                                        "labelled tools overlap the header or undo controls")
+                        }
+                        try require(!labelled.history.intersects(labelled.featureHistory), "undo labels overlap History")
+                        let icons = WorkspaceLayout.resolve(size: size, browser: browser, inspector: false,
+                            railRight: right, largeText: largeText, toolLabels: false)
+                        try require(icons.rail.width == (largeText ? 56 : 52), "hiding labels did not restore compact rails")
+                    }
+                }
+            }
+        }
         let quickDefaults = ["select", "line", "circle", "modify"]
         var quick = QuickAccessLayout(defaults: quickDefaults)
         try require(quick.order == quickDefaults, "quick access changed the initial tools")

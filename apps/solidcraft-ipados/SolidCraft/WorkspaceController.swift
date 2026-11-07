@@ -30,6 +30,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var additionalQuickTools: [String: WorkspaceButton] = [:]
     private var additionalNavigationTools: [String: WorkspaceButton] = [:]
     private var customizeToolbars = UserDefaults.standard.object(forKey: "SolidCraft.workspace.quickAccess.enabled") as? Bool ?? true
+    private var showToolLabels = ToolLabels.current
     private lazy var navigationMoreButton = WorkspaceButton(QuickAccessText.text("more"), action: {})
     private let historyActions = UIStackView()
     private let featureHistory = FeatureHistoryBar()
@@ -641,6 +642,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkFeatureDiagnosticsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--grouped-inspector-check") {
                     self.startGroupedInspectorCheckIfReady()
+                } else if ProcessInfo.processInfo.arguments.contains("--tool-labels-check") {
+                    self.developmentCheckStarted = true; self.checkToolLabelsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
                     self.developmentCheckStarted = true; self.checkChromeOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--browser-check") || ProcessInfo.processInfo.arguments.contains("--browser-actions-check") || ProcessInfo.processInfo.arguments.contains("--browser-swipes-check") {
@@ -802,6 +805,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         finishSketchButton.accessibilityIdentifier = "workspace-finish-sketch"
         cancelToolButton.accessibilityIdentifier = "workspace-cancel-tool"
         configureQuickAccess()
+        let labelledControls = chromeIcons.map(\.0) + sketchQuickTools.map(\.1) + [navigationMoreButton]
+            + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
+        labelledControls.forEach { $0.toolLabels(showToolLabels) }
+        viewButton.toolLabels(showToolLabels, mirrored: !railRight)
+        for button in navigationActions.arrangedSubviews.compactMap({ $0 as? WorkspaceButton }) {
+            button.toolLabels(showToolLabels, mirrored: !railRight)
+        }
+        featureHistory.toolLabels(showToolLabels)
+        // Each icon and its separate caption owns its surface. A wide bar
+        // background would put the caption back inside the button's surface.
+        for host in [railScroll, navigationScroll, historyActions] {
+            host.backgroundColor = .clear; host.layer.borderWidth = 0; host.clipsToBounds = true
+        }
         if state != nil { updateAvailability(); updateStatus() }
         view.setNeedsLayout()
     }
@@ -3769,6 +3785,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let title = name == "fit" ? WorkspaceStyle.text("fit") : NativeText.value("ui.ipados." + name)
             let button = WorkspaceButton(title) { [weak self] in self?.runViewCommand(id) }
             button.artwork(icon, compact: true); button.accessibilityIdentifier = "workspace-quick-" + id
+            button.toolLabels(showToolLabels, mirrored: !railRight)
             additionalNavigationTools[id] = button; navigationQuickAccess?.register(id, button: button)
         }
         for (id, label) in [("sketch.move", "move"), ("sketch.extend", "extend"), ("sketch.project", "project")] where additionalQuickTools[id] == nil {
@@ -3777,11 +3794,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 if id == "sketch.project" { self?.showSketchProjection() } else { self?.setTool(id) }
             }
             button.commandArtwork(id, compact: true); button.accessibilityIdentifier = "workspace-tool-" + id
+            button.toolLabels(showToolLabels)
             additionalQuickTools[id] = button; railQuickAccess?.register(id, button: button)
         }
         for tool in (state?.modelling?.tools ?? []) + (state?.assembly?.tools ?? []) where additionalQuickTools[tool.id] == nil {
             let button = WorkspaceButton(ModellingText.label(tool.label)) { [weak self] in self?.beginModelling(operation: tool.id) }
             button.commandArtwork(tool.id, compact: true); button.accessibilityIdentifier = "workspace-tool-" + tool.id
+            button.toolLabels(showToolLabels)
             additionalQuickTools[tool.id] = button; railQuickAccess?.register(tool.id, button: button)
         }
         updateAdditionalQuickTools()
@@ -4002,6 +4021,19 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.homeToolbar, forKey: "SolidCraft.workspace.homeToolbar")
             self.configureChrome(); self.rebuildMenus()
         }
+        let toolLabels = UIAction(title: WorkspaceStyle.text("show_tool_labels"),
+            subtitle: WorkspaceStyle.text("show_tool_labels_help"), state: showToolLabels ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.canvas.cancelInput(); self.showToolLabels.toggle()
+            UserDefaults.standard.set(self.showToolLabels, forKey: ToolLabels.key)
+            func refresh(_ view: UIView) {
+                (view as? WorkspaceButton)?.refreshExternalToolLabelPreference()
+                view.subviews.forEach(refresh)
+            }
+            refresh(self.workspace)
+            self.configureChrome(); self.rebuildMenus()
+            UIAccessibility.post(notification: .layoutChanged, argument: self.moreButton)
+        }
         let connectedEdges = UIAction(title: WorkspaceStyle.text("connected_edge_selection"), state: canvas.connectedEdgeSelectionEnabled ? .on : .off) { [weak self] _ in
             guard let self, WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: self.textEntryActive, numericEditActive: self.numericEditing) else { return }
             self.canvas.cancelInput()
@@ -4171,7 +4203,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UIMenu(title: ProjectText.text("title"), children: projectMenuActions()),
             UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple,
             UIAction(title: WorkspaceStyle.text("clear")) { [weak self] _ in self?.run("select.clear") },
-            homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances + [UIMenu(options: .displayInline, children: [followAppearance])])
+            toolLabels, homeToolbar, connectedEdges, historyGestures, browserSwipes, immediateSketchEdit, historySelection, rollbackEditing, orbit, twist, rotationSnap, handles, dragResolution, automaticCut, automaticDepth, acceptOnTap, dismissal, faceExtrude, sketchExtrude, tuckedOptions, edgeTools, edgeLength, side, UIMenu(title: WorkspaceStyle.text("appearance"), children: appearances + [UIMenu(options: .displayInline, children: [followAppearance])])
         ]
         let restoreLastProject = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
         let showProjectsOnLaunch = ProjectLibrary.showsBrowserOnLaunch()
@@ -4589,8 +4621,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let subtitleHeight = 2 * ceil(subtitle.font.lineHeight) + 2
         let actionsHeight = max(44, ceil(UIFont.preferredFont(forTextStyle: .body).lineHeight) + 20)
         let compactHeadingHeight = max(52, titleHeight + ceil(subtitle.font.lineHeight) + 8)
+        let labelledHeader = compactChrome && showToolLabels
+        let railWidth = ToolLabels.railWidth(enabled: showToolLabels, largeText: largeText)
+        let betweenColumns = max(0, chrome.width - 2 * (max(railWidth, viewButton.intrinsicContentSize.width) + 16))
+        let headerWidth = min(largeText ? 420 : 340, betweenColumns < 180 && labelledHeader ? max(0, chrome.width - 16) : betweenColumns)
+        let documentRowHeight = labelledHeader ? max(44, documentActionsButton.sizeThatFits(
+            CGSize(width: max(44, headerWidth - 16), height: .greatestFiniteMagnitude)).height) + 8 : 0
         let completionHeight = finishSketchButton.isHidden ? 0 : actionsHeight + 8
-        let headingHeight = compactChrome ? compactHeadingHeight + completionHeight :
+        let headingHeight = compactChrome ? compactHeadingHeight + documentRowHeight + completionHeight :
             (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
         var inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
             (modellingEditing ? (modellingInspector?.compact == true ? 620 : min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84)) : 640))
@@ -4604,7 +4642,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                                historyExpanded: historyExpanded,
                                                inspectorPreferredWidth: modellingInspector?.compact == true && modellingInspector?.minimal != true ? 380 : 320,
                                                historyToggleWidth: featureHistory.preferredToggleWidth,
-                                               viewButtonSize: viewButton.intrinsicContentSize)
+                                               viewButtonSize: viewButton.intrinsicContentSize,
+                                               toolLabels: showToolLabels,
+                                               historyActionsWidth: showToolLabels ? 2 * max(undoButton.intrinsicContentSize.width, redoButton.intrinsicContentSize.width) + 2 : 100)
                 .placed(in: chrome, viewport: viewport)
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
@@ -4652,12 +4692,14 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if resolved.floating {
             let statusSize = status.sizeThatFits(resolved.status.size)
             status.frame.size.width = min(resolved.status.width, statusSize.width)
-            let titleWidth = max(0, top.bounds.width - 64)
+            let titleWidth = max(0, top.bounds.width - (labelledHeader ? 24 : 64))
             titleLabel.frame = CGRect(x: 12, y: 5, width: titleWidth, height: titleHeight)
             subtitle.frame = CGRect(x: 12, y: titleHeight + 5, width: titleWidth, height: ceil(subtitle.font.lineHeight) + 2)
-            documentActionsButton.frame = CGRect(x: max(0, top.bounds.width - 48), y: 4, width: min(44, top.bounds.width), height: max(0, compactHeadingHeight - 8))
-            finishSketchButton.frame = CGRect(x: 8, y: compactHeadingHeight, width: max(0, top.bounds.width - 16),
-                height: max(0, top.bounds.height - compactHeadingHeight - 8))
+            documentActionsButton.frame = labelledHeader ?
+                CGRect(x: 8, y: compactHeadingHeight, width: max(0, top.bounds.width - 16), height: max(0, documentRowHeight - 8)) :
+                CGRect(x: max(0, top.bounds.width - 48), y: 4, width: min(44, top.bounds.width), height: max(0, compactHeadingHeight - 8))
+            finishSketchButton.frame = CGRect(x: 8, y: compactHeadingHeight + documentRowHeight, width: max(0, top.bounds.width - 16),
+                height: max(0, top.bounds.height - compactHeadingHeight - documentRowHeight - 8))
             browserButton.frame = resolved.browserAccess
             navigationScroll.frame = resolved.navigation
             viewButton.frame = resolved.viewAccess
@@ -9315,6 +9357,61 @@ private extension FoundationController {
 
     /// Actual UIKit regression for floating controls across appearance and safe-area
     /// settings. Foundation rectangle tests cannot observe retained scroll state.
+    func checkToolLabelsOnDevice() {
+        guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
+        let saved = UserDefaults.standard.object(forKey: ToolLabels.key)
+        let original = showToolLabels
+        var issues: [String] = []
+        let controls = [viewButton, documentActionsButton, browserButton, moreButton, undoButton, redoButton]
+            + Array(railQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
+            + Array(navigationQuickAccess?.buttons.values ?? Dictionary<String, WorkspaceButton>().values)
+            + Array(additionalQuickTools.values) + Array(additionalNavigationTools.values)
+        func capture(_ name: String) {
+            let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+            do { try image.pngData()?.write(to: directory.appendingPathComponent("tool-labels-" + name + ".png"), options: .atomic) }
+            catch { issues.append("Capture: \(error)") }
+        }
+        func toggle() {
+            guard let action = moreButton.menu?.children.compactMap({ $0 as? UIAction }).first(where: {
+                $0.title == WorkspaceStyle.text("show_tool_labels")
+            }) else { issues.append("Show tool labels is missing from Tools"); return }
+            action.performWithSender(moreButton, target: nil)
+            view.layoutIfNeeded()
+        }
+        func verify(_ visible: Bool) {
+            if ToolLabels.current != visible { issues.append("Saved visibility does not survive restoration") }
+            for button in controls {
+                if button.configuration?.title != nil { issues.append("Title remains inside " + (button.accessibilityLabel ?? "button")) }
+                if button.accessibilityLabel?.isEmpty != false { issues.append("Missing accessibility name") }
+                let caption = button.subviews.flatMap(\.subviews).first { $0.accessibilityIdentifier == "workspace-rail-caption" }
+                if caption?.isHidden != !visible { issues.append("Caption visibility: " + (button.accessibilityLabel ?? "button")) }
+                if visible, let caption, let icon = caption.superview?.subviews.first(where: {
+                    $0.accessibilityIdentifier == "workspace-tool-icon-surface"
+                }), caption.frame.intersects(icon.frame) {
+                    issues.append("Caption overlaps its icon surface: " + (button.accessibilityLabel ?? "button"))
+                }
+            }
+            let historyCaption = featureHistory.subviews.flatMap(\.subviews).flatMap(\.subviews).first {
+                $0.accessibilityIdentifier == "workspace-rail-caption"
+            }
+            if historyCaption?.isHidden != !visible { issues.append("History caption is not outside its icon") }
+        }
+        if !showToolLabels { toggle() }
+        verify(true); capture("shown")
+        toggle(); verify(false); capture("hidden")
+        toggle(); verify(true); capture("restored")
+        showToolLabels = original
+        UserDefaults.standard.set(saved, forKey: ToolLabels.key)
+        configureChrome(); rebuildMenus(); view.layoutIfNeeded()
+        do {
+            try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unknown",
+                "coverage": "UIKit captions and production menu toggle on physical iPad; synthetic actions"])
+                .write(to: directory.appendingPathComponent("tool-labels-check.json"), options: .atomic)
+        } catch { print("Tool labels report failed: \(error)") }
+        print("Tool labels check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+    }
+
     func checkChromeOnDevice() {
         struct Report: Encodable {
             let compact: Bool
