@@ -9,6 +9,14 @@ the source history and current verification scope.
 
 ## Current presentation
 
+In the right-hand **More tools** list, hold a view such as **Top** to reveal
+**Add to quick access** directly beneath it. Tap that action to pin the view;
+an ordinary tap on Top still selects that view. VoiceOver exposes the same Add
+action on each tool. Disabled tools can be pinned without running them.
+**Settings > Workspace > Hold in More to add quick access** restores the previous
+menu and its Add submenu when turned off. The existing toolbar hold-and-drag
+gesture still reorders or removes pinned tools.
+
 Related toolbar tools share one background around their icon column. Sketch
 Point, drawing and editing tools, and Sketch Tools belong to one group. Create
 Sketch and solid tools share a modelling group; assembly tools have their own.

@@ -36,9 +36,11 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var additionalQuickTools: [String: WorkspaceButton] = [:]
     private var additionalNavigationTools: [String: WorkspaceButton] = [:]
     private var customizeToolbars = UserDefaults.standard.object(forKey: "SolidCraft.workspace.quickAccess.enabled") as? Bool ?? true
+    private var holdInMore = UserDefaults.standard.object(forKey: "SolidCraft.workspace.quickAccess.holdInMore") as? Bool ?? true
+    private weak var navigationOverflow: QuickAccessOverflowController?
     private var showToolLabels = ToolLabels.current
     private var groupRelatedTools = ToolGrouping.enabled(UserDefaults.standard.object(forKey: ToolGrouping.key) as? Bool)
-    private lazy var navigationMoreButton = WorkspaceButton(QuickAccessText.text("more"), action: {})
+    private lazy var navigationMoreButton = WorkspaceButton(QuickAccessText.text("more")) { [weak self] in self?.showNavigationMore() }
     private let historyActions = WorkspaceToolStack()
     private let featureHistory = FeatureHistoryBar()
     private var historyExpanded = false
@@ -1919,7 +1921,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         viewButton.menu = nil; viewButton.showsMenuAsPrimaryAction = false
         homeButton.availability(enabled: !viewCameraLocked && (!homeToolbar || (state?.sketch == nil && viewPresentation?.planar != true)))
         updateAdditionalQuickTools()
-        navigationMoreButton.menu = navigationQuickAccess?.overflowMenu()
+        rebuildNavigationMore()
         navigationMoreButton.availability(enabled: !numericEditing && !modellingCommitting && pending.isEmpty)
         refreshSettingsViewItems()
         viewControlsPopover?.render(viewPresentation, cameraEnabled: !viewCameraLocked,
@@ -3949,10 +3951,30 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         for bar in [railQuickAccess, navigationQuickAccess].compactMap({ $0 }) { bar.customizationEnabled = customizeToolbars }
         navigationMoreButton.systemArtwork("ellipsis", compact: true)
         navigationMoreButton.accessibilityIdentifier = "workspace-navigation-more"
-        navigationMoreButton.showsMenuAsPrimaryAction = true
+        rebuildNavigationMore()
         navigationMoreButton.isHidden = !customizeToolbars
         railQuickAccess?.arrange(fixed: [sketchToolsButton, toolsMoreButton])
         navigationQuickAccess?.arrange(fixed: [navigationMoreButton])
+    }
+
+    private func rebuildNavigationMore() {
+        navigationMoreButton.menu = holdInMore ? nil : navigationQuickAccess?.overflowMenu()
+        navigationMoreButton.showsMenuAsPrimaryAction = !holdInMore
+        navigationOverflow?.render()
+    }
+
+    private func showNavigationMore(animated: Bool = true) {
+        guard customizeToolbars, holdInMore, navigationMoreButton.isEnabled,
+              presentedViewController == nil, let navigationQuickAccess else { return }
+        canvas.cancelInput(); view.endEditing(true)
+        let panel = QuickAccessOverflowController(bar: navigationQuickAccess)
+        panel.overrideUserInterfaceStyle = workspaceInterfaceStyle
+        if let popover = panel.popoverPresentationController {
+            popover.sourceView = navigationMoreButton; popover.sourceRect = navigationMoreButton.bounds
+            popover.permittedArrowDirections = [.left, .right]; popover.delegate = self
+        }
+        navigationOverflow = panel
+        present(panel, animated: animated)
     }
 
     private func registerAdditionalQuickTools() {
@@ -4575,6 +4597,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.customizeToolbars, forKey: "SolidCraft.workspace.quickAccess.enabled")
             self.configureChrome(); self.rebuildMenus()
         })
+        preferences[.workspace, default: []].append(UIAction(title: QuickAccessText.text("hold_in_more"), subtitle: QuickAccessText.text("hold_in_more_help"), state: holdInMore ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.holdInMore.toggle()
+            UserDefaults.standard.set(self.holdInMore, forKey: "SolidCraft.workspace.quickAccess.holdInMore")
+            self.rebuildMenus()
+        })
         settingsSections = WorkspaceSettingsCategory.allCases.map {
             WorkspaceSettingsSection(category: $0, items: preferences[$0] ?? [])
         }
@@ -4589,7 +4617,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let groupedCommands = Set(tools.map(\.id) + (state?.assembly?.tools ?? []).map(\.id) + sketchTools.map(\.0) + ["sketch.project"])
         toolsMoreButton.menu = UIMenu(children: (customizeToolbars ? [railQuickAccess?.overflowMenu(excluding: groupedCommands)].compactMap { $0 } : []) + commands)
         toolsMoreButton.showsMenuAsPrimaryAction = true
-        navigationMoreButton.menu = navigationQuickAccess?.overflowMenu()
+        rebuildNavigationMore()
         navigationMoreButton.availability(enabled: settingsButton.isEnabled)
     }
 
@@ -6506,7 +6534,8 @@ private extension FoundationController {
               let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         var issues: [String] = []
         func capture(_ name: String) {
-            let image = UIGraphicsImageRenderer(bounds: view.bounds).image { _ in view.drawHierarchy(in: view.bounds, afterScreenUpdates: true) }
+            let surface: UIView = view.window ?? view
+            let image = UIGraphicsImageRenderer(bounds: surface.bounds).image { _ in surface.drawHierarchy(in: surface.bounds, afterScreenUpdates: true) }
             do {
                 try image.pngData()?.write(to: directory.appendingPathComponent("quick-access-" + name + ".png"), options: .atomic)
             } catch { issues.append("Capture: \(error)") }
@@ -6515,12 +6544,32 @@ private extension FoundationController {
             issues += left.map { "Tools: " + $0 }
             navigationQuickAccess.developmentCheck(capture: { capture("navigation-" + $0) }) { right in
                 issues += right.map { "Navigation: " + $0 }
-                do {
-                    try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
-                        "coverage": "Synthetic production drag path on physical iPad; no physical contacts"])
-                        .write(to: directory.appendingPathComponent("quick-access-check.json"), options: .atomic)
-                } catch { print("Quick access report failed: \(error)") }
-                print("Quick access check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+                let savedHoldInMore = self.holdInMore
+                let restore = navigationQuickAccess.developmentPreserveLayout(overflowID: "view.top")
+                self.holdInMore = false; self.rebuildNavigationMore()
+                if self.navigationMoreButton.menu == nil || !self.navigationMoreButton.showsMenuAsPrimaryAction {
+                    issues.append("More: legacy menu preference did not restore the previous menu")
+                }
+                self.holdInMore = true; self.rebuildNavigationMore()
+                self.showNavigationMore(animated: false)
+                guard let popup = self.navigationOverflow else {
+                    restore(); self.holdInMore = savedHoldInMore; self.rebuildNavigationMore()
+                    print("Quick access FAIL: More did not open"); return
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                    popup.developmentCheck(capture: capture) { overflow in
+                        issues += overflow.map { "More: " + $0 }
+                        popup.dismiss(animated: false)
+                        restore(); self.holdInMore = savedHoldInMore; self.rebuildNavigationMore()
+                        do {
+                            try JSONSerialization.data(withJSONObject: ["passed": issues.isEmpty, "issues": issues,
+                                "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
+                                "coverage": "Synthetic production drag and More hold/add paths on physical iPad; no physical contacts"])
+                                .write(to: directory.appendingPathComponent("quick-access-check.json"), options: .atomic)
+                        } catch { print("Quick access report failed: \(error)") }
+                        print("Quick access check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+                    }
+                }
             }
         }
     }

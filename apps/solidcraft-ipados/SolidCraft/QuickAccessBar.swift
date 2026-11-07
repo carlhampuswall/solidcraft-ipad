@@ -288,6 +288,21 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
         ])
     }
 
+    var overflowButtons: [(id: String, button: WorkspaceButton)] {
+        guard customizationEnabled else { return [] }
+        return layout.overflow(from: catalog).compactMap { id in
+            guard let button = buttons[id], !button.isHidden else { return nil }
+            return (id, button)
+        }
+    }
+
+    func activateOverflow(_ id: String) {
+        guard let button = overflowButtons.first(where: { $0.id == id })?.button,
+              button.isEnabled else { return }
+        button.sendActions(for: .touchUpInside)
+        button.sendActions(for: .primaryActionTriggered)
+    }
+
     func addMenu(ids: [String]) -> UIMenu? {
         guard customizationEnabled else { return nil }
         let actions = layout.overflow(from: ids).compactMap { id -> UIAction? in
@@ -307,7 +322,7 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
         layout.remove(id); changed()
     }
 
-    private func reset() {
+    func reset() {
         guard held == nil else { return }
         layout = QuickAccessLayout(defaults: defaults); changed()
     }
@@ -475,6 +490,17 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
     }
 
 #if DEBUG
+    func developmentPreserveLayout(overflowID: String? = nil) -> () -> Void {
+        let original = layout
+        let saved = UserDefaults.standard.data(forKey: preferenceKey)
+        if let overflowID { remove(overflowID) }
+        return { [self] in
+            layout = original
+            UserDefaults.standard.set(saved, forKey: preferenceKey)
+            applyOrder(); onLayout?(); onChange?()
+        }
+    }
+
     /// Synthetic production-path checks; gesture delivery still needs fingers.
     func developmentCheck(capture: @escaping (String) -> Void, completion: @escaping ([String]) -> Void) {
         let original = layout
@@ -607,6 +633,180 @@ final class QuickAccessBar: NSObject, UIGestureRecognizerDelegate {
                     }
                 }
             }
+        }
+    }
+#endif
+}
+
+/// More stays open while a held row reveals its pin action. A hold never runs
+/// the tool; ordinary taps dismiss this list before using the original control.
+final class QuickAccessOverflowController: UITableViewController {
+    private let bar: QuickAccessBar
+    private var items: [(id: String, button: WorkspaceButton)] = []
+    private var heldID: String?
+    private var choosing = false
+
+    init(bar: QuickAccessBar) {
+        self.bar = bar
+        super.init(style: .plain)
+        modalPresentationStyle = .popover
+        title = QuickAccessText.text("more")
+        render()
+    }
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tableView.accessibilityIdentifier = "workspace-navigation-overflow"
+        tableView.backgroundColor = WorkspaceStyle.surface
+        tableView.rowHeight = UITableView.automaticDimension
+        tableView.estimatedRowHeight = 52
+        tableView.tableFooterView = UIView()
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(hold(_:)))
+        hold.minimumPressDuration = 0.4
+        tableView.addGestureRecognizer(hold)
+        render()
+    }
+
+    func render() {
+        items = bar.overflowButtons
+        if !items.contains(where: { $0.id == heldID }) { heldID = nil }
+        let count = items.count + (heldID == nil ? 0 : 1) + 1
+        preferredContentSize = CGSize(width: 320, height: min(560, CGFloat(count) * 56))
+        if isViewLoaded { tableView.reloadData() }
+    }
+
+    private var additionRow: Int? {
+        items.firstIndex(where: { $0.id == heldID }).map { $0 + 1 }
+    }
+
+    private func item(at row: Int) -> (id: String, button: WorkspaceButton)? {
+        if row == additionRow { return nil }
+        let index = row - (additionRow.map { row > $0 ? 1 : 0 } ?? 0)
+        return items.indices.contains(index) ? items[index] : nil
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        items.count + (heldID == nil ? 0 : 1) + 1
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = UITableViewCell(style: .default, reuseIdentifier: nil)
+        var content = cell.defaultContentConfiguration()
+        content.textProperties.numberOfLines = 0
+        content.textProperties.color = WorkspaceStyle.foreground
+        content.directionalLayoutMargins.top = 14
+        content.directionalLayoutMargins.bottom = 14
+        cell.backgroundColor = WorkspaceStyle.surface
+        cell.accessibilityTraits = .button
+        if let item = item(at: indexPath.row) {
+            content.text = item.button.accessibilityLabel
+            content.image = item.button.configuration?.image
+            content.secondaryText = item.button.isEnabled ? nil : item.button.accessibilityHint
+            if !item.button.isEnabled { content.textProperties.color = WorkspaceStyle.secondary }
+            cell.accessibilityIdentifier = "workspace-overflow-" + item.id
+            cell.accessibilityCustomActions = [UIAccessibilityCustomAction(name: QuickAccessText.text("add")) { [weak self] _ in
+                self?.add(item.id); return self != nil
+            }]
+        } else if indexPath.row == additionRow {
+            content.text = QuickAccessText.text("add")
+            content.image = UIImage(systemName: "plus")
+            content.textProperties.color = view.tintColor
+            cell.accessibilityIdentifier = "workspace-overflow-add"
+        } else {
+            content.text = QuickAccessText.text("reset")
+            cell.accessibilityIdentifier = "workspace-overflow-reset"
+        }
+        cell.contentConfiguration = content
+        return cell
+    }
+
+    @objc private func hold(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began,
+              let path = tableView.indexPathForRow(at: gesture.location(in: tableView)) else { return }
+        revealAddition(at: path)
+    }
+
+    private func revealAddition(at path: IndexPath) {
+        guard !choosing, let item = item(at: path.row) else { return }
+        heldID = item.id
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        render()
+        if let row = additionRow {
+            let path = IndexPath(row: row, section: 0)
+            tableView.scrollToRow(at: path, at: .none, animated: true)
+            UIAccessibility.post(notification: .layoutChanged, argument: tableView.cellForRow(at: path))
+        }
+    }
+
+    private func add(_ id: String) {
+        guard items.contains(where: { $0.id == id }) else { return }
+        heldID = nil
+        bar.add(id)
+        render()
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard !choosing else { return }
+        if let item = item(at: indexPath.row) {
+            guard item.button.isEnabled else { return }
+            choosing = true
+            dismiss(animated: true) { [bar] in bar.activateOverflow(item.id) }
+        } else if indexPath.row == additionRow, let id = heldID {
+            add(id)
+        } else {
+            heldID = nil
+            bar.reset()
+            render()
+        }
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        [UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(close))]
+    }
+    @objc private func close() { dismiss(animated: true) }
+
+#if DEBUG
+    func developmentCheck(capture: @escaping (String) -> Void, completion: @escaping ([String]) -> Void) {
+        var issues: [String] = []
+        func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
+        guard let index = items.firstIndex(where: { $0.id == "view.top" }) else {
+            completion(["Top must be in More before the hold check"]); return
+        }
+        let restore = bar.developmentPreserveLayout()
+        let button = items[index].button
+        let enabled = button.isEnabled
+        capture("more-before")
+        revealAddition(at: IndexPath(row: index, section: 0))
+        check(!bar.contains("view.top"), "Holding Top pinned it without choosing Add")
+        check(additionRow == index + 1, "Add did not appear immediately below Top")
+        check(presentedViewController == nil, "Holding Top opened another popup")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [self] in
+            capture("more-held")
+            if let row = additionRow {
+                check(tableView(tableView, cellForRowAt: IndexPath(row: row, section: 0)).accessibilityIdentifier == "workspace-overflow-add", "Held action is not accessible")
+                tableView(tableView, didSelectRowAt: IndexPath(row: row, section: 0))
+            }
+            check(bar.contains("view.top") && button.superview != nil, "Add did not pin Top")
+            check(!items.contains(where: { $0.id == "view.top" }), "Pinned Top remained duplicated in More")
+            restore(); render()
+            // Camera-disabled commands can still be pinned, but tapping them
+            // must leave the popup open and must not dispatch their command.
+            button.isEnabled = false
+            if let index = items.firstIndex(where: { $0.id == "view.top" }) {
+                let path = IndexPath(row: index, section: 0)
+                tableView(tableView, didSelectRowAt: path)
+                check(!choosing, "A disabled view command was selected")
+                revealAddition(at: path)
+                check(additionRow == index + 1, "Disabled tool lost its hold action")
+                if let row = additionRow { tableView(tableView, didSelectRowAt: IndexPath(row: row, section: 0)) }
+                check(bar.contains("view.top"), "Disabled tool could not be pinned")
+            }
+            button.isEnabled = enabled
+            restore(); heldID = nil; render()
+            capture("more-restored")
+            completion(issues)
         }
     }
 #endif
