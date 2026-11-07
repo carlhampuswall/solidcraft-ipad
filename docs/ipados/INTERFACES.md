@@ -353,7 +353,10 @@ session merely to show a preview.
 Native requests use `requestNumeric` or `requestModelling`:
 
 - Begin returns a token and current native form/parameter data. Numeric actions
-  use preview/commit/cancel; model actions also include inspect and selection.
+  use preview/commit/cancel. Model actions also include inspect and selection.
+  After a handle drag, the host reads the settled draft with the read-only
+  model action `state`. This preserves a newly grabbed contact and never queues
+  another preview of the same parameters.
 - Extrusion selection accepts `params:{"field":"profile"|"targets"}`. Target
   mode temporarily picks whole bodies and updates only the target list; source
   mode resolves sketch regions or planar faces. The native form synchronizes

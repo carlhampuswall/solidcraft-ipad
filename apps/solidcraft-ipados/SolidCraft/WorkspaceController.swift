@@ -209,6 +209,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private weak var modelValueEditor: NumericValueEditorController?
     private lazy var modelValueButton = WorkspaceButton(HandleText.text("edit_value")) { [weak self] in self?.editModelValue() }
     private var modellingSelectionPending = false
+    private var handleRead: UUID?
     private var modellingInspectPending = false
     private var modellingCommitting = false
     private var modellingPreviewQueue = ModellingPreviewQueue()
@@ -542,7 +543,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.modelValue = self.acceptsModelValueFrame ? value : nil
             self.layoutModelValue()
         }
-        session.onToolWorkCompleted = { [weak self] in self?.inspectModelling() }
+        session.onModelHandleSettled = { [weak self] token, error in self?.readHandleResult(token, error: error) }
         session.onModelApplyRequested = { [weak self] token in
             guard let self, self.modellingToken == token else { return }
             self.requestDraftApply()
@@ -575,7 +576,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 self.acceptsModelValueFrame = true
                 let staleChanged = self.previewStale != previewStale
                 self.previewStale = previewStale
-                if previewStale { self.modellingInspector?.invalidatePreview() }
+                if previewStale && staleChanged { self.modellingInspector?.invalidatePreview() }
                 if staleChanged { self.updateStatus() }
             }
             #if DEBUG
@@ -2194,7 +2195,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 }
                 self.inspectorOpen = form.extrusionBar == nil; self.browserOpen = false; self.failure = nil
                 self.relayoutPanels()
-                self.scheduleModellingPreview()
+                if !ModellingFormPresentation.needsExtrusionDistance(form.params) { self.scheduleModellingPreview() }
 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("--auto-face-extrude-check"),
                    operation == "solid.extrude", feature == nil {
@@ -2233,7 +2234,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 
     private func drainDraftApply() {
         guard pendingTapAwayApply, let form = modellingInspector, !session.toolActivityInFlight,
-              !modellingInspectPending, !modellingContextInspectInFlight, modellingPreviewQueue.active == nil,
+              handleRead == nil, !modellingInspectPending, !modellingContextInspectInFlight, modellingPreviewQueue.active == nil,
               form.handleEntryEnabled else { return }
         pendingTapAwayApply = false
         guard !ModellingFormPresentation.needsExtrusionDistance(form.params), !ModellingFormPresentation.needsCombineBodies(form.params) else {
@@ -2312,6 +2313,33 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
 #if DEBUG
             let check = self.assemblyCheckEvaluated; self.assemblyCheckEvaluated = nil; check?(result, commit)
 #endif
+        }
+    }
+
+    /// The handle worker owns drag previews. Read the settled draft once on lift.
+    /// A selection inspection can change inputs and start another evaluation.
+    private func readHandleResult(_ token: UInt64, error: BridgeError?) {
+        guard token == modellingToken, let form = modellingInspector, !modellingCommitting else { return }
+        let read = UUID(), version = modellingFormVersion, params = form.params
+        handleRead = read
+        session.requestModelling(action: "state", token: token) { [weak self, weak form] result in
+            guard let self, self.handleRead == read, token == self.modellingToken else { return }
+            self.handleRead = nil
+            defer { self.drainDraftApply() }
+            guard self.modellingFormVersion == version, let form, form.params == params else { return }
+            switch result {
+            case .success(let model):
+                form.inspected(model)
+                if let error, model.valid != true {
+                    self.pendingTapAwayApply = false
+                    form.failed(error)
+                    self.failure = error.message
+                } else if model.valid == true {
+                    self.failure = nil
+                }
+            case .failure(let failure): form.failed(failure)
+            }
+            self.updateStatus()
         }
     }
 
@@ -2474,6 +2502,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorPanel.setFooter(nil); inspectorPanel.setTitle(WorkspaceStyle.text("inspector"))
         previewStale = false
         modellingToken = nil; modellingFeature = nil; modellingContext = nil; modellingStarting = false
+        handleRead = nil
         modellingCommitting = false; modellingInspectPending = false; modellingSelectionPending = false
         modellingPreviewQueue.clear()
         modellingFormVersion &+= 1; modellingContextInspectInFlight = false
@@ -5203,6 +5232,7 @@ private extension FoundationController {
         compactToolControls = true; compactInspector = true; applySolidOnTapAway = true
         (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles) = (true, true, false, true)
         var issues: [String] = [], measurements: [[String: Any]] = []
+        let presentValue = session.onModelValue
         var finished = false
         func find(_ id: String, in root: UIView) -> UIView? {
             if root.accessibilityIdentifier == id { return root }
@@ -5219,6 +5249,7 @@ private extension FoundationController {
         }
         func finish(_ issue: String? = nil) {
             guard !finished else { return }; finished = true
+            session.onModelValue = presentValue
             if let issue { issues.append(issue); capture("failed") }
             compactToolControls = savedControls; compactInspector = savedCompact; applySolidOnTapAway = savedApply
             (tuckExtrudeOptions, extrudeOnFaceSelection, automaticExtrudeDepth, directHandles) = savedExtrude
@@ -5348,11 +5379,31 @@ private extension FoundationController {
                         }
                     }
                     if finishMode == 0 { capture("face-selected") }
-                    self.session.developmentSurfaceDrag(from: origin, to: [origin[0], origin[1], origin[2] + 5], source: .pencil) { drag in
-                        if case .failure(let error) = drag { finish("Handle drag failed: " + error.description) }
+                    var lifted = false
+                    var frames: [[Double]] = []
+                    if finishMode == 0 {
+                        let start = ProcessInfo.processInfo.systemUptime
+                        self.session.onModelValue = { value in
+                            presentValue?(value)
+                            if let depth = value?.value, depth != frames.last?.last {
+                                frames.append([ProcessInfo.processInfo.systemUptime - start, depth])
+                            }
+                        }
                     }
-                    wait("face handle drag", until: { form.handleEntryEnabled && self.modelValue?.valid == true &&
-                        abs(self.modelValue?.value ?? 0) > 1 && self.canvas.displayingPreview && apply.isEnabled && !self.modellingInspectPending }) {
+                    self.session.developmentSurfaceDrag(from: origin, to: [origin[0], origin[1], origin[2] + 5], source: .pencil,
+                                                       pauseAndReverse: finishMode == 0) { drag in
+                        if case .failure(let error) = drag { finish("Handle drag failed: " + error.description) }
+                        lifted = true
+                    }
+                    wait("face handle drag", until: { lifted && self.handleRead == nil && form.handleEntryEnabled && self.modelValue?.valid == true &&
+                        abs((self.modelValue?.value ?? 0) - 5) < 0.11 && self.canvas.displayingPreview && apply.isEnabled && !self.modellingInspectPending }) {
+                        if finishMode == 0 {
+                            self.session.onModelValue = presentValue
+                            measurements.append(["face_drag_elapsed_seconds_and_depth_mm": frames])
+                            guard frames.contains(where: { ($0.last ?? 0) > 6 }) else {
+                                finish("The displayed handle missed the outward stroke before reversing"); return
+                            }
+                        }
                         func nextFace() {
                             self.session.command("select.clear") { _ in
                                 wait("clear face", until: { self.state?.selection.isEmpty == true && self.pending.isEmpty }) {

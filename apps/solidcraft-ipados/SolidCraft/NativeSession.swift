@@ -243,7 +243,7 @@ final class NativeSession {
     var onReferenceLabels: (([ReferenceLabelPresentation]) -> Void)?
     var onViewPresentation: ((ViewControlsPresentation) -> Void)?
     var onModelValue: ((ModelValuePresentation?) -> Void)?
-    var onToolWorkCompleted: (() -> Void)?
+    var onModelHandleSettled: ((UInt64, BridgeError?) -> Void)?
     var onModelDismissed: ((UInt64) -> Void)?
     var onModelApplyRequested: ((UInt64) -> Void)?
     private var lastModelApplyRequest: [UInt64]?
@@ -1036,10 +1036,8 @@ final class NativeSession {
                 let reply = try state.request(Data("{\"kind\":\"input_batch\",\"events\":".utf8) + events + Data("}".utf8), lane: .viewport)
 #if DEBUG
                 self?.traceInput(batch.samples, before: before, reply: reply)
-#else
-                _ = reply
 #endif
-                self?.drainToolWork()
+                self?.drainToolWork(viewport: reply)
                 DispatchQueue.main.async { [weak self] in self?.redraw() }
             } catch {
 #if DEBUG
@@ -1052,11 +1050,13 @@ final class NativeSession {
 
     /// Runs on display. The Rust mailbox replaces pending previews, while this gate
     /// bounds work on the engine queue. Cancellation invalidates in-flight tickets.
-    private func drainToolWork() {
-        guard !toolBusy, let ticket = lifecycle.ticket else { return }
+    @discardableResult
+    private func drainToolWork(viewport: Data? = nil) -> ToolPending.Pending? {
+        guard !toolBusy, let ticket = lifecycle.ticket else { return nil }
         do {
-            let data = try state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)
-            guard try JSONDecoder().decode(ToolPending.self, from: data).result.tool_pending else { return }
+            let data = try viewport ?? state.request(Data("{\"kind\":\"snapshot\"}".utf8), lane: .viewport)
+            let pending = try JSONDecoder().decode(ToolPending.self, from: data).result
+            guard pending.tool_pending else { return pending }
             toolBusy = true
             DispatchQueue.main.async { [weak self] in self?.beginToolActivity(ticket: ticket) }
             engine.async { [weak self, state, lifecycle] in
@@ -1069,22 +1069,32 @@ final class NativeSession {
                 self?.display.async { [weak self] in
                     guard let self else { return }
                     self.toolBusy = false
-                    self.drainToolWork()
+                    let pending = self.drainToolWork()
                     let stillBusy = self.toolBusy
                     DispatchQueue.main.async { [weak self] in
                         guard let self, self.alive, lifecycle.accepts(ticket) else { return }
                         if !stillBusy { self.endToolActivity(ticket: ticket) }
-                        if let completedFailure { self.onFailure?(completedFailure) }
-                        self.onToolWorkCompleted?()
+                        if let token = pending?.model_token {
+                            if !stillBusy && pending?.model_handle_held == false {
+                                self.onModelHandleSettled?(token, completedFailure)
+                            }
+                        } else if let completedFailure {
+                            self.onFailure?(completedFailure)
+                        }
                         self.redraw()
                     }
                 }
             }
-        } catch { failure(error) }
+            return pending
+        } catch { failure(error); return nil }
     }
 
     private struct ToolPending: Decodable {
-        struct Pending: Decodable { let tool_pending: Bool }
+        struct Pending: Decodable {
+            let tool_pending: Bool
+            let model_token: UInt64?
+            let model_handle_held: Bool?
+        }
         let result: Pending
     }
 
@@ -1210,7 +1220,7 @@ final class NativeSession {
     /// Device acceptance only: actual samples enter the production mailbox.
     /// World points belong to the disposable fixture, never a user's design.
     func developmentSurfaceDrag(from start: [Double], to end: [Double], source: InputSample.Source,
-                                completion: @escaping (Result<Void, BridgeError>) -> Void) {
+                                pauseAndReverse: Bool = false, completion: @escaping (Result<Void, BridgeError>) -> Void) {
         guard alive, let ticket = lifecycle.ticket else {
             completion(.failure(BridgeError(code: "surface_check", message: "Viewport inactive"))); return
         }
@@ -1231,17 +1241,36 @@ final class NativeSession {
                 let first = try project(start), last = try project(end)
                 DispatchQueue.main.async { [weak self] in
                     guard let self, self.alive, lifecycle.accepts(ticket) else { return }
-                    for (index, phase) in [InputSample.Phase.began, .moved, .ended].enumerated() {
-                        let point = index == 0 ? first : last
+                    func send(_ phase: InputSample.Phase, fraction: Double) {
+                        let point = zip(first, last).map { $0 + ($1 - $0) * fraction }
                         var sample = InputSample(source: source, phase: phase, id: 9400,
                             x_points: point[0], y_points: point[1], x_pixels: point[0] * metrics.scale, y_pixels: point[1] * metrics.scale,
-                            scale: metrics.scale, timestamp: ProcessInfo.processInfo.systemUptime + Double(index) * 0.001,
+                            scale: metrics.scale, timestamp: ProcessInfo.processInfo.systemUptime,
                             pressure: nil, altitude: nil, geometry_revision: report.geometry_revision, consumed: false, shift: false, button: 0, scroll: 0)
                         sample.viewport_epoch = report.viewport_epoch; sample.camera_epoch = report.camera_epoch
                         sample.document_id = report.document_id; sample.display_preview = report.preview == true
                         self.record(sample)
                     }
-                    completion(.success(()))
+                    send(.began, fraction: 0)
+                    guard pauseAndReverse else {
+                        send(.moved, fraction: 1); send(.ended, fraction: 1)
+                        completion(.success(())); return
+                    }
+                    // Cross the form preview debounce with the same Pencil down,
+                    // then reverse. Losing capture at the pause leaves the wrong depth.
+                    for i in 1...36 {
+                        let returning = i > 24
+                        let fraction = returning ? 1.5 - Double(i - 24) / 24 : Double(i) / 16
+                        let delay = Double(i) / 120 + (returning ? 0.65 : 0)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                            guard self.alive, lifecycle.accepts(ticket) else { return }
+                            send(.moved, fraction: fraction)
+                            if i == 36 {
+                                send(.ended, fraction: 1)
+                                completion(.success(()))
+                            }
+                        }
+                    }
                 }
             } catch {
                 let failure = BridgeState.error(error)

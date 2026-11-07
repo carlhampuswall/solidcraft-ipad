@@ -357,17 +357,27 @@ impl Viewport {
     }
 
     pub fn input(&mut self, e: InputEvent) -> Result<Value, AdapterError> {
-        if let Err(failure) = e.validate() {
-            self.cancel_interactions();
-            return Err(failure);
+        self.input_batch(std::iter::once(e))
+    }
+
+    /// Route every actual sample in order, then describe the final viewport once.
+    pub fn input_batch(&mut self, events: impl IntoIterator<Item = InputEvent>) -> Result<Value, AdapterError> {
+        let mut last = None;
+        for e in events {
+            if let Err(failure) = e.validate() {
+                self.cancel_interactions();
+                return Err(failure);
+            }
+            let source = e.source;
+            let phase = e.phase;
+            last = Some((source, phase, self.route(e)?));
         }
-        let source = e.source;
-        let phase = e.phase;
-        let handled = self.route(e)?;
         let mut reply = self.diagnostic();
-        reply["source"] = json!(source);
-        reply["phase"] = json!(phase);
-        reply["handled"] = json!(handled);
+        if let Some((source, phase, handled)) = last {
+            reply["source"] = json!(source);
+            reply["phase"] = json!(phase);
+            reply["handled"] = json!(handled);
+        }
         Ok(reply)
     }
 
@@ -375,6 +385,13 @@ impl Viewport {
         self.contacts.clear();
         self.hover = None;
         self.changed();
+    }
+
+    pub fn model_handle_held(&self) -> bool {
+        self.contacts
+            .drag
+            .as_ref()
+            .is_some_and(|drag| matches!(drag.work.operation, ToolOperation::Modelling { .. }) && self.contacts.items.contains_key(&drag.contact))
     }
 
     pub fn take_tool_work(&mut self) -> Option<ToolWork> {
@@ -525,6 +542,9 @@ impl Viewport {
                 && let Some(edit) = &mut self.modelling
             {
                 edit.preview = None;
+                if !self.model_handle_held() {
+                    self.contacts.drag = None;
+                }
             }
             // A failed preview is still provisional. Preserve the last valid display
             // and contact anchors so the next actual sample can recover normally.
@@ -582,7 +602,7 @@ impl Viewport {
             if (p[0] - q[0]).hypot(p[1] - q[1]) / self.metrics.scale > if self.direct_handles { 24. } else { 16. } {
                 return false;
             }
-            let Some(plane) = h.interaction_plane(self.camera.back()) else {
+            let Some(plane) = h.interaction_plane(&self.camera) else {
                 return false;
             };
             let Some(anchor) = self.plane_point(point, plane) else {
@@ -668,7 +688,7 @@ impl Viewport {
                 let Some(h) = self.modelling.as_ref().and_then(|e| e.handle.as_ref()) else {
                     return;
                 };
-                let Some(plane) = h.interaction_plane(self.camera.back()) else {
+                let Some(plane) = h.interaction_plane(&self.camera) else {
                     return;
                 };
                 (plane, h.factor)
@@ -697,11 +717,10 @@ impl Viewport {
             if !moved {
                 return;
             }
-            let radius = self
-                .modelling
-                .as_ref()
-                .and_then(|e| e.handle.as_ref())
-                .map_or_else(|| d.anchor_radius + (world - d.anchor).dot(plane.x) / factor, |h| h.proposal(d.anchor, world, d.anchor_radius));
+            let radius = self.modelling.as_ref().and_then(|e| e.handle.as_ref()).map_or_else(
+                || d.anchor_radius + (world - d.anchor).dot(plane.x) / factor,
+                |h| h.proposal(d.anchor, world, d.anchor_radius, plane.x),
+            );
             // Quantise the proposed parameter, never the contact position. Keep
             // the original anchor so sub-step motion accumulates without drift.
             let linear = self.modelling.as_ref().and_then(|edit| edit.handle.as_ref()).is_none_or(|handle| !handle.angular && handle.units == "mm");

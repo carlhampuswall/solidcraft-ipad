@@ -973,7 +973,7 @@ impl Viewport {
             "selection":self.selection,"hover":self.hover,"filter":self.filter,"multiple":self.multiple,
             "updating":self.updating,"drag_step_mm":self.drag_step_mm,"camera":self.camera,"viewport_epoch":self.metrics_epoch,"camera_epoch":self.camera_epoch,"metrics":self.metrics,
             "volume_mm3":self.model.as_ref().map(|m|m.volume_mm3),"preview_volume_mm3":self.display_model().filter(|m| self.model.as_ref().is_none_or(|a| !Arc::ptr_eq(a,m))).map(|m|m.volume_mm3),"preview":self.contacts.preview.is_some() || self.numeric.as_ref().is_some_and(|e|e.preview.is_some()) || self.modelling.as_ref().is_some_and(|e|e.preview.is_some() || e.last_preview.is_some()),"preview_stale":self.modelling.as_ref().is_some_and(|e|e.preview.is_none() && e.last_preview.is_some()),"numeric_token":self.numeric.as_ref().map(|e|e.token),"model_token":self.modelling.as_ref().map(|e|e.token),
-            "input":input,"tool_pending":self.contacts.diagnostic()["tool_pending"],"planar":self.planar,
+            "tool_pending":input["tool_pending"],"model_handle_held":self.model_handle_held(),"input":input,"planar":self.planar,
             "origin":self.origin,"reference_labels":self.reference_labels(),
             "background":self.background.map(|color| [color.0,color.1,color.2]),
             "sketch_color":self.sketch_color.map(|color| [color.0,color.1,color.2]),
@@ -1154,7 +1154,7 @@ impl Viewport {
                     .modelling
                     .as_ref()
                     .and_then(|edit| edit.handle.as_ref())
-                    .is_some_and(|h| !h.angular && self.draw_linear_handle(&mut scene, p, h.normal));
+                    .is_some_and(|h| !h.angular && self.draw_linear_handle(&mut scene, p, h.drag_axis(&self.camera)));
             for axis in [right, up].into_iter().filter(|_| !arrow) {
                 scene.lines.push(SceneLine {
                     points: vec![p - axis * size, p + axis * size],

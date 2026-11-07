@@ -996,6 +996,70 @@ fn modelling_face_extrusion_waits_for_user_distance_and_clearing_restores_source
 }
 
 #[test]
+fn face_handle_tracks_a_face_on_stroke_across_invalid_depth_and_recovers_after_lift() {
+    let _serial = isolated_registry();
+    let id = sc_session_create();
+    engine_command(id, "solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Stock"}));
+    view_request(id, json!({"kind":"viewport","metrics":{"width_points":800,"height_points":600,"scale":2}}));
+    for command in ["view.top", "view.fit"] {
+        view_request(id, json!({"kind":"command","command":command,"params":{}}));
+    }
+    let params = json!({"profile":{"faces":[[20,15,10]],"face_body":"Stock"},"distance":""});
+    assert_eq!(request(id, &json!({"kind":"model","action":"begin","operation":"solid.extrude","params":params}).to_string()), 0);
+    let model = response(id)["result"].clone();
+    let token = model["token"].as_u64().unwrap();
+    let origin = &model["viewport"]["model_value"]["position"];
+    let (x, y) = (origin[0].as_f64().unwrap(), origin[1].as_f64().unwrap());
+    let sample = |phase: &str, offset: f64, time: u32| {
+        let y = y - offset;
+        view_request(
+            id,
+            json!({"kind":"input","event":{"source":"pencil","phase":phase,"id":7,"timestamp":time,
+            "x_points":x,"y_points":y,"x_pixels":x*2.,"y_pixels":y*2.,"scale":2,
+            "geometry_revision":model["viewport"]["geometry_revision"]}}),
+        )
+    };
+    let state = || {
+        assert_eq!(request(id, &json!({"kind":"model","action":"state","token":token}).to_string()), 0);
+        response(id)["result"].clone()
+    };
+    let evaluate = || request(id, r#"{"kind":"tool_work"}"#);
+    sample("began", 0., 1);
+    sample("moved", 45., 2);
+    assert_eq!(evaluate(), 0);
+    let first = state();
+    assert_eq!(first["viewport"]["model_handle_held"], true);
+    let first_depth = first["handle"]["distance"].as_f64().unwrap();
+    assert!(first_depth > 0.);
+    sample("moved", 0., 3);
+    assert_eq!(evaluate(), -1, "zero depth must fail provisionally");
+    let invalid = state();
+    assert_eq!(invalid["valid"], false);
+    assert_eq!(invalid["viewport"]["preview_volume_mm3"], first["viewport"]["preview_volume_mm3"]);
+    assert_eq!(invalid["viewport"]["model_handle_held"], true);
+    sample("moved", 20., 4);
+    assert_eq!(evaluate(), 0);
+    let recovered = state();
+    assert_eq!(recovered["valid"], true);
+    let depth = recovered["handle"]["distance"].as_f64().unwrap();
+    assert!(depth > 0. && depth < first_depth);
+    sample("ended", 0., 5);
+    assert_eq!(evaluate(), -1);
+    let released = state();
+    assert_eq!(released["viewport"]["input"]["edit"], Value::Null);
+    assert_eq!(released["valid"], false);
+    sample("began", 0., 6);
+    sample("ended", 30., 7);
+    assert_eq!(evaluate(), 0);
+    let result = state();
+    assert_eq!(result["valid"], true);
+    assert_eq!(result["viewport"]["volume_mm3"], 12_000.);
+    let expected = 1200. * (10. + result["handle"]["distance"].as_f64().unwrap());
+    assert!((result["viewport"]["preview_volume_mm3"].as_f64().unwrap() - expected).abs() < 1e-5);
+    assert_eq!(sc_session_destroy(id), 0);
+}
+
+#[test]
 fn modelling_sketch_attachment_uses_exact_face_form_preview_cancel_and_single_commit() {
     let _serial = isolated_registry();
     let id = sc_session_create();

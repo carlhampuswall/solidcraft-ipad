@@ -159,20 +159,26 @@ impl ModelHandle {
             self.origin + self.normal * self.distance * self.factor
         }
     }
-    pub(crate) fn interaction_plane(&self, back: solidcore_record::Vec3) -> Option<solidcore_record::Plane> {
+    /// A nearly end-on axis has too little screen travel to resolve depth reliably.
+    /// Use the same upward screen direction for the arrow and the drag in that view.
+    pub(crate) fn drag_axis(&self, camera: &solidcraft_render::Camera) -> solidcore_record::Vec3 {
+        if self.normal.cross(camera.back()).len() < 0.1 { camera.basis().1 } else { self.normal }
+    }
+    pub(crate) fn interaction_plane(&self, camera: &solidcraft_render::Camera) -> Option<solidcore_record::Plane> {
         Some(if self.angular {
             solidcore_record::Plane { origin: self.origin, x: self.arm, y: self.normal.cross(self.arm) }
         } else {
-            solidcore_record::Plane { origin: self.origin, x: self.normal, y: back.cross(self.normal).normalized()? }
+            let axis = self.drag_axis(camera);
+            solidcore_record::Plane { origin: self.origin, x: axis, y: camera.back().cross(axis).normalized()? }
         })
     }
-    pub(crate) fn proposal(&self, anchor: solidcore_record::Vec3, point: solidcore_record::Vec3, value: f64) -> f64 {
+    pub(crate) fn proposal(&self, anchor: solidcore_record::Vec3, point: solidcore_record::Vec3, value: f64, axis: solidcore_record::Vec3) -> f64 {
         if self.angular {
             let a = anchor - self.origin;
             let b = point - self.origin;
             value + self.normal.dot(a.cross(b)).atan2(a.dot(b)).to_degrees()
         } else {
-            value + (point - anchor).dot(self.normal) / self.factor
+            value + (point - anchor).dot(axis) / self.factor
         }
     }
     pub(crate) fn set_parameter(&self, params: &mut Value, value: f64) {

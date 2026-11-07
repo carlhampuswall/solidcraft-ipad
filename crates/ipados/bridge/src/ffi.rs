@@ -151,11 +151,7 @@ impl Entry {
                     viewport.cancel_interactions();
                     return Err(error("input_limit", "at most 128 input samples per batch"));
                 }
-                let mut reply = viewport.diagnostic();
-                for event in events {
-                    reply = viewport.input(event)?;
-                }
-                Ok(reply)
+                viewport.input_batch(events)
             }
             Request::Viewport { metrics } => {
                 viewport.set_metrics(metrics)?;
@@ -354,6 +350,9 @@ impl Entry {
             let token = token.ok_or_else(|| error("bad_params", "A modelling edit token is required."))?;
             let edit = self.viewport.lock().map_err(|_| error("lock", "viewport lock poisoned"))?.model_edit(token)?;
             match action {
+                // Tool work has already published or rejected this depth. Reading
+                // it for the native form must never change a captured contact.
+                "state" => {}
                 "selection" => self
                     .viewport
                     .lock()
@@ -420,7 +419,7 @@ impl Entry {
             result["reply"] = reply;
             result["feedback"] = json!(feedback);
         }
-        if action == "inspect" {
+        if matches!(action, "inspect" | "state") {
             valid = result["valid"] == true;
         }
         let mut workspace = adapter.workspace_with_model(&selection, radius, numeric, edit.as_ref());
