@@ -43,6 +43,7 @@ enum WorkspaceStyle {
     static let scrim = UIColor.systemBackground.withAlphaComponent(0.45)
     static let foreground = UIColor.label
     static let secondary = UIColor.secondaryLabel
+    static let disclosure = UIColor.systemGray
     static let accent = UIColor.systemBlue
     // Brighter and greener than the shared renderer's deep-blue Z axis.
     static let darkSketchLine = UIColor.systemCyan
@@ -803,8 +804,9 @@ private final class ToolVariantsIndicator: UIView {
     init() {
         super.init(frame: .zero)
         isUserInteractionEnabled = false; isAccessibilityElement = false
+        clipsToBounds = true
         accessibilityIdentifier = "workspace-tool-variants"
-        tintColor = WorkspaceStyle.foreground
+        tintColor = WorkspaceStyle.disclosure
         layer.addSublayer(triangle)
         registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (indicator: ToolVariantsIndicator, _: UITraitCollection) in
             indicator.setNeedsLayout()
@@ -832,13 +834,16 @@ class MenuChoiceButton: UIButton {
     override var menu: UIMenu? { didSet { refreshChoicesIndicator() } }
     override var isEnabled: Bool { didSet { variantsIndicator?.alpha = isEnabled ? 1 : 0.45 } }
     var choicesIndicatorBounds: CGRect { bounds }
+    private var hasChoicesIndicator: Bool {
+        !suppressesChoicesIndicator && (customChoices || menu?.children.isEmpty == false)
+    }
 
     func toolVariants(_ visible: Bool) {
         customChoices = visible
         refreshChoicesIndicator()
     }
     private func refreshChoicesIndicator() {
-        let visible = !suppressesChoicesIndicator && (customChoices || menu?.children.isEmpty == false)
+        let visible = hasChoicesIndicator
         if visible && variantsIndicator == nil {
             let indicator = ToolVariantsIndicator()
             addSubview(indicator); variantsIndicator = indicator
@@ -848,8 +853,12 @@ class MenuChoiceButton: UIButton {
     }
     func layoutChoicesIndicator() {
         guard let indicator = variantsIndicator else { return }
-        let surface = choicesIndicatorBounds
-        indicator.frame = CGRect(x: surface.maxX - 10, y: surface.maxY - 10, width: 7, height: 7)
+        guard hasChoicesIndicator, let frame = MenuDisclosureLayout.frame(in: choicesIndicatorBounds, clippedTo: bounds) else {
+            indicator.isHidden = true
+            return
+        }
+        indicator.frame = frame
+        indicator.isHidden = false
         indicator.alpha = isEnabled ? 1 : 0.45
         bringSubviewToFront(indicator)
     }

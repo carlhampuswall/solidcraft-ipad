@@ -1,6 +1,40 @@
 import CoreGraphics
 import Foundation
 
+/// A first press starts the default tool; pressing an active family opens choices.
+enum SketchToolFamily: CaseIterable {
+    case line, rectangle
+
+    var tools: [String] {
+        switch self {
+        case .line: return ["sketch.line", "sketch.arc.three_point", "sketch.spline.fit_point"]
+        case .rectangle: return ["sketch.rectangle.two_point", "sketch.rectangle.center"]
+        }
+    }
+    var defaultTool: String {
+        switch self {
+        case .line: return "sketch.line"
+        case .rectangle: return "sketch.rectangle.two_point"
+        }
+    }
+    var labelKey: String {
+        switch self {
+        case .line: return "line"
+        case .rectangle: return "rectangle"
+        }
+    }
+    var icons: [String] {
+        switch self {
+        case .line: return ["line", "arc", "spline"]
+        case .rectangle: return ["rect", "rect_center"]
+        }
+    }
+    func contains(_ tool: String?) -> Bool { tool.map(tools.contains) ?? false }
+    static func forButton(_ tool: String) -> SketchToolFamily? {
+        allCases.first { $0.defaultTool == tool }
+    }
+}
+
 struct SketchProjectionSource: Decodable {
     let id: UInt64
     let name: String
@@ -48,6 +82,21 @@ enum ToolLabels {
     static var current: Bool { restored(UserDefaults.standard.object(forKey: key) as? Bool) }
     static func railWidth(enabled: Bool, largeText: Bool) -> CGFloat {
         enabled ? (largeText ? 220 : 164) : (largeText ? 56 : 52)
+    }
+}
+
+/// Keep the entire disclosure mark inside even a fully rounded button corner.
+enum MenuDisclosureLayout {
+    static func frame(in surface: CGRect, clippedTo bounds: CGRect) -> CGRect? {
+        guard [surface.minX, surface.minY, surface.width, surface.height,
+               bounds.minX, bounds.minY, bounds.width, bounds.height].allSatisfy(\.isFinite) else { return nil }
+        let visible = surface.intersection(bounds)
+        guard !visible.isNull, !visible.isEmpty else { return nil }
+        let radius = min(visible.width, visible.height) / 2
+        let inset = ceil(max(6, radius * (1 - 1 / sqrt(2)) + 1))
+        let side = min(6, visible.width - 2 * inset, visible.height - 2 * inset)
+        guard side > 0 else { return nil }
+        return CGRect(x: visible.maxX - inset - side, y: visible.maxY - inset - side, width: side, height: side)
     }
 }
 

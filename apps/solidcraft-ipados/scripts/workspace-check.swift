@@ -10,6 +10,30 @@ struct WorkspaceChecks {
     static func main() throws {
         try require(ToolLabels.restored(nil) && ToolLabels.restored(true) && !ToolLabels.restored(false),
                     "tool labels lost their visible default or saved icon-only setting")
+        for height in [CGFloat(32), 44, 52, 80] {
+            for width in [height, 164, 220] {
+                let button = CGRect(x: 0, y: 0, width: width, height: height)
+                for surface in [button, CGRect(x: 0, y: (height - 44) / 2, width: 44, height: 44),
+                                CGRect(x: width - 44, y: (height - 44) / 2, width: 44, height: 44)] {
+                    guard let mark = MenuDisclosureLayout.frame(in: surface, clippedTo: button) else {
+                        try require(false, "visible menu button lost its disclosure triangle"); continue
+                    }
+                    let visible = surface.intersection(button)
+                    let radius = min(visible.width, visible.height) / 2
+                    let center = CGPoint(x: visible.maxX - radius, y: visible.maxY - radius)
+                    try require(button.contains(mark) && visible.contains(mark), "disclosure triangle escaped its button or mirrored icon surface")
+                    for vertex in [CGPoint(x: mark.minX, y: mark.maxY), CGPoint(x: mark.maxX, y: mark.minY),
+                                   CGPoint(x: mark.maxX, y: mark.maxY)] {
+                        try require(hypot(vertex.x - center.x, vertex.y - center.y) < radius,
+                                    "disclosure triangle crossed the rounded corner")
+                    }
+                }
+            }
+        }
+        for surface in [CGRect.zero, CGRect(x: 50, y: 50, width: 44, height: 44), CGRect(x: 0, y: 0, width: 4, height: 4)] {
+            try require(MenuDisclosureLayout.frame(in: surface, clippedTo: CGRect(x: 0, y: 0, width: 44, height: 44)) == nil,
+                        "a collapsed or detached menu button drew a triangle outside its surface")
+        }
         for size in [CGSize(width: 1194, height: 790), CGSize(width: 834, height: 1140), CGSize(width: 390, height: 700)] {
             for largeText in [false, true] {
                 for right in [false, true] {
@@ -34,6 +58,19 @@ struct WorkspaceChecks {
             }
         }
         let quickDefaults = ["select", "line", "circle", "modify"]
+        for family in SketchToolFamily.allCases {
+            try require(family.tools.first == family.defaultTool && family.tools.count == family.icons.count,
+                        "a sketch family lost its default tool or choice icons")
+            try require(SketchToolFamily.forButton(family.defaultTool) == family && !family.contains("select") && !family.contains(nil),
+                        "the first press cannot start a sketch family's default tool")
+            for tool in family.tools {
+                try require(family.contains(tool), "an active sketch variant cannot reopen its family choices")
+            }
+        }
+        try require(SketchToolFamily.line.contains("sketch.arc.three_point") &&
+                    SketchToolFamily.line.contains("sketch.spline.fit_point") &&
+                    !SketchToolFamily.rectangle.contains("sketch.line"),
+                    "arc/spline choices escaped Line or activated Rectangle")
         try require(ToolGrouping.enabled(nil) && ToolGrouping.enabled(true) && !ToolGrouping.enabled(false),
                     "tool grouping lost its default or the individual-background preference")
         let sketchBar = ["select", "sketch.point", "sketch.line", "sketch.rectangle.two_point", "sketch.circle.center",
