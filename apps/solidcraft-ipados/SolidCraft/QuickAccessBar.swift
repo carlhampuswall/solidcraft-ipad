@@ -645,8 +645,7 @@ final class QuickAccessOverflowController: UITableViewController, UIEditMenuInte
     private var items: [(id: String, button: WorkspaceButton)] = []
     private var choosing = false
     private lazy var pinMenu = UIEditMenuInteraction(delegate: self)
-    private var pinMenuConfiguration: UIEditMenuConfiguration?
-    private var pinMenuVisible: Bool { pinMenuConfiguration != nil }
+    private var pinMenuVisible = false
 
     init(bar: QuickAccessBar) {
         self.bar = bar
@@ -746,14 +745,12 @@ final class QuickAccessOverflowController: UITableViewController, UIEditMenuInte
 
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, willPresentMenuFor configuration: UIEditMenuConfiguration,
                              animator: UIEditMenuInteractionAnimating) {
-        pinMenuConfiguration = configuration
+        pinMenuVisible = true
     }
 
     func editMenuInteraction(_ interaction: UIEditMenuInteraction, willDismissMenuFor configuration: UIEditMenuConfiguration,
                              animator: UIEditMenuInteractionAnimating) {
-        animator.addCompletion { [weak self] in
-            if self?.pinMenuConfiguration === configuration { self?.pinMenuConfiguration = nil }
-        }
+        pinMenuVisible = false
     }
 
     override func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
