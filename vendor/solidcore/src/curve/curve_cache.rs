@@ -1406,7 +1406,6 @@ pub fn compute_constants(
 
     let mut efo = FindCurveDistanceExtrema::new(k, bez, original, interval, 10.0 * EFF_ZERO);
     let mut solver = LocalSolve1d::with_interval(interval, false);
-    solver.set_failed_guess_no_sign_change(k.fixes.oscillating_skips_failed_guesses);
 
     // Step along the curve: when the function changes sign, call the local solver.
     let num_steps = 20u32;
@@ -1477,7 +1476,7 @@ pub fn build_bezier_spans(k: &Kernel, curve: &Curve, knots: &[f64]) -> Result<Ve
     if knots.len() < 2 {
         return Err(SolidError::sm_err(OP_BUILD));
     }
-    let mut out = Vec::with_capacity(knots.len() - 1);
+    let mut out = Vec::new();
     let mut pv = [Vec3::UNDEF; 2];
 
     let mut param = knots.first().copied().unwrap_or(0.0);

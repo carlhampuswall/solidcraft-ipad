@@ -25,7 +25,10 @@
 //!   evaluated through `&Kernel`, as every surface is. It is borrowed only to look a
 //!   station up and to store one, never across a solve, so a nested support's own
 //!   evaluations use it meanwhile, as in the fork. A hit returns what a fresh solve from
-//!   the same seeds gives (the key is the definition's serial, s and the truncation).
+//!   the same seeds gives (the key is the definition's identity, s and the truncation).
+//!   The identity is the definition's own allocation, not a kernel's count, so a kernel
+//!   evaluating a definition another kernel made never takes a station of its own
+//!   definitions for it (#2388).
 //! - **The memo's thumbweight.** The fork keeps a pointer to the slot it hit or filled
 //!   and writes the equal area thumbweight's series there; here the slot's index. Nothing
 //!   evaluates a surface between the two, so it is the same slot.
@@ -44,7 +47,10 @@ use super::tay::{gn_area_sum, gn_half_angle, gn_invert, gn_target, gn_wedge_cos,
 use crate::error::{Result, SolidError};
 use crate::geom::vector3d::Vec3;
 use crate::kernel::Kernel;
-use crate::surface::procedural_blend::{count_evaluation, count_solve, ProceduralBlend};
+use crate::surface::procedural_blend::{
+    count_evaluation, count_solve, DefinitionIdentity, ProceduralBlend,
+};
+use std::sync::Arc;
 
 const OP: &str = "blend::fillet_section::definition::evaluate_definition";
 
@@ -356,10 +362,10 @@ pub fn bern_taylor(b: &[f64], t0: f64, lj: usize) -> Vec<f64> {
 pub const STATION_MEMO: usize = 4;
 
 /// `sm_StationMemo`: one kept station.
-#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, Default)]
 struct MemoSlot {
-    /// `lSerial`: the definition's serial (0: empty).
-    serial: u64,
+    /// `lSerial`: the definition's identity (held while the station is kept).
+    identity: Option<Arc<DefinitionIdentity>>,
     /// `dS`.
     s: f64,
     /// `ts`, `te`: the truncation it was solved to.
@@ -378,11 +384,12 @@ struct MemoSlot {
 
 /// The stations the definitions on a kernel solved last (`t_asMemo`, `t_lMemoNext`): an
 /// evaluation at the same s (another t) takes its station from here. Keyed by the
-/// definition's serial, never reused, so a station is never another definition's.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// definition's identity, held while the station is kept, so a station is never another
+/// definition's.
+#[derive(Clone, Debug, Default)]
 pub struct StationMemo {
-    /// The slots filled so far, at most [`STATION_MEMO`] (the fork's empty slots, serial
-    /// 0, never match: a serial is at least 1). On the heap: a station is kilobytes.
+    /// The slots filled so far, at most [`STATION_MEMO`] (the fork's empty slots never
+    /// match: they hold no identity). On the heap: a station is kilobytes.
     slots: Vec<MemoSlot>,
     next: usize,
 }
@@ -395,13 +402,12 @@ pub struct StationMemo {
 /// the side after s, or with `before` on the side before it (c5b6bb7). A foot on a knot
 /// line takes its support's partials on the piece it moves into along s (comes from, with
 /// `before`), the way the seed moves; the station is solved again with those sides where
-/// that is not the piece a solve without sides takes. With
-/// [`crate::kernel::UpstreamFixes::fillet_round_on_round_as_definition`] off, `before` is
-/// not taken and no station is solved again (fork 5e8c9c1, before c5b6bb7).
+/// that is not the piece a solve without sides takes.
 ///
 /// One station solve: the feet by Newton from the seeds, then their series in s (and in
 /// tau for the G^n jets) order by order, as the G^n section's stations are built. The
-/// section is then exact in t: n >= 2, `sum_ik c_ik(s) phi_ik(t)`, `phi_ik` the
+/// section is then exact in t: n = 0 (a chamfer, #2486), the chord `(1 - t) rho_1 + t
+/// rho_2` between the feet; n >= 2, `sum_ik c_ik(s) phi_ik(t)`, `phi_ik` the
 /// section's rational functions over its common weight (the equal area thumbweight
 /// resolved as a series in s at this station, c6d9b9a); n = 1, the rational quadratic arc
 /// from the first rail to the second on the circle the balls' envelope touches the ball
@@ -425,13 +431,15 @@ pub fn evaluate_definition(
 ) -> Result<Vec<Vec<Vec3>>> {
     let def = pb.definition();
     count_evaluation(k);
-    // the side of s (c5b6bb7): only with WR-714's flag; before it the side after s
-    let sides_taken = k.fixes.fillet_round_on_round_as_definition;
-    let before = before && sides_taken;
     let n = def.order as usize;
     // the station: the jets to order n in tau (G^n), or the rails and the centre one
     // order more in s (the circle's m')
-    let (ts, te) = if n >= 2 { (ls, n) } else { (ls + 1, 0) };
+    // (n = 0, the chord: the rails to order s, #2486)
+    let (ts, te) = match n {
+        0 => (ls, 0),
+        1 => (ls + 1, 0),
+        _ => (ls, n),
+    };
     if ls > 64 || lt > 64 || ts > MAX_S || te > MAX_E || ts + te + 1 > MAX_K {
         return Err(SolidError::invalid_input(
             OP,
@@ -472,19 +480,18 @@ pub fn evaluate_definition(
     }
 
     // the memo: a station solved at this s, to this truncation, for this definition
-    let serial = def.serial;
+    let identity = &def.identity;
     let mut slot: Option<usize> = None;
     let mut at: Option<GnStation> = None;
     let mut memo_w: Option<Tay<f64>> = None;
     {
         let memo = k.blend_station_memo.borrow();
         for (m, e) in memo.slots.iter().enumerate() {
-            if e.serial == serial
-                && e.s == s
-                && e.ts == ts
-                && e.te == te
-                && (!e.sided || e.before == before)
-            {
+            let same = e
+                .identity
+                .as_ref()
+                .is_some_and(|i| Arc::ptr_eq(i, identity));
+            if same && e.s == s && e.ts == ts && e.te == te && (!e.sided || e.before == before) {
                 at = e.station;
                 memo_w = e.w;
                 slot = Some(m);
@@ -517,83 +524,70 @@ pub fn evaluate_definition(
             gn_solve_station_with(k, faces, &def.leader, s, seed, r, def.sides, tr, tol, opts);
         count_solve(k, steps);
         let mut st = solved?.0;
-        let mut sided = false;
-        if sides_taken {
-            // a foot on a knot line of its support: the support's partials there on the
-            // piece the foot moves into along s (comes from, `before`), as the stations'
-            // series were taken; the way it moves is the seed's (the stations' feet and
-            // their s-derivatives, interpolated)
-            let mut dir = [0.0_f64; 4];
-            for (f, sd) in def.seeds.iter().enumerate() {
-                let w = sd.evaluate(s, 1, !before, false)?;
-                let w1 = w.get(1).copied().ok_or_else(|| SolidError::sm_err(OP))?;
-                if let Some(x) = dir.get_mut(2 * f) {
-                    *x = w1.x;
-                }
-                if let Some(x) = dir.get_mut(2 * f + 1) {
-                    *x = w1.y;
-                }
+        // a foot on a knot line of its support: the support's partials there on the
+        // piece the foot moves into along s (comes from, `before`), as the stations'
+        // series were taken; the way it moves is the seed's (the stations' feet and
+        // their s-derivatives, interpolated)
+        let mut dir = [0.0_f64; 4];
+        for (f, sd) in def.seeds.iter().enumerate() {
+            let w = sd.evaluate(s, 1, !before, false)?;
+            let w1 = w.get(1).copied().ok_or_else(|| SolidError::sm_err(OP))?;
+            if let Some(x) = dir.get_mut(2 * f) {
+                *x = w1.x;
             }
-            let on = st.x.map(|x| x.at(0, 0));
-            let (sides, other) = feet_on_knots(k, faces, on, dir, before, tr.s() + tr.e() + 1)?;
-            if other {
-                let opts = StationOptions {
-                    law,
-                    top,
-                    sides: Some(sides),
-                    before,
-                };
-                let (solved, steps) = gn_solve_station_with(
-                    k,
-                    faces,
-                    &def.leader,
-                    s,
-                    on,
-                    r,
-                    def.sides,
-                    tr,
-                    tol,
-                    opts,
-                );
-                count_solve(k, steps);
-                st = solved?.0;
+            if let Some(x) = dir.get_mut(2 * f + 1) {
+                *x = w1.y;
             }
-            // the side matters only at one of the definition's stations: a foot on a knot
-            // line, or s a knot of the leader or the law; elsewhere the station is the same
-            // from either side
-            sided = sides.iter().any(|&q| q != 0);
-            // (the leader's derivatives to order s + 1 enter, its unit tangent's; the law's
-            // to order s; a curve is C^(p - multiplicity) at a knot, its derivatives to
-            // that order the same either side)
-            let along = [(Some(&def.leader), ts + 1), (def.law.as_ref(), ts)];
-            for (curve, used) in along {
-                if sided {
+        }
+        let on = st.x.map(|x| x.at(0, 0));
+        let (sides, other) = feet_on_knots(k, faces, on, dir, before, tr.s() + tr.e() + 1)?;
+        if other {
+            let opts = StationOptions {
+                law,
+                top,
+                sides: Some(sides),
+                before,
+            };
+            let (solved, steps) =
+                gn_solve_station_with(k, faces, &def.leader, s, on, r, def.sides, tr, tol, opts);
+            count_solve(k, steps);
+            st = solved?.0;
+        }
+        // the side matters only at one of the definition's stations: a foot on a knot
+        // line, or s a knot of the leader or the law; elsewhere the station is the same
+        // from either side
+        let mut sided = sides.iter().any(|&q| q != 0);
+        // (the leader's derivatives to order s + 1 enter, its unit tangent's; the law's
+        // to order s; a curve is C^(p - multiplicity) at a knot, its derivatives to
+        // that order the same either side)
+        let along = [(Some(&def.leader), ts + 1), (def.law.as_ref(), ts)];
+        for (curve, used) in along {
+            if sided {
+                break;
+            }
+            let Some(curve) = curve else {
+                continue;
+            };
+            let (knots, mult) = curve.knots(None)?;
+            let deg = curve.degree()?;
+            let mut m = 1;
+            while m + 1 < knots.len() && m < mult.len() {
+                let (Some(&km), Some(&mm)) = (knots.get(m), mult.get(m)) else {
                     break;
-                }
-                let Some(curve) = curve else {
-                    continue;
                 };
-                let (knots, mult) = curve.knots(None)?;
-                let deg = curve.degree()?;
-                let mut m = 1;
-                while m + 1 < knots.len() && m < mult.len() {
-                    let (Some(&km), Some(&mm)) = (knots.get(m), mult.get(m)) else {
-                        break;
-                    };
-                    let on_knot = (s - km).abs() <= 1.0e-9 * (1.0 + km.abs());
-                    // used > p - multiplicity, in signed arithmetic
-                    if on_knot && used + mm > deg {
-                        sided = true;
-                    }
-                    m += 1;
+                let on_knot = (s - km).abs() <= 1.0e-9 * (1.0 + km.abs());
+                // used > p - multiplicity, in signed arithmetic
+                if on_knot && used + mm > deg {
+                    sided = true;
                 }
+                m += 1;
             }
         }
         let mut memo = k.blend_station_memo.borrow_mut();
         let m = memo.next;
         memo.next = (memo.next + 1) % STATION_MEMO;
         let entry = MemoSlot {
-            serial,
+            identity: Some(Arc::clone(identity)),
             s,
             ts,
             te,
@@ -629,7 +623,7 @@ pub fn evaluate_definition(
             w
         } else {
             let u = gn_half_angle(&gn_wedge_cos::<f64>(&at.f, &at.v, r0 * r1, ls));
-            let w0 = gn_equal_area_w(n, u.at(0))?;
+            let w0 = gn_equal_area_w(k, n, u.at(0))?;
             let d = gn_area_sum(n, Tay::of_terms(w0, 1.0));
             if d.at(1).partial_cmp(&0.0) != Some(Ordering::Less) {
                 // "the section's area does not fall with its thumbweight"
@@ -694,6 +688,18 @@ pub fn evaluate_definition(
                 sum = sum.add(&tv_of(ff, kk, ls, lt).times(&phi));
             }
         }
+    } else if n == 0 {
+        // the chord (#2486): (1 - t) rho_1 + t rho_2, exact in t
+        let [f0, f1] = &at.f;
+        let rho1 = tv_of(f0, 0, ls, lt);
+        let rho2 = tv_of(f1, 0, ls, lt);
+        let mut a = T2::new(ls, lt, 1.0 - t);
+        let mut b = T2::new(ls, lt, t);
+        if lt >= 1 {
+            a.set(0, 1, -1.0);
+            b.set(0, 1, 1.0);
+        }
+        sum = rho1.times(&a).add(&rho2.times(&b));
     } else {
         // the centre to one order more, for its tangent m'
         let m1 = tv_of(&at.v, 0, ls + 1, lt);

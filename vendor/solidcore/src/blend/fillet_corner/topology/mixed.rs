@@ -12,8 +12,7 @@
 //!
 //! Deviations: the ring (`sm_MixedRing`) read here is kept on the corner
 //! ([`MixedCorner`]) for the later steps, with the blends' solvers' identities (their
-//! first geometries' `GetFilletSolver()`). Opt-in: `Kernel::fixes.fillet_blend_corner`
-//! (WR-697). There is no recursion.
+//! first geometries' `GetFilletSolver()`; WR-697). There is no recursion.
 
 use super::{new_corner_vertex, Nx2TopologyEnv, OP_NX2};
 use crate::blend::blend_corner::mixed::{mixed_ring, MixedCorner};
@@ -34,7 +33,7 @@ impl FilletCorner {
     /// (B2's rail end on F2); edges X-A (B1's trimline), A-P (on F1), P-V (the seam), V-X
     /// (the inflection, in T), V-Q, Q-B (on F2), X-B (B2's trimline), every one
     /// precomputed. The blends run on past the vertex: the corner is neither blending nor
-    /// a bevel.
+    /// a bevel. Q is on the edge beyond the seam, where the ring has one (#2953).
     ///
     /// # Errors
     ///
@@ -118,9 +117,13 @@ impl FilletCorner {
             fv.set_point_class(PointClassType::Vertex, Some(EntityRef::Vertex(vertex)));
             fv.set_fillet_vertex_type(FilletVertexType::OnVertex);
         }
+        let (q_class, q_on) = match ring.beyond {
+            Some(eu) => (PointClassType::Edgeuse, EntityRef::Edgeuse(eu)),
+            None => (PointClassType::Face, EntityRef::Face(ring.f2)),
+        };
         pseudo
             .fillet_vertex_mut(q)?
-            .set_point_class(PointClassType::Face, Some(EntityRef::Face(ring.f2)));
+            .set_point_class(q_class, Some(q_on));
         pseudo
             .fillet_vertex_mut(b)?
             .set_point_class(PointClassType::Face, Some(EntityRef::Face(ring.f2)));

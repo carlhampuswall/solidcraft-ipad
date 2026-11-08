@@ -9962,7 +9962,24 @@ fn assembly_position_capture_preserves_unrelated_pending_moves_and_grounded_part
             .execute("occurrence.move", json!({"occurrence":occurrence,"path":[occurrence],"space":"world","translate":translation,"capture":false}))
             .unwrap();
     }
-    assembly_accept(&mut adapter, "component.capture_position", json!({"occurrences":[first]}), &[Sel::Occurrence { path: vec![first] }]);
+    // Exercise the published typed contract, not only the permissive command handler.
+    adapter.session.param_check = solidcraft_engine::schema::ParamCheck::Strict;
+    let pending = adapter.session.pending_moves.clone();
+    let document = adapter.session.doc.clone();
+    let empty = adapter.execute("component.capture_position", json!({"occurrences":[]})).unwrap();
+    assert_eq!(empty.value["captured"], json!(0));
+    assert_eq!(adapter.session.pending_moves, pending, "an explicit empty scope captures nothing");
+    assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+    for occurrences in [json!(null), json!(first), json!(["1"]), json!([-1]), json!([first, u64::MAX]), json!(vec![first; 10_001])] {
+        let history = (adapter.session.undo.len(), adapter.session.redo.len());
+        assert!(adapter.execute("component.capture_position", json!({"occurrences":occurrences})).is_err());
+        assert_eq!(adapter.session.pending_moves, pending, "invalid scopes must not capture any pending move");
+        assert!(Arc::ptr_eq(&document, &adapter.session.doc));
+        assert_eq!((adapter.session.undo.len(), adapter.session.redo.len()), history, "invalid scopes leave history intact");
+    }
+    let captured =
+        assembly_accept(&mut adapter, "component.capture_position", json!({"occurrences":[first]}), &[Sel::Occurrence { path: vec![first] }]);
+    assert_eq!(captured["captured"], json!(1));
     assert!(!adapter.session.pending_moves.contains_key(&first));
     assert!(adapter.session.pending_moves.contains_key(&second));
     assert!(assembly_marker(&adapter, &[first], Vec3::ZERO).dist(Vec3::new(10.0, 0.0, 0.0)) < 1e-9);

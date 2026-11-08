@@ -15,8 +15,11 @@ categories = ["graphics", "mathematics", "science"]
 # Kernels start with the curve cache memo off (`Kernel::memoize_curve_caches`), to
 # run difftest and the tests in both positions. Results never depend on it.
 curve-memo-off = []
+# The upstream optional kernel profiler; disabled unless explicitly requested.
+profile = []
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [lints.rust]

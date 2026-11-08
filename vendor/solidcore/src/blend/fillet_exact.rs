@@ -26,18 +26,27 @@
 //! | `line_spine` (private), [`BlendQuadric::foot`] | none (#2405): the line spine's line and the faces' feet of it |
 //! | [`classify_exact_blend`]           | `SmFilletSolver::ClassifyExactBlend`       |
 //! | [`calc_exact_fillet_geom`]         | `SmFilletSolver::CalcExactFilletGeom`      |
-//! | [`ball_zone_open_at_an_end`]       | not the fork's (#2401): a collapsed offset's zone open at an end |
+//! | [`ball_zone_open_at_an_end`], [`CollapsedOffset`] | not the fork's (#2401): a collapsed offset's zone open at an end |
+//! | `bending_toward_ball`, `focal_offset`, `edge_match`, `EdgeMatch` (private) | none (solidcore #2652) |
 //! | `across`, `lines_meet`, `coaxial`, `inscribed_radius`, `pair_plane`, `points_with_contact`, `directions_with_dots`, `touching_point` (private) | `sm_Across`, `sm_LinesMeet`, `sm_Coaxial`, `sm_InscribedRadius`, `sm_PairPlane`, `sm_PointsWithContact`, `sm_DirectionsWithDots`, `sm_TouchingPoint` |
 //! | [`classify_ball_on_collapsed_offset`], `curve_crosses_quadric` (private) | none (solidcore #2403) |
+//! | `ball_on_face_along_arc` (private) | none (solidcore #2652) |
 //!
 //! Deviations:
-//! - **A round of the ball's radius as a face (solidcore #2403, not in the fork).** With
-//!   `fillet_blend_corner`, a torus is read too ([`QuadricKind::Torus`]; it has no class of
+//! - **A round of the ball's radius as a face (solidcore #2403, not in the fork).** A
+//!   torus is read too ([`QuadricKind::Torus`]; it has no class of
 //!   its own), so that a torus moved in by its tube radius is its tube-centre circle
 //!   ([`QuadricKind::Circle`]), as a cylinder so moved is its axis. An offset collapsed
 //!   onto such a curve that the other offset crosses is a point spine
 //!   ([`classify_ball_on_collapsed_offset`]): the round along an earlier round's end curve,
 //!   where that round has the ball's radius, is a piece of the ball.
+//! - **An offset collapsed by its geometry (solidcore #2652, not in the fork).** With
+//!   a constant ball, a round on a face of no natural quadric (a
+//!   B-spline, as a round of the ball's radius built by a trace) and a surface quadric is
+//!   the ball's piece ([`BlendSpine::Point`]) where the geometry says the face is as wide as
+//!   the ball: the ball's centre is the same at every point of the round and the ball lies
+//!   on the face along its contact arc, within the solver's tolerance
+//!   (`ball_on_face_along_arc`, decided where it is built); otherwise it is traced.
 //! - **Out-params.** `FromSurface`, `ClassifyExactBlend` and `CalcExactFilletGeom` return
 //!   their results (`rQuadric`, `rBlend`, `rbBuilt`); `Implicit` returns `(A, b, c)`.
 //! - **Rational classes.** The conic, conic-pair and nodal-quartic classes are built
@@ -47,6 +56,8 @@
 //! - **A chamfer round a circle** (a linear section, class circle) is traced unless
 //!   `fillet_chamfer_cone_on_arc` (WR-421) is on as well: the fork revolves it
 //!   unconditionally; here that revolution stays behind its own flag.
+//! - **A point spine with a noncircular section (#2905).** The spherical builders
+//!   require a circular section; other sections stay with their own traced generator.
 //! - **Recognisers' statuses.** `SmSphere::IsNurbSurfaceSphere` returning `TRUE` without a
 //!   sphere (its `SER`s) is "no sphere", as the fork's `&& pNurbSphere != NULL` reads it:
 //!   [`Sphere::is_nurb_surface_sphere`]'s non-`Unported` errors.
@@ -72,6 +83,7 @@ use crate::math::{Point3, Vec3, BIG_DOUBLE, EFF_ZERO, EFF_ZERO_SQRT};
 use crate::nurbs::b_spline_surface::BSplineSurface;
 use crate::nurbs::knots::Side;
 use crate::surface::cone::Cone;
+use crate::surface::procedural_blend::exact::{ExactClass, ExactRound};
 use crate::surface::sphere::Sphere;
 use crate::surface::surface::p2::PLANE_TYPE;
 use crate::surface::surface::{Surface, SurfaceKind};
@@ -102,7 +114,7 @@ pub enum QuadricKind {
     Line,
     /// `SM_BQ_POINT`: a sphere moved in by its radius.
     Point,
-    /// Not in the fork (solidcore #2403, with `fillet_blend_corner`): a torus, its tube of
+    /// Not in the fork (solidcore #2403): a torus, its tube of
     /// radius [`BlendQuadric::tube`] about the circle of radius [`BlendQuadric::radius`] about
     /// the axis. No class of its own: it is read so that its offset by its tube radius is
     /// known as [`QuadricKind::Circle`].
@@ -181,6 +193,205 @@ fn point_and_normal(k: &Kernel, surface: &Surface, uv: Point2) -> Result<(Point3
     Ok((p, n))
 }
 
+/// Not the fork (solidcore #2652): a face's bending toward the ball at `uv`, read from its
+/// geometry: the point, the unit normal toward the ball (the side `off`, the ball centre's
+/// signed offset along the face's normal, is on), the principal curvatures toward the ball
+/// (larger first: the roots of `(L - kE)(N - kG) - (M - kF)^2`) and the unit principal
+/// direction of the larger. `None` at a pole (`Su x Sv = 0`) or where that direction is not
+/// defined (an umbilic).
+///
+/// # Errors
+///
+/// Those of the evaluation.
+fn bending_toward_ball(
+    k: &Kernel,
+    surface: &Surface,
+    uv: Point2,
+    off: f64,
+) -> Result<Option<Bending>> {
+    use crate::nurbs::b_spline_surface_n_lib::p2::EvaluateFlags;
+    let flags = EvaluateFlags {
+        u_side: Side::Left,
+        v_side: Side::Left,
+        only_upper_half: true,
+        non_zero_tangents: false,
+    };
+    let d = surface.evaluate(k, uv, 2, 2, flags)?;
+    let at = |i: usize, j: usize| d.get(i).and_then(|row| row.get(j)).copied();
+    let (Some(s), Some(sv), Some(svv), Some(su), Some(suv), Some(suu)) =
+        (at(0, 0), at(0, 1), at(0, 2), at(1, 0), at(1, 1), at(2, 0))
+    else {
+        return Ok(None);
+    };
+    let m = su.cross(sv);
+    let dl = m.length();
+    // (a NaN length is a pole too)
+    if dl.is_nan() || dl <= EFF_ZERO * su.length() * sv.length() || dl <= 0.0 {
+        return Ok(None);
+    }
+    let n = m * ((if off < 0.0 { -1.0 } else { 1.0 }) / dl);
+    let (e, f, g) = (su.dot(su), su.dot(sv), sv.dot(sv));
+    let (l, mm, nn) = (suu.dot(n), suv.dot(n), svv.dot(n));
+    let a = l * nn - mm * mm;
+    let b = e * nn + g * l - 2.0 * f * mm;
+    let c = e * g - f * f;
+    let disc = b * b - 4.0 * a * c;
+    let root = (if disc > 0.0 { disc } else { 0.0 }).sqrt();
+    let (k_max, k_min) = ((b + root) / (2.0 * c), (b - root) / (2.0 * c));
+    // the principal direction of k_max, from the larger row of II - k I
+    let r0 = (l - k_max * e, mm - k_max * f);
+    let r1 = (mm - k_max * f, nn - k_max * g);
+    let (p, q) = if r0.0.abs() + r0.1.abs() >= r1.0.abs() + r1.1.abs() {
+        r0
+    } else {
+        r1
+    };
+    let Ok(bending) = (su * (-q) + sv * p).unitize() else {
+        return Ok(None);
+    };
+    Ok(Some(Bending {
+        point: s,
+        normal: n,
+        k_max,
+        k_min,
+        direction: bending,
+    }))
+}
+
+/// [`bending_toward_ball`]'s answer.
+#[derive(Debug, Clone, Copy)]
+struct Bending {
+    point: Point3,
+    /// The unit normal toward the ball.
+    normal: Vec3,
+    /// The larger principal curvature toward the ball.
+    k_max: f64,
+    /// The smaller.
+    k_min: f64,
+    /// The unit principal direction of `k_max`.
+    direction: Vec3,
+}
+
+/// Not the fork (solidcore #2652): the offset by the ball (`off`) of a face of no natural
+/// quadric at `uv` where its larger radius of curvature toward the ball is the ball's
+/// (within `tol`): its focal curve's tangent line through the ball's centre there
+/// ([`QuadricKind::Line`], along the face's other principal direction), or the centre
+/// ([`QuadricKind::Point`]) where both are. `None` where the offset does not collapse
+/// there.
+///
+/// # Errors
+///
+/// Those of the evaluation.
+fn focal_offset(
+    k: &Kernel,
+    surface: &Surface,
+    uv: Point2,
+    off: f64,
+    tol: f64,
+) -> Result<Option<BlendQuadric>> {
+    let Some(Bending {
+        point: s,
+        normal: n,
+        k_max,
+        k_min,
+        direction: bending,
+    }) = bending_toward_ball(k, surface, uv, off)?
+    else {
+        return Ok(None);
+    };
+    let radius = off.abs();
+    if k_max.is_nan() || k_max <= 0.0 || (1.0 / k_max - radius).abs() > tol {
+        return Ok(None);
+    }
+    let centre = s + n * radius;
+    if k_min > 0.0 && (1.0 / k_min - radius).abs() <= tol {
+        return Ok(Some(BlendQuadric {
+            kind: QuadricKind::Point,
+            point: centre,
+            ..BlendQuadric::default()
+        }));
+    }
+    let Ok(dir) = n.cross(bending).unitize() else {
+        return Ok(None);
+    };
+    Ok(Some(BlendQuadric {
+        kind: QuadricKind::Line,
+        point: centre,
+        dir,
+        ..BlendQuadric::default()
+    }))
+}
+
+/// Not the fork (solidcore #2652): how a face of no natural quadric matches a ball of
+/// radius `|off|` along an edge (`curve` over `ivl`, on the face): [`EdgeMatch::Full`] where
+/// its larger radius of curvature toward the ball is the ball's (within `tol`) at each of
+/// 17 stations, [`EdgeMatch::Partial`] with its least radius there where that holds at some
+/// stations only or the radius crosses the ball's between two, [`EdgeMatch::None`]
+/// otherwise (or where a station does not drop onto the face).
+///
+/// # Errors
+///
+/// Those of the evaluations and the drops.
+fn edge_match(
+    k: &Kernel,
+    surface: &Surface,
+    curve: &crate::curve::curve::Curve,
+    ivl: crate::geom::extent1d::Extent1d,
+    off: f64,
+    tol: f64,
+) -> Result<EdgeMatch> {
+    use crate::surface::surface::p4::NoObject;
+    use crate::surface::surface::p5::DropPointOptions;
+    const STATIONS: u32 = 16;
+    let radius = off.abs();
+    let domain = surface.natural_uv_domain_with_nurb(k)?;
+    let (mut all, mut some, mut crosses) = (true, false, false);
+    let mut side = 0.0_f64;
+    let mut least = BIG_DOUBLE;
+    for i in 0..=STATIONS {
+        let v = curve.evaluate_point(k, ivl.evaluate(f64::from(i) / f64::from(STATIONS)))?;
+        let dropped =
+            surface.drop_point::<NoObject>(k, v, &domain, &DropPointOptions::default())?;
+        if !dropped.success {
+            return Ok(EdgeMatch::None);
+        }
+        let rho = match bending_toward_ball(k, surface, dropped.result_uv, off)? {
+            Some(b) if b.k_max > 0.0 => 1.0 / b.k_max,
+            _ => BIG_DOUBLE,
+        };
+        least = least.min(rho);
+        if (rho - radius).abs() <= tol {
+            some = true;
+            continue;
+        }
+        all = false;
+        let here = if rho < radius { -1.0 } else { 1.0 };
+        #[allow(clippy::float_cmp)] // the +-1 signs
+        if side != 0.0 && here != side {
+            crosses = true;
+        }
+        side = here;
+    }
+    Ok(if all {
+        EdgeMatch::Full
+    } else if some || crosses {
+        EdgeMatch::Partial(least)
+    } else {
+        EdgeMatch::None
+    })
+}
+
+/// [`edge_match`]'s answer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum EdgeMatch {
+    /// The face is as wide as the ball along the whole edge.
+    Full,
+    /// Along part of it, the face's least radius of curvature toward the ball given.
+    Partial(f64),
+    /// Nowhere.
+    None,
+}
+
 /// The cone's data (`GetZAxis`, `GetRadius(0)`, `GetRadius(1)`, `IsCylinder`,
 /// `GetOrigin`).
 struct ConeData {
@@ -225,8 +436,8 @@ impl TorusData {
 }
 
 /// `sm_QuadricOfSurface`: the natural quadric of an analytic surface (not an offset
-/// surface), oriented by its normal at `uv`, or [`QuadricKind::None`]; with
-/// `fillet_blend_corner`, a torus as well (solidcore #2403).
+/// surface), oriented by its normal at `uv`, or [`QuadricKind::None`]; a torus as well
+/// (solidcore #2403).
 fn quadric_of_surface(k: &Kernel, surface: &Surface, uv: Point2, tol: f64) -> Result<BlendQuadric> {
     let mut q = BlendQuadric::default();
 
@@ -248,11 +459,10 @@ fn quadric_of_surface(k: &Kernel, surface: &Surface, uv: Point2, tol: f64) -> Re
         SurfaceKind::Sphere(s) => Some((s.base().position().origin(), s.radius())),
         _ => None,
     };
-    // Not in the fork (solidcore #2403): with `fillet_blend_corner` a torus is read too, as
-    // the last kind (it has no class of its own; see `QuadricKind::Torus`)
-    let tori = k.fixes.fillet_blend_corner;
+    // Not in the fork (solidcore #2403): a torus is read too, as the last kind (it has no
+    // class of its own; see `QuadricKind::Torus`)
     let mut torus = match surface.kind() {
-        SurfaceKind::Torus(t) if tori => Some(TorusData::of(t)),
+        SurfaceKind::Torus(t) => Some(TorusData::of(t)),
         _ => None,
     };
     let mut plane = surface.type_code() == PLANE_TYPE;
@@ -270,7 +480,7 @@ fn quadric_of_surface(k: &Kernel, surface: &Surface, uv: Point2, tol: f64) -> Re
                 // no sphere, or TRUE without a sphere (its SER statuses)
                 Ok(None) | Err(_) => {}
             }
-            if sphere.is_none() && tori {
+            if sphere.is_none() {
                 match Torus::is_nurb_surface_torus(k, bss, 1.0) {
                     Ok(Some(t)) => torus = Some(TorusData::of(&t)),
                     Err(e @ (SolidError::Unported { .. } | SolidError::Cancelled { .. })) => {
@@ -592,7 +802,7 @@ pub enum BlendSpine {
     /// the axis; a sphere with its centre on it): the ball's section turned about the axis.
     Circle,
     /// `SM_BS_POINT`: one point (two cylinders as wide as the ball, their axes meeting): a
-    /// piece of the ball. With `fillet_blend_corner` also an offset collapsed onto a line
+    /// piece of the ball. Also an offset collapsed onto a line
     /// or a circle (a cylinder or torus as wide as the ball) that the other offset crosses
     /// ([`classify_ball_on_collapsed_offset`], solidcore #2403): the ball's triangle.
     Point,
@@ -628,6 +838,10 @@ pub struct ExactBlend {
     /// `m_sDir`: circle, the axis's unit direction; conic (pair), the plane's unit normal;
     /// line (not the fork, #2405), its unit direction.
     pub dir: Vec3,
+    /// Not the fork (#2485): what [`classify_exact_blend`] read the class from, so that
+    /// [`classify_supports`] reads it again from the round's supports alone; `None` for a
+    /// blend not classified from a solver.
+    pub inputs: Option<ClassInputs>,
 }
 
 impl Default for ExactBlend {
@@ -640,8 +854,32 @@ impl Default for ExactBlend {
             radius: 0.0,
             point: Point3::ZERO,
             dir: Vec3::ZERO,
+            inputs: None,
         }
     }
+}
+
+/// Not the fork (#2485): the numbers a classification reads off a round's two faces (its
+/// supports) beside the faces themselves: where each face's quadric is read, how far the
+/// ball's centre is off each along its normal, the centre, the tolerance placements are
+/// decided within and the classification's own switches. With the supports they decide
+/// the class ([`classify_supports`]), as [`classify_exact_blend`] decided it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ClassInputs {
+    /// The `(u, v)` each face's quadric is read at.
+    pub uv: [Point2; 2],
+    /// The signed offset of the ball's centre from each face, along the face's normal.
+    pub offsets: [f64; 2],
+    /// The ball's centre the spine is classified at.
+    pub centre: Point3,
+    /// The tolerance placements are decided within (the body's).
+    pub tol: f64,
+    /// Whether a face's offset collapsed onto its spine and crossed by the other is the
+    /// ball's piece ([`classify_ball_on_collapsed_offset`], with a constant ball).
+    pub ball_on_collapsed: bool,
+    /// Whether the solver's radii can change along the edge (only the line, circle and
+    /// point classes are kept then).
+    pub radii_can_change: bool,
 }
 
 /// Not the fork (#2405): the line two offsets of a line spine meet in, `O1 ∩ O2`, as its
@@ -795,6 +1033,30 @@ fn pair_plane(
     centre: Point3,
     tol: f64,
 ) -> Option<(Point3, Vec3)> {
+    let mut best = BIG_DOUBLE;
+    let mut out = None;
+    for sign in [1.0, -1.0] {
+        let Some((n, k, len)) = pair_plane_form(q, rho, sign) else {
+            continue;
+        };
+        let off = (n.dot(centre - c) - k).abs() / len;
+        if off < best {
+            best = off;
+            let normal = n * (1.0 / len);
+            out = Some((c + normal * (k / len), normal));
+        }
+    }
+    if best <= tol {
+        out
+    } else {
+        None
+    }
+}
+
+/// One of the pair's two planes, by `sign`: (x - c).n = k, as `n`, `k` and the length of
+/// `n`; `None` for a plane not defined (the quadrics' axes along each other). `n` depends
+/// on the quadrics' axes alone, so a sign names the same plane's normal for every offset.
+fn pair_plane_form(q: &[BlendQuadric; 2], rho: f64, sign: f64) -> Option<(Vec3, f64, f64)> {
     let mut u = [Vec3::ZERO; 2];
     let mut kk = [0.0; 2];
     let mut s = [0.0; 2];
@@ -807,26 +1069,34 @@ fn pair_plane(
             *si = if cone { 1.0 / qi.angle.cos() } else { 1.0 };
         }
     }
-    let mut best = BIG_DOUBLE;
-    let mut out = None;
-    for sign in [1.0, -1.0] {
-        let n = u[1] * s[1] - u[0] * (sign * s[0]);
-        let k = kk[1] * s[1] - kk[0] * sign * s[0];
-        let len = n.length();
-        if len <= EFF_ZERO_SQRT {
-            continue;
-        }
-        let off = (n.dot(centre - c) - k).abs() / len;
-        if off < best {
-            best = off;
-            let normal = n * (1.0 / len);
-            out = Some((c + normal * (k / len), normal));
-        }
-    }
-    if best <= tol {
-        out
-    } else {
-        None
+    let n = u[1] * s[1] - u[0] * (sign * s[0]);
+    let k = kk[1] * s[1] - kk[0] * sign * s[0];
+    let len = n.length();
+    (len > EFF_ZERO_SQRT).then_some((n, k, len))
+}
+
+/// The conic of a [`BlendSpine::ConicPair`] on which the edge lies (solidcore #2952). The
+/// two conics cross where the two faces touch, so a station there lies on both and does not
+/// tell them apart: the spine is then read off the edge. The faces meet in their own pair of
+/// conics, in planes of the same normals as the offsets' (they depend on the axes alone),
+/// and `mid`, the edge's middle, lies on one of those.
+fn pair_plane_of_edge(blend: &mut ExactBlend, mid: Point3, tol: f64) {
+    let [a, b] = blend.offsets;
+    let Some(c) = lines_meet(a.point, a.dir, b.point, b.dir, tol) else {
+        return;
+    };
+    let rho = 0.5 * (inscribed_radius(&a, c) + inscribed_radius(&b, c));
+    let [fa, fb] = blend.faces;
+    let rho_faces = 0.5 * (inscribed_radius(&fa, c) + inscribed_radius(&fb, c));
+    let off = |sign: f64| {
+        pair_plane_form(&blend.faces, rho_faces, sign)
+            .map_or(BIG_DOUBLE, |(n, k, len)| (n.dot(mid - c) - k).abs() / len)
+    };
+    let sign = if off(1.0) <= off(-1.0) { 1.0 } else { -1.0 };
+    if let Some((n, k, len)) = pair_plane_form(&blend.offsets, rho, sign) {
+        let normal = n * (1.0 / len);
+        blend.point = c + normal * (k / len);
+        blend.dir = normal;
     }
 }
 
@@ -1174,7 +1444,7 @@ fn curve_crosses_quadric(
     Some(near + x)
 }
 
-/// Not in the fork (solidcore #2403; with `fillet_blend_corner`): a constant round one of
+/// Not in the fork (solidcore #2403): a constant round one of
 /// whose faces is itself a round of the ball's radius on the ball's side (a cylinder or a
 /// torus as wide as the ball), whose offset `blend.offsets` is therefore collapsed onto that
 /// round's spine, a line or a circle, which the other offset (a plane, sphere, cylinder or
@@ -1234,7 +1504,7 @@ pub fn classify_exact_blend(
     b: &Brep,
     tsect: &TsectPnt,
 ) -> Result<ExactBlend> {
-    let mut blend = ExactBlend::default();
+    let blend = ExactBlend::default();
     if !ops.can_make_analytic()? {
         return Ok(blend);
     }
@@ -1253,11 +1523,17 @@ pub fn classify_exact_blend(
         .solver()
         .edgeuse(0)?
         .ok_or_else(|| SolidError::null_pointer(OP))?;
-    eu::edge(b, eu0)?.ok_or_else(|| SolidError::null_pointer(OP))?;
+    let e = eu::edge(b, eu0)?.ok_or_else(|| SolidError::null_pointer(OP))?;
     let tol = b.tolerance();
 
     let mut radius = 0.0;
     ops.setup_offset_values(tsect, Some(&mut radius))?;
+    // Not the fork (solidcore #2652): with a constant ball, a face of no natural quadric is
+    // read on (`classify_faces`: the ball's piece where its centre stays put)
+    let any_faces = !ops.offset_radii_can_change()?;
+    let mut faces = [BlendQuadric::default(); 2];
+    let mut uvs = [Point2::new(0.0, 0.0); 2];
+    let mut offs = [0.0; 2];
     let mut centre = Point3::ZERO;
     for i in 0..2 {
         let uv = tsect.uv_pos(if i == 0 {
@@ -1265,47 +1541,134 @@ pub fn classify_exact_blend(
         } else {
             SrfIndex::Second
         });
-        let (face, p, n) = {
+        let face = {
+            let off = ops
+                .solver()
+                .surface(i)?
+                .ok_or_else(|| SolidError::null_pointer(OP))?;
+            BlendQuadric::from_surface(k, off.surface.base_surface(), uv, tol)?
+        };
+        if face.kind == QuadricKind::None && !any_faces {
+            return Ok(blend);
+        }
+        let q = crate::blend::fillet_solver::p2::eval_offset(k, ops.solver_mut(), i, uv)?;
+        // A station past the face's edge is read where its offset was: on the extension
+        // `eval_offset` made, which a base surface does not reach (its point there clamps
+        // to the edge, and `q - p` is no offset).
+        let (p, n) = {
             let off = ops
                 .solver()
                 .surface(i)?
                 .ok_or_else(|| SolidError::null_pointer(OP))?;
             let base = off.surface.base_surface();
-            let face = BlendQuadric::from_surface(k, base, uv, tol)?;
-            if face.kind == QuadricKind::None {
-                return Ok(blend);
-            }
-            let (p, n) = point_and_normal(k, base, uv)?;
-            (face, p, n)
+            off.surface
+                .surface
+                .with_extended_base_surface(|ext| point_and_normal(k, ext.unwrap_or(base), uv))?
         };
-        let q = crate::blend::fillet_solver::p2::eval_offset(k, ops.solver_mut(), i, uv)?;
-        let off = (q - p).dot(n);
+        if let (Some(f), Some(u), Some(o)) = (faces.get_mut(i), uvs.get_mut(i), offs.get_mut(i)) {
+            *f = face;
+            *u = uv;
+            *o = (q - p).dot(n);
+        }
+        if i == 0 {
+            centre = q;
+        }
+    }
+    let radii_can_change = ops.offset_radii_can_change()?;
+    let inputs = ClassInputs {
+        uv: uvs,
+        offsets: offs,
+        centre,
+        tol,
+        ball_on_collapsed: !radii_can_change,
+        radii_can_change,
+    };
+    let mut blend = classify_faces(faces, &inputs);
+    if blend.spine == BlendSpine::ConicPair {
+        use crate::topology::edge;
+        if let Some(curve) = edge::curve(b, e)? {
+            let mid = curve.evaluate_point(k, edge::interval(b, e)?.evaluate(0.5))?;
+            pair_plane_of_edge(&mut blend, mid, tol);
+        }
+    }
+    Ok(blend)
+}
+
+/// The class of a round on faces whose quadrics are `faces`, read with `inputs`
+/// ([`classify_exact_blend`]'s, past the faces): each face moved by its offset, the spine
+/// classified at the centre ([`classify_blend_spine`]; then, as solidcore #2403 does, a
+/// collapsed offset the other crosses), and with radii that can change only the line,
+/// circle and point classes kept.
+///
+/// Not the fork (solidcore #2652): with `inputs.ball_on_collapsed`, a round one of whose
+/// faces has no natural quadric ([`QuadricKind::None`], a B-spline) and the other a surface
+/// quadric is the ball's piece about the centre ([`BlendSpine::Point`]) where that face is
+/// as wide as the ball: whether it is is decided from the geometry where the round is built
+/// ([`calc_exact_fillet_geom`]: the ball's centre is the same at every point and the ball
+/// lies on that face along its contact arc), else it is traced. Its offset is read as the
+/// line through the centre ([`QuadricKind::Line`]), its direction that contact arc's axis,
+/// set where it is built.
+fn classify_faces(faces: [BlendQuadric; 2], inputs: &ClassInputs) -> ExactBlend {
+    let tol = inputs.tol;
+    let mut blend = ExactBlend {
+        inputs: Some(*inputs),
+        ..ExactBlend::default()
+    };
+    let generic = faces.iter().filter(|f| f.kind == QuadricKind::None).count();
+    if generic > 0 && !(generic == 1 && inputs.ball_on_collapsed) {
+        return ExactBlend::default();
+    }
+    for (i, (face, off)) in faces.iter().zip(inputs.offsets).enumerate() {
+        let offset = if face.kind == QuadricKind::None {
+            BlendQuadric {
+                kind: QuadricKind::Line,
+                point: inputs.centre,
+                ..BlendQuadric::default()
+            }
+        } else {
+            face.offset(off, tol)
+        };
         if let (Some(f), Some(o), Some(c)) = (
             blend.faces.get_mut(i),
             blend.offsets.get_mut(i),
             blend.contact.get_mut(i),
         ) {
-            *f = face;
-            *o = face.offset(off, tol);
+            *f = *face;
+            *o = offset;
             *c = if off > 0.0 { -1.0 } else { 1.0 };
         }
         blend.radius = off.abs();
-        if i == 0 {
-            centre = q;
+    }
+    if generic > 0 {
+        let surface = |q: &BlendQuadric| {
+            matches!(
+                q.kind,
+                QuadricKind::Plane
+                    | QuadricKind::Sphere
+                    | QuadricKind::Cylinder
+                    | QuadricKind::Cone
+            )
+        };
+        if blend
+            .faces
+            .iter()
+            .zip(&blend.offsets)
+            .any(|(f, o)| f.kind != QuadricKind::None && surface(o))
+        {
+            blend.spine = BlendSpine::Point;
+            blend.point = inputs.centre;
         }
+        return blend;
     }
 
-    classify_blend_spine(centre, tol, &mut blend);
+    classify_blend_spine(inputs.centre, tol, &mut blend);
     // Not in the fork (solidcore #2403): a face that is a round of the ball's radius, its
     // offset collapsed onto its spine, which the other offset crosses: the ball's piece
-    if blend.spine == BlendSpine::Traced
-        && k.fixes.fillet_blend_corner
-        && !ops.offset_radii_can_change()?
-    {
-        classify_ball_on_collapsed_offset(centre, tol, &mut blend);
+    if blend.spine == BlendSpine::Traced && inputs.ball_on_collapsed {
+        classify_ball_on_collapsed_offset(inputs.centre, tol, &mut blend);
     }
 
-    if ops.offset_radii_can_change()?
+    if inputs.radii_can_change
         && !matches!(
             blend.spine,
             BlendSpine::Line | BlendSpine::Circle | BlendSpine::Point
@@ -1313,7 +1676,208 @@ pub fn classify_exact_blend(
     {
         blend.spine = BlendSpine::Traced;
     }
-    Ok(blend)
+    blend
+}
+
+/// Not the fork (#2485): the class of a round read again from its two supports alone (the
+/// faces [`classify_exact_blend`] read, as the round keeps them) with the numbers it read
+/// beside them, `inputs`. On the same supports it is that classification, bit for bit; on
+/// supports rebuilt from a record, whose analytic parameters are derived from their NURBS
+/// forms to rounding, it is the same class to rounding.
+///
+/// # Errors
+///
+/// Those of [`BlendQuadric::from_surface`].
+pub fn classify_supports(
+    k: &Kernel,
+    supports: [&Surface; 2],
+    inputs: &ClassInputs,
+) -> Result<ExactBlend> {
+    let mut faces = [BlendQuadric::default(); 2];
+    for ((face, support), uv) in faces.iter_mut().zip(supports).zip(inputs.uv) {
+        *face = BlendQuadric::from_surface(k, support, uv, inputs.tol)?;
+        // (solidcore #2652) a face of no natural quadric is read on with a constant ball
+        if face.kind == QuadricKind::None && !inputs.ball_on_collapsed {
+            return Ok(ExactBlend::default());
+        }
+    }
+    Ok(classify_faces(faces, inputs))
+}
+
+/// Not the fork (#2485): a quadric of revolution about the axis through `a` along the
+/// unit `d`, as its meridian in the half-plane `(rho, z)`, `rho` the distance from the
+/// axis and `z` the height along it from `a`: a line `p + t e` or a circle about `c` of
+/// radius `r`. `None` for a quadric that is not coaxial with it.
+#[derive(Debug, Clone, Copy)]
+enum Meridian {
+    Line { p: Point2, e: Point2 },
+    Circle { c: Point2, r: f64 },
+}
+
+fn meridian(q: &BlendQuadric, a: Point3, d: Vec3) -> Option<Meridian> {
+    let z = |x: Point3| (x - a).dot(d);
+    let rho = |x: Point3| across(x - a, d).length();
+    Some(match q.kind {
+        // a plane square to the axis: z = h
+        QuadricKind::Plane => Meridian::Line {
+            p: Point2::new(0.0, z(q.point)),
+            e: Point2::new(1.0, 0.0),
+        },
+        // a coaxial cylinder: rho = R
+        QuadricKind::Cylinder => Meridian::Line {
+            p: Point2::new(q.radius, 0.0),
+            e: Point2::new(0.0, 1.0),
+        },
+        // a cylinder as wide as the ball, collapsed onto the axis: rho = 0
+        QuadricKind::Line => Meridian::Line {
+            p: Point2::new(0.0, 0.0),
+            e: Point2::new(0.0, 1.0),
+        },
+        // a sphere about a point of the axis
+        QuadricKind::Sphere => Meridian::Circle {
+            c: Point2::new(rho(q.point), z(q.point)),
+            r: q.radius,
+        },
+        // a coaxial cone: the line from its apex at its half-angle into its nappe
+        QuadricKind::Cone => Meridian::Line {
+            p: Point2::new(rho(q.point), z(q.point)),
+            e: Point2::new(q.angle.sin(), q.angle.cos() * q.dir.dot(d).signum()),
+        },
+        _ => return None,
+    })
+}
+
+/// The crossings of two meridians (at most two).
+fn meridians_cross(a: Meridian, b: Meridian) -> Vec<Point2> {
+    let cross2 = |u: Point2, v: Point2| u.x * v.y - u.y * v.x;
+    let sub = |u: Point2, v: Point2| Point2::new(u.x - v.x, u.y - v.y);
+    let line_circle = |p: Point2, e: Point2, c: Point2, r: f64| {
+        // |p + t e - c|^2 = r^2
+        let w = sub(p, c);
+        let ee = e.x * e.x + e.y * e.y;
+        let be = w.x * e.x + w.y * e.y;
+        let disc = be * be - ee * (w.x * w.x + w.y * w.y - r * r);
+        if !(disc >= 0.0 && ee > 0.0) {
+            return Vec::new();
+        }
+        let root = disc.sqrt();
+        [(-be - root) / ee, (-be + root) / ee]
+            .iter()
+            .map(|t| Point2::new(p.x + t * e.x, p.y + t * e.y))
+            .collect()
+    };
+    match (a, b) {
+        (Meridian::Line { p: p0, e: e0 }, Meridian::Line { p: p1, e: e1 }) => {
+            let den = cross2(e0, e1);
+            if den == 0.0 {
+                return Vec::new();
+            }
+            let t = cross2(sub(p1, p0), e1) / den;
+            vec![Point2::new(p0.x + t * e0.x, p0.y + t * e0.y)]
+        }
+        (Meridian::Line { p, e }, Meridian::Circle { c, r })
+        | (Meridian::Circle { c, r }, Meridian::Line { p, e }) => line_circle(p, e, c, r),
+        (Meridian::Circle { c: c0, r: r0 }, Meridian::Circle { c: c1, r: r1 }) => {
+            // the radical line, then a line-circle crossing
+            let d = sub(c1, c0);
+            let dd = d.x * d.x + d.y * d.y;
+            if dd == 0.0 {
+                return Vec::new();
+            }
+            let along = (dd + r0 * r0 - r1 * r1) / (2.0 * dd);
+            let p = Point2::new(c0.x + along * d.x, c0.y + along * d.y);
+            line_circle(p, Point2::new(-d.y, d.x), c0, r0)
+        }
+    }
+}
+
+/// Not the fork (#2486): the plane a chamfer between two planes lies on, from its offsets
+/// alone: the plane through the feet, on the two faces, of the line the offsets meet in
+/// (its unit normal `d x (F_2 - F_1)`). `None` for a blend that is not a line spine
+/// between planes, or feet that coincide.
+#[must_use]
+pub fn chord_implicit(blend: &ExactBlend) -> Option<crate::surface::implicit::Implicit> {
+    let planes = blend.faces.iter().all(|f| f.kind == QuadricKind::Plane);
+    if blend.spine != BlendSpine::Line || !planes {
+        return None;
+    }
+    let (p, d) = (blend.point, blend.dir);
+    let [a, b] = &blend.faces;
+    let foot = |f: &BlendQuadric| p - f.dir * (p - f.point).dot(f.dir);
+    let (f1, f2) = (foot(a), foot(b));
+    let normal = d.cross(f2 - f1).unitize().ok()?;
+    Some(crate::surface::implicit::Implicit::Plane { origin: f1, normal })
+}
+
+/// Not the fork (#2485): the surface a classified round lies on, from its offsets alone:
+/// for the line, circle and point classes the analytic surface by its implicit equation
+/// (the cylinder of the ball's radius about the line the offsets meet in, the ball about
+/// the point, and the torus about the common axis whose centre circle is where the
+/// offsets' meridians cross, the crossing nearest the classified centre); for the conic,
+/// conic-pair and nodal-quartic classes the canal surface of the ball's radius about
+/// `leader`, the round's rational centre line (its parameter the net's through `map`),
+/// which must lie on both offsets. `None` for
+/// a traced round, a blend classified without its inputs, offsets whose meridians do not
+/// cross and a rational class without its leader.
+pub fn class_surface(
+    blend: &ExactBlend,
+    leader: Option<&crate::nurbs::b_spline_curve::BSplineCurve>,
+    map: &crate::surface::implicit::LeaderMap,
+) -> Option<crate::surface::implicit::ClassSurface> {
+    use crate::surface::implicit::{ClassSurface, Implicit};
+    let r = blend.radius;
+    let implicit = match blend.spine {
+        BlendSpine::Line => Some(Implicit::Cone {
+            origin: blend.point,
+            axis: blend.dir,
+            radius: r,
+            tan_angle: 0.0,
+        }),
+        BlendSpine::Point => Some(Implicit::Sphere {
+            centre: blend.point,
+            radius: r,
+        }),
+        BlendSpine::Circle => {
+            let centre = blend.inputs?.centre;
+            let (a, d) = (blend.point, blend.dir);
+            let ma = meridian(&blend.offsets[0], a, d)?;
+            let mb = meridian(&blend.offsets[1], a, d)?;
+            let near = Point2::new(across(centre - a, d).length(), (centre - a).dot(d));
+            let dist = |x: &Point2| (x.x - near.x).hypot(x.y - near.y);
+            let spine = meridians_cross(ma, mb)
+                .into_iter()
+                .filter(|x| x.x >= 0.0)
+                .min_by(|x, y| dist(x).total_cmp(&dist(y)))?;
+            Some(Implicit::Torus {
+                centre: a + d * spine.y,
+                axis: d,
+                major: spine.x,
+                minor: r,
+            })
+        }
+        BlendSpine::Conic | BlendSpine::ConicPair | BlendSpine::NodalQuartic => {
+            return Some(ClassSurface::Canal {
+                spine: Box::new(leader?.clone()),
+                map: *map,
+                offsets: [blend.offsets[0].implicit(), blend.offsets[1].implicit()],
+                radius: r,
+            });
+        }
+        BlendSpine::Traced => None,
+    };
+    implicit.map(ClassSurface::Implicit)
+}
+
+/// [`ball_zone_open_at_an_end`]'s refusal: the radius named (the face's) and whether the
+/// face is as wide as the ball along part of the edge only (solidcore #2652), not along the
+/// whole edge with the zone open at an end.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CollapsedOffset {
+    /// The face's radius of curvature toward the ball: its radius, or (partial) its least
+    /// along the edge.
+    pub radius: f64,
+    /// Whether the face is as wide as the ball along part of the edge only.
+    pub partial: bool,
 }
 
 /// Not the fork's (#2401; with `fixes.fillet_gn_section_generator`): for a constant ball of
@@ -1334,11 +1898,20 @@ pub fn classify_exact_blend(
 /// on the other face's offset, within the solver's tolerance.
 ///
 /// An end at a vertex of one of `joined` (the session's other blended edges) is where the
-/// chain runs on into the next round: with `fixes.fillet_blend_corner` the Join places that
+/// chain runs on into the next round: the Join places that
 /// round's section through the fixed centre and the piece is built as the ball's triangle
 /// between the two sections (`classify_ball_on_collapsed_offset`, #2403), so that end
 /// closes the zone whatever the plane square to the edge. The caller passes `joined` only
 /// under that flag; without it such a piece is traced and is judged by the plane alone.
+///
+/// Not the fork (solidcore #2652; the rule of hub #2243): a face of no natural quadric (a
+/// B-spline) is judged by its geometry along the edge (`edge_match`). As wide as the ball
+/// along the whole edge (its larger radius of curvature toward the ball the ball's, within
+/// the body's tolerance, at every station), its offset collapses as a cylinder's does, onto
+/// its focal curve (`focal_offset`), read again at each end's own foot to judge that end.
+/// As wide as the ball along part of the edge only, it is refused
+/// ([`CollapsedOffset::partial`]), naming the face's least radius of curvature toward the
+/// ball along the edge: open, as below it the ball no longer matches the face anywhere.
 ///
 /// # Errors
 ///
@@ -1350,7 +1923,7 @@ pub fn ball_zone_open_at_an_end(
     b: &Brep,
     radius: Option<f64>,
     joined: &[EdgeId],
-) -> Result<Option<f64>> {
+) -> Result<Option<CollapsedOffset>> {
     use crate::surface::surface::p4::NoObject;
     use crate::surface::surface::p5::DropPointOptions;
     use crate::topology::edge;
@@ -1370,9 +1943,273 @@ pub fn ball_zone_open_at_an_end(
     let approx = ops.solver().approx_tol_3d;
     let mid = curve.evaluate_point(k, ivl.evaluate(0.5))?;
 
-    // each face's quadric there and its offset by the ball
+    // each face's quadric there and its offset by the ball; (solidcore #2652) a face of no
+    // natural quadric as wide as the ball along the whole edge, its offset collapsed by its
+    // geometry (`edge_match`, `focal_offset`)
     let mut faces = [BlendQuadric::default(); 2];
     let mut offsets = [BlendQuadric::default(); 2];
+    let mut focal = [None; 2];
+    for i in 0..2 {
+        let (face, p, n, uv) = {
+            let off = ops
+                .solver()
+                .surface(i)?
+                .ok_or_else(|| SolidError::null_pointer(OP))?;
+            let base = off.surface.base_surface();
+            let domain = base.natural_uv_domain_with_nurb(k)?;
+            let dropped =
+                base.drop_point::<NoObject>(k, mid, &domain, &DropPointOptions::default())?;
+            if !dropped.success {
+                return Ok(None);
+            }
+            let uv = dropped.result_uv;
+            let face = BlendQuadric::from_surface(k, base, uv, tol)?;
+            let (p, n) = point_and_normal(k, base, uv)?;
+            (face, p, n, uv)
+        };
+        let q = crate::blend::fillet_solver::p2::eval_offset(k, ops.solver_mut(), i, uv)?;
+        let mut off = (q - p).dot(n);
+        if let Some(r) = radius {
+            off = if off < 0.0 { -r } else { r };
+        }
+        let offset = if face.kind == QuadricKind::None {
+            let surface = ops
+                .solver()
+                .surface(i)?
+                .ok_or_else(|| SolidError::null_pointer(OP))?;
+            let base = surface.surface.base_surface();
+            match edge_match(k, base, &curve, ivl, off, tol)? {
+                // as wide as the ball along part of the edge only: refused, naming the face's
+                // least radius there (hub #2243)
+                EdgeMatch::Partial(least) => {
+                    return Ok(Some(CollapsedOffset {
+                        radius: least,
+                        partial: true,
+                    }))
+                }
+                EdgeMatch::None => face.offset(off, tol),
+                EdgeMatch::Full => {
+                    let (Some(collapsed), Some(Bending { k_max, .. })) = (
+                        focal_offset(k, base, uv, off, tol)?,
+                        bending_toward_ball(k, base, uv, off)?,
+                    ) else {
+                        return Ok(None);
+                    };
+                    // the face's radius there, the one named
+                    if let Some(slot) = focal.get_mut(i) {
+                        *slot = Some((off, 1.0 / k_max));
+                    }
+                    collapsed
+                }
+            }
+        } else {
+            face.offset(off, tol)
+        };
+        if let (Some(f), Some(o)) = (faces.get_mut(i), offsets.get_mut(i)) {
+            *f = face;
+            *o = offset;
+        }
+    }
+    let collapsed = |q: &BlendQuadric| matches!(q.kind, QuadricKind::Line | QuadricKind::Point);
+    let Some(c) = offsets.iter().position(collapsed) else {
+        return Ok(None);
+    };
+    let (Some(&axis), Some(&other), Some(face), Some(&focal)) = (
+        offsets.get(c),
+        offsets.get(1 - c),
+        faces.get(c),
+        focal.get(c),
+    ) else {
+        return Ok(None);
+    };
+    // the other face's offset must be read to judge the ends
+    if other.kind == QuadricKind::None {
+        return Ok(None);
+    }
+    let face_radius = focal.map_or(face.radius, |(_, rho)| rho);
+
+    // each end of the edge: does the plane through it square to the edge hold the centre?
+    for t in [ivl.min(), ivl.max()] {
+        let pv = curve.evaluate(k, t, 1, true, false)?;
+        let (Some(&v), Some(&d)) = (pv.first(), pv.get(1)) else {
+            return Ok(None);
+        };
+        let Ok(along) = d.unitize() else {
+            return Ok(None);
+        };
+        if end_runs_on(b, e, v, tol, joined)? {
+            continue;
+        }
+        let closes = if let Some((off, _)) = focal {
+            // (solidcore #2652) the focal curve read again at the end's own foot: there it
+            // crosses the plane square to the edge (the face's normal there is square to the
+            // edge), or (along it) lies in it
+            let surface = ops
+                .solver()
+                .surface(c)?
+                .ok_or_else(|| SolidError::null_pointer(OP))?;
+            let base = surface.surface.base_surface();
+            let domain = base.natural_uv_domain_with_nurb(k)?;
+            let dropped =
+                base.drop_point::<NoObject>(k, v, &domain, &DropPointOptions::default())?;
+            if !dropped.success {
+                return Ok(None);
+            }
+            let Some(at_end) = focal_offset(k, base, dropped.result_uv, off, tol)? else {
+                return Ok(None);
+            };
+            at_end.kind == QuadricKind::Point
+                || at_end.dir.dot(along).abs() <= EFF_ZERO_SQRT
+                || other.distance(at_end.point) <= approx
+        } else if axis.kind == QuadricKind::Point {
+            (axis.point - v).dot(along).abs() <= approx
+        } else {
+            let across_plane = axis.dir.dot(along);
+            if across_plane.abs() <= EFF_ZERO_SQRT {
+                // the axis lies in the plane (or misses it)
+                (axis.point - v).dot(along).abs() <= approx
+            } else {
+                let x = axis.point + axis.dir * ((v - axis.point).dot(along) / across_plane);
+                other.distance(x) <= approx
+            }
+        };
+        if !closes {
+            return Ok(Some(CollapsedOffset {
+                radius: face_radius,
+                partial: false,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+/// A rail of a constant ball's round or chamfer whose ends lie within the part's
+/// resolution of each other ([`rail_below_resolution`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RailBelowResolution {
+    /// The distance between the rail's ends.
+    pub chord: f64,
+    /// The resolution: two of the blend's vertex tolerances (its approximation tolerance),
+    /// within which the rail's two end vertices would be one.
+    pub resolution: f64,
+    /// The largest ball radius on this side of the collapse whose rail is longer than the
+    /// resolution (an open bound).
+    pub fit: f64,
+    /// The ball radius at which the rail closes to a point on the axis (the cone's apex
+    /// on it: no rail to resolve).
+    pub point_size: f64,
+    /// The rail lies on the far side of the axis from the edge (its section runs through
+    /// the axis): refused whatever its length, `fit` is then `point_size`.
+    pub past_axis: bool,
+}
+
+/// A coaxial quadric's trace in the meridian half-plane of `axis` through the edge, as a
+/// line `(point, unit direction)` in `(r, h)`: `r` the signed distance from the axis
+/// along `radial`, `h` along the axis from `axis_point`. A plane square to the axis, a
+/// cylinder or its axis, and a cone are lines there; a sphere, a torus or a plane at an
+/// angle to the axis have none (`None`). `radius` is the cylinder's signed radius (an
+/// offset taken through the axis stays on its far side, as `r < 0`).
+fn meridian_line(
+    q: &BlendQuadric,
+    radius: f64,
+    axis_point: Point3,
+    axis: Vec3,
+    ang_tol: f64,
+) -> Option<([f64; 2], [f64; 2])> {
+    match q.kind {
+        QuadricKind::Plane => {
+            if q.dir.cross(axis).length() > ang_tol {
+                return None;
+            }
+            Some(([0.0, (q.point - axis_point).dot(axis)], [1.0, 0.0]))
+        }
+        QuadricKind::Cylinder | QuadricKind::Line => Some(([radius, 0.0], [0.0, 1.0])),
+        QuadricKind::Cone => {
+            let s = if q.dir.dot(axis) < 0.0 { -1.0 } else { 1.0 };
+            Some((
+                [0.0, (q.point - axis_point).dot(axis)],
+                [q.angle.sin(), s * q.angle.cos()],
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// Where two meridian lines meet (`None` when parallel).
+fn meet(a: ([f64; 2], [f64; 2]), b: ([f64; 2], [f64; 2])) -> Option<[f64; 2]> {
+    let ([px, py], [dx, dy]) = a;
+    let ([qx, qy], [ex, ey]) = b;
+    let cross = dx * ey - dy * ex;
+    if cross.abs() <= EFF_ZERO {
+        return None;
+    }
+    let s = ((qx - px) * ey - (qy - py) * ex) / cross;
+    Some([px + s * dx, py + s * dy])
+}
+
+/// The foot of `m` on a meridian line (its direction a unit vector).
+fn foot_on(line: ([f64; 2], [f64; 2]), m: [f64; 2]) -> [f64; 2] {
+    let ([px, py], [dx, dy]) = line;
+    let s = (m[0] - px) * dx + (m[1] - py) * dy;
+    [px + s * dx, py + s * dy]
+}
+
+/// Not the fork's (#2546, WR-739): a
+/// constant ball's round or chamfer along an arc whose faces are coaxial quadrics that
+/// trace lines in the meridian half-plane (a plane square to the axis, a cylinder, a
+/// cone) has its spine on a circle about the axis, and each rail is the circle of the
+/// ball's contact with a face: an arc similar to the edge, of radius `r_i` where the
+/// edge's is `R_e`, so its ends are `C_e |r_i| / R_e` apart for the edge's chord `C_e`.
+/// The rail whose ends come within the resolution (two of the solver's approximation
+/// tolerances, `2 tol`: its two end vertices would be one) without closing to a point
+/// cannot be represented: it is reported with the size that builds. The spine point is
+/// where the faces' offsets by the ball meet in that half-plane, and the rail point its
+/// foot on the face, in closed form; each moves linearly with the ball's radius `t`, so
+/// `r_i(t) = R_e + t (r_i - R_e) / d` for the solver's radius `d`, and the rail closes
+/// to a point at `t0 = -R_e / g` (`g` that slope) and leaves the resolution at
+/// `r_i(t) = 2 tol R_e / C_e`. A rail at a point to rounding (`|r_i| <= EFF_ZERO (1 +
+/// R_e)`: the ball's centre on the axis, a chamfer as wide as the round it runs round)
+/// is not refused: it builds as the cone's apex. A rail on the far side of the axis from
+/// the edge (`r_i < 0`: the ball's section runs through the axis, a chamfer wider than the
+/// round it runs round) is no blend of the edge whatever its length: it is reported
+/// `past_axis`, with `t0` as its fit, the largest size that keeps the rail on the edge's
+/// side.
+/// `None` for a closed edge, faces of other kinds or placements, and rails on the edge's
+/// side longer than the resolution.
+///
+/// # Errors
+///
+/// Those of the drops and the evaluations; `SM_ERR_NULL_POINTER` for a solver without
+/// its edge use, offset surfaces or edge curve.
+pub fn rail_below_resolution(
+    ops: &mut dyn FilletSolverOps,
+    k: &Kernel,
+    b: &Brep,
+) -> Result<Option<RailBelowResolution>> {
+    use crate::surface::surface::p4::NoObject;
+    use crate::surface::surface::p5::DropPointOptions;
+    use crate::topology::edge;
+    let eu0 = ops
+        .solver()
+        .edgeuse(0)?
+        .ok_or_else(|| SolidError::null_pointer(OP))?;
+    let e = eu::edge(b, eu0)?.ok_or_else(|| SolidError::null_pointer(OP))?;
+    if edge::is_closed(b, e)? {
+        return Ok(None);
+    }
+    let curve = edge::evaluation_curve(b, e)?
+        .ok_or_else(|| SolidError::null_pointer(OP))?
+        .clone();
+    let ivl = edge::interval(b, e)?;
+    let tol = b.tolerance();
+    let resolution = 2.0 * ops.solver().approx_tol_3d;
+    let start = curve.evaluate_point(k, ivl.min())?;
+    let mid = curve.evaluate_point(k, ivl.evaluate(0.5))?;
+    let end = curve.evaluate_point(k, ivl.max())?;
+
+    // each face's quadric there, and its signed offset by the ball
+    let mut faces = [BlendQuadric::default(); 2];
+    let mut offs = [0.0; 2];
     for i in 0..2 {
         let (face, p, n, uv) = {
             let off = ops
@@ -1395,54 +2232,86 @@ pub fn ball_zone_open_at_an_end(
             (face, p, n, uv)
         };
         let q = crate::blend::fillet_solver::p2::eval_offset(k, ops.solver_mut(), i, uv)?;
-        let mut off = (q - p).dot(n);
-        if let Some(r) = radius {
-            off = if off < 0.0 { -r } else { r };
-        }
-        if let (Some(f), Some(o)) = (faces.get_mut(i), offsets.get_mut(i)) {
+        if let (Some(f), Some(o)) = (faces.get_mut(i), offs.get_mut(i)) {
             *f = face;
-            *o = face.offset(off, tol);
+            *o = (q - p).dot(n);
         }
     }
-    let collapsed = |q: &BlendQuadric| matches!(q.kind, QuadricKind::Line | QuadricKind::Point);
-    let Some(c) = offsets.iter().position(collapsed) else {
+    let [fa, fb] = faces;
+    let [oa, ob] = offs;
+    let d = oa.abs();
+    if d <= tol {
+        return Ok(None);
+    }
+
+    // the common axis, and the meridian half-plane through the edge's middle
+    let reach = tol
+        .max(d)
+        .max(mid.distance(fa.point))
+        .max(mid.distance(fb.point));
+    let Some((axis_point, axis)) = coaxial(&fa, &fb, tol, reach) else {
         return Ok(None);
     };
-    let (Some(&axis), Some(&other), Some(face)) =
-        (offsets.get(c), offsets.get(1 - c), faces.get(c))
-    else {
+    let ang_tol = tol / reach.max(tol);
+    let edge_radius = across(mid - axis_point, axis).length();
+    let edge_chord = across(end - start, axis).length();
+    if edge_radius <= tol || edge_chord <= tol {
+        return Ok(None);
+    }
+    let lines = |q: &BlendQuadric, off: f64| {
+        let moved = if q.kind == QuadricKind::Cylinder {
+            let mut m = *q;
+            m.radius = q.radius + q.side * off;
+            m
+        } else {
+            q.offset(off, 0.0)
+        };
+        meridian_line(&moved, moved.radius, axis_point, axis, ang_tol)
+    };
+    let (Some(face_a), Some(face_b), Some(off_a), Some(off_b)) = (
+        lines(&fa, 0.0),
+        lines(&fb, 0.0),
+        lines(&fa, oa),
+        lines(&fb, ob),
+    ) else {
+        return Ok(None);
+    };
+    let Some(centre) = meet(off_a, off_b) else {
         return Ok(None);
     };
 
-    // each end of the edge: does the plane through it square to the edge hold the centre?
-    for t in [ivl.min(), ivl.max()] {
-        let pv = curve.evaluate(k, t, 1, true, false)?;
-        let (Some(&v), Some(&d)) = (pv.first(), pv.get(1)) else {
-            return Ok(None);
-        };
-        let Ok(along) = d.unitize() else {
-            return Ok(None);
-        };
-        if end_runs_on(b, e, v, tol, joined)? {
+    let point_zero = EFF_ZERO * (1.0 + edge_radius);
+    let mut worst: Option<RailBelowResolution> = None;
+    for face in [face_a, face_b] {
+        let r = foot_on(face, centre)[0];
+        let chord = edge_chord * r.abs() / edge_radius;
+        let past_axis = r < 0.0;
+        if r.abs() <= point_zero || (!past_axis && chord > resolution) {
             continue;
         }
-        let closes = if axis.kind == QuadricKind::Point {
-            (axis.point - v).dot(along).abs() <= approx
+        let slope = (r - edge_radius) / d;
+        if slope.abs() <= EFF_ZERO {
+            continue;
+        }
+        let point_size = -edge_radius / slope;
+        // on the edge's side: where the rail's ends come to the resolution, short of t0
+        let fit = if past_axis {
+            point_size
         } else {
-            let across_plane = axis.dir.dot(along);
-            if across_plane.abs() <= EFF_ZERO_SQRT {
-                // the axis lies in the plane (or misses it)
-                (axis.point - v).dot(along).abs() <= approx
-            } else {
-                let x = axis.point + axis.dir * ((v - axis.point).dot(along) / across_plane);
-                other.distance(x) <= approx
-            }
+            (resolution * edge_radius / edge_chord - edge_radius) / slope
         };
-        if !closes {
-            return Ok(Some(face.radius));
+        let rail = RailBelowResolution {
+            chord,
+            resolution,
+            fit: fit.max(0.0),
+            point_size,
+            past_axis,
+        };
+        if worst.is_none_or(|w| rail.fit < w.fit) {
+            worst = Some(rail);
         }
     }
-    Ok(None)
+    Ok(worst)
 }
 
 /// Whether the end of `e` at `at` (within `tol`) is a vertex one of `joined` also ends at:
@@ -1466,6 +2335,86 @@ fn end_runs_on(b: &Brep, e: EdgeId, at: Point3, tol: f64, joined: &[EdgeId]) -> 
     Ok(false)
 }
 
+/// Not the fork (solidcore #2652): whether the ball about `blend.point` lies on face `ring`
+/// (one of no natural quadric) along an arc, so that its offset by the ball collapses there
+/// and the round is the ball's piece ([`classify_faces`]); returns that arc's unit axis.
+/// Decided from the geometry, within the solver's tolerance: the ball's centre is
+/// `blend.point` at every point of `tsects` (it does not move along the edge), and the
+/// ball's great circle through the first and last points' feet on the face lies on the face
+/// between them, the face's normal through the centre at each of 16 steps (the ball touches
+/// it there, it does not cross it). `None` where any of that fails, or the feet are one
+/// point or opposite (no one great circle).
+///
+/// # Errors
+///
+/// Those of `SetupOffsetValues`, the evaluations and the drops;
+/// `SM_ERR_NULL_POINTER` for a solver without its offset surface.
+fn ball_on_face_along_arc(
+    ops: &mut dyn FilletSolverOps,
+    k: &Kernel,
+    blend: &ExactBlend,
+    ring: usize,
+    tsects: &[TsectPnt],
+) -> Result<Option<Vec3>> {
+    use crate::blend::fillet_solver::p2::eval_offset;
+    use crate::surface::surface::p4::NoObject;
+    use crate::surface::surface::p5::DropPointOptions;
+    const STEPS: u32 = 16;
+    let (Some(first), Some(last)) = (tsects.first(), tsects.last()) else {
+        return Ok(None);
+    };
+    let tol = ops.solver().approx_tol_3d;
+    let (centre, radius) = (blend.point, blend.radius);
+    for t in tsects {
+        ops.setup_offset_values(t, None)?;
+        let c = eval_offset(k, ops.solver_mut(), 0, t.uv_pos(SrfIndex::First))?;
+        if c.distance(centre) > tol {
+            return Ok(None);
+        }
+    }
+    let index = if ring == 0 {
+        SrfIndex::First
+    } else {
+        SrfIndex::Second
+    };
+    let surface = ops
+        .solver()
+        .surface(ring)?
+        .ok_or_else(|| SolidError::null_pointer(OP))?
+        .surface
+        .base_surface();
+    let mut feet = [Vec3::ZERO; 2];
+    for (foot, t) in feet.iter_mut().zip([first, last]) {
+        *foot = surface.evaluate_point(k, t.uv_pos(index))? - centre;
+        if (foot.length() - radius).abs() > tol {
+            return Ok(None);
+        }
+    }
+    let [e0, e1] = feet;
+    let Ok(axis) = e0.cross(e1).unitize() else {
+        return Ok(None);
+    };
+    let (Ok(x), Ok(y)) = (e0.unitize(), axis.cross(e0).unitize()) else {
+        return Ok(None);
+    };
+    let turn = e1.dot(y).atan2(e1.dot(x));
+    let domain = surface.natural_uv_domain_with_nurb(k)?;
+    for i in 1..STEPS {
+        let a = turn * f64::from(i) / f64::from(STEPS);
+        let p = centre + (x * a.cos() + y * a.sin()) * radius;
+        let dropped =
+            surface.drop_point::<NoObject>(k, p, &domain, &DropPointOptions::default())?;
+        if !dropped.success {
+            return Ok(None);
+        }
+        let (q, n) = point_and_normal(k, surface, dropped.result_uv)?;
+        if q.distance(p) > tol || n.dot(p - centre).abs() < radius * (1.0 - EFF_ZERO_SQRT) {
+            return Ok(None);
+        }
+    }
+    Ok(Some(axis))
+}
+
 /// `SmFilletSolver::CalcExactFilletGeom(crBlend, rTsectPnts, pFG, bRecalc, rbBuilt)`: the
 /// exact surface of a constant round by its class, stored in `fillet_geom` (`None`: the
 /// solver's first fillet geometry) of `pseudo` with its rails; `recalc` is the surface
@@ -1477,12 +2426,145 @@ fn end_runs_on(b: &Brep, e: EdgeId, at: Point3, tol: f64, joined: &[EdgeId]) -> 
 /// ball's piece between two contact circles (not rebuilt on a recalc), or with one face's
 /// offset collapsed and the other's not, the ball's triangle (solidcore #2403, rebuilt).
 ///
+/// A geometry built here is marked [`FilletGeom::exact_class`](crate::blend::fillet_geom::p1::FilletGeom::exact_class)
+/// (not upstream, #2489).
+///
 /// # Errors
 ///
 /// Those of the builders (a failure in them is an error, not a trace), of
 /// `SetupOffsetValues` and the evaluations.
 #[allow(clippy::too_many_arguments)]
 pub fn calc_exact_fillet_geom(
+    ops: &mut dyn FilletSolverOps,
+    k: &Kernel,
+    b: &Brep,
+    pseudo: &mut FilletBrep,
+    blend: &ExactBlend,
+    tsects: &[TsectPnt],
+    fillet_geom: Option<FilletGeomId>,
+    recalc: bool,
+) -> Result<bool> {
+    let built = exact_fillet_geom_of_class(ops, k, b, pseudo, blend, tsects, fillet_geom, recalc)?;
+    if built {
+        let g = match fillet_geom {
+            Some(g) => g,
+            None => ops.solver().first_fillet_geom()?,
+        };
+        pseudo.geom_mut(g)?.exact_class = true;
+        if k.fixes.fillet_round_as_definition {
+            keep_definition(ops, k, pseudo, blend, fillet_geom)?;
+        }
+    }
+    Ok(built)
+}
+
+/// Not the fork (#2485, with `fillet_round_as_definition`): the round just built by its
+/// exact class keeps its definition on its surface ([`ExactRound`]): its supports (the
+/// faces the class was read off), the ball's radius, the ball's circle as its section and
+/// the centre line as its leader. Its net is its exact surface, re-certified at once
+/// ([`ExactRound::recertify`]: the class read again from the supports, the net on the
+/// class's surface). A round of a linear section (a chamfer) keeps none here.
+///
+/// # Errors
+///
+/// Those of the re-certification (a class's surface not exact is refused, not kept with a
+/// bound it does not have); `SM_ERR_NULL_POINTER` for a solver without its offset surfaces;
+/// those of copying the supports.
+fn keep_definition(
+    ops: &dyn FilletSolverOps,
+    k: &Kernel,
+    pseudo: &mut FilletBrep,
+    blend: &ExactBlend,
+    fillet_geom: Option<FilletGeomId>,
+) -> Result<()> {
+    use crate::curve::curve::CurveKind;
+    let (Some(class), Some(inputs)) = (ExactClass::of_spine(blend.spine), blend.inputs) else {
+        return Ok(());
+    };
+    let s = ops.solver();
+    let circular = s
+        .fsg
+        .as_ref()
+        .is_some_and(|g| g.fillet_surface_generator_type() == FilletSurfaceGeneratorType::Circular);
+    if !circular {
+        return Ok(());
+    }
+    let support = |i: usize| -> Result<&Surface> {
+        Ok(s.surface(i)?
+            .ok_or_else(|| SolidError::null_pointer(OP))?
+            .surface
+            .base_surface())
+    };
+    let g = match fillet_geom {
+        Some(g) => g,
+        None => s.first_fillet_geom()?,
+    };
+    let leader = match pseudo
+        .geom(g)?
+        .center_line_curve
+        .as_ref()
+        .map(crate::curve::curve::Curve::kind)
+    {
+        Some(CurveKind::BSpline(c)) => Some(c),
+        Some(CurveKind::Line(c)) => Some(c.base()),
+        Some(CurveKind::Ellipse(c)) => Some(c.base()),
+        _ => None,
+    };
+    let round = ExactRound::create(
+        k,
+        class,
+        [support(0)?, support(1)?],
+        blend.radius,
+        leader,
+        inputs,
+    )?;
+    let Some(surface) = pseudo.geom_mut(g)?.fillet_surface_mut(None)? else {
+        return Err(SolidError::null_pointer(OP));
+    };
+    keep_round_if_proved(k, surface, round, inputs.tol)?;
+    Ok(())
+}
+
+/// `round` kept on `net` where it is proved ([`ExactRound::recertify`]), returning whether it
+/// was. The class is read within `tol`, the body's tolerance, and the certificate to rounding.
+/// Supports only that close to the class (a cylinder's axis 1e-13 off square to a plane, as
+/// read from a record) make a net that is the round but not provably on the class's surface:
+/// no bound of 0, so it keeps no definition. A net further off the
+/// class than `tol` ([`ExactRound::miss`]) is built wrongly, and stays an error.
+///
+/// # Errors
+///
+/// The certificate's refusal of a net more than `tol` off the class, or of supports that
+/// give the class no surface; those of the certificate and of [`ExactRound::miss`].
+pub fn keep_round_if_proved(
+    k: &Kernel,
+    net: &mut Surface,
+    round: ExactRound,
+    tol: f64,
+) -> Result<bool> {
+    match round.recertify(k, net) {
+        Ok(_) => {
+            net.set_exact_round(Some(round));
+            Ok(true)
+        }
+        Err(e) => {
+            let off = matches!(
+                &e,
+                SolidError::InvalidInput { operation, .. }
+                    if *operation == crate::surface::implicit::OP_EXACT
+            );
+            match off.then(|| round.miss(k, net)).transpose()?.flatten() {
+                Some(miss) if miss <= tol => Ok(false),
+                _ => Err(e),
+            }
+        }
+    }
+}
+
+/// [`calc_exact_fillet_geom`]'s build by the class (`CalcExactFilletGeom`), without the
+/// definition kept.
+#[allow(clippy::too_many_arguments)]
+fn exact_fillet_geom_of_class(
     ops: &mut dyn FilletSolverOps,
     k: &Kernel,
     b: &Brep,
@@ -1552,17 +2634,33 @@ pub fn calc_exact_fillet_geom(
             Ok(true)
         }
         BlendSpine::Point => {
+            // A point class describes the rolling ball, not a straight section between
+            // its contacts. The spherical builders cannot construct that chamfer.
+            if section(ops)? != FilletSurfaceGeneratorType::Circular {
+                return Ok(false);
+            }
             // (solidcore #2403) one face's offset collapsed onto a line or circle, the other a
             // surface: the ball touches the one along a circle and the other at a point, and
             // its piece is the ball's triangle, rebuilt on a recalc from its new ends
             let collapsed =
                 |q: &BlendQuadric| matches!(q.kind, QuadricKind::Line | QuadricKind::Circle);
             if collapsed(&blend.offsets[0]) != collapsed(&blend.offsets[1]) {
+                // (solidcore #2652) a face of no natural quadric: the ball's piece only where
+                // its geometry says so, its contact arc's axis then the collapsed offset's
+                let mut blend = *blend;
+                if let Some(ring) = blend.faces.iter().position(|f| f.kind == QuadricKind::None) {
+                    let Some(axis) = ball_on_face_along_arc(ops, k, &blend, ring, tsects)? else {
+                        return Ok(false);
+                    };
+                    if let Some(o) = blend.offsets.get_mut(ring) {
+                        o.dir = axis;
+                    }
+                }
                 FilletSolver::calc_ball_triangle_fillet_geom(
                     ops,
                     k,
                     pseudo,
-                    blend,
+                    &blend,
                     tsects,
                     fillet_geom,
                 )?;
@@ -1620,6 +2718,79 @@ pub fn calc_exact_fillet_geom(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A box's edge rounded 2: the round's net, without its definition, and the definition.
+    fn kept_round() -> (Kernel, Surface, ExactRound) {
+        use crate::blend::fillet_executive::session::FilletSession;
+        use crate::kernel::UpstreamFixes;
+        use crate::surface::procedural_blend::BlendRef;
+        use crate::topology::face::p2 as face;
+        let mut k = Kernel {
+            fixes: UpstreamFixes::all(),
+            ..Kernel::default()
+        };
+        let mut b = crate::primitive::api_primitives::create_box(
+            &mut k,
+            Point3::new(0.0, 0.0, 0.0),
+            30.0,
+            20.0,
+            10.0,
+        )
+        .unwrap();
+        let edge = b.edge_list()[0];
+        {
+            let mut s = FilletSession::new(&mut k, &mut b).unwrap();
+            s.prepare_constant_radius_edges(&mut k, &[edge], 2.0, 1, 1, 1.0)
+                .unwrap();
+            s.do_fillet(&mut k).unwrap();
+        }
+        for &f in b.face_list() {
+            let s = face::surface(&b, f).unwrap().unwrap();
+            if let Some(BlendRef::Exact { round, .. }) = s.procedural_blend() {
+                let round = round.clone();
+                let mut net = s.clone();
+                net.set_exact_round(None);
+                return (k, net, round);
+            }
+        }
+        panic!("no face keeps an exact definition");
+    }
+
+    /// `net` moved `by` along every axis: its own axis is along one, the others take it off
+    /// the class.
+    fn moved(k: &Kernel, net: &Surface, by: f64) -> Surface {
+        let mut net = net.clone();
+        let shift = crate::geom::axis2_placement::Axis2Placement::new(
+            Point3::new(by, by, by),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        );
+        net.transform(k, &shift, None).unwrap();
+        net
+    }
+
+    /// The class is read within 2e-5 here. A net on it keeps its definition; one off it by
+    /// less keeps none (the round of supports that close to the class); one further off is
+    /// built wrongly, and stays an error.
+    #[test]
+    fn a_net_off_its_class_keeps_no_definition_within_the_tolerance_only() {
+        let tol = 2e-5;
+        let (k, net, round) = kept_round();
+        let mut on = net.clone();
+        assert!(keep_round_if_proved(&k, &mut on, round.clone(), tol).unwrap());
+        assert!(on.procedural_blend().is_some());
+
+        let mut near = moved(&k, &net, 1e-7);
+        assert!(!keep_round_if_proved(&k, &mut near, round.clone(), tol).unwrap());
+        assert!(near.procedural_blend().is_none());
+
+        let mut far = moved(&k, &net, 1e-3);
+        let refused = keep_round_if_proved(&k, &mut far, round, tol);
+        assert!(
+            matches!(refused, Err(SolidError::InvalidInput { .. })),
+            "{refused:?}"
+        );
+    }
 
     fn plane(point: Point3, normal: Vec3) -> BlendQuadric {
         BlendQuadric {

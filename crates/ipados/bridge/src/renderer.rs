@@ -257,6 +257,8 @@ impl NativeRenderer {
             pv_key: 0,
             pv_slot: self.empty.clone(),
             pv_hide: false,
+            preview_bounds: None,
+            moving: None,
             view_proj: snapshot.view_proj.to_f32(),
             back: camera.back().to_f32(),
             size_px: [self.size[0] as f32, self.size[1] as f32],

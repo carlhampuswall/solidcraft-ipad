@@ -90,12 +90,19 @@ fn drawing(app: &mut SolveApp, ui: &mut egui::Ui) {
             "prefs.line_hover_tangent_arc",
             "prefs.sketch.center_arc",
             "prefs.sketch_construction_lines",
+            "prefs.sketch_mirror_auto_line",
             "prefs.sketch.ellipse_axes",
             "prefs.sketch.auto_dimensions",
             "prefs.sketch.auto_locate",
+            "ui.first_dimension_scales",
         ];
-        let right_labels =
-            ["prefs.sketch.shortcut_cycles_modes", "prefs.ribbon_click_ends_tool", "ui.project_face_edges_sketch", "prefs.sketch.project_options"];
+        let right_labels = [
+            "prefs.sketch.shortcut_cycles_modes",
+            "prefs.ribbon_click_ends_tool",
+            "ui.project_face_edges_sketch",
+            "ui.project_references_construction",
+            "prefs.sketch.project_options",
+        ];
         let natural = [left_labels.as_slice(), right_labels.as_slice()]
             .map(|labels| labels.iter().map(|id| check_width(ui, app.tr(id), true)).fold(0.0, f32::max));
         let available = ui.available_width();
@@ -128,6 +135,7 @@ fn drawing(app: &mut SolveApp, ui: &mut egui::Ui) {
                     &mut app.preferences.center_arc_follows_cursor,
                 );
                 check(ui, "sketch_construction_lines", "prefs.sketch_construction_lines", None, &mut app.preferences.sketch_construction_lines);
+                check(ui, "sketch_mirror_auto_line", "prefs.sketch_mirror_auto_line", None, &mut app.preferences.sketch_mirror_auto_line);
                 check(ui, "ellipse_axes", "prefs.sketch.ellipse_axes", Some("prefs.sketch.ellipse_axes_note"), &mut app.preferences.ellipse_axes);
                 check(
                     ui,
@@ -145,6 +153,13 @@ fn drawing(app: &mut SolveApp, ui: &mut egui::Ui) {
                         &mut app.preferences.sketch_auto_locate,
                     );
                 });
+                check(
+                    ui,
+                    "first_dimension_scales",
+                    "ui.first_dimension_scales",
+                    Some("ui.first_dimension_scales_tip"),
+                    &mut app.preferences.first_dimension_scales,
+                );
             });
             ui.allocate_ui_with_layout(egui::vec2(right, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
                 check(
@@ -165,6 +180,13 @@ fn drawing(app: &mut SolveApp, ui: &mut egui::Ui) {
                 if check(ui, "auto_project", "ui.project_face_edges_sketch", None, &mut auto).changed() {
                     let _ = app.run("sketch.auto_project", json!({"value": auto}));
                 }
+                check(
+                    ui,
+                    "project_construction",
+                    "ui.project_references_construction",
+                    Some("ui.project_references_construction_note"),
+                    &mut app.session.project_construction,
+                );
                 check(
                     ui,
                     "project_options_dialog",
@@ -194,6 +216,13 @@ fn opening(app: &mut SolveApp, ui: &mut egui::Ui) {
             "prefs.sketch_open_look_at",
             Some("prefs.sketch_open_look_at_note"),
             &mut app.preferences.sketch_open_look_at,
+        );
+        check(
+            ui,
+            "escape_twice_finishes_sketch",
+            "prefs.sketch.escape_twice_finishes",
+            Some("prefs.sketch.escape_twice_finishes_note"),
+            &mut app.preferences.escape_twice_finishes_sketch,
         );
         picture_group(ui, app.tr("prefs.sketch_exit_view"), |ui| {
             let label = app.tr("prefs.sketch_exit_view");
@@ -393,6 +422,13 @@ fn selecting(app: &mut SolveApp, ui: &mut egui::Ui) {
         check(ui, "prefer_free_sketch_points", "prefs.sketch.prefer_free_points", None, &mut app.preferences.prefer_free_sketch_points);
         check(
             ui,
+            "select_hidden_edges",
+            "prefs.select_hidden_edges",
+            Some("prefs.select_hidden_edges_help"),
+            &mut app.preferences.select_hidden_edges,
+        );
+        check(
+            ui,
             "select_other_hidden",
             "prefs.sketch.select_other_hidden",
             Some("prefs.select_other_hidden_help"),
@@ -471,6 +507,7 @@ fn targets(key: &str, response: &egui::Response) {
         "sketch_align_points" => "Line up with other sketch points while drawing",
         "sketch_auto_dimensions" => "Dimension new shapes",
         "sketch_auto_locate" => "Also place them from the origin (fully constrained)",
+        "first_dimension_scales" => "The first dimension scales the drawing",
         "center_arc_follows_cursor" => "Center point arc follows the cursor's direction",
         "shortcut_cycles_modes" => "Pressing a tool's shortcut again switches its mode",
         "project_options_dialog" => "Project options dialog",

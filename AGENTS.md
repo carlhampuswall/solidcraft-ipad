@@ -1,13 +1,13 @@
 # SolidCraft: instructions for agents
 
-SolidCraft is a clean-room Rust parametric CAD app. This router lists rules and skills; humans: CONTRIBUTING.md.
+SolidCraft is clean-room Rust parametric CAD. Rules and skills are routed here; see CONTRIBUTING.md.
 
 ## iPadOS fork
 First read [UPSTREAM.md](docs/ipados/UPSTREAM.md) and [SETUP.md](docs/ipados/SETUP.md).
 Swift/FFI exceptions: `docs/ipados/ARCHITECTURE.md` and scoped AGENTS.md files.
 Shared `develop`, no build lock; batch checks: [TASK-COORDINATION.md](docs/ipados/TASK-COORDINATION.md).
 
-## Start here
+## Start
 Work: ROADMAP.md, CONTRIBUTING.md and issues labelled `help wanted`, `good first issue`, `needs-triage`. Architecture: `docs/architecture.md`. Act when code and rules settle a question; ask when it changes what users see. Local `plan/` notes are optional.
 
 ## Hard rules (what enforces each)
@@ -26,10 +26,11 @@ Work: ROADMAP.md, CONTRIBUTING.md and issues labelled `help wanted`, `good first
 - A design-format change is ONE new file in `crates/doc/src/format/pending/`: `scripts/test-format-pending.sh`.
 - A command has input and output schemas (will become required; `schema/unconverted.txt` only shrinks): `skills/solidcraft-commands/SKILL.md`.
 - New UI strings go in `assets/locales/pending/<slug>.json`, ATTRIBUTION rows in `attribution/pending/<slug>.md`: `cargo xtask lists`.
-- A changed default keeps the old behaviour behind a preference and fills the PR's `Changes a default:` line, and no second PR for an issue a lower-numbered one closes: `pr-checks.yml`.
+- A changed default keeps the old behaviour behind a preference and fills the PR's `Changes a default:` line: `pr-checks.yml`.
 - A regression test goes in the area's existing test file, never a per-bug file (#3226).
-- Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR, never force-push `main`, no pushes just to catch up with `main`: `skills/solidcraft-contributing/SKILL.md`.
+- Look at open PRs first, claim with a draft PR (lowest number wins), one topic per PR: `skills/solidcraft-contributing/SKILL.md`.
 - A PR's title and first sentence make sense to someone who never saw your chat or the issue: `skills/solidcraft-contributing/SKILL.md`.
+- Code/comments/docs/commits are English; parallelize independent work: `skills/solidcraft-contributing/SKILL.md`, "Working as an agent".
 - Show observable changes with real screenshots or a recording, captured yourself.
 - Local checks: TASK-COORDINATION.md; upstream/main/releases need full CI. Never switch branches mid-check. `cargo xtask skills` checks routing.
 
