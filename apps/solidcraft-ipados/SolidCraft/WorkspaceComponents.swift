@@ -223,6 +223,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
         for (control, id) in [(back, "back"), (play, "play"), (forward, "forward")] {
             if control === play { control.systemArtwork("play.fill", compact: true) }
             else { control.artwork("chevron_right", compact: true, flippedHorizontally: control === back) }
+            control.suppressesChoicesIndicator = true
             control.accessibilityIdentifier = "workspace-history-" + id
             transport.addArrangedSubview(control)
         }
@@ -290,7 +291,8 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private func styleSurface() {
         if expanded { WorkspaceStyle.floatingSurface(self) }
         else { backgroundColor = .clear; layer.borderWidth = 0; clipsToBounds = false }
-        ([back, play, forward] + Array(buttons.values)).forEach(WorkspaceStyle.floatingSurface)
+        WorkspaceStyle.floatingSurface(transportScroll)
+        buttons.values.forEach(WorkspaceStyle.floatingSurface)
     }
 
     func setExpanded(_ value: Bool) {
