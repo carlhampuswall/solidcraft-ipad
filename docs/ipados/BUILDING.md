@@ -391,7 +391,7 @@ DEBUG `--toolbar-selection-check` uses the disposable launch fixture and
 synthetic viewport taps to open automatic face Extrude, invoke the production
 Cancel action, reopen Extrude and deselect in empty space. It checks that toolbar
 icons, order, touch targets and frame remain stable through repeated layouts,
-with customization enabled/disabled and either toolbar position. It writes
+with customization enabled/disabled and the fixed left toolbar. It writes
 `toolbar-selection-check.json` and `toolbar-*.png` in Documents. Normal launch
 never runs it or loads a library project for this check. Physical Pencil input
 remains separate coverage.

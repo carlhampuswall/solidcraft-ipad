@@ -71,8 +71,6 @@ struct WorkspaceChecks {
                     SketchToolFamily.line.contains("sketch.spline.fit_point") &&
                     !SketchToolFamily.rectangle.contains("sketch.line"),
                     "arc/spline choices escaped Line or activated Rectangle")
-        try require(ToolGrouping.enabled(nil) && ToolGrouping.enabled(true) && !ToolGrouping.enabled(false),
-                    "tool grouping lost its default or the individual-background preference")
         let sketchBar = ["select", "sketch.point", "sketch.line", "sketch.rectangle.two_point", "sketch.circle.center",
                          "sketch.offset", "sketch.fillet", "sketch.trim", "sketch.delete", "sketch.tools", "tools.more"]
         try require(ToolGrouping.ordered(sketchBar, enabled: true) == sketchBar &&
@@ -83,7 +81,7 @@ struct WorkspaceChecks {
                     ["select", "modelling", "solid.fillet", "sketch.create", "assembly", "joint.create", "tools.more"],
                     "pinned modelling and assembly tools did not join their families in saved relative order")
         try require(ToolGrouping.ordered(customizedBar, enabled: false) == customizedBar,
-                    "disabling grouping did not preserve the previous placement")
+                    "an ungrouped tool stack changed the saved placement")
         let navigationBar = ["navigation.home", "navigation.projection", "navigation.inspector", "navigation.constraints",
                              "navigation.dimensions", "navigation.construction", "view.front", "navigation.more"]
         try require(ToolGrouping.ordered(navigationBar, enabled: true) ==
@@ -157,21 +155,15 @@ struct WorkspaceChecks {
                     "sketch editing did not request temporary rollback and restoration to the latest feature")
         try require(ModellingFormPresentation.sketchEditParameters(["sketch": UInt64(7)], rollback: false)["restore_marker"] == nil,
                     "legacy sketch editing moved the history marker")
-        try require(BrowserSwipeActions.enabled(nil) && BrowserSwipeActions.enabled(true) && !BrowserSwipeActions.enabled(false),
-                    "browser swipes lost their default or legacy preference")
-        try require(BrowserSwipeActions.leading(enabled: true, available: true, rename: true, folder: true, item: true) == [.rename, .newFolder, .moveToFolder],
+        try require(BrowserSwipeActions.leading(available: true, rename: true, folder: true, item: true) == [.rename, .newFolder, .moveToFolder],
                     "body/sketch swipes lost rename, grouping or existing-folder movement")
-        try require(BrowserSwipeActions.leading(enabled: true, available: true, rename: false, folder: true, item: false) == [.newFolder],
+        try require(BrowserSwipeActions.leading(available: true, rename: false, folder: true, item: false) == [.newFolder],
                     "built-in folders offered rename or item movement")
-        try require(BrowserSwipeActions.leading(enabled: true, available: true, rename: true, folder: false, item: false) == [.rename],
+        try require(BrowserSwipeActions.leading(available: true, rename: true, folder: false, item: false) == [.rename],
                     "an ungroupable row offered folder actions")
-        for enabled in [false, true] {
-            for available in [false, true] where !enabled || !available {
-                try require(BrowserSwipeActions.leading(enabled: enabled, available: available, rename: true, folder: true, item: true).isEmpty &&
-                            BrowserSwipeActions.trailing(enabled: enabled, available: available, target: .body("Post")).isEmpty,
-                            "disabled swipes or a competing edit still exposed actions")
-            }
-        }
+        try require(BrowserSwipeActions.leading(available: false, rename: true, folder: true, item: true).isEmpty &&
+                    BrowserSwipeActions.trailing(available: false, target: .body("Post")).isEmpty,
+                    "a competing edit still exposed swipe actions")
         func deletion(_ kind: String, type: String? = nil, name: String? = nil, feature: UInt64? = nil, path: [UInt64]? = nil,
                       component: UInt64? = nil, joint: UInt64? = nil, group: UInt64? = nil) -> BrowserDeleteTarget? {
             BrowserDeleteTarget.resolve(kind: kind, entityType: type, name: name, feature: feature, path: path, component: component, joint: joint, group: group)
@@ -184,7 +176,7 @@ struct WorkspaceChecks {
                     deletion("folder", group: 5) == .folder(5), "swipe deletion lost a supported row identity")
         for target in [deletion("component", component: 0), deletion("folder"), deletion("body", type: "face", name: "Post"),
                        deletion("occurrence", type: "occurrence", path: []), deletion("origin", type: "feature", feature: 7), deletion("sketch")] {
-            try require(target == nil && BrowserSwipeActions.trailing(enabled: true, available: true, target: target).isEmpty,
+            try require(target == nil && BrowserSwipeActions.trailing(available: true, target: target).isEmpty,
                         "the document root, origin, built-in folder or incomplete row offered Delete")
         }
         try require(BrowserDeleteTarget.body("Post").parameters == ["items": .array([.object(["type": .string("body"), "name": .string("Post")])])],

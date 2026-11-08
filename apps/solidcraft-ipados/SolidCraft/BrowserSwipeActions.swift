@@ -9,11 +9,8 @@ enum BrowserSwipeAction: Equatable {
 }
 
 enum BrowserSwipeActions {
-    static let preferenceKey = "SolidCraft.workspace.browserSwipeActions"
-    static func enabled(_ stored: Bool?) -> Bool { stored ?? true }
-
-    static func leading(enabled: Bool, available: Bool, rename: Bool, folder: Bool, item: Bool) -> [BrowserSwipeAction] {
-        guard enabled && available else { return [] }
+    static func leading(available: Bool, rename: Bool, folder: Bool, item: Bool) -> [BrowserSwipeAction] {
+        guard available else { return [] }
         var actions: [BrowserSwipeAction] = []
         if rename { actions.append(.rename) }
         if folder { actions.append(.newFolder) }
@@ -21,8 +18,8 @@ enum BrowserSwipeActions {
         return actions
     }
 
-    static func trailing(enabled: Bool, available: Bool, target: BrowserDeleteTarget?) -> [BrowserSwipeAction] {
-        enabled && available && target != nil ? [.delete] : []
+    static func trailing(available: Bool, target: BrowserDeleteTarget?) -> [BrowserSwipeAction] {
+        available && target != nil ? [.delete] : []
     }
 }
 /// Explicit row targets avoid deleting another item just because it is selected.

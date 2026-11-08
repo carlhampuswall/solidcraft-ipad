@@ -39,7 +39,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var holdInMore = UserDefaults.standard.object(forKey: "SolidCraft.workspace.quickAccess.holdInMore") as? Bool ?? true
     private weak var navigationOverflow: QuickAccessOverflowController?
     private var showToolLabels = ToolLabels.current
-    private var groupRelatedTools = ToolGrouping.enabled(UserDefaults.standard.object(forKey: ToolGrouping.key) as? Bool)
     private lazy var navigationMoreButton = WorkspaceButton(QuickAccessText.text("more")) { [weak self] in self?.showNavigationMore() }
     private let historyActions = WorkspaceToolStack()
     private let featureHistory = FeatureHistoryBar()
@@ -54,7 +53,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var browserFindButton = WorkspaceButton(BrowserText.text("find")) { [weak self] in self?.toggleBrowserSearch() }
     private lazy var browserSearchDismiss = WorkspaceButton(BrowserText.text("dismiss_find")) { [weak self] in self?.dismissBrowserSearch() }
     private var browserSearchOpen = false
-    private var browserSwipesEnabled = BrowserSwipeActions.enabled(UserDefaults.standard.object(forKey: BrowserSwipeActions.preferenceKey) as? Bool)
     private var browserSearchBookmark: BrowserScrollBookmark?
     private var browserSearching = false
     private var visibleOriginRows: [String] = []
@@ -239,7 +237,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var localSaveLabel: String?
     private var documentStatus = WorkspaceStyle.text("unsaved_session")
     private var keyboardTop: CGFloat?
-    private var railRight = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.railRight")
+    // Toolbar and browser placement are fixed; ignore saved legacy preferences.
+    private let railRight = false
     private static let handleButtonAppearanceKey = "SolidCraft.workspace.numericMenusFollowAppearance"
     private var handleButtonsFollowAppearance = UserDefaults.standard.bool(forKey: handleButtonAppearanceKey)
     private var appearance = (UserDefaults.standard.object(forKey: "SolidCraft.workspace.appearance") as? Int) ?? 2
@@ -252,7 +251,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var useBottomSafeArea = UserDefaults.standard.object(forKey: "SolidCraft.workspace.useBottomSafeArea") as? Bool ?? true
     private var pinnedBrowser = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.pinnedBrowser")
     private var featuresInBrowser = BrowserFeatureVisibility.restored(UserDefaults.standard.object(forKey: BrowserFeatureVisibility.key) as? Bool)
-    private var leftBrowser = UserDefaults.standard.object(forKey: "SolidCraft.workspace.leftBrowser") as? Bool ?? true
+    private let leftBrowser = true
     private var diagnostics = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.diagnostics")
     private var gridVisible = UserDefaults.standard.object(forKey: "SolidCraft.workspace.gridVisible") as? Bool ?? true
     private var verticalGrid = UserDefaults.standard.object(forKey: "SolidCraft.workspace.verticalGrid") as? Bool ?? false
@@ -836,7 +835,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         featureHistory.toolLabels(showToolLabels)
         historyActions.identify(undoButton, as: "edit.undo")
         historyActions.identify(redoButton, as: "edit.redo")
-        historyActions.groupsTools = compactChrome && groupRelatedTools
+        historyActions.groupsTools = true
         historyActions.updateGroups()
         // Group backgrounds span only the icon column. Captions keep their
         // separate chips and the wide scroll hosts stay transparent.
@@ -1235,9 +1234,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private func browserSwipeConfiguration(at index: IndexPath, leading: Bool) -> UISwipeActionsConfiguration? {
         guard index.section == 1, visibleRows.indices.contains(index.row), presentedViewController == nil else { return nil }
         let row = visibleRows[index.row], browser = row.browser
-        let actions = leading ? BrowserSwipeActions.leading(enabled: browserSwipesEnabled, available: browserCanChange,
+        let actions = leading ? BrowserSwipeActions.leading(available: browserCanChange,
             rename: browser?.rename != nil, folder: browser?.folder != nil && browser?.component != nil, item: browser?.key != nil)
-            : BrowserSwipeActions.trailing(enabled: browserSwipesEnabled, available: browserCanChange, target: browserDeleteTarget(row))
+            : BrowserSwipeActions.trailing(available: browserCanChange, target: browserDeleteTarget(row))
         guard !actions.isEmpty else { return nil }
         let document = state?.document_id, revision = state?.geometry_revision
         let configuration = UISwipeActionsConfiguration(actions: actions.map { intent in
@@ -1249,7 +1248,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             case .moveToFolder: title = BrowserText.text("move_to_folder")
             }
             let action = UIContextualAction(style: intent == .delete ? .destructive : .normal, title: title) { [weak self] _, source, complete in
-                guard let self, self.browserSwipesEnabled, self.presentedViewController == nil,
+                guard let self, self.presentedViewController == nil,
                       let current = self.currentBrowserRow(row.id, document: document, revision: revision) else { complete(false); return }
                 // Delete is only a request for confirmation here. Keep UIKit from
                 // removing the row before the engine publishes the confirmed edit.
@@ -3844,7 +3843,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     }
 
     private func configureQuickAccess() {
-        for bar in [rail, navigationActions] { bar.groupsTools = compactChrome && groupRelatedTools }
+        for bar in [rail, navigationActions] { bar.groupsTools = true }
         rail.identify(sketchToolsButton, as: "sketch.tools")
         rail.identify(toolsMoreButton, as: "tools.more")
         navigationActions.identify(navigationMoreButton, as: "navigation.more")
@@ -4126,12 +4125,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let multiple = UIAction(title: WorkspaceStyle.text("multiple"), state: multiple ? .on : .off) { [weak self] _ in
             self?.toggleMultipleSelection()
         }
-        let side = UIAction(title: NativeText.value("ui.ipados.settings.toolbar_right"), state: railRight ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.canvas.cancelInput(); self.railRight.toggle()
-            UserDefaults.standard.set(self.railRight, forKey: "SolidCraft.workspace.railRight")
-            self.view.setNeedsLayout(); self.rebuildMenus()
-        }
         let appearances = ["system", "light", "dark"].enumerated().map { index, key in
             UIAction(title: WorkspaceStyle.text(key), state: appearance == index ? .on : .off) { [weak self] _ in
                 guard let self else { return }; self.appearance = index
@@ -4152,15 +4145,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.configureChrome(); self.rebuildMenus()
             UIAccessibility.post(notification: .layoutChanged, argument: self.settingsPopover?.view ?? self.settingsButton)
         }
-        let toolGroups = UIAction(title: WorkspaceStyle.text("group_related_tools"),
-            subtitle: WorkspaceStyle.text("group_related_tools_help"), state: groupRelatedTools ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.canvas.cancelInput()
-            self.railQuickAccess?.cancelDrag(); self.navigationQuickAccess?.cancelDrag()
-            self.groupRelatedTools.toggle()
-            UserDefaults.standard.set(self.groupRelatedTools, forKey: ToolGrouping.key)
-            self.configureChrome(); self.rebuildMenus()
-        }
         let connectedEdges = UIAction(title: WorkspaceStyle.text("connected_edge_selection"), state: canvas.connectedEdgeSelectionEnabled ? .on : .off) { [weak self] _ in
             guard let self, WorkspaceFocusPolicy.documentShortcutsEnabled(textEntryActive: self.textEntryActive, numericEditActive: self.numericEditing) else { return }
             self.canvas.cancelInput()
@@ -4173,13 +4157,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             self.canvas.cancelInput()
             self.canvas.historyGesturesEnabled.toggle()
             UserDefaults.standard.set(self.canvas.historyGesturesEnabled, forKey: "SolidCraft.workspace.historyGestures")
-            self.rebuildMenus()
-        }
-        let browserSwipes = UIAction(title: BrowserText.text("swipe_actions"), subtitle: BrowserText.text("swipe_actions_help"), state: browserSwipesEnabled ? .on : .off) { [weak self] _ in
-            guard let self else { return }
-            self.table.setEditing(false, animated: true)
-            self.browserSwipesEnabled.toggle()
-            UserDefaults.standard.set(self.browserSwipesEnabled, forKey: BrowserSwipeActions.preferenceKey)
             self.rebuildMenus()
         }
         let rotationSnap = UIAction(title: WorkspaceStyle.text("sketch_rotation_snap"), attributes: numericEditing || modellingEditing ? .disabled : [], state: sketchRotationSnap ? .on : .off) { [weak self] _ in
@@ -4264,7 +4241,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         // legacy presentation fallbacks still load saved values without switches here.
         var preferences: [WorkspaceSettingsCategory: [UIMenuElement]] = [
             .appearance: [UIMenu(title: NativeText.value("ui.ipados.settings.theme"), children: appearances)],
-            .workspace: [toolLabels, toolGroups, side, browserSwipes],
+            .workspace: [toolLabels],
             .navigation: [historyGestures, rotationSnap],
             .selection: [UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple, connectedEdges, edgeLength],
             .modelling: [dragResolution, automaticCut, automaticDepth, acceptOnTap, faceExtrude, sketchExtrude, edgeTools],
@@ -4298,11 +4275,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             guard let self else { return }; self.featuresInBrowser.toggle()
             UserDefaults.standard.set(self.featuresInBrowser, forKey: BrowserFeatureVisibility.key)
             self.updateRows(); self.rebuildMenus()
-        })
-        preferences[.workspace, default: []].append(UIAction(title: BrowserText.text("left_browser"), state: leftBrowser ? .on : .off) { [weak self] _ in
-            guard let self else { return }; self.canvas.cancelInput(); self.leftBrowser.toggle()
-            UserDefaults.standard.set(self.leftBrowser, forKey: "SolidCraft.workspace.leftBrowser")
-            self.view.setNeedsLayout(); self.rebuildMenus()
         })
         do {
             preferences[.sketching, default: []].insert(UIAction(title: SketchText.text("snapping"), attributes: state?.sketch == nil ? .disabled : [], state: sketchInput?.snapping != false ? .on : .off) { [weak self] _ in
@@ -4644,10 +4616,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
         var inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
             (modellingEditing ? (modellingInspector?.compact == true ? 620 : min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84)) : 640))
-        let placeRailRight = railRight && modellingInspector?.extrusionBar == nil
         func resolve(railHeight: CGFloat, navHeight: CGFloat) -> WorkspaceLayout {
             WorkspaceLayout.resolve(size: chrome.size, browser: browserOpen, inspector: inspectorOpen,
-                                               railRight: placeRailRight, largeText: largeText,
+                                               railRight: railRight, largeText: largeText,
                                                minimumHeaderHeight: headingHeight, minimumStatusHeight: 2 * ceil(status.font.lineHeight) + 8,
                                                compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railHeight,
                                                inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight, leftBrowser: leftBrowser,
@@ -7289,10 +7260,10 @@ private extension FoundationController {
         guard let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first,
               session.currentProject == nil else { return }
         let expected = generation
-        let savedCustomization = customizeToolbars, savedSide = railRight
+        let savedCustomization = customizeToolbars
         let savedExtrude = extrudeOnFaceSelection
         let savedTools = UserDefaults.standard.data(forKey: "SolidCraft.workspace.quickAccess.tools")
-        let variants = [(false, false), (false, true), (true, false), (true, true)]
+        let variants = [false, true]
         var issues: [String] = []
         var stages: [[String: Any]] = []
         var finished = false
@@ -7300,13 +7271,13 @@ private extension FoundationController {
         func finish() {
             guard !finished else { return }; finished = true
             session.endDevelopmentSelectionTapsCheck()
-            customizeToolbars = savedCustomization; railRight = savedSide; extrudeOnFaceSelection = savedExtrude
+            customizeToolbars = savedCustomization; extrudeOnFaceSelection = savedExtrude
             UserDefaults.standard.set(savedTools, forKey: "SolidCraft.workspace.quickAccess.tools")
             do {
                 let report: [String: Any] = [
                     "passed": issues.isEmpty, "issues": issues, "stages": stages,
                     "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
-                    "coverage": "Physical iPad UIKit; synthetic face/empty taps, production Cancel, repeated layouts, customization and handedness. Physical Pencil unverified."
+                    "coverage": "Physical iPad UIKit; synthetic face/empty taps, production Cancel, repeated layouts and customization with the fixed left toolbar. Physical Pencil unverified."
                 ]
                 try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
                     .write(to: directory.appendingPathComponent("toolbar-selection-check.json"), options: .atomic)
@@ -7360,7 +7331,7 @@ private extension FoundationController {
         }
         func variant(_ index: Int) {
             guard index < variants.count else { finish(); return }
-            (customizeToolbars, railRight) = variants[index]
+            customizeToolbars = variants[index]
             configureChrome(); rebuildMenus()
             if customizeToolbars { railQuickAccess?.add("solid.extrude") }
             view.setNeedsLayout(); view.layoutIfNeeded(); railScroll.layoutIfNeeded()
@@ -8393,7 +8364,7 @@ private extension FoundationController {
     }
 
     func checkBrowserOnDevice() {
-        leftBrowser = true; appearance = 2
+        appearance = 2
         featuresInBrowser = false
         originExpanded = false
         configureChrome(); applyAppearance()
@@ -8475,11 +8446,8 @@ private extension FoundationController {
     /// fixture. Physical finger swipes remain separate from these handler calls.
     private func checkBrowserSwipesOnDevice(capture: @escaping (String) -> Void) {
         let started = Date().timeIntervalSince1970
-        let savedPreference = UserDefaults.standard.object(forKey: BrowserSwipeActions.preferenceKey)
-        let savedEnabled = browserSwipesEnabled
         var issues: [String] = [], screenshots: [String] = []
         var finished = false
-        browserSwipesEnabled = true
         rebuildMenus()
         func check(_ value: Bool, _ message: String) { if !value { issues.append(message) } }
         func shot(_ name: String) {
@@ -8489,9 +8457,6 @@ private extension FoundationController {
         func finish() {
             guard !finished else { return }; finished = true
             self.browserDeleteConfirmation = nil; self.browserNameSubmission = nil
-            self.browserSwipesEnabled = savedEnabled
-            if let savedPreference { UserDefaults.standard.set(savedPreference, forKey: BrowserSwipeActions.preferenceKey) }
-            else { UserDefaults.standard.removeObject(forKey: BrowserSwipeActions.preferenceKey) }
             self.rebuildMenus()
             do {
                 let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
@@ -8642,15 +8607,6 @@ private extension FoundationController {
         check(leading.actions.map(\.title) == [BrowserText.text("rename"), BrowserText.text("new_folder"), BrowserText.text("move_to_folder")], "unexpected right swipe actions")
         check(stale.style == .destructive, "Delete was not destructive")
         check(tableView(table, trailingSwipeActionsConfigurationForRowAt: IndexPath(row: 0, section: 0)) == nil, "origin offered Delete")
-        if let preference = settingsActions.first(where: { $0.title == BrowserText.text("swipe_actions") }) {
-            preference.performWithSender(settingsButton, target: nil)
-            check(!browserSwipesEnabled && !UserDefaults.standard.bool(forKey: BrowserSwipeActions.preferenceKey) &&
-                  tableView(table, leadingSwipeActionsConfigurationForRowAt: path) == nil && tableView(table, trailingSwipeActionsConfigurationForRowAt: path) == nil,
-                  "legacy preference did not disable swipe actions")
-            stale.handler(stale, table) { check(!$0, "disabled stale action remained executable") }
-            settingsActions.first(where: { $0.title == BrowserText.text("swipe_actions") })?
-                .performWithSender(settingsButton, target: nil)
-        } else { issues.append("missing swipe preference") }
         guard invoke("body:Post", leading: true, title: BrowserText.text("rename")) != nil else { return }
         submitName("Swipe Post", until: { self.rowByID[postID] != nil && self.rowByID["body:Post"] == nil }) {
             stale.handler(stale, self.table) { check(!$0, "stale action accepted a changed model") }
@@ -9838,7 +9794,9 @@ private extension FoundationController {
                 SketchText.text("constrained_green"), SketchText.text("visual_plane_selection"),
                 HistoryText.text("highlight_selection"), WorkspaceStyle.text("edit_sketch_on_history_selection"),
                 WorkspaceStyle.text("rollback_feature_editing"), WorkspaceStyle.text("viewpoint_orbit"),
-                WorkspaceStyle.text("cancel_tools_on_dismiss")]
+                WorkspaceStyle.text("cancel_tools_on_dismiss"), NativeText.value("ui.ipados.settings.toolbar_right"),
+                WorkspaceStyle.text("group_related_tools"), BrowserText.text("swipe_actions"),
+                BrowserText.text("left_browser")]
             check(Set(titles).isDisjoint(with: removedTitles), "A duplicate or legacy switch returned to Settings")
             check(self.toolsMoreButton.menu != nil && self.rail.arrangedSubviews.contains(self.toolsMoreButton), "Left tool menu is missing")
             let commands = (self.state?.modelling?.tools ?? []) + (self.state?.assembly?.tools ?? [])

@@ -9,9 +9,9 @@ the source history and current verification scope.
 
 ## Current presentation
 
-The Settings button opens 28 preference rows in seven categories: Appearance,
+The Settings button opens 24 preference rows in seven categories: Appearance,
 Workspace, Navigation, Selection, Modelling, Sketching and Projects. These cover
-user choices such as theme, tool labels/grouping, toolbar and browser placement,
+user choices such as theme, tool labels, browser pinning,
 gestures, selection filters, modelling workflow, sketch aids and project startup.
 Projection, grid, axes, planes, origin visibility and two-finger rotation live
 only in View. Settings no longer repeats those controls or offers diagnostics,
@@ -34,9 +34,8 @@ Sketch and solid tools share a modelling group; assembly tools have their own.
 View shortcuts, sketch constraints/dimensions/construction, and Undo/Redo each
 share a background. Select, More, Properties and Cancel remain separate.
 Pinned shortcuts join their family while keeping the saved relative order of
-its tools. Captions remain outside the icon backgrounds. **Settings > Workspace
-> Group related tools** is on by default; turning it off restores individual
-backgrounds and the saved ungrouped order.
+its tools. Captions remain outside the icon backgrounds. Related tools always
+share their group backgrounds; grouping is not a setting.
 
 `WorkspaceController.swift` hosts one real `MetalCanvas` behind native floating
 controls. The document header is a centred surface, normally 340 × 52 points,
@@ -500,9 +499,10 @@ separator, fill, accent and error tokens support system/light/dark appearance.
 Primary targets are at least 44 points; rail tools are 60 high. Fonts follow
 Dynamic Type and numeric results use monospaced digits. No action needs hover.
 
-Native presentation preferences use UserDefaults keys
-`SolidCraft.workspace.railRight` and `SolidCraft.workspace.appearance` (0 system,
-1 light, 2 dark). They are not stored in a design or copied into egui preferences.
+The tool rail stays on the left, and the Model browser always opens from the
+left. Placement is not configurable, and legacy placement preferences are ignored.
+Native appearance uses `SolidCraft.workspace.appearance` (0 system, 1 light,
+2 dark). It is not stored in a design or copied into egui preferences.
 
 ## Presentation mapping and browser
 
@@ -515,12 +515,12 @@ Swipe right for **Rename**, **New folder** and **Move to folder**, according to 
 row's existing capabilities. Creating a folder from an item places that item in
 the new folder. Full swipes do not automatically run an action. Commands retain
 their native history and reject actions from an older document/model revision.
-Changes a default: yes — **Tools → Swipe model items** is enabled; disabling it
-restores the previous browser gestures (`SolidCraft.workspace.browserSwipeActions`).
+Model-item swipe actions are always available for supported rows when editing
+is allowed. Saved preferences cannot disable swipe actions or tool grouping.
 The disposable DEBUG `--browser-swipes-check` invokes the actual UIKit swipe
 configurations and handlers, verifies name validation, folder creation/movement,
 folder removal with contents retained, body/sketch deletion, Cancel, Undo/Redo,
-stale actions and the preference. It writes `browser-swipes-check.json` and
+stale actions. It writes `browser-swipes-check.json` and
 `browser-check-swipes-*.png`; these calls do not verify physical finger swipes.
 
 The Model browser shows bodies, sketches, construction geometry, components,

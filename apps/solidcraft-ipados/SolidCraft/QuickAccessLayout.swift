@@ -3,9 +3,6 @@ import Foundation
 /// Native chrome only. Group membership is independent of tool availability,
 /// and saved placement retains the user's order within each family.
 enum ToolGrouping {
-    static let key = "SolidCraft.workspace.groupRelatedTools"
-    static func enabled(_ stored: Bool?) -> Bool { stored ?? true }
-
     static func family(_ id: String) -> String {
         switch id {
         case "sketch.create", "modelling", "modify", "pattern", "post_radius": return "modelling"
