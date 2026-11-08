@@ -23,6 +23,7 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     private var filtered: [ProjectRecord] = []
     private var folders: [ProjectFolder] = []
     private var organisation = ProjectOrganisation()
+    private var displayedContents: ProjectLibraryContents?
     private var folder: UUID?
     private var showingArchive = false
     var creationFolder: UUID? { showingArchive ? nil : folder }
@@ -114,6 +115,8 @@ final class ProjectBrowserController: UITableViewController, UISearchResultsUpda
     }
 
     func display(_ contents: ProjectLibraryContents, current: UUID?) {
+        guard contents != displayedContents || self.current != current else { return }
+        displayedContents = contents
         projects = contents.projects; projectIDs = Set(projects.map(\.id))
         organisation = contents.organisation; self.current = current
         if let folder, organisation.folder(folder) == nil { self.folder = nil }

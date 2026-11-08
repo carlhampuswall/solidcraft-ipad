@@ -226,6 +226,9 @@ final class NativeSession {
     var onCommandWillBegin: ((String) -> Void)?
     var onProjectChange: ((ProjectRecord) -> Void)?
     private(set) var currentProject: ProjectRecord?
+    // Main-thread snapshot for presenting Projects without waiting for CAD work.
+    private(set) var cachedProjectContents: ProjectLibraryContents?
+    private var projectLibraryGeneration = UUID()
     private var projectBusy = false
     private var referenceTimer: DispatchSourceTimer?
     private var referenceCheckPending = false
@@ -255,21 +258,25 @@ final class NativeSession {
 
     func start(completion: @escaping (Result<String, BridgeError>) -> Void) {
         engine.async { [weak self, state] in
-            let result = Result { () throws -> (String, ProjectRecord?) in
+            var initialContents: ProjectLibraryContents?
+            let result = Result { () throws -> (String, ProjectRecord?, ProjectLibraryContents?) in
                 // Diagnostic drivers retain their disposable fixture and never
                 // read, replace or autosave a person's library project.
                 let diagnostic = ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("--") && $0.contains("-check") }
                 if diagnostic {
                     let data = try state.request(Data("{\"kind\":\"fixture\"}".utf8), lane: .engine)
-                    return (String(decoding: data, as: UTF8.self), nil)
+                    return (String(decoding: data, as: UTF8.self), nil, nil)
                 }
                 let library = try ProjectLibrary.applicationLibrary()
                 let projects = try library.projects()
+                // Reuse the startup scan, even when restoring a large design.
+                let contents = try? ProjectLibraryContents(projects: projects, organisation: library.organisation())
+                initialContents = contents
                 let selected = UserDefaults.standard.string(forKey: Self.selectedProjectKey)
                 let restore = UserDefaults.standard.object(forKey: "SolidCraft.projects.restoreLast") as? Bool ?? true
                 if restore, let project = projects.first(where: { $0.id.uuidString == selected }) ?? projects.first {
                     let data = try Self.replaceProject(state, source: project.file, project: project)
-                    return (String(decoding: data, as: UTF8.self), project)
+                    return (String(decoding: data, as: UTF8.self), project, contents)
                 }
                 let support = library.root.deletingLastPathComponent()
                 let legacy = support.appendingPathComponent("Modelling.solidcraft")
@@ -283,12 +290,18 @@ final class NativeSession {
                         _ = try state.request(Data("{\"kind\":\"fixture\"}".utf8), lane: .engine)
                         data = try Self.fileCommand(state, "file.save_as", params: ["path": project.file.path])
                     }
-                    return (String(decoding: data, as: UTF8.self), project)
+                    let createdContents = contents.map { ProjectLibraryContents(projects: [project] + $0.projects, organisation: $0.organisation) }
+                    return (String(decoding: data, as: UTF8.self), project, createdContents)
                 } catch { try? library.remove(project); throw error }
             }.mapError(BridgeState.error)
+            // A failed document restore must still leave Projects ready to open.
+            let contents = (try? result.get())?.2 ?? initialContents
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.alive else { return }
-                if case .success(let value) = result, let project = value.1 { self.selectProject(project) }
+                self.cachedProjectContents = contents
+                if case .success(let value) = result {
+                    if let project = value.1 { self.selectProject(project) }
+                }
                 completion(result.map { $0.0 })
                 self.refreshWorkspace()
                 self.redraw()
@@ -509,12 +522,15 @@ final class NativeSession {
     }
 
     private func projectTask<T>(_ operation: @escaping (BridgeState, ProjectLibrary, ProjectRecord?) throws -> T,
+                                refreshContents: Bool = true,
                                 completion: @escaping (Result<T, BridgeError>) -> Void) {
         guard alive, !projectBusy else {
             completion(.failure(BridgeError(code: "busy", message: "ui.ipados.projects.busy"))); return
         }
         autosave?.cancel(); autosave = nil
         projectBusy = true
+        // A mutation supersedes any background list refresh already in flight.
+        let generation = UUID(); projectLibraryGeneration = generation
         let current = currentProject
         let activity = UUID(); commandActivities.insert(activity); publishActivityStatus()
         #if DEBUG
@@ -523,9 +539,14 @@ final class NativeSession {
         let libraryOverride: ProjectLibrary? = nil
         #endif
         engine.async { [weak self, state] in
-            let result = Result { try operation(state, libraryOverride ?? ProjectLibrary.applicationLibrary(), current) }.mapError(BridgeState.error)
+            let library = Result { try libraryOverride ?? ProjectLibrary.applicationLibrary() }
+            let result = Result { try operation(state, library.get(), current) }.mapError(BridgeState.error)
+            // Publish a fresh list before mutation callbacks can reopen Projects.
+            // A failed transaction can also have rolled files back on disk.
+            let contents = refreshContents ? try? library.get().contents() : nil
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.alive else { return }
+                if refreshContents, self.projectLibraryGeneration == generation { self.cachedProjectContents = contents }
                 self.projectBusy = false
                 self.commandActivities.remove(activity); self.publishActivityStatus()
                 completion(result)
@@ -541,13 +562,33 @@ final class NativeSession {
     }
 
     func listProjects(completion: @escaping (Result<[ProjectRecord], BridgeError>) -> Void) {
-        projectTask({ _, library, _ in try library.projects() }, completion: completion)
+        listProjectContents { completion($0.map(\.projects)) }
     }
 
     func listProjectContents(completion: @escaping (Result<ProjectLibraryContents, BridgeError>) -> Void) {
-        projectTask({ _, library, _ in
-            try ProjectLibraryContents(projects: library.projects(), organisation: library.organisation())
-        }, completion: completion)
+        guard alive else { return }
+        let generation = projectLibraryGeneration
+        #if DEBUG
+        let libraryOverride = projectLibraryOverride
+        #else
+        let libraryOverride: ProjectLibrary? = nil
+        #endif
+        // Keep disk reads serialized with library writes. Browsing does not
+        // cancel autosave, occupy projectBusy or recompute/redraw the CAD model.
+        engine.async { [weak self] in
+            let result = Result { try (libraryOverride ?? ProjectLibrary.applicationLibrary()).contents() }.mapError(BridgeState.error)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.alive else { return }
+                #if DEBUG
+                guard self.projectLibraryOverride?.root == libraryOverride?.root else { return }
+                #endif
+                guard self.projectLibraryGeneration == generation else {
+                    self.listProjectContents(completion: completion); return
+                }
+                self.cachedProjectContents = try? result.get()
+                completion(result)
+            }
+        }
     }
 
     func organiseProjects(_ change: ProjectLibraryChange, completion: @escaping (Result<Void, BridgeError>) -> Void) {
@@ -713,11 +754,13 @@ final class NativeSession {
             do {
                 let project = try ProjectLibrary(root: root).reserve(name: "STEP Share Check")
                 try Self.saveProject(state, project)
-                return (root, project)
+                return (root, project, try ProjectLibrary(root: root).contents())
             } catch { try? FileManager.default.removeItem(at: root); throw error }
-        }) { [weak self] result in
+        }, refreshContents: false) { [weak self] result in
             if case .success(let value) = result {
                 self?.projectLibraryOverride = ProjectLibrary(root: value.0)
+                self?.projectLibraryGeneration = UUID()
+                self?.cachedProjectContents = value.2
                 self?.currentProject = value.1; self?.onProjectChange?(value.1)
             }
             completion(result.map { $0.0 })
@@ -727,6 +770,7 @@ final class NativeSession {
     func developmentClearExportFixture(_ root: URL) {
         autosave?.cancel(); autosave = nil; currentProject = nil
         projectLibraryOverride = nil
+        projectLibraryGeneration = UUID(); cachedProjectContents = nil
         try? FileManager.default.removeItem(at: root)
     }
     #endif

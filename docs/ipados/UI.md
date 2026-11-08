@@ -459,6 +459,13 @@ on launch** (`SolidCraft.projects.showBrowserOnLaunch`, default true) restores
 the former direct-to-workspace launch when disabled. **Reopen last project on
 launch** independently controls which document is loaded behind the panel.
 
+Projects uses the library snapshot already read at startup, including after a
+failed document restore. The rows are populated and selectable before the sheet
+opens. A background refresh checks disk changes without disabling the list,
+cancelling autosave or refreshing the CAD workspace. Project transactions refresh
+the snapshot before their completion callbacks; superseded list results are
+retried so they cannot re-enable controls during a newer transaction.
+
 The Projects navigation controller follows the saved System/Light/Dark workspace
 appearance. Swipe a project row or long-press it to rename it. Renaming preserves
 the UUID, native extension and directory for relative component links. Current
@@ -469,7 +476,8 @@ on the current project named in the footer. Each transfer closes the panel befor
 presenting the native file or share controller.
 
 Debug `--projects-check` extends the existing STEP share acceptance driver with
-the startup panel, a direct tap on the top folder button, Light/Dark/System
+the startup panel, immediately populated/selectable rows before the presentation
+animation completes, a direct tap on the top folder button, Light/Dark/System
 appearance, busy controls, rename validation,
 identity/history preservation, saving to the new path and Projects → Share STEP.
 It uses a temporary project library and restores launch/appearance preferences;

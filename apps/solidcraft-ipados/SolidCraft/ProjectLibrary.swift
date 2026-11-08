@@ -441,7 +441,7 @@ enum ProjectLibraryChange: Equatable {
     case sort(ProjectSort, folder: UUID?, archive: Bool)
 }
 
-struct ProjectLibraryContents {
+struct ProjectLibraryContents: Equatable {
     let projects: [ProjectRecord]
     let organisation: ProjectOrganisation
 }
@@ -552,6 +552,10 @@ struct ProjectLibrary {
         guard data.count <= 4 * 1024 * 1024 else { throw Self.failure("invalid_organisation") }
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         try data.write(to: organisationFile, options: .atomic)
+    }
+
+    func contents() throws -> ProjectLibraryContents {
+        try ProjectLibraryContents(projects: projects(), organisation: organisation())
     }
 
     func projects() throws -> [ProjectRecord] {

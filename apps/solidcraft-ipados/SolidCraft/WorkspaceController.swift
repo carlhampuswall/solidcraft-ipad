@@ -2868,15 +2868,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         browser.onShare = { [weak self, weak browser] in
             browser?.dismiss(animated: true) { [weak self] in self?.exportProject(format: "step", share: true) }
         }
+        if let contents = session.cachedProjectContents {
+            browser.display(contents, current: session.currentProject?.id)
+        } else { browser.setBusy(true) }
         present(navigation, animated: true) { [weak self, weak browser] in if let browser { self?.loadProjects(browser) } }
     }
 
     private func loadProjects(_ browser: ProjectBrowserController) {
-        browser.setBusy(true)
+        let cached = session.cachedProjectContents
+        if let cached { browser.display(cached, current: session.currentProject?.id) }
+        browser.setBusy(cached == nil)
         session.listProjectContents { [weak self, weak browser] result in
             guard let self, let browser else { return }; browser.setBusy(false)
             switch result {
-            case .success(let projects): browser.display(projects, current: self.session.currentProject?.id)
+            case .success(let projects):
+                if projects != cached { browser.display(projects, current: self.session.currentProject?.id) }
             case .failure(let error): browser.showError(error)
             }
         }
@@ -5174,7 +5180,15 @@ private extension FoundationController {
                 if openedByButton { documentActionsButton.sendActions(for: .touchUpInside) }
                 else { projectsStartupHandled = false; showStartupProjectsIfReady() }
             }
-            wait({ self.projectsBrowser?.tableView.numberOfRows(inSection: 1) == 1 }) {
+            // Assert before yielding the main queue: neither the presentation
+            // animation nor an asynchronous directory read has completed yet.
+            guard let immediateBrowser = projectsBrowser,
+                  immediateBrowser.tableView.numberOfRows(inSection: 1) == 1,
+                  immediateBrowser.tableView.allowsSelection,
+                  immediateBrowser.navigationItem.rightBarButtonItems?.first?.isEnabled == true else {
+                report("Projects were not immediately populated and selectable"); return
+            }
+            wait({ self.projectsBrowser?.navigationController?.isBeingPresented == false }) {
                 guard let browser = self.projectsBrowser, let project = self.session.currentProject else { report("Missing startup project browser"); return }
                 if !openedByButton {
                     browser.dismiss(animated: false) { checkBrowser(openedByButton: true) }
@@ -5251,7 +5265,23 @@ private extension FoundationController {
                 case .failure(let error): report(error.description)
                 case .success(let root):
                     fixture = root
-                    if checksProjects { checkBrowser() } else { run(0) }
+                    if checksProjects {
+                        // Start a save in the same turn as a list refresh. The
+                        // superseded read must retry and settle its completion.
+                        self.session.listProjectContents { result in
+                            switch result {
+                            case .failure(let error): report(error.description)
+                            case .success(let contents):
+                                guard contents.projects.map(\.id) == [self.session.currentProject?.id].compactMap({ $0 }) else {
+                                    report("Superseded project refresh lost the current library"); return
+                                }
+                                checkBrowser()
+                            }
+                        }
+                        self.session.saveProject { result in
+                            if case .failure(let error) = result { report(error.description) }
+                        }
+                    } else { run(0) }
                 }
             }
         }
