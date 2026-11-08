@@ -201,13 +201,15 @@ checks the bottom status readout and its disabled preference, then writes
 Reserve the physical iPad through the task protocol before running it. Circular
 rim circumference and read-only history preservation are covered by the focused
 session tests named `workspace_edge_length`. The readout uses `inspect.measure`
-on a scratch session; Tools → Show selected edge length restores the previous
+on a scratch session; Settings → Selection → Show selected edge length restores the previous
 status display when disabled (`SolidCraft.workspace.edgeLengthReadout`).
 Round edges also expose `selection_edge_radius_mm` from the same scratch
-measurement and show radius beside length. Full circular rims use circumference;
+measurement and show diameter beside length by default. Settings → Selection →
+Show diameter for circular edges restores radius when disabled
+(`SolidCraft.workspace.edgeDiameterReadout`, default true). Full circular rims use circumference;
 partial arcs use their arc length. Straight edges show length alone. The native
 `--edge-length-check` includes a circular cylinder rim and a semicircular solid
-edge, checking both values, the saved toggle, and actual UIKit captures.
+edge, checking diameter and radius modes, the readout toggle, and actual UIKit captures.
 
 Verified on 2026-10-31 with clean combined candidate
 `5597b7cff54fec0c9af95e21b10a1d08d69ea30e` (measurement change `522e34aa`):

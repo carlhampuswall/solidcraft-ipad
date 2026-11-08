@@ -228,19 +228,37 @@ struct WorkspaceChecks {
                         "an unavailable or invalid edge produced a length readout")
         }
         let radiusTemplate = "Radius: {radius} mm"
+        let diameterTemplate = "Diameter: {diameter} mm"
+        try require(EdgeLengthReadout.diameterRestored(nil) && EdgeLengthReadout.diameterRestored(true) && !EdgeLengthReadout.diameterRestored(false),
+                    "circular-edge diameter preference lost its default or saved radius mode")
+        try require(EdgeLengthReadout.text(lengthMM: 2 * .pi * 7, radiusMM: 7, enabled: true, template: edgeTemplate,
+            radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, locale: edgeLocale) == "Edge length: 43.982 mm · Diameter: 14 mm",
+            "a circular rim did not display diameter by default beside its circumference")
         try require(EdgeLengthReadout.text(lengthMM: .pi * 7, radiusMM: 7, enabled: true, template: edgeTemplate,
-            radiusTemplate: radiusTemplate, locale: edgeLocale) == "Edge length: 21.991 mm · Radius: 7 mm",
-            "a semicircle did not display arc length together with its measured radius")
+            radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, locale: edgeLocale) == "Edge length: 21.991 mm · Diameter: 14 mm",
+            "a semicircle did not retain arc length beside its diameter")
         try require(EdgeLengthReadout.text(lengthMM: 12.34567, radiusMM: 4.12345, enabled: true, template: edgeTemplate,
-            radiusTemplate: radiusTemplate, locale: Locale(identifier: "de_DE")) == "Edge length: 12,346 mm · Radius: 4,123 mm",
+            radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, locale: Locale(identifier: "de_DE")) == "Edge length: 12,346 mm · Diameter: 8,247 mm",
+            "round-edge diameter did not use locale-aware precision after doubling the radius")
+        try require(EdgeLengthReadout.text(lengthMM: .pi * 7, radiusMM: 7, enabled: true, template: edgeTemplate,
+            radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, showDiameter: false, locale: edgeLocale) == "Edge length: 21.991 mm · Radius: 7 mm",
+            "disabling circular-edge diameter did not restore the radius readout")
+        try require(EdgeLengthReadout.text(lengthMM: 12.34567, radiusMM: 4.12345, enabled: true, template: edgeTemplate,
+            radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, showDiameter: false, locale: Locale(identifier: "de_DE")) == "Edge length: 12,346 mm · Radius: 4,123 mm",
             "round-edge length and radius did not share locale-aware precision")
-        try require(EdgeLengthReadout.text(lengthMM: 40, radiusMM: 7, enabled: false, template: edgeTemplate,
-            radiusTemplate: radiusTemplate) == nil, "disabled measurement preference left a radius readout")
-        for radius: Double? in [nil, .nan, .infinity, -1] {
-            try require(EdgeLengthReadout.text(lengthMM: 40, radiusMM: radius, enabled: true, template: edgeTemplate,
-                radiusTemplate: radiusTemplate, locale: edgeLocale) == "Edge length: 40 mm",
-                "a straight or invalid-radius edge displayed a fabricated radius")
+        for showDiameter in [true, false] {
+            try require(EdgeLengthReadout.text(lengthMM: 40, radiusMM: 7, enabled: false, template: edgeTemplate,
+                radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, showDiameter: showDiameter) == nil,
+                "disabled measurement preference left a circular-edge readout")
+            for radius: Double? in [nil, .nan, .infinity, -1] {
+                try require(EdgeLengthReadout.text(lengthMM: 40, radiusMM: radius, enabled: true, template: edgeTemplate,
+                    radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, showDiameter: showDiameter, locale: edgeLocale) == "Edge length: 40 mm",
+                    "a straight or invalid-radius edge displayed a fabricated circular measurement")
+            }
         }
+        try require(EdgeLengthReadout.text(lengthMM: 40, radiusMM: .greatestFiniteMagnitude, enabled: true, template: edgeTemplate,
+            radiusTemplate: radiusTemplate, diameterTemplate: diameterTemplate, locale: edgeLocale) == "Edge length: 40 mm",
+            "an overflowing diameter displayed a non-finite measurement")
         // Boolean presentation follows typed options, never labels or truthy strings.
         let automatic = ModellingFormPresentation.initialParameters(operation: "solid.extrude", feature: nil,
             automatic: true, legacyDepth: false, supplied: nil)

@@ -9,7 +9,7 @@ the source history and current verification scope.
 
 ## Current presentation
 
-The Settings button opens 24 preference rows in seven categories: Appearance,
+The Settings button opens 25 preference rows in seven categories: Appearance,
 Workspace, Navigation, Selection, Modelling, Sketching and Projects. These cover
 user choices such as theme, tool labels, browser pinning,
 gestures, selection filters, modelling workflow, sketch aids and project startup.
@@ -20,6 +20,12 @@ tool controls, inline dimensions and quick-access customization. Previously save
 compatibility values still load; removing their rows does not reset the workspace
 or change the document. Older fallback descriptions below document those saved
 values and their regression checks, rather than current Settings rows.
+
+Selected circular edges show diameter beside edge length by default. In
+**Settings → Selection**, turn off **Show diameter for circular edges** to show
+radius instead. The choice persists across launches
+(`SolidCraft.workspace.edgeDiameterReadout`, default true). Circular arcs keep
+their measured arc length in either mode; straight edges show length alone.
 
 In the right-hand **More tools** list, hold a view such as **Top** to open a
 native context menu with **Add to quick access**. The list keeps the same rows

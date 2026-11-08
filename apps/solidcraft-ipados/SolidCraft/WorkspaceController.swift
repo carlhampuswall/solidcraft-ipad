@@ -291,6 +291,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private var edgeToolsOnSelection = EdgeToolSelection.restored(UserDefaults.standard.object(forKey: EdgeToolSelection.key) as? Bool)
     private var automaticExtrudeDepth = UserDefaults.standard.bool(forKey: ModellingFormPresentation.automaticExtrudeDepthKey)
     private var edgeLengthReadout = EdgeLengthReadout.restored(UserDefaults.standard.object(forKey: EdgeLengthReadout.key) as? Bool)
+    private var edgeDiameterReadout = EdgeLengthReadout.diameterRestored(UserDefaults.standard.object(forKey: EdgeLengthReadout.diameterKey) as? Bool)
     private var visualPlaneSelection = UserDefaults.standard.object(forKey: "SolidCraft.workspace.visualPlaneSelection") as? Bool ?? true
     private var revealSketchPlanes = UserDefaults.standard.object(forKey: "SolidCraft.workspace.revealSketchPlanes") as? Bool ?? true
     private var legacyOriginPlanes = UserDefaults.standard.bool(forKey: "SolidCraft.workspace.legacyOriginPlanes")
@@ -4278,6 +4279,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             UserDefaults.standard.set(self.edgeLengthReadout, forKey: EdgeLengthReadout.key)
             self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
         }
+        let edgeDiameter = UIAction(title: WorkspaceStyle.text("edge_diameter_readout"), subtitle: WorkspaceStyle.text("edge_diameter_readout_help"),
+            state: edgeDiameterReadout ? .on : .off) { [weak self] _ in
+            guard let self else { return }
+            self.edgeDiameterReadout.toggle()
+            UserDefaults.standard.set(self.edgeDiameterReadout, forKey: EdgeLengthReadout.diameterKey)
+            self.updateStatus(); self.view.setNeedsLayout(); self.rebuildMenus()
+        }
         let sketchExtrude = UIAction(title: WorkspaceStyle.text("extrude_on_sketch_selection"), subtitle: WorkspaceStyle.text("extrude_on_sketch_selection_help"), state: extrudeOnSketchSelection ? .on : .off) { [weak self] _ in
             guard let self else { return }
             self.extrudeOnSketchSelection.toggle()
@@ -4309,7 +4317,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             .appearance: [UIMenu(title: NativeText.value("ui.ipados.settings.theme"), children: appearances)],
             .workspace: [toolLabels],
             .navigation: [historyGestures, rotationSnap],
-            .selection: [UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple, connectedEdges, edgeLength],
+            .selection: [UIMenu(title: WorkspaceStyle.text("filter"), children: filters), multiple, connectedEdges, edgeLength, edgeDiameter],
             .modelling: [dragResolution, automaticCut, automaticDepth, acceptOnTap, faceExtrude, sketchExtrude, edgeTools],
             .sketching: [], .projects: []
         ]
@@ -4577,7 +4585,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         if state?.sketch == nil,
            let length = EdgeLengthReadout.text(lengthMM: state?.selection_edge_length_mm, radiusMM: state?.selection_edge_radius_mm,
                                               enabled: edgeLengthReadout, template: WorkspaceStyle.text("edge_length"),
-                                              radiusTemplate: WorkspaceStyle.text("edge_radius")) {
+                                              radiusTemplate: WorkspaceStyle.text("edge_radius"), diameterTemplate: WorkspaceStyle.text("edge_diameter"),
+                                              showDiameter: edgeDiameterReadout) {
             status.text = length
             return
         }
@@ -7202,6 +7211,7 @@ private extension FoundationController {
         guard let directory = try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true),
               session.currentProject == nil else { return }
         let savedReadout = edgeLengthReadout
+        let savedDiameter = edgeDiameterReadout
         let expectedGeneration = generation
         let started = Date().timeIntervalSince1970
         let run = UUID().uuidString
@@ -7219,7 +7229,7 @@ private extension FoundationController {
         func finish(_ error: String? = nil) {
             guard !finished else { return }; finished = true
             assemblyCheckWorkspace = nil; session.endDevelopmentSelectionTapsCheck()
-            edgeLengthReadout = savedReadout; updateStatus()
+            edgeLengthReadout = savedReadout; edgeDiameterReadout = savedDiameter; updateStatus()
             let report: [String: Any] = ["passed": error == nil && stages.count == cases.count, "error": error ?? "",
                 "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unstamped",
                 "run_id": run, "started_at": started, "completed_at": Date().timeIntervalSince1970,
@@ -7248,9 +7258,17 @@ private extension FoundationController {
                             finish("Incorrect selection, length or radius at " + name); return
                         }
                         let readout = EdgeLengthReadout.text(lengthMM: expectedLength, radiusMM: expectedRadius, enabled: true,
-                            template: WorkspaceStyle.text("edge_length"), radiusTemplate: WorkspaceStyle.text("edge_radius"))
+                            template: WorkspaceStyle.text("edge_length"), radiusTemplate: WorkspaceStyle.text("edge_radius"),
+                            diameterTemplate: WorkspaceStyle.text("edge_diameter"))
                         if let readout {
                             guard self.status.text == readout else { finish("Status did not display " + readout); return }
+                            self.edgeDiameterReadout = false; self.updateStatus()
+                            let radiusReadout = EdgeLengthReadout.text(lengthMM: expectedLength, radiusMM: expectedRadius, enabled: true,
+                                template: WorkspaceStyle.text("edge_length"), radiusTemplate: WorkspaceStyle.text("edge_radius"),
+                                diameterTemplate: WorkspaceStyle.text("edge_diameter"), showDiameter: false)
+                            guard self.status.text == radiusReadout else { finish("Preference did not restore radius"); return }
+                            self.edgeDiameterReadout = true; self.updateStatus()
+                            guard self.status.text == readout else { finish("Preference did not restore diameter"); return }
                             self.edgeLengthReadout = false; self.updateStatus()
                             guard self.status.text != readout else { finish("Preference did not hide length"); return }
                             self.edgeLengthReadout = true; self.updateStatus()
@@ -7286,7 +7304,7 @@ private extension FoundationController {
                 switch result { case .success: prepare(index + 1); case .failure(let error): finish(error.description) }
             }
         }
-        edgeLengthReadout = true; extrudeOnFaceSelection = false
+        edgeLengthReadout = true; edgeDiameterReadout = true; extrudeOnFaceSelection = false
         browserOpen = false; inspectorOpen = false; relayoutPanels()
         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if !finished { finish("Edge length diagnostic timed out") } }
         prepare(0)

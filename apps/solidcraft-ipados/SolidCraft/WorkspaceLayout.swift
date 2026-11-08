@@ -106,17 +106,23 @@ enum MenuDisclosureLayout {
 
 enum EdgeLengthReadout {
     static let key = "SolidCraft.workspace.edgeLengthReadout"
+    static let diameterKey = "SolidCraft.workspace.edgeDiameterReadout"
     static func restored(_ value: Bool?) -> Bool { value ?? true }
-    static func text(lengthMM: Double?, radiusMM: Double? = nil, enabled: Bool, template: String, radiusTemplate: String? = nil, locale: Locale = .current) -> String? {
+    static func diameterRestored(_ value: Bool?) -> Bool { value ?? true }
+    static func text(lengthMM: Double?, radiusMM: Double? = nil, enabled: Bool, template: String,
+                     radiusTemplate: String? = nil, diameterTemplate: String? = nil, showDiameter: Bool = true,
+                     locale: Locale = .current) -> String? {
         guard enabled, let lengthMM, lengthMM.isFinite, lengthMM >= 0 else { return nil }
         let formatter = NumberFormatter()
         formatter.locale = locale; formatter.numberStyle = .decimal
         formatter.maximumFractionDigits = 3
         guard let number = formatter.string(from: NSNumber(value: lengthMM)) else { return nil }
         let length = template.replacingOccurrences(of: "{length}", with: number)
-        guard let radiusMM, radiusMM.isFinite, radiusMM >= 0, let radiusTemplate,
-              let radius = formatter.string(from: NSNumber(value: radiusMM)) else { return length }
-        return length + " · " + radiusTemplate.replacingOccurrences(of: "{radius}", with: radius)
+        guard let radiusMM, radiusMM.isFinite, radiusMM >= 0 else { return length }
+        let value = showDiameter ? radiusMM * 2 : radiusMM
+        guard value.isFinite, let circleTemplate = showDiameter ? diameterTemplate : radiusTemplate,
+              let measurement = formatter.string(from: NSNumber(value: value)) else { return length }
+        return length + " · " + circleTemplate.replacingOccurrences(of: showDiameter ? "{diameter}" : "{radius}", with: measurement)
     }
 }
 

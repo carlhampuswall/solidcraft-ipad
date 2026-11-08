@@ -1,0 +1,42 @@
+{
+  "ar": {
+    "ui.ipados.workspace.edge_diameter": "القطر: {diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "عرض القطر للحواف الدائرية",
+    "ui.ipados.workspace.edge_diameter_readout_help": "عرض القطر بدلاً من نصف القطر في قياسات الحواف المحددة."
+  },
+  "de": {
+    "ui.ipados.workspace.edge_diameter": "Durchmesser: {diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "Durchmesser für kreisförmige Kanten anzeigen",
+    "ui.ipados.workspace.edge_diameter_readout_help": "Bei ausgewählten Kanten den Durchmesser statt des Radius anzeigen."
+  },
+  "en": {
+    "ui.ipados.workspace.edge_diameter": "Diameter: {diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "Show diameter for circular edges",
+    "ui.ipados.workspace.edge_diameter_readout_help": "Show diameter instead of radius in selected edge measurements."
+  },
+  "he": {
+    "ui.ipados.workspace.edge_diameter": "קוטר: {diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "הצגת קוטר עבור קצוות מעגליים",
+    "ui.ipados.workspace.edge_diameter_readout_help": "הצגת קוטר במקום רדיוס במדידות של קצוות נבחרים."
+  },
+  "ja": {
+    "ui.ipados.workspace.edge_diameter": "直径: {diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "円形エッジの直径を表示",
+    "ui.ipados.workspace.edge_diameter_readout_help": "選択したエッジの測定値に半径ではなく直径を表示します。"
+  },
+  "ko": {
+    "ui.ipados.workspace.edge_diameter": "지름: {diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "원형 모서리의 지름 표시",
+    "ui.ipados.workspace.edge_diameter_readout_help": "선택한 모서리의 측정값에 반지름 대신 지름을 표시합니다."
+  },
+  "vi": {
+    "ui.ipados.workspace.edge_diameter": "Đường kính: {diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "Hiển thị đường kính cho cạnh tròn",
+    "ui.ipados.workspace.edge_diameter_readout_help": "Hiển thị đường kính thay vì bán kính trong số đo cạnh được chọn."
+  },
+  "zh": {
+    "ui.ipados.workspace.edge_diameter": "直径：{diameter} mm",
+    "ui.ipados.workspace.edge_diameter_readout": "显示圆形边的直径",
+    "ui.ipados.workspace.edge_diameter_readout_help": "在所选边的测量值中显示直径而非半径。"
+  }
+}
