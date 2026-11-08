@@ -63,7 +63,7 @@ enum WorkspaceStyle {
         view.backgroundColor = surface.withAlphaComponent(0.96)
         view.layer.cornerRadius = radius
         view.layer.borderWidth = 0.5
-        view.layer.borderColor = separator.cgColor
+        view.layer.borderColor = separator.resolvedColor(with: view.traitCollection).cgColor
         view.clipsToBounds = true
     }
 
@@ -290,6 +290,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
     private func styleSurface() {
         if expanded { WorkspaceStyle.floatingSurface(self) }
         else { backgroundColor = .clear; layer.borderWidth = 0; clipsToBounds = false }
+        ([back, play, forward] + Array(buttons.values)).forEach(WorkspaceStyle.floatingSurface)
     }
 
     func setExpanded(_ value: Bool) {
@@ -382,6 +383,7 @@ final class FeatureHistoryBar: UIView, UIGestureRecognizerDelegate {
                 }
             }
             button.artwork(icons[feature.id] ?? "component", compact: true)
+            WorkspaceStyle.floatingSurface(button)
             button.widthAnchor.constraint(equalToConstant: 44).isActive = true
             button.accessibilityIdentifier = "workspace-history-feature-" + String(feature.id)
             style(button, feature: feature)
@@ -706,6 +708,7 @@ private final class RailButtonContent: UIView {
     private let gap: CGFloat = 6
     private let inset: CGFloat = 9
     private let separateIconSurface: Bool
+    private let glyphTint: UIColor
     var sharedIconSurface = false
     private var captionVisible = true
     private var requestedCaptionVisible = true
@@ -713,6 +716,7 @@ private final class RailButtonContent: UIView {
 
     init(title: String, tint: UIColor, separateIconSurface: Bool = false) {
         self.separateIconSurface = separateIconSurface
+        glyphTint = tint
         super.init(frame: .zero)
         isUserInteractionEnabled = false; accessibilityElementsHidden = true
         WorkspaceStyle.floatingSurface(chip)
@@ -767,13 +771,13 @@ private final class RailButtonContent: UIView {
         chip.backgroundColor = WorkspaceStyle.surface
         iconSurface.backgroundColor = selected || highlighted ? WorkspaceStyle.selectedToolSurface : WorkspaceStyle.surface
         iconSurface.layer.borderColor = (diagnostic.map(FeatureDiagnosticStyle.color) ??
-            (selected || history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.separator)).cgColor
+            (selected || history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.separator)).resolvedColor(with: traitCollection).cgColor
         iconSurface.layer.borderWidth = diagnostic == nil ? 0.5 : 2
         if sharedIconSurface && !selected && !highlighted && diagnostic == nil {
             iconSurface.backgroundColor = .clear
             iconSurface.layer.borderWidth = 0
         }
-        glyph.tintColor = history && enabled ? WorkspaceStyle.accent : WorkspaceStyle.foreground
+        glyph.tintColor = history && enabled ? WorkspaceStyle.accent : glyphTint
     }
 
     private func textSize(_ label: UILabel, width: CGFloat) -> CGSize {
@@ -986,7 +990,7 @@ final class WorkspaceButton: MenuChoiceButton {
         refreshIcon()
     }
     func separateRailCaption(tint: UIColor = WorkspaceStyle.foreground) {
-        let content = RailButtonContent(title: fullTitle, tint: tint)
+        let content = RailButtonContent(title: fullTitle, tint: tint, separateIconSurface: true)
         content.showCaption(ToolLabels.current && !isHistoryAction, mirrored: false)
         railContent = content
         automaticallyUpdatesConfiguration = false
