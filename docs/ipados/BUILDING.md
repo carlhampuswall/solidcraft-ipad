@@ -35,6 +35,20 @@ opened Properties fit their content instead of reserving a fixed tall panel.
 Finishing a compact tool closes its card; selecting a browser item does not open
 Properties automatically. Properties remains available from its toolbar button.
 
+With compact controls enabled, Properties opens beside its toolbar icon with a
+pointer to the button, like the other tool popups. The popup follows toolbar
+scrolling and stays inside the available window above the keyboard. Its content
+scrolls while tool actions remain pinned. Tap Properties again, Close, or outside
+an idle Properties popup to dismiss it. Active tools retain their existing
+selection, Apply and Cancel behavior. The saved noncompact control preference
+keeps the previous panel presentation.
+
+The Debug `--properties-popup-check` captures Light and Dark popups with and
+without tool labels, verifies the icon anchor and unchanged viewport/camera,
+and exercises dismissal and the previous panel presentation. Reports and PNGs
+are written to Documents as `properties-popup-check.json` and
+`properties-popup-*.png`. Run it only in a reserved physical iPad session.
+
 Saved compatibility values for compact tool controls and the operation inspector
 still restore their older presentations. Their switches have been removed from
 Settings, along with the Collapse Extrude options switch.

@@ -427,6 +427,41 @@ enum ModelValuePlacement {
     }
 }
 
+/// Properties stays in the workspace so picking and nested value editors remain
+/// available. Its popup points at the same icon-only anchor as native tool menus.
+struct InspectorPopoverLayout {
+    let frame: CGRect
+    let tip: CGPoint
+    let baseStart: CGPoint
+    let baseEnd: CGPoint
+
+    static func resolve(container: CGRect, source: CGRect, preferredSize: CGSize) -> InspectorPopoverLayout? {
+        guard [container.minX, container.minY, container.width, container.height,
+               source.minX, source.minY, source.width, source.height,
+               preferredSize.width, preferredSize.height].allSatisfy(\.isFinite),
+              container.width > 16, container.height > 16, source.width > 0, source.height > 0,
+              preferredSize.width > 0, preferredSize.height >= 44, container.intersects(source) else { return nil }
+        let bounds = container.insetBy(dx: 8, dy: 8)
+        let arrow: CGFloat = 12
+        let leftRoom = max(0, source.minX - bounds.minX - arrow)
+        let rightRoom = max(0, bounds.maxX - source.maxX - arrow)
+        let onLeft = leftRoom >= rightRoom
+        let width = min(preferredSize.width, onLeft ? leftRoom : rightRoom)
+        let height = min(preferredSize.height, bounds.height)
+        guard width > 0, height >= 44 else { return nil }
+        let x = onLeft ? source.minX - arrow - width : source.maxX + arrow
+        let y = min(max(bounds.minY, source.midY - height / 2), bounds.maxY - height)
+        let frame = CGRect(x: x, y: y, width: width, height: height)
+        let centre = min(max(source.midY, frame.minY + 22), frame.maxY - 22)
+        // Overlap the panel border slightly so the arrow joins its surface.
+        let baseX = onLeft ? frame.maxX - 1 : frame.minX + 1
+        return InspectorPopoverLayout(frame: frame,
+            tip: CGPoint(x: onLeft ? source.minX - 2 : source.maxX + 2, y: source.midY),
+            baseStart: CGPoint(x: baseX, y: centre - 8),
+            baseEnd: CGPoint(x: baseX, y: centre + 8))
+    }
+}
+
 /// Native chrome geometry in available display points, placed into window space
 /// before assigning the actual Metal view. Rendering and picking share its bounds.
 struct WorkspaceLayout {
@@ -435,7 +470,7 @@ struct WorkspaceLayout {
     var rail: CGRect
     var canvas: CGRect
     var browser: CGRect?
-    let inspector: CGRect?
+    var inspector: CGRect?
     let compact: Bool
     var navigation: CGRect = .zero
     var history: CGRect = .zero

@@ -886,6 +886,57 @@ struct WorkspaceChecks {
                                                    railRight: false, largeText: false, inspectorContentHeight: 500, navigationContentHeight: 146)
         try require(numericPanel.inspector?.height == 500, "simple numeric editor became a full-height inspector")
         try require(numericPanel.navigation.height == 146, "navigation surface retains unused permanent space")
+        // The Properties popup follows the icon rather than a fixed screen edge.
+        // Include safe-area origins, mirrored toolbars and keyboard-sized bounds.
+        for size in [CGSize(width: 1194, height: 790), CGSize(width: 744, height: 790), CGSize(width: 320, height: 260)] {
+            for origin in [CGPoint.zero, CGPoint(x: 24, y: 50)] {
+                let container = CGRect(origin: origin, size: size)
+                for right in [false, true] {
+                    for sourceY in [container.minY + 24, container.midY, container.maxY - 68] {
+                        let source = CGRect(x: right ? container.maxX - 52 : container.minX + 8,
+                                            y: sourceY, width: 44, height: 44)
+                        for height: CGFloat in [180, 620, 760] {
+                            guard let popup = InspectorPopoverLayout.resolve(container: container, source: source,
+                                preferredSize: CGSize(width: 380, height: height)) else {
+                                throw NSError(domain: "PropertiesPopup", code: 1)
+                            }
+                            try require(container.insetBy(dx: 8, dy: 8).contains(popup.frame), "Properties popup escaped usable bounds")
+                            try require(!popup.frame.intersects(source), "Properties popup covers its button")
+                            try require(popup.tip.y == source.midY, "Properties pointer missed its icon vertically")
+                            try require(abs(popup.tip.x - (right ? source.minX - 2 : source.maxX + 2)) < 0.5,
+                                        "Properties pointer detached from its icon")
+                            try require(popup.baseStart.y >= popup.frame.minY + 14 && popup.baseEnd.y <= popup.frame.maxY - 14,
+                                        "Properties pointer overlaps a rounded corner")
+                            let moved = source.offsetBy(dx: 0, dy: sourceY == container.midY ? 8 : -8)
+                            let following = InspectorPopoverLayout.resolve(container: container, source: moved,
+                                preferredSize: CGSize(width: 380, height: height))
+                            try require(following?.tip.y == moved.midY, "Properties pointer did not follow toolbar scrolling")
+                            cases += 1
+                        }
+                    }
+                }
+            }
+        }
+        for source in [CGRect(x: -100, y: 20, width: 44, height: 44), CGRect(x: 10, y: 10, width: 0, height: 44),
+                       CGRect(x: CGFloat.nan, y: 10, width: 44, height: 44)] {
+            try require(InspectorPopoverLayout.resolve(container: CGRect(x: 0, y: 0, width: 600, height: 400),
+                source: source, preferredSize: CGSize(width: 320, height: 620)) == nil,
+                "Properties accepted a missing or invalid anchor")
+        }
+        for width: CGFloat in [320, 390, 500, 744] {
+            for labels in [false, true] {
+                for large in [false, true] {
+                    let container = CGRect(x: 0, y: 24, width: width, height: 450)
+                    let workspace = WorkspaceLayout.resolve(size: container.size, browser: false, inspector: true,
+                        railRight: false, largeText: large, toolLabels: labels).placed(in: container, viewport: container)
+                    let source = CGRect(x: workspace.navigation.maxX - 44, y: workspace.navigation.minY + 54, width: 44, height: 44)
+                    let popup = InspectorPopoverLayout.resolve(container: container, source: source,
+                        preferredSize: CGSize(width: large ? 380 : 320, height: 620))
+                    try require((popup?.frame.width ?? 0) >= 248, "labelled rails collapsed Properties in a narrow window")
+                    cases += 1
+                }
+            }
+        }
         for size in [CGSize(width: 1194, height: 790), CGSize(width: 744, height: 790), CGSize(width: 500, height: 400)] {
             for right in [false, true] {
                 for large in [false, true] {

@@ -1259,6 +1259,47 @@ final class BrowserSearchField: UITextField {
     }
 }
 
+/// A noninteractive pointer joins a workspace panel to its toolbar icon.
+final class WorkspacePanelPointer: UIView {
+    private var points: [CGPoint] = []
+    init() {
+        super.init(frame: .zero)
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        isAccessibilityElement = false
+        isHidden = true
+        contentMode = .redraw
+        registerForTraitChanges([UITraitUserInterfaceStyle.self]) { (pointer: WorkspacePanelPointer, _: UITraitCollection) in
+            pointer.setNeedsDisplay()
+        }
+    }
+    required init?(coder: NSCoder) { nil }
+    func update(_ layout: InspectorPopoverLayout?) {
+        isHidden = layout == nil
+        guard let layout else { return }
+        let vertices = [layout.baseStart, layout.tip, layout.baseEnd]
+        let bounds = vertices.reduce(CGRect(origin: layout.tip, size: .zero)) {
+            $0.union(CGRect(origin: $1, size: .zero))
+        }.insetBy(dx: -1, dy: -1)
+        frame = bounds
+        points = vertices.map { CGPoint(x: $0.x - bounds.minX, y: $0.y - bounds.minY) }
+        setNeedsDisplay()
+    }
+    override func draw(_ rect: CGRect) {
+        guard let first = points.first else { return }
+        let path = UIBezierPath()
+        path.move(to: first)
+        for point in points.dropFirst() { path.addLine(to: point) }
+        path.close()
+        WorkspaceStyle.surface.setFill(); path.fill()
+        let outline = UIBezierPath()
+        outline.move(to: first)
+        for point in points.dropFirst() { outline.addLine(to: point) }
+        outline.lineWidth = 0.5
+        WorkspaceStyle.separator.setStroke(); outline.stroke()
+    }
+}
+
 final class WorkspacePanel: UIView {
     let content = UIView()
     private let body = UIStackView()

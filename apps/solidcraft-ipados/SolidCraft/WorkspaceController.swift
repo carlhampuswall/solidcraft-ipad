@@ -60,6 +60,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private let browserMessage = WorkspaceStyle.label(.body, secondary: true)
     private lazy var browserPanel = WorkspacePanel(title: WorkspaceStyle.text("browser")) { [weak self] in self?.closePanels() }
     private lazy var inspectorPanel = WorkspacePanel(title: WorkspaceStyle.text("inspector")) { [weak self] in self?.closePanels() }
+    private let inspectorPointer = WorkspacePanelPointer()
     private lazy var undoButton = WorkspaceButton(NativeText.value("ui.ipados.undo")) { [weak self] in self?.run("edit.undo") }
     private lazy var redoButton = WorkspaceButton(NativeText.value("ui.ipados.redo")) { [weak self] in self?.run("edit.redo") }
     private lazy var browserButton = WorkspaceButton(WorkspaceStyle.text("browser")) { [weak self] in self?.toggleBrowser() }
@@ -328,6 +329,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         workspace.addSubview(scrim)
         workspace.addSubview(browserPanel)
         workspace.addSubview(inspectorPanel)
+        workspace.addSubview(inspectorPointer)
+        navigationScroll.delegate = self
         scrim.backgroundColor = WorkspaceStyle.scrim
         scrim.addAction(UIAction { [weak self] _ in self?.closePanels() }, for: .touchUpInside)
         scrim.accessibilityLabel = WorkspaceStyle.text("close")
@@ -674,6 +677,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                     self.developmentCheckStarted = true; self.checkSettingsOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--tool-labels-check") {
                     self.developmentCheckStarted = true; self.checkToolLabelsOnDevice()
+                } else if ProcessInfo.processInfo.arguments.contains("--properties-popup-check") {
+                    self.developmentCheckStarted = true; self.checkPropertiesPopupOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--chrome-check") {
                     self.developmentCheckStarted = true; self.checkChromeOnDevice()
                 } else if ProcessInfo.processInfo.arguments.contains("--browser-check") || ProcessInfo.processInfo.arguments.contains("--browser-actions-check") || ProcessInfo.processInfo.arguments.contains("--browser-swipes-check") {
@@ -834,6 +839,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         // there is no full-screen hit-testing overlay in the floating layout.
         workspace.bringSubviewToFront(scrim)
         workspace.bringSubviewToFront(browserPanel); workspace.bringSubviewToFront(inspectorPanel)
+        workspace.bringSubviewToFront(inspectorPointer)
         homeButton.accessibilityIdentifier = homeToolbar ? "workspace-home" : "workspace-fit"
         projectionButton.accessibilityIdentifier = "workspace-projection"
         documentActionsButton.accessibilityIdentifier = "workspace-document-actions"
@@ -2328,13 +2334,21 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             return target === top || target === titleLabel || target === subtitle ||
                 target === documentActionsButton || target.isDescendant(of: documentActionsButton)
         }
-        guard draftAppliesOnTapAway, modellingInspector != nil, presentedViewController == nil,
-              let target = touch.view else { return false }
+        guard presentedViewController == nil, let target = touch.view else { return false }
+        if compactToolControls, inspectorOpen, !numericEditing, !modellingEditing,
+           !planeChoosing, planeDraft == nil, edgeSelectorContext == nil,
+           sketchInput?.projection == nil, state?.active_tool == "select" {
+            return ![inspectorPanel, inspectorButton].contains { target === $0 || target.isDescendant(of: $0) }
+        }
+        guard draftAppliesOnTapAway, modellingInspector != nil else { return false }
         let toolViews: [UIView?] = [canvas, extrusionRailScroll, modelValueButton, modellingInspector?.resultButton, inspectorPanel]
         return !toolViews.compactMap { $0 }.contains { target === $0 || target.isDescendant(of: $0) }
     }
 
-    @objc private func applyDraftFromChrome() { requestDraftApply() }
+    @objc private func applyDraftFromChrome() {
+        if draftAppliesOnTapAway { requestDraftApply() }
+        else { closePanels() }
+    }
 
     private func requestDraftApply() {
         guard draftAppliesOnTapAway, let form = modellingInspector, !modellingCommitting else { return }
@@ -3867,6 +3881,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         canvas.cancelInput(); inspectorOpen.toggle(); browserOpen = false
         relayoutPanels()
     }
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        if scrollView === navigationScroll && inspectorOpen && compactToolControls { view.setNeedsLayout() }
+    }
     private func closePanels() {
         if draftAppliesOnTapAway { requestDraftApply(); return }
         if sketchInput?.projection != nil { projectionAction("cancel") }
@@ -4689,8 +4706,9 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         let completionHeight = finishSketchButton.isHidden ? 0 : actionsHeight + 8
         let headingHeight = compactChrome ? compactHeadingHeight + completionHeight :
             (compactWidth ? titleHeight + subtitleHeight + actionsHeight + 12 : max(titleHeight + subtitleHeight + 8, actionsHeight + 8))
-        var inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
+        let inspectorHeight: CGFloat = largeText ? 760 : (numericEditing ? 500 :
             (modellingEditing ? (modellingInspector?.compact == true ? 620 : min(640, 240 + CGFloat(modellingInspector?.fields.count ?? 4) * 84)) : 640))
+        let inspectorWidth: CGFloat = largeText || modellingInspector?.compact == true && modellingInspector?.minimal != true ? 380 : 320
         func resolve(railHeight: CGFloat, navHeight: CGFloat) -> WorkspaceLayout {
             WorkspaceLayout.resolve(size: chrome.size, browser: browserOpen, inspector: inspectorOpen,
                                                railRight: railRight, largeText: largeText,
@@ -4698,21 +4716,20 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                                compactChrome: compactChrome, pinnedBrowser: pinnedBrowser, railContentHeight: railHeight,
                                                inspectorContentHeight: inspectorHeight, navigationContentHeight: navHeight, leftBrowser: leftBrowser,
                                                historyExpanded: historyExpanded,
-                                               inspectorPreferredWidth: modellingInspector?.compact == true && modellingInspector?.minimal != true ? 380 : 320,
+                                               inspectorPreferredWidth: inspectorWidth,
                                                historyToggleWidth: featureHistory.preferredToggleWidth,
                                                viewButtonSize: viewButton.intrinsicContentSize,
                                                toolLabels: showToolLabels)
                 .placed(in: chrome, viewport: viewport)
         }
         let available = resolve(railHeight: chrome.height, navHeight: chrome.height)
-        if compactToolControls, let frame = available.inspector {
+        func inspectorFittingHeight(width: CGFloat) -> CGFloat {
             let visible = properties.arrangedSubviews.filter { !$0.isHidden }
-            let width = max(0, frame.width - 32)
             let measured = visible.reduce(CGFloat(0)) { height, child in
-                height + child.systemLayoutSizeFitting(CGSize(width: width, height: 0),
+                height + child.systemLayoutSizeFitting(CGSize(width: max(0, width - 32), height: 0),
                     withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel).height
             } + CGFloat(max(0, visible.count - 1)) * properties.spacing + 32
-            inspectorHeight = inspectorPanel.fittingHeight(contentHeight: measured, width: frame.width)
+            return inspectorPanel.fittingHeight(contentHeight: measured, width: width)
         }
         func contentHeight(_ stack: UIStackView, width: CGFloat) -> CGFloat {
             if let tools = stack as? WorkspaceToolStack { return tools.fittingContentHeight(width: width) }
@@ -4724,13 +4741,12 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                 $0 + max(WorkspaceStyle.touch, $1.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
             } + CGFloat(max(0, visible.count - 1)) * stack.spacing
         }
-        let resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
+        var resolved = resolve(railHeight: contentHeight(rail, width: available.rail.width),
                                navHeight: contentHeight(navigationActions, width: available.navigation.width))
         if canvas.frame != resolved.canvas {
             canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true
             sketchInput = nil; endpointActions.isHidden = true
         }
-        layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
         railScroll.frame = resolved.rail
         let contextualRail = modellingInspector?.extrusionBar
@@ -4768,6 +4784,32 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let controlsY = titleHeight + subtitleHeight + 8
             topScroll.frame = compact ? CGRect(x: 8, y: controlsY, width: max(0, top.bounds.width - 16), height: max(44, top.bounds.height - controlsY)) : CGRect(x: titleWidth + 24, y: 4, width: max(0, top.bounds.width - titleWidth - 32), height: max(44, top.bounds.height - 8))
         }
+        if resetChromeOffsets {
+            // Reparenting changes scroll content dimensions. Settle the offsets
+            // before converting the Properties icon into workspace coordinates.
+            [topScroll, railScroll, navigationScroll].forEach { $0.setContentOffset(.zero, animated: false) }
+            resetChromeOffsets = false
+        }
+        var inspectorPopup: InspectorPopoverLayout?
+        if compactToolControls, resolved.inspector != nil {
+            navigationScroll.layoutIfNeeded(); navigationActions.layoutIfNeeded()
+            let iconInScroll = inspectorButton.convert(inspectorButton.popoverAnchorRect, to: navigationScroll)
+            if inspectorPanel.isHidden || !navigationScroll.bounds.contains(iconInScroll) {
+                navigationScroll.scrollRectToVisible(iconInScroll, animated: false)
+                navigationScroll.layoutIfNeeded()
+            }
+            let source = inspectorButton.convert(inspectorButton.popoverAnchorRect, to: workspace)
+            // The old panel reserves space for both rails. A popup can use all
+            // the room beside its icon, including in a narrow labelled window.
+            if let room = InspectorPopoverLayout.resolve(container: chrome, source: source,
+                preferredSize: CGSize(width: inspectorWidth, height: max(44, chrome.height))) {
+                inspectorPopup = InspectorPopoverLayout.resolve(container: chrome, source: source,
+                    preferredSize: CGSize(width: inspectorWidth, height: inspectorFittingHeight(width: room.frame.width)))
+            }
+            resolved.inspector = inspectorPopup?.frame
+        }
+        inspectorPointer.update(inspectorPopup)
+        layout = resolved
         browserPanel.isHidden = resolved.browser == nil
         if resolved.browser == nil { browserSearchField.resignFirstResponder() }
         inspectorPanel.isHidden = resolved.inspector == nil
@@ -4787,13 +4829,6 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorPanel.accessibilityViewIsModal = sketchInput?.projection == nil && compact && inspectorOpen
         let modelControls: [UIView] = [modellingInspector?.resultButton, modelValueButton, endpointActions].compactMap { $0 }
         workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, settingsButton, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointActions, canvas, inspectorPanel, featureHistory, status]
-        if resetChromeOffsets {
-            // Reparenting the same controls changes scroll content dimensions.
-            // Discard the old text-toolbar offsets once, after the new frames
-            // exist; normal user scrolling remains untouched thereafter.
-            [topScroll, railScroll, navigationScroll].forEach { $0.setContentOffset(.zero, animated: false) }
-            resetChromeOffsets = false
-        }
         updateAvailability()
         canvas.updateDrawableSize()
     }
@@ -10141,6 +10176,79 @@ private extension FoundationController {
                 .write(to: directory.appendingPathComponent("tool-labels-check.json"), options: .atomic)
         } catch { print("Tool labels report failed: \(error)") }
         print("Tool labels check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+    }
+
+    private func checkPropertiesPopupOnDevice() {
+        let savedLabels = showToolLabels, savedAppearance = appearance, savedControls = compactToolControls
+        let savedInspector = inspectorOpen, savedBrowser = browserOpen
+        let expected = generation
+        let variants = [(1, false), (1, true), (2, false), (2, true)]
+        var issues: [String] = [], frames: [[String: Any]] = []
+        func check(_ condition: Bool, _ message: String) { if !condition { issues.append(message) } }
+        func finish() {
+            showToolLabels = savedLabels; appearance = savedAppearance; compactToolControls = savedControls
+            inspectorOpen = savedInspector; browserOpen = savedBrowser
+            applyAppearance(); configureChrome(); rebuildInspector(); relayoutPanels()
+            do {
+                let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                let report: [String: Any] = ["passed": issues.isEmpty, "issues": issues, "frames": frames,
+                    "candidate": Bundle.main.object(forInfoDictionaryKey: "SolidCraftCandidate") as? String ?? "unknown",
+                    "coverage": "Physical iPad UIKit layout and captures; synthetic activation; no physical touch claim"]
+                try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: directory.appendingPathComponent("properties-popup-check.json"), options: .atomic)
+            } catch { print("Properties popup report failed: \(error)") }
+            print("Properties popup check \(issues.isEmpty ? "PASS" : "FAIL"): \(issues)")
+        }
+        func step(_ index: Int) {
+            guard active, generation == expected else { return }
+            guard index < variants.count else { finish(); return }
+            appearance = variants[index].0; showToolLabels = variants[index].1
+            compactToolControls = true; inspectorOpen = false; browserOpen = false
+            applyAppearance(); configureChrome(); rebuildInspector(); relayoutPanels()
+            let canvasFrame = canvas.frame, camera = viewPresentation
+            inspectorButton.sendActions(for: .touchUpInside)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                guard self.active, self.generation == expected else { return }
+                self.view.layoutIfNeeded()
+                let source = self.inspectorButton.convert(self.inspectorButton.popoverAnchorRect, to: self.workspace)
+                let panel = self.inspectorPanel.frame
+                check(self.inspectorOpen && !self.inspectorPanel.isHidden && !self.inspectorPointer.isHidden,
+                      "Properties popup did not open in variant \(index)")
+                check(panel.maxX < source.minX || panel.minX > source.maxX, "Properties covers its icon")
+                check(abs(self.inspectorPointer.frame.midY - source.midY) < 1, "Properties pointer missed its icon")
+                check(self.workspace.bounds.contains(panel), "Properties escaped the window")
+                check(self.canvas.frame == canvasFrame && self.viewPresentation == camera, "Properties changed the viewport or camera")
+                check(self.keyboardTop == nil && !self.textEntryActive, "Properties opened text entry")
+                check(self.presentedViewController == nil, "Properties blocked nested tool popups")
+                frames.append(["appearance": self.appearance, "labels": self.showToolLabels,
+                    "source": [source.minX, source.minY, source.width, source.height].map(Double.init),
+                    "panel": [panel.minX, panel.minY, panel.width, panel.height].map(Double.init)])
+                do {
+                    let directory = try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+                    let image = UIGraphicsImageRenderer(bounds: self.workspace.bounds).image { _ in
+                        self.view.drawHierarchy(in: self.view.bounds, afterScreenUpdates: true)
+                    }
+                    if let png = image.pngData() {
+                        try png.write(to: directory.appendingPathComponent("properties-popup-\(index).png"), options: .atomic)
+                    } else { issues.append("Properties capture failed") }
+                } catch { issues.append("Properties capture: \(error)") }
+                self.inspectorButton.sendActions(for: .touchUpInside)
+                check(!self.inspectorOpen && self.inspectorPointer.isHidden, "Properties button did not dismiss its popup")
+                self.inspectorButton.sendActions(for: .touchUpInside)
+                self.applyDraftFromChrome()
+                check(!self.inspectorOpen && self.inspectorPointer.isHidden, "Outside tap did not dismiss idle Properties")
+                self.inspectorButton.sendActions(for: .touchUpInside)
+                self.closePanels()
+                check(!self.inspectorOpen && self.inspectorPointer.isHidden, "Close did not dismiss Properties")
+                self.compactToolControls = false
+                self.inspectorButton.sendActions(for: .touchUpInside)
+                check(self.inspectorOpen && !self.inspectorPanel.isHidden && self.inspectorPointer.isHidden,
+                      "Previous Properties presentation unavailable")
+                self.closePanels()
+                step(index + 1)
+            }
+        }
+        step(0)
     }
 
     func checkChromeOnDevice() {
