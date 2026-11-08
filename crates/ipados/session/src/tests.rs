@@ -1788,7 +1788,8 @@ fn history_rollback_displays_each_stage_and_rebuilds_all_downstream_features_aft
     assert!((viewport.snapshot().unwrap().model.volume_mm3 - 12_000.).abs() < 1e-6, "Cancel restores the original view");
     // The preference preserves the previous preview and marker behavior.
     let legacy = adapter.begin_model_with_rollback(819, None, Some(extrude), &[], false).unwrap();
-    assert!(legacy.repair_source.is_none());
+    assert!(legacy.live_profile_picking(), "source selection remains usable with the legacy rollback preference");
+    assert!((legacy.last_preview.as_ref().unwrap().volume_mm3 - 12_000.).abs() < 1e-6);
     assert!((adapter.prepare_model(&legacy, params.clone(), true).unwrap().model.volume_mm3 - 24_000.).abs() < 1e-6);
     let history = adapter.session.undo.len();
     let edited = modelling_commit(&mut adapter, &edit, params);
@@ -8059,6 +8060,197 @@ fn modelling_editable_extrusion_regenerates_same_feature_chain_and_native_contai
     let edit = numeric_apply(&mut loaded, &selection, None, "40 mm");
     assert_eq!(edit.expression, "60 mm");
     assert!((modelling_volume(&loaded) - 18_000.0).abs() < 1e-6);
+}
+
+#[test]
+fn modelling_extrusion_edit_live_profiles_add_remove_clear_and_reject_late_previews() {
+    for source in [InputSource::Pencil, InputSource::Finger, InputSource::Indirect] {
+        let mut adapter = SessionAdapter::new();
+        let sketch = adapter.execute("sketch.create", json!({"plane":"XY"})).unwrap().value["sketch"].as_u64().unwrap();
+        adapter.execute("sketch.rectangle.two_point", json!({"p0":[-30,-10],"p1":[-10,10]})).unwrap();
+        adapter.execute("sketch.rectangle.two_point", json!({"p0":[10,-5],"p1":[30,5]})).unwrap();
+        adapter.execute("sketch.finish", json!({})).unwrap();
+        let feature =
+            adapter.execute("solid.extrude", json!({"sketch":sketch,"profiles":[{"point":[-20,0]}],"distance":"7 mm"})).unwrap().value["feature"]
+                .as_u64()
+                .unwrap();
+        let original = adapter.session.doc.clone();
+        let names = adapter.session.doc.feature(feature).unwrap().param_names.clone();
+        let history = adapter.session.undo.len();
+        let mut view = Viewport::default();
+        view.set_metrics(metrics(800., 600., 2.)).unwrap();
+        view.begin_update(1);
+        view.install(1, adapter.snapshot().unwrap());
+        view.command("view.top", &json!({})).unwrap();
+        view.command("view.fit", &json!({})).unwrap();
+        view.multiple = false; // Source picking remains additive in single-selection mode.
+        view.direct_handles = false;
+        view.cancel_tools_on_dismiss = false;
+        let edit = adapter.begin_model(820, None, Some(feature), &[]).unwrap();
+        assert!(edit.live_profile_picking());
+        let untouched = adapter.refresh_model(&edit, &[], None).unwrap();
+        assert_eq!(untouched.params, edit.params, "opening/inspection must retain the saved reference");
+        view.begin_model(edit).unwrap();
+        view.command("view.fit", &json!({})).unwrap();
+        assert_eq!(view.selection().len(), 1, "editing immediately highlights the existing source");
+        for (step, position, selected, volume) in [
+            (0, Vec3::new(25., 2., 0.), 2, Some(4200.)),
+            (1, Vec3::new(-25., 2., 0.), 1, Some(1400.)),
+            (2, Vec3::new(25., 2., 0.), 0, None),
+            (3, Vec3::new(25., 2., 0.), 1, Some(1400.)),
+        ] {
+            let previous = view.model_edit(820).unwrap();
+            let late = adapter.prepare_model(&previous, previous.params.clone(), false).ok();
+            let tap = point(&view, position);
+            for phase in [InputPhase::Began, InputPhase::Ended] {
+                feed(&mut view, source, phase, 820 + step, tap, 1. + step as f64);
+            }
+            assert_eq!(view.selection().len(), selected, "{source:?} source tap {step}");
+            if let Some(late) = late {
+                assert!(view.publish_model(820, &late).is_err(), "a source tap invalidates in-flight preview work");
+            }
+            let current = view.model_edit(820).unwrap();
+            let refreshed = adapter.refresh_model(&current, view.selection(), None).unwrap();
+            if step == 0 {
+                let mut numeric = current.params.clone();
+                numeric["extent"]["distance"] = json!("8 mm");
+                let raced = adapter.refresh_model(&current, view.selection(), Some(numeric)).unwrap();
+                assert_eq!(raced.params["profile"], refreshed.params["profile"], "a numeric proposal must retain pending source taps");
+                assert_eq!(raced.params["extent"]["distance"], "8 mm");
+            }
+            assert_eq!(refreshed.params["extent"]["distance"], "7 mm");
+            view.update_model(refreshed.clone()).unwrap();
+            if let Some(volume) = volume {
+                let preview = adapter.prepare_model(&refreshed, refreshed.params.clone(), false).unwrap();
+                assert!((preview.model.volume_mm3 - volume).abs() < 1e-6);
+                view.publish_model(820, &preview).unwrap();
+                assert!(view.model_edit(820).unwrap().live_profile_picking(), "preview must keep picking armed");
+            } else {
+                assert!(refreshed.waiting_for_selection(&refreshed.params));
+                assert!(
+                    adapter.prepare_model(&refreshed, refreshed.params.clone(), true).is_err(),
+                    "empty sources cannot fall back to the saved sketch"
+                );
+                assert!(view.model_active());
+            }
+            assert!(Arc::ptr_eq(&original, &adapter.session.doc));
+            assert_eq!(adapter.session.undo.len(), history);
+        }
+        let edit = view.model_edit(820).unwrap();
+        let model = modelling_commit(&mut adapter, &edit, edit.params.clone());
+        view.finish_model(820, Some(model)).unwrap();
+        assert_eq!(adapter.session.doc.feature(feature).unwrap().param_names, names);
+        assert_eq!(adapter.session.doc.features.len(), 2);
+        assert!((modelling_volume(&adapter) - 1400.).abs() < 1e-6);
+        adapter.execute("edit.undo", json!({})).unwrap();
+        assert_eq!(*adapter.session.doc, *original);
+        adapter.execute("edit.redo", json!({})).unwrap();
+        assert!((modelling_volume(&adapter) - 1400.).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn modelling_extrusion_edit_all_profiles_preserves_intent_and_cancel_restores_the_scene() {
+    let (mut adapter, sketch, _, feature) = modelling_plate(40., "10 mm");
+    // Older files can retain All rather than a captured boundary selection.
+    if let FeatureKind::Extrude { profiles, .. } = &mut adapter.session.doc_mut().feature_mut(feature).unwrap().kind {
+        *profiles = solidcraft_engine::doc::ProfileSel::All;
+    }
+    adapter.session.refresh();
+    let original = adapter.session.doc.clone();
+    let edit = adapter.begin_model(821, None, Some(feature), &[]).unwrap();
+    assert_eq!(edit.params["profile"]["profiles"], json!({"type":"all"}));
+    let no_op = adapter.refresh_model(&edit, &edit.source_selection, None).unwrap();
+    modelling_commit(&mut adapter, &no_op, no_op.params.clone());
+    let FeatureKind::Extrude { profiles, .. } = &adapter.session.doc.feature(feature).unwrap().kind else { panic!("extrude") };
+    assert_eq!(profiles, &solidcraft_engine::doc::ProfileSel::All);
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    let scene = adapter.snapshot().unwrap();
+    view.install(1, scene.clone());
+    let edit = adapter.begin_model(822, None, Some(feature), &[]).unwrap();
+    view.begin_model(edit).unwrap();
+    assert_eq!(view.selection(), &[Sel::Profile { sketch, index: 0 }]);
+    view.select(Some(Sel::Profile { sketch, index: 0 }), false);
+    assert!(view.selection().is_empty());
+    view.finish_model(822, None).unwrap();
+    assert!(Arc::ptr_eq(&view.snapshot().unwrap().model, &scene));
+    assert_eq!(adapter.session.doc.features, original.features);
+}
+
+#[test]
+fn modelling_extrusion_edit_body_faces_replace_and_add_coplanar_sources_atomically() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.box", json!({"length":40,"width":30,"height":10,"body_name":"Stock"})).unwrap();
+    let sketch = adapter.execute("sketch.create", json!({"plane":"XY","offset":"10 mm"})).unwrap().value["sketch"].as_u64().unwrap();
+    adapter.execute("sketch.rectangle.two_point", json!({"p0":[15,-1],"p1":[25,31]})).unwrap();
+    adapter.execute("sketch.finish", json!({})).unwrap();
+    adapter.execute("solid.extrude", json!({"sketch":sketch,"distance":5,"direction":"negative","operation":"cut","targets":["Stock"]})).unwrap();
+    let first = modelling_face(&adapter, "Stock", Vec3::new(5., 15., 10.));
+    let second = modelling_face(&adapter, "Stock", Vec3::new(35., 15., 10.));
+    let create = adapter.begin_model(823, Some("solid.extrude"), None, std::slice::from_ref(&first)).unwrap();
+    let mut params = create.params.clone();
+    params["distance"] = json!("3 mm");
+    params["operation"] = json!("join");
+    modelling_commit(&mut adapter, &create, params);
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let original = adapter.session.doc.clone();
+    let names = adapter.session.doc.feature(feature).unwrap().param_names.clone();
+    let count = adapter.session.doc.features.len();
+    let mut view = Viewport::default();
+    view.set_metrics(metrics(800., 600., 2.)).unwrap();
+    view.begin_update(1);
+    view.install(1, adapter.snapshot().unwrap());
+    let edit = adapter.begin_model(824, None, Some(feature), &[]).unwrap();
+    assert!(edit.fields.iter().any(|field| field["key"] == "profile"));
+    view.begin_model(edit).unwrap();
+    assert!(matches!(view.selection(), [Sel::Face { body, .. }] if body == "Stock"));
+    let selected = view.selection().to_vec();
+    view.select_model_inputs(824, Some("targets")).unwrap();
+    view.select_model_inputs(824, Some("profile")).unwrap();
+    assert_eq!(view.selection(), selected, "returning from target selection restores the current source faces");
+    view.select(Some(second.clone()), false);
+    assert_eq!(view.selection().len(), 2);
+    let edit = view.model_edit(824).unwrap();
+    let both = adapter.refresh_model(&edit, view.selection(), None).unwrap();
+    let preview = adapter.prepare_model(&both, both.params.clone(), false).unwrap();
+    assert!(preview.handle.is_some(), "joined face previews retain the depth handle on their original source");
+    assert!((preview.model.volume_mm3 - 13200.).abs() < 1e-5);
+    assert!(Arc::ptr_eq(&adapter.session.doc, &original));
+    view.update_model(both).unwrap();
+    view.publish_model(824, &preview).unwrap();
+    view.select(Some(first), false);
+    assert_eq!(view.selection(), &[second]);
+    let edit = view.model_edit(824).unwrap();
+    let replacement = adapter.refresh_model(&edit, view.selection(), None).unwrap();
+    let prepared = adapter.prepare_model(&replacement, replacement.params.clone(), true).unwrap();
+    let history = adapter.session.undo.len();
+    let model = adapter.accept_model(&replacement, prepared).unwrap();
+    assert_eq!(adapter.session.doc.features.len(), count, "unused internal source profiles are replaced without accumulating helpers");
+    assert_eq!(adapter.session.undo.len(), history + 1);
+    assert!((model.volume_mm3 - 11850.).abs() < 1e-5);
+    assert_eq!(adapter.session.doc.feature(feature).unwrap().param_names, names);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*adapter.session.doc, *original);
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - 11850.).abs() < 1e-5);
+    let reopened = modelling_roundtrip(&adapter);
+    assert!((modelling_volume(&reopened) - 11850.).abs() < 1e-5);
+    let original = adapter.session.doc.clone();
+    let edit = adapter.begin_model(825, None, Some(feature), &[]).unwrap();
+    let mut params = edit.params.clone();
+    params["profile"] = json!({"sketch":sketch,"profiles":"all"});
+    params["operation"] = json!("new_body");
+    params["targets"] = json!([]);
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    modelling_commit(&mut adapter, &edit, edit.params.clone());
+    assert!(adapter.session.doc.features.iter().all(|f| !f.is_internal_profile()), "switching to an authored profile collects the old face helper");
+    let FeatureKind::Extrude { profiles, .. } = &adapter.session.doc.feature(feature).unwrap().kind else { panic!("extrude") };
+    assert_eq!(profiles, &solidcraft_engine::doc::ProfileSel::All, "changing source preserves explicit All-profile intent");
+    assert!((modelling_volume(&adapter) - 11460.).abs() < 1e-5);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert_eq!(*adapter.session.doc, *original);
 }
 
 #[test]

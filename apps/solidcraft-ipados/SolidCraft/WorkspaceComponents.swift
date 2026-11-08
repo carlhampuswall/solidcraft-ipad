@@ -2221,7 +2221,7 @@ final class ModellingInspector: UIStackView {
     private(set) var selectionField: String?
     var hasBodyPicks: Bool { fields.contains { $0.kind == "body_pick" } }
     var isPickingBodies: Bool { hasBodyPicks && selectionField != nil }
-    var isPickingMultipleInputs: Bool { ["edges", "target", "tools"].contains(selectionField ?? "") }
+    var isPickingMultipleInputs: Bool { ModellingFormPresentation.isPickingMultipleInputs(selectionField: selectionField) }
     var automaticallyPreviews: Bool { ModellingFormPresentation.automaticallyPreviews(selectionField: selectionField) }
     private var validated: [String: PresentationJSON]?
     private var attachmentReady: Bool {

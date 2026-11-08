@@ -654,8 +654,7 @@ impl Viewport {
                     self.multiple = params.get("enabled").and_then(Value::as_bool).ok_or_else(|| error("bad_params", "enabled must be a boolean"))?;
                 }
                 "select.clear" => {
-                    self.selection.clear();
-                    self.hover = None;
+                    self.select(None, false);
                 }
                 _ => return Err(error("unknown_command", format!("unsupported viewport command {id}"))),
             }
@@ -870,11 +869,19 @@ impl Viewport {
 
     pub(crate) fn select(&mut self, hit: Option<Sel>, add: bool) {
         let body_field = self.modelling.as_ref().and_then(|edit| edit.body_pick_field()).map(str::to_string);
-        let source_field = self.modelling.as_ref().and_then(|edit| edit.selection_field.as_deref()).filter(|field| *field == "edges");
+        let source_field =
+            self.modelling.as_ref().and_then(|edit| edit.selection_field.as_deref()).filter(|field| *field == "edges" || *field == "profile");
+        let profile = source_field == Some("profile");
         let sketch_fillet = self.modelling.as_ref().is_some_and(|edit| edit.operation == "sketch.fillet");
         if source_field.is_some()
             && hit.as_ref().is_some_and(|hit| {
-                if sketch_fillet { !matches!(hit, Sel::SketchCurve { .. } | Sel::SketchPoint { .. }) } else { !matches!(hit, Sel::Edge { .. }) }
+                if profile {
+                    !matches!(hit, Sel::Profile { .. } | Sel::Face { .. })
+                } else if sketch_fillet {
+                    !matches!(hit, Sel::SketchCurve { .. } | Sel::SketchPoint { .. })
+                } else {
+                    !matches!(hit, Sel::Edge { .. })
+                }
             })
         {
             return;
@@ -905,6 +912,13 @@ impl Viewport {
             _ => add,
         };
         let previous = (body_field.is_some() || picking_sources).then(|| self.selection.clone());
+        if profile && let Some(hit) = &hit {
+            self.selection.retain(|selected| match (selected, hit) {
+                (Sel::Profile { sketch: a, .. }, Sel::Profile { sketch: b, .. }) => a == b,
+                (Sel::Face { body: a, .. }, Sel::Face { body: b, .. }) => a == b,
+                _ => false,
+            });
+        }
         if !add {
             self.selection.clear();
         }
@@ -924,7 +938,7 @@ impl Viewport {
         {
             // A late preview must never validate an earlier set of input picks.
             edit.version = edit.version.saturating_add(1);
-            if edit.live_edge_picking() {
+            if edit.live_edge_picking() || edit.live_profile_picking() {
                 edit.source_selection_changed = true;
                 edit.last_preview = edit.preview.take().or_else(|| edit.last_preview.clone());
             } else {

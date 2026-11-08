@@ -16,6 +16,12 @@ or tap its distance to edit the depth. The result button follows the handle.
 Tap it to choose New Body, Union, Intersect or Subtract. Direction, applicable
 targets and additional inputs are on the left, alongside the checkmark and Cancel.
 
+Editing an Extrude immediately highlights its existing source faces or sketch
+regions. Tap a selected source to remove it, or another source to add it. Picking
+continues while the result previews, and clearing every source keeps the editor
+open for replacement picks. Depth, extent and target settings stay intact.
+Apply records one undo step; Cancel restores the original model.
+
 A tap on empty canvas or surrounding workspace controls applies a valid new
 solid operation. The checkmark also applies it. Cancel discards the draft and
 camera gestures keep it open. Disable **Tools > Apply solid tools on tap away**

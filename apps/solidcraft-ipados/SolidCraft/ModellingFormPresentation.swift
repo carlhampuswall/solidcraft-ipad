@@ -54,6 +54,12 @@ enum ModellingFormPresentation {
         return result
     }
 
+    /// Retain the latest source selection when taps arrive during a preview.
+    static func isPickingMultipleInputs(selectionField: String?) -> Bool {
+        guard let selectionField else { return false }
+        return ["edges", "profile", "target", "tools"].contains(selectionField)
+    }
+
     static func automaticallyPreviews(selectionField: String?) -> Bool {
         guard let selectionField else { return true }
         return !["target", "tools"].contains(selectionField)

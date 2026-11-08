@@ -12,6 +12,7 @@ mod editing;
 mod feature_selection;
 mod input;
 mod modelling;
+mod modelling_profiles;
 mod origin;
 mod picking;
 mod recovery;

@@ -121,6 +121,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--combine-selection") {
         return combine_selection_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--extrude-edit-selection") {
+        return extrude_edit_selection_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--selection-taps") {
         return selection_taps_proof(&destination);
     }
@@ -656,6 +659,115 @@ fn history_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Err("Apply did not restore the latest feature".into());
     }
     capture(&view, "applied")?;
+    Ok(())
+}
+
+/// Existing extrusion sources remain directly editable before and after previews.
+fn extrude_edit_selection_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    let sketch = engine.execute("sketch.create", json!({"plane":"XY","name":"Editable regions"}))?.value["sketch"].as_u64().ok_or("source sketch")?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[-30,-10],"p1":[-10,10]}))?;
+    engine.execute("sketch.rectangle.two_point", json!({"p0":[10,-5],"p1":[30,5]}))?;
+    engine.execute("sketch.finish", json!({}))?;
+    let feature = engine
+        .execute(
+            "solid.extrude",
+            json!({"sketch":sketch,"profiles":[{"point":[-20,0]}],
+        "distance":"10 mm","operation":"new"}),
+        )?
+        .value["feature"]
+        .as_u64()
+        .ok_or("extrusion")?;
+    let original_definition = engine.execute("timeline.inspect", json!({"feature":feature}))?.value["definition"].clone();
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, engine.snapshot()?);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let frame = view.snapshot().ok_or("extrusion source edit frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&frame, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("PNG")?)?;
+        println!("{stage}: selected {}; {:.3} mm³; {path}", view.diagnostic()["selection"], frame.model.volume_mm3);
+        Ok(())
+    };
+    let check_volume = |actual: f64, expected: f64| -> Result<(), Box<dyn std::error::Error>> {
+        if (actual - expected).abs() > 1e-5 {
+            return Err(format!("extrusion source edit volume: expected {expected}, got {actual}").into());
+        }
+        Ok(())
+    };
+    let tap = |view: &mut Viewport, point: serde_json::Value, time: f64| -> Result<(), Box<dyn std::error::Error>> {
+        let projected = view.command("view.project", &json!({"point":point}))?;
+        for (phase, timestamp) in [("began", time), ("ended", time + 0.1)] {
+            let context = view.diagnostic();
+            view.input(serde_json::from_value(json!({"source":"pencil","phase":phase,"id":91,"timestamp":timestamp,
+                "x_points":projected["points"][0],"y_points":projected["points"][1],"x_pixels":projected["pixels"][0],"y_pixels":projected["pixels"][1],"scale":1,
+                "geometry_revision":context["geometry_revision"],"document_id":context["document_id"],"viewport_epoch":context["viewport_epoch"],
+                "camera_epoch":context["camera_epoch"],"display_preview":context["preview"]}))?)?;
+        }
+        Ok(())
+    };
+    check_volume(engine.snapshot()?.volume_mm3, 4000.)?;
+    capture(&view, "before")?;
+    let edit = engine.begin_model(9010, None, Some(feature), &[])?;
+    view.begin_model(edit)?;
+    let original_selection = view.selection().to_vec();
+    if original_selection.len() != 1 || view.diagnostic()["selection"][0]["type"] != "profile" {
+        return Err("opening an extrusion did not restore its selected source region".into());
+    }
+    view.command("view.fit", &json!({}))?;
+    capture(&view, "open")?;
+    tap(&mut view, json!([20, 1, 0]), 1.)?;
+    if view.selection().len() != 2 || !original_selection.iter().all(|source| view.selection().contains(source)) {
+        return Err("Pencil tap did not add the second source region".into());
+    }
+    let second = view.selection().iter().find(|source| !original_selection.contains(source)).cloned().ok_or("second source region")?;
+    let edit = engine.refresh_model(&view.model_edit(9010)?, view.selection(), None)?;
+    view.update_model(edit.clone())?;
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
+    check_volume(preview.model.volume_mm3, 6000.)?;
+    view.publish_model(9010, &preview)?;
+    capture(&view, "add")?;
+    tap(&mut view, json!([-26, 6, 0]), 2.)?;
+    if view.selection() != [second.clone()] {
+        return Err("Pencil tap after preview did not remove the original source region".into());
+    }
+    let edit = engine.refresh_model(&view.model_edit(9010)?, view.selection(), None)?;
+    view.update_model(edit.clone())?;
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
+    check_volume(preview.model.volume_mm3, 2000.)?;
+    view.publish_model(9010, &preview)?;
+    if view.selection() != [second] || engine.model_descriptor(&view.model_edit(9010)?)["selection_field"] != "profile" {
+        return Err("extrusion preview lost its editable source selection".into());
+    }
+    capture(&view, "remove")?;
+    let edit = view.model_edit(9010)?;
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    let applied = engine.accept_model(&edit, prepared)?;
+    check_volume(applied.volume_mm3, 2000.)?;
+    view.finish_model(9010, Some(applied))?;
+    let definition = engine.execute("timeline.inspect", json!({"feature":feature}))?.value["definition"].clone();
+    // The command's profile array is stored as a native tagged reference. The
+    // measured result and changed native selection must belong to the same ID.
+    if definition["sketch"] != edit.params["profile"]["sketch"] || definition["profiles"] == original_definition["profiles"] {
+        return Err("Apply did not preserve the original extrusion identity with its new selected source".into());
+    }
+    capture(&view, "applied")?;
+    engine.execute("edit.undo", json!({}))?;
+    check_volume(engine.snapshot()?.volume_mm3, 4000.)?;
+    if engine.execute("timeline.inspect", json!({"feature":feature}))?.value["definition"] != original_definition {
+        return Err("one Undo did not restore the original extrusion definition".into());
+    }
+    view.begin_update(2);
+    view.install(2, engine.snapshot()?);
+    capture(&view, "undo")?;
+    println!(
+        "PASS: existing extrusion source restored, second region added, original deselected after preview, Apply and one Undo. Synthetic Pencil input and macOS GPU; physical iPad input unverified."
+    );
     Ok(())
 }
 

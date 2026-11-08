@@ -43,6 +43,7 @@ pub struct ModelEdit {
     pub params: Value,
     pub(crate) selection_field: Option<String>,
     pub(crate) source_selection_changed: bool,
+    pub(crate) source_selection: Vec<Sel>,
     pub(crate) document_id: String,
     pub(crate) geometry_revision: u64,
     pub(crate) fields: Vec<Value>,
@@ -62,6 +63,9 @@ impl ModelEdit {
     /// An interactive preview waits for unfilled picks. Explicit Apply still
     /// goes through prepare_model and the shared command's full validation.
     pub fn waiting_for_selection(&self, params: &Value) -> bool {
+        if self.editing_extrusion() && params["profile"].is_null() {
+            return true;
+        }
         if self.feature.is_some() || !params.is_object() || params.to_string().len() > 65536 {
             return false;
         }
@@ -95,6 +99,14 @@ impl ModelEdit {
 
     pub(crate) fn live_edge_picking(&self) -> bool {
         self.selection_field.as_deref() == Some("edges") && (self.params.get("radius").is_some() || self.params.get("distance").is_some())
+    }
+
+    pub(crate) fn live_profile_picking(&self) -> bool {
+        self.editing_extrusion() && self.selection_field.as_deref() == Some("profile")
+    }
+
+    fn editing_extrusion(&self) -> bool {
+        self.feature.is_some() && self.params.get("extent").is_some() && self.fields.iter().any(|field| field["key"] == "profile")
     }
 
     fn edge_pick_selection(&self, model: &SceneSnapshot) -> Vec<Sel> {
@@ -407,7 +419,7 @@ fn display_polyline_midpoint(points: &[solidcore_record::Vec3]) -> Option<solidc
     points.first().copied()
 }
 
-fn profile_reference(sketch: &solidcraft_engine::doc::SolvedSketch, indices: &[usize]) -> Result<Value, AdapterError> {
+pub(crate) fn profile_reference(sketch: &solidcraft_engine::doc::SolvedSketch, indices: &[usize]) -> Result<Value, AdapterError> {
     let captured = capture_profile_selection(sketch, indices).map_err(|e| error("profile", e.to_string()))?;
     let profiles = match captured {
         ProfileSel::Curves { loops } => json!(loops.iter().map(|curves| json!({"curves":curves})).collect::<Vec<_>>()),
@@ -419,7 +431,7 @@ fn profile_reference(sketch: &solidcraft_engine::doc::SolvedSketch, indices: &[u
     Ok(json!({"sketch":sketch.feature,"profiles":profiles}))
 }
 
-fn extrusion_face_reference(selection: &[Sel]) -> Result<Option<Value>, AdapterError> {
+pub(crate) fn extrusion_face_reference(selection: &[Sel]) -> Result<Option<Value>, AdapterError> {
     let mut body = None;
     let mut points = Vec::new();
     for selected in selection {
@@ -647,6 +659,7 @@ impl SessionAdapter {
             params,
             selection_field: None,
             source_selection_changed: false,
+            source_selection: Vec::new(),
             document_id: self.session.document_id.clone(),
             geometry_revision: self.geometry_revision,
             fields: Vec::new(),
@@ -777,7 +790,7 @@ impl SessionAdapter {
                     }
                 }
                 edit.params["profile"] = json!({"sketch":edit.params["sketch"],"profiles":edit.params["profiles"]});
-                if !edit.params["sketch"].as_u64().is_some_and(|id| context.internal_profile(id)) {
+                if edit.params.get("extent").is_some() || !edit.params["sketch"].as_u64().is_some_and(|id| context.internal_profile(id)) {
                     edit.fields.push(field("profile", "Reselect source profile", "reference", options));
                 }
             }
@@ -878,12 +891,22 @@ impl SessionAdapter {
         if matches!(edit.operation.as_str(), "solid.fillet" | "solid.chamfer" | "sketch.fillet") || treatment_edit {
             edit.selection_field = Some("edges".into());
         }
+        let extrusion_edit =
+            feature.and_then(|id| self.session.doc.feature(id)).is_some_and(|feature| matches!(feature.kind, FeatureKind::Extrude { .. }));
+        if extrusion_edit {
+            edit.selection_field = Some("profile".into());
+            context.restore_extrusion_sources(&mut edit)?;
+            if let Some(sketch) = edit.params["sketch"].as_u64().filter(|id| !context.internal_profile(*id)) {
+                context.session.feature_edit_sketch = Some(sketch);
+                context.session.visibility.hidden_profiles.retain(|id| *id != sketch);
+            }
+        }
         let source_picking = reattach
             || combine && feature.is_some()
             || thread && feature.is_some()
             || treatment_edit
             || feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err());
-        if source_picking || edit.rollback {
+        if source_picking || edit.rollback || extrusion_edit {
             let snapshot = |context: &mut Self| -> Result<Arc<SceneSnapshot>, AdapterError> {
                 let mut source = context.snapshot()?;
                 let model = Arc::get_mut(&mut source).ok_or_else(|| error("preview", "The editing source must be uniquely owned."))?;
@@ -892,13 +915,28 @@ impl SessionAdapter {
                 model.revision = self.session.revision;
                 Ok(source)
             };
-            if !source_picking && let Some(position) = feature.and_then(|id| self.session.doc.feature_index(id)) {
+            if extrusion_edit {
+                edit.input_source = Some(snapshot(&mut context)?);
+                if !source_picking {
+                    if edit.rollback
+                        && let Some(position) = feature.and_then(|id| self.session.doc.feature_index(id))
+                    {
+                        context.execute("timeline.roll_to", json!({"position":position + 1}))?;
+                    } else {
+                        context = Self { session: self.session.scratch(), geometry_revision: self.geometry_revision, workspace_cache: None };
+                    }
+                }
+                edit.repair_source = Some(snapshot(&mut context)?);
+                edit.last_preview = edit.repair_source.clone();
+            } else if !source_picking && let Some(position) = feature.and_then(|id| self.session.doc.feature_index(id)) {
                 // The form uses the preceding state for references, while the
                 // viewport shows this feature without its dependent suffix.
                 edit.input_source = Some(snapshot(&mut context)?);
                 context.execute("timeline.roll_to", json!({"position":position + 1}))?;
             }
-            edit.repair_source = Some(snapshot(&mut context)?);
+            if !extrusion_edit {
+                edit.repair_source = Some(snapshot(&mut context)?);
+            }
         }
         edit.handle = if crate::assembly::supported(&edit.operation) { self.assembly_handle(&edit) } else { self.extrusion_handle(&edit) };
         Ok(edit)
@@ -954,7 +992,11 @@ impl SessionAdapter {
             "symmetric" => 0.5,
             _ => 1.,
         };
-        let world = self.session.world_state().ok()?;
+        let world = if let Some(feature) = edit.feature {
+            Arc::new(solidcraft_engine::doc::world_state(&self.session.placed_document(), &self.session.model.state_before(feature)).ok()?)
+        } else {
+            self.session.world_state().ok()?
+        };
         let source = edit.params.get("profile").unwrap_or(&edit.params);
         let face_point = source["faces"].as_array().and_then(|points| points.first()).or_else(|| source.get("face"));
         let (origin, normal, arm) = if let Some(point) = face_point {
@@ -1146,6 +1188,15 @@ impl SessionAdapter {
         let canvas_selection = params.is_none();
         let sketch_edges = (canvas_selection && edit.operation == "sketch.fillet").then(|| refreshed.params["edges"].clone());
         refreshed.params = params.unwrap_or_else(|| edit.params.clone());
+        if edit.live_profile_picking() {
+            if edit.source_selection_changed && (canvas_selection || refreshed.params["profile"] == edit.params["profile"]) {
+                refreshed.params["profile"] = self.extrusion_source_reference(edit, selection)?;
+                refreshed.source_selection = selection.to_vec();
+                refreshed.source_selection_changed = false;
+            } else if !canvas_selection {
+                self.restore_extrusion_sources(&mut refreshed)?;
+            }
+        }
         if let Some(edges) = sketch_edges {
             refreshed.params["edges"] = edges;
             refreshed.source_selection_changed = false;
@@ -1272,7 +1323,7 @@ impl SessionAdapter {
         }
         refreshed.handle =
             if crate::assembly::supported(&edit.operation) { self.assembly_handle(&refreshed) } else { self.extrusion_handle(&refreshed) };
-        if refreshed.selection_field.is_some() && !refreshed.live_edge_picking() {
+        if refreshed.selection_field.is_some() && !refreshed.live_edge_picking() && !refreshed.live_profile_picking() {
             refreshed.handle = None;
         }
         Ok(refreshed)
@@ -1688,6 +1739,10 @@ impl SessionAdapter {
             update_face_extrusion_target(&mut p, None);
         }
         let target_feature = edit.feature.and_then(|id| self.session.doc.feature(id));
+        if edit.editing_extrusion() && p["profile"].is_null() {
+            return Err(error("selection", "ui.ipados.face_extrude.choose_source"));
+        }
+        let replacement_source = self.replaces_extrusion_profile(edit, &p).then(|| p["profile"].clone());
         let thread = edit.operation == "solid.thread" || target_feature.is_some_and(|feature| matches!(feature.kind, FeatureKind::Thread { .. }));
         if thread {
             let point = serde_json::from_value::<solidcore_record::Vec3>(p["face"].clone()).ok().filter(|point| point.is_finite());
@@ -1927,7 +1982,21 @@ impl SessionAdapter {
         } else {
             None
         };
-        let reply = scratch.execute(command, p.clone())?.value;
+        let commands = if let Some(source) = replacement_source {
+            self.replacement_profile_commands(edit, &source, p["set"].clone(), commit)?
+        } else {
+            vec![(command.into(), p.clone())]
+        };
+        let mut reply = Value::Null;
+        for (id, params) in &commands {
+            reply = scratch.execute(id, params.clone())?.value;
+        }
+        if !commit
+            && edit.rollback
+            && let Some(position) = edit.feature.and_then(|id| scratch.session.doc.feature_index(id))
+        {
+            scratch.execute("timeline.roll_to", json!({"position":position + 1}))?;
+        }
         scratch.validate_model_references()?;
         scratch.validate_joint_references()?;
         let mut model = scratch.snapshot()?;
@@ -1936,6 +2005,7 @@ impl SessionAdapter {
             let feature = edit.feature.or_else(|| reply["feature"].as_u64());
             if let Some(feature) =
                 feature.filter(|id| scratch.session.doc.feature(*id).is_some_and(|f| matches!(f.kind, FeatureKind::Extrude { .. })))
+                && commands.len() == 1
             {
                 feedback = self.extrusion_preview_scene(&scratch, command, &p, feature, &mut model)?;
             }
@@ -1952,7 +2022,7 @@ impl SessionAdapter {
                 .filter(|result| !result.skipped)
                 .filter_map(|result| result.warning.as_ref().map(|warning| format!("{}: {warning}", result.name))),
         );
-        let transaction = if commit { Some(self.session.scratch().compute_commands(&[(command.into(), p)], restore_marker)?) } else { None };
+        let transaction = if commit { Some(self.session.scratch().compute_commands(&commands, restore_marker)?) } else { None };
         let mut updated = edit.clone();
         updated.params = params.clone();
         let offset =
@@ -2105,7 +2175,32 @@ impl SessionAdapter {
         let transaction = prepared.transaction.take().ok_or_else(|| error("preview", "A preview cannot be committed."))?;
         let revision = self.geometry_revision.checked_add(1).ok_or_else(|| error("revision_limit", "Revision exhausted."))?;
         let model = Arc::get_mut(&mut prepared.model).ok_or_else(|| error("preview", "Prepared scene must be uniquely owned."))?;
+        let compound = self.replaces_extrusion_profile(edit, &prepared.params);
+        let history = compound.then(|| {
+            let mut doc = self.session.doc.clone();
+            if edit.rollback {
+                Arc::make_mut(&mut doc).marker = None;
+            }
+            (
+                self.session.undo.clone(),
+                solidcraft_engine::Snapshot {
+                    label: solidcraft_engine::find_command("timeline.edit").map_or("Edit Feature", |command| command.label).into(),
+                    doc,
+                    active_sketch: self.session.active_sketch,
+                    pending_moves: self.session.pending_moves.clone(),
+                    visibility: self.session.visibility.clone(),
+                },
+            )
+        });
         self.session.accept_commands(transaction)?;
+        if let Some((mut undo, before)) = history {
+            let limit = self.session.undo.len();
+            undo.push(before);
+            if undo.len() > limit {
+                undo.drain(..undo.len() - limit);
+            }
+            self.session.undo = undo;
+        }
         self.geometry_revision = revision;
         model.geometry_revision = revision;
         model.revision = self.session.revision;
@@ -2126,6 +2221,9 @@ impl Viewport {
             && let Some(model) = &self.model
         {
             self.selection = edit.edge_pick_selection(model);
+        }
+        if edit.live_profile_picking() {
+            self.selection = edit.source_selection.clone();
         }
         self.modelling = Some(edit);
         self.changed();
@@ -2159,7 +2257,7 @@ impl Viewport {
                 .cloned();
         }
         if let Some(source) = &edit.repair_source {
-            self.model = Some(source.clone());
+            self.model = Some(if edit.live_profile_picking() { edit.input_source.as_ref().unwrap_or(source).clone() } else { source.clone() });
             self.selection.clear();
             self.updating = false;
         }
@@ -2170,6 +2268,9 @@ impl Viewport {
             && let Some(model) = &self.model
         {
             self.selection = edit.edge_pick_selection(model);
+        }
+        if edit.live_profile_picking() {
+            self.selection = edit.source_selection.clone();
         }
         self.modelling = Some(edit);
         self.changed();
@@ -2189,7 +2290,7 @@ impl Viewport {
         }
         if let Some(e) = &mut self.modelling {
             e.preview = Some(prepared.model.clone());
-            if !e.live_edge_picking() {
+            if !e.live_edge_picking() && !e.live_profile_picking() {
                 e.selection_field = None;
             }
             e.last_preview = None;
@@ -2206,7 +2307,7 @@ impl Viewport {
         self.cancel_interactions();
         if let Some(e) = &mut self.modelling {
             e.preview = None;
-            e.last_preview = None;
+            e.last_preview = if e.live_profile_picking() && !e.params["profile"].is_null() { e.repair_source.clone() } else { None };
         }
         self.changed();
         Ok(())
@@ -2239,12 +2340,15 @@ impl Viewport {
             self.model = Some(source.clone());
         }
         self.selection.clear();
+        if field == Some("profile") && edit.editing_extrusion() {
+            self.selection = edit.source_selection.clone();
+        }
         if edit.has_body_picks() {
             self.selection = edit.body_pick_selection(field.unwrap_or("target"));
         }
         if let Some(edit) = &mut self.modelling {
             edit.selection_field = field.map(str::to_string);
-            edit.source_selection_changed = true;
+            edit.source_selection_changed = !edit.live_profile_picking();
             if edit.operation == "sketch.redefine" {
                 edit.params["plane"] = Value::Null;
             }

@@ -898,7 +898,12 @@ impl Viewport {
                     InputSource::Pencil if valid => Owner::PencilCandidate,
                     InputSource::Indirect
                         if (!self.numeric_active()
-                            && (!e.display_preview || valid && self.modelling.is_some() && (self.direct_handles || allow_dismissal)))
+                            && (!e.display_preview
+                                || valid
+                                    && self.modelling.is_some()
+                                    && (self.direct_handles
+                                        || allow_dismissal
+                                        || self.modelling.as_ref().is_some_and(|edit| edit.live_profile_picking()))))
                             || e.button != 0 =>
                     {
                         Owner::Pointer
@@ -916,12 +921,12 @@ impl Viewport {
             if (owner == Owner::PencilCandidate || direct) && self.begin_tool(&e, point) {
                 owner = Owner::Tool;
             }
-            // Live edge tools map visible preview edges back to source inputs.
-            // Other forms must reveal their source before topology picking.
+            // Live source pickers retain their original input geometry while
+            // the result preview is displayed.
             if matches!(owner, Owner::PencilCandidate | Owner::Pointer)
                 && e.display_preview
                 && self.modelling.as_ref().is_some_and(|e| e.preview.is_some() || e.last_preview.is_some())
-                && self.modelling.as_ref().is_none_or(|edit| !edit.live_edge_picking())
+                && self.modelling.as_ref().is_none_or(|edit| !edit.live_edge_picking() && !edit.live_profile_picking())
             {
                 owner = if allow_dismissal { Owner::ModelDismiss } else { Owner::Suppressed };
             }
@@ -1042,9 +1047,11 @@ impl Viewport {
             // Live edge tools resolve the visible preview back to source inputs.
             let handle_tap = owner == Owner::Tool
                 && !moved
-                && (!e.display_preview || self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking()))
+                && (!e.display_preview || self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking() || edit.live_profile_picking()))
                 && matches!(e.source, InputSource::Pencil | InputSource::Indirect)
-                && self.modelling.as_ref().is_some_and(|edit| edit.live_edge_picking() || edit.preview.is_none() && edit.last_preview.is_none())
+                && self.modelling.as_ref().is_some_and(|edit| {
+                    edit.live_edge_picking() || edit.live_profile_picking() || edit.preview.is_none() && edit.last_preview.is_none()
+                })
                 && self
                     .contacts
                     .drag
@@ -1085,7 +1092,7 @@ impl Viewport {
             // Stale/consumed contacts and navigation never dismiss an edit.
             if let Some(edit) = self.modelling.as_ref()
                 && (self.cancel_tools_on_dismiss || edit.apply_on_tap_away)
-                && (!edit.apply_on_tap_away || edit.selection_field.is_none())
+                && (!edit.apply_on_tap_away || edit.selection_field.is_none() || edit.live_profile_picking())
                 && edit.body_pick_field().is_none()
                 && model_token == Some(edit.token)
                 && e.phase == InputPhase::Ended

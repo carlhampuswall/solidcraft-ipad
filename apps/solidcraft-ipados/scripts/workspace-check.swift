@@ -1268,6 +1268,14 @@ struct WorkspaceChecks {
             try require(ModellingFormPresentation.placement(fields[1], operation: "sketch.fillet", params: populated) == .primary, "compact surface tool hid its editable value")
         }
         try require(!ModellingFormPresentation.usesDirectSurfaceControls(model.fields ?? [], compact: true), "unrelated tools acquired surface controls")
+        for field in ["edges", "profile", "target", "tools"] {
+            try require(ModellingFormPresentation.isPickingMultipleInputs(selectionField: field),
+                        "selection changes during a preview would be dropped for \(field)")
+        }
+        for field: String? in [nil, "face", "faces", "plane", "unknown"] {
+            try require(!ModellingFormPresentation.isPickingMultipleInputs(selectionField: field),
+                        "an unrelated source acquired multiple-input picking")
+        }
         for field in ["target", "tools"] {
             try require(!ModellingFormPresentation.automaticallyPreviews(selectionField: field),
                         "an automatic preview would stop multi-input picking after the first selection")
