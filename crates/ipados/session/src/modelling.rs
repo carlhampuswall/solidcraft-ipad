@@ -20,6 +20,7 @@ const TOOLS: &[&str] = &[
     "solid.revolve",
     "solid.shell",
     "solid.hole",
+    "solid.thread",
     "solid.combine",
     "solid.pattern.rectangular",
     "solid.pattern.circular",
@@ -75,6 +76,7 @@ impl ModelEdit {
             "solid.fillet" | "solid.chamfer" | "sketch.fillet" => empty("edges"),
             "solid.offset_face" => empty("faces"),
             "solid.hole" => empty("sketch"),
+            "solid.thread" => empty("face"),
             "solid.combine" => empty("target") || empty("tools"),
             "solid.loft" => empty("sections"),
             "solid.pattern.rectangular" | "solid.pattern.circular" | "solid.pattern.path" | "solid.mirror" => match params["source_mode"].as_str() {
@@ -288,6 +290,52 @@ fn field(key: &str, label: &str, kind: &str, options: Vec<Value>) -> Value {
 }
 fn choices(values: &[&str]) -> Vec<Value> {
     values.iter().map(|v| option(*v, json!(v))).collect()
+}
+
+fn thread_fields(edit: &mut ModelEdit, faces: Vec<Value>) {
+    let p = &mut edit.params;
+    if p.get("designation").is_none_or(Value::is_null) {
+        p["designation"] = json!("");
+    }
+    if p.get("modeled").is_none() {
+        p["modeled"] = json!(false);
+    }
+    if p.get("hand").is_none() {
+        p["hand"] = json!("right");
+    }
+    if p.get("extent").is_none() {
+        p["extent"] = json!(if p.get("length").is_some_and(|length| !length.is_null()) {
+            "length"
+        } else if p.get("up_to").is_some_and(|limit| !limit.is_null()) {
+            "up_to"
+        } else {
+            "full"
+        });
+    }
+    if p.get("length").is_none_or(Value::is_null) {
+        p["length"] = json!("10 mm");
+    }
+    let f = &mut edit.fields;
+    f.retain(|field| !matches!(field["key"].as_str(), Some("face" | "designation" | "modeled" | "hand" | "extent" | "length")));
+    f.push(field("face", "ui.ipados.thread.face", "reference", faces));
+    f.push(field("designation", "ui.ipados.thread.designation", "text", Vec::new()));
+    f.push(field("modeled", "ui.ipados.thread.modeled", "choice", boolean_choices()));
+    f.push(field(
+        "hand",
+        "ui.ipados.thread.hand",
+        "choice",
+        vec![
+            option("ui.ipados.thread.right", json!("right")),
+            option("ui.ipados.thread.left", json!("left")),
+            option("ui.ipados.thread.both", json!("both")),
+        ],
+    ));
+    let mut extents = vec![option("ui.ipados.thread.full", json!("full")), option("ui.ipados.thread.length", json!("length"))];
+    if p.get("up_to").is_some_and(|limit| !limit.is_null()) {
+        extents.push(option("ui.ipados.thread.up_to", json!("up_to")));
+    }
+    f.push(field("extent", "ui.ipados.thread.extent", "choice", extents));
+    length_expression(f, "length", "ui.ipados.thread.length_value");
 }
 
 fn extrusion_operations(editing: bool) -> Vec<Value> {
@@ -792,6 +840,10 @@ impl SessionAdapter {
                 let options = ["XY", "XZ", "YZ"].into_iter().map(|label| option(label, json!({"type":"origin","name":label}))).collect();
                 edit.fields.push(field("plane", "Mirror plane", "choice", options));
             }
+            if self.session.doc.feature(feature.unwrap_or_default()).is_some_and(|feature| matches!(feature.kind, FeatureKind::Thread { .. })) {
+                let current = edit.params["face"].clone();
+                thread_fields(&mut edit, vec![option("ui.ipados.thread.face", current)]);
+            }
             if edit.fields.is_empty() {
                 return Err(error(
                     "unsupported",
@@ -802,6 +854,11 @@ impl SessionAdapter {
             context.assembly_form(&mut edit, selection)?;
         } else {
             context.create_model_form(&mut edit, selection)?;
+        }
+        let thread = edit.operation == "solid.thread"
+            || feature.and_then(|id| self.session.doc.feature(id)).is_some_and(|feature| matches!(feature.kind, FeatureKind::Thread { .. }));
+        if thread && feature.is_none() {
+            edit.selection_field = Some("face".into());
         }
         let combine = edit.operation == "solid.combine"
             || feature.and_then(|id| self.session.doc.feature(id)).is_some_and(|feature| matches!(feature.kind, FeatureKind::Combine { .. }));
@@ -823,6 +880,7 @@ impl SessionAdapter {
         }
         let source_picking = reattach
             || combine && feature.is_some()
+            || thread && feature.is_some()
             || treatment_edit
             || feature.is_some() && (self.session.model.results.iter().any(|r| r.error.is_some()) || self.validate_model_references().is_err());
         if source_picking || edit.rollback {
@@ -1113,6 +1171,13 @@ impl SessionAdapter {
         if edit.operation == "sketch.redefine" && canvas_selection && edit.selection_field.as_deref() == Some("plane") {
             refreshed.params["plane"] = self.sketch_attachment_selection(edit, selection);
         }
+        if canvas_selection && edit.selection_field.as_deref() == Some("face") && (edit.feature.is_none() || edit.source_selection_changed) {
+            refreshed.params["face"] = match selection {
+                [Sel::Face { point, .. }] => json!(point),
+                _ => Value::Null,
+            };
+            refreshed.source_selection_changed = false;
+        }
         invalidate_automatic_subtract_scope(&edit.params, &mut refreshed.params);
         if selecting_targets && canvas_selection {
             if let Some(fields) = refreshed.params.as_object_mut() {
@@ -1378,7 +1443,7 @@ impl SessionAdapter {
                 if let Some(body) = selected_body {
                     p["body"] = json!(body);
                 }
-                f.push(field("faces", "ui.ipados.handles.faces", "references", faces));
+                f.push(field("faces", "ui.ipados.handles.faces", "references", faces.clone()));
                 f.push(field("body", "Target body", "reference", bodies.clone()));
                 length_expression(f, "distance", "Distance");
             }
@@ -1481,6 +1546,12 @@ impl SessionAdapter {
                 f.push(field("through_all", "Through All", "choice", boolean_choices()));
                 p["type"] = json!("simple");
             }
+            "solid.thread" => {
+                p["face"] = match selection {
+                    [Sel::Face { point, .. }] => json!(point),
+                    _ => Value::Null,
+                };
+            }
             "solid.combine" => {
                 f.push(field("target", "Target body", "reference", bodies.clone()));
                 f.push(field("tools", "Tool bodies", "references", bodies.clone()));
@@ -1581,6 +1652,9 @@ impl SessionAdapter {
             }
             f.push(field("targets", "Target bodies · required for join, cut or intersect", "references", bodies));
         }
+        if edit.operation == "solid.thread" {
+            thread_fields(edit, faces);
+        }
         Ok(())
     }
 
@@ -1614,6 +1688,51 @@ impl SessionAdapter {
             update_face_extrusion_target(&mut p, None);
         }
         let target_feature = edit.feature.and_then(|id| self.session.doc.feature(id));
+        let thread = edit.operation == "solid.thread" || target_feature.is_some_and(|feature| matches!(feature.kind, FeatureKind::Thread { .. }));
+        if thread {
+            let point = serde_json::from_value::<solidcore_record::Vec3>(p["face"].clone()).ok().filter(|point| point.is_finite());
+            if point.is_none() {
+                return Err(error("selection", "ui.ipados.thread.choose_face"));
+            }
+            if !p["modeled"].is_boolean() || !p["designation"].is_string() {
+                return Err(error("bad_params", "ui.ipados.thread.invalid_options"));
+            }
+            let extent = p["extent"].as_str().ok_or_else(|| error("bad_params", "ui.ipados.thread.invalid_options"))?.to_string();
+            let fields = p.as_object_mut().ok_or_else(|| error("bad_params", "ui.ipados.thread.invalid_options"))?;
+            fields.remove("extent");
+            match extent.as_str() {
+                "full" => {
+                    fields.remove("length");
+                    fields.remove("up_to");
+                    if edit.feature.is_some() {
+                        fields.insert("length".into(), Value::Null);
+                        fields.insert("up_to".into(), Value::Null);
+                    }
+                }
+                "length" => {
+                    if fields.get("length").is_none_or(|length| !length.is_string() && !length.is_number()) {
+                        return Err(error("bad_params", "ui.ipados.thread.invalid_options"));
+                    }
+                    if edit.feature.is_none() {
+                        fields.insert("extent".into(), json!("length"));
+                    }
+                    fields.remove("up_to");
+                    if edit.feature.is_some() {
+                        fields.insert("up_to".into(), Value::Null);
+                    }
+                }
+                "up_to" if edit.feature.is_some() && fields.get("up_to").is_some_and(|limit| !limit.is_null()) => {
+                    fields.insert("length".into(), Value::Null);
+                }
+                _ => return Err(error("bad_params", "ui.ipados.thread.invalid_options")),
+            }
+            if fields.get("designation").and_then(Value::as_str).is_some_and(|designation| designation.trim().is_empty()) {
+                fields.remove("designation");
+                if edit.feature.is_some() {
+                    fields.insert("designation".into(), Value::Null);
+                }
+            }
+        }
         if edit.operation == "solid.offset_face" || target_feature.is_some_and(|feature| matches!(feature.kind, FeatureKind::OffsetFace { .. })) {
             let source = match edit.feature {
                 Some(id) => self.session.model.state_before(id),
@@ -2100,6 +2219,8 @@ impl Viewport {
                 Some("plane")
             } else if edit.has_body_picks() {
                 Some("target")
+            } else if edit.fields.iter().any(|input| input["key"] == "face") {
+                Some("face")
             } else if edit.fields.iter().any(|input| input["key"] == "edges") {
                 Some("edges")
             } else {
@@ -2107,7 +2228,7 @@ impl Viewport {
             }
         });
         if field.is_some_and(|field| {
-            !matches!(field, "profile" | "targets" | "target" | "tools" | "plane" | "edges" | "faces")
+            !matches!(field, "profile" | "targets" | "target" | "tools" | "plane" | "edges" | "faces" | "face")
                 || !edit.fields.iter().any(|input| input["key"] == field)
                 || matches!(field, "target" | "tools") && !edit.has_body_picks()
         }) {

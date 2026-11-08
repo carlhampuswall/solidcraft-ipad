@@ -782,7 +782,7 @@ impl Viewport {
         } else if self
             .modelling
             .as_ref()
-            .is_some_and(|edit| matches!(edit.selection_field.as_deref(), Some("profile" | "faces")) || edit.operation == "sketch.redefine")
+            .is_some_and(|edit| matches!(edit.selection_field.as_deref(), Some("profile" | "faces" | "face")) || edit.operation == "sketch.redefine")
         {
             PickFilter::Face
         } else {

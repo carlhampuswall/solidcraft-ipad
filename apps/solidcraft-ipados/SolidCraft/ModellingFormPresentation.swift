@@ -12,11 +12,23 @@ enum ModellingFormPresentation {
 
     enum ControlPlacement: Equatable { case primary, additional, hidden }
 
+    private static func usesThreadControls(operation: String?, params: [String: PresentationJSON]) -> Bool {
+        operation == "solid.thread" || operation == "timeline.edit" && params["designation"] != nil && params["modeled"] != nil
+    }
+
+    static func visibleField(_ key: String, operation: String?, params: [String: PresentationJSON]) -> Bool {
+        !usesThreadControls(operation: operation, params: params) || key != "length" || params["extent"] == .string("length")
+    }
+
     /// Keep the editable values and unfilled inputs in the small tool card.
     /// References remain opaque; populated sources and secondary choices are
     /// still available under More options without opening Properties.
     static func placement<Workspace>(_ field: ModellingResponse<Workspace>.Field, operation: String?,
                                      params: [String: PresentationJSON]) -> ControlPlacement {
+        if !visibleField(field.key, operation: operation, params: params) { return .hidden }
+        if usesThreadControls(operation: operation, params: params) {
+            if ["modeled", "extent"].contains(field.key) { return .primary }
+        }
         if field.key == "name", operation?.hasPrefix("solid.") != true { return .primary }
         if field.key == "targets", params["operation"] == .string("new") || params["operation"] == .string("new_body") { return .additional }
         if field.key == "features", params["source_mode"] == .string("bodies") { return .additional }

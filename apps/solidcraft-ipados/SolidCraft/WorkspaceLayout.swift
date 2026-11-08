@@ -941,7 +941,7 @@ enum PresentationLabelKey {
         "solid_fillet": "ui.fillet", "solid_hole": "ui.hole", "solid_loft": "ui.loft", "solid_mirror": "ui.mirror",
         "solid_pattern_circular": "ui.circular_pattern", "solid_pattern_path": "ui.pattern_on_path",
         "solid_pattern_rectangular": "ui.rectangular_pattern", "solid_revolve": "ui.revolve",
-        "solid_shell": "ui.shell", "solid_sweep": "ui.sweep", "timeline_edit": "cmd.timeline_redefine"
+        "solid_shell": "ui.shell", "solid_sweep": "ui.sweep", "solid_thread": "ui.thread", "timeline_edit": "cmd.timeline_redefine"
     ]
     static func label(_ value: String, lookup: (String) -> String) -> String {
         let key: String

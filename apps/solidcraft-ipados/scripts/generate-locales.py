@@ -11,7 +11,7 @@ import sys
 MODELLING_LABELS = {
     "ui.chamfer", "ui.circular_pattern", "ui.combine", "ui.extrude", "ui.fillet",
     "ui.hole", "ui.loft", "ui.mirror", "ui.pattern_on_path", "ui.rectangular_pattern",
-    "ui.revolve", "ui.shell", "ui.sweep",
+    "ui.revolve", "ui.shell", "ui.sweep", "ui.thread",
 }
 
 

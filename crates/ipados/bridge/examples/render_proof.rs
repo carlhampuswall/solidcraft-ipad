@@ -175,6 +175,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::args().nth(2).as_deref() == Some("--modelling") {
         return modelling_proof(&destination);
     }
+    if std::env::args().nth(2).as_deref() == Some("--thread") {
+        return thread_proof(&destination);
+    }
     if std::env::args().nth(2).as_deref() == Some("--face-extrude") {
         return face_extrude_proof(&destination, false);
     }
@@ -1603,6 +1606,68 @@ fn face_extrude_proof(destination: &str, multiple: bool) -> Result<(), Box<dyn s
         let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
         view.finish_model(token, Some(engine.accept_model(&edit, prepared)?))?;
     }
+    Ok(())
+}
+
+/// Native Thread form and transaction, rendered by the actual shared GPU path.
+fn thread_proof(destination: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let mut engine = SessionAdapter::new();
+    engine.execute("solid.cylinder", json!({"radius":5,"height":18,"body_name":"Thread stock"}))?;
+    let original = engine.snapshot()?;
+    let original_volume = original.volume_mm3;
+    let mut view = Viewport::default();
+    view.set_metrics(ViewportMetrics { width_points: 960., height_points: 640., scale: 1., origin_points: [0.; 2] })?;
+    view.begin_update(1);
+    view.install(1, original);
+    view.command("view.isometric", &json!({}))?;
+    view.command("view.fit", &json!({}))?;
+    let capturer = solidcraft_gpu::capture::Capturer::headless()?;
+    let capture = |view: &Viewport, stage: &str| -> Result<(), Box<dyn std::error::Error>> {
+        let snapshot = view.snapshot().ok_or("thread frame")?;
+        let rgba = solidcraft_ipados_bridge::renderer::capture_feedback(&snapshot, &capturer, 960, 640)?;
+        let path = destination.replace(".png", &format!("-{stage}.png"));
+        std::fs::write(&path, solidcraft_render::png(960, 640, rgba).ok_or("thread PNG")?)?;
+        println!("{stage}: {:.3} mm³; {path}", snapshot.model.volume_mm3);
+        Ok(())
+    };
+    capture(&view, "before")?;
+    let faces = engine.execute("model.faces", json!({"body":"Thread stock"}))?.value;
+    let face = faces["faces"].as_array().and_then(|faces| faces.iter().find(|face| face["cylinder"].is_object())).ok_or("thread cylinder face")?;
+    let mut point: solidcraft_ipados_session::WorldPoint = serde_json::from_value(face["point"].clone())?;
+    // Pick near the upper free end so the existing engine can choose the start.
+    point.z = 17.;
+    let selected = serde_json::from_value(json!({"type":"face","body":"Thread stock","index":face["index"],"point":point}))?;
+    let edit = engine.begin_model(775, Some("solid.thread"), None, &[selected])?;
+    let mut params = edit.params.clone();
+    params["designation"] = json!("M10");
+    params["modeled"] = json!(true);
+    params["hand"] = json!("left");
+    params["extent"] = json!("length");
+    params["length"] = json!("6 mm");
+    let edit = engine.refresh_model(&edit, &[], Some(params))?;
+    view.begin_model(edit.clone())?;
+    let preview = engine.prepare_model(&edit, edit.params.clone(), false)?;
+    if preview.model.volume_mm3 >= original_volume || (engine.snapshot()?.volume_mm3 - original_volume).abs() > 1e-6 {
+        return Err("thread preview must cut a groove without changing the document".into());
+    }
+    let preview_volume = preview.model.volume_mm3;
+    view.publish_model(edit.token, &preview)?;
+    capture(&view, "preview")?;
+    let prepared = engine.prepare_model(&edit, edit.params.clone(), true)?;
+    view.finish_model(edit.token, Some(engine.accept_model(&edit, prepared)?))?;
+    if (engine.snapshot()?.volume_mm3 - preview_volume).abs() > 1e-6 {
+        return Err("applied thread differs from its preview".into());
+    }
+    capture(&view, "applied")?;
+    engine.execute("edit.undo", json!({}))?;
+    let restored = engine.snapshot()?;
+    if (restored.volume_mm3 - original_volume).abs() > 1e-6 {
+        return Err("thread Undo did not restore the original cylinder".into());
+    }
+    view.begin_update(2);
+    view.install(2, restored);
+    capture(&view, "undo")?;
+    println!("PASS: M10 left-handed modelled partial thread preview, Apply and one-step Undo. macOS GPU only.");
     Ok(())
 }
 

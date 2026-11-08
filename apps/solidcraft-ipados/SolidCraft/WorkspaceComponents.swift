@@ -2516,6 +2516,7 @@ final class ModellingInspector: UIStackView {
             }
         }
         for field in orderedFields {
+            if !ModellingFormPresentation.visibleField(field.key, operation: operation, params: params) { continue }
             let placement = minimal ? ModellingFormPresentation.placement(field, operation: operation, params: params) : .primary
             if placement == .hidden { continue }
             let secondary = minimal ? placement == .additional : compactExtrude && !InspectorPresentation.isPrimary(field)

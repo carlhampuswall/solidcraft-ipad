@@ -9811,6 +9811,127 @@ fn modelling_through_all_extrusion_and_hole_can_edit_original_to_blind_depth() {
     }
 }
 
+#[test]
+fn modelling_thread_tool_waits_for_one_face_and_reselects_without_resetting_values() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.cylinder", json!({"radius":5,"height":20,"body_name":"Thread shaft"})).unwrap();
+    let edit = adapter.begin_model(762, Some("solid.thread"), None, &[]).unwrap();
+    assert!(edit.waiting_for_selection(&edit.params));
+    assert!(adapter.workspace(&[], false, false)["modelling"]["tools"].as_array().unwrap().iter().any(|tool| tool["id"] == "solid.thread"));
+    assert!(adapter.prepare_model(&edit, edit.params.clone(), false).is_err());
+    let first = modelling_face(&adapter, "Thread shaft", Vec3::new(5., 0., 1.));
+    let mut params = edit.params.clone();
+    params["designation"] = json!("M10x1");
+    params["hand"] = json!("left");
+    params["extent"] = json!("length");
+    params["length"] = json!("4 mm");
+    let edit = adapter.refresh_model(&edit, &[], Some(params)).unwrap();
+    let edit = adapter.refresh_model(&edit, &[first], None).unwrap();
+    assert!(!edit.waiting_for_selection(&edit.params));
+    assert_eq!(edit.params["face"], json!([5., 0., 1.]));
+    assert_eq!(edit.params["designation"], "M10x1");
+    assert_eq!(edit.params["length"], "4 mm");
+    assert_eq!(edit.params["hand"], "left");
+
+    let mut viewport = Viewport::default();
+    viewport.set_metrics(metrics(800., 600., 2.)).unwrap();
+    viewport.begin_update(1);
+    viewport.install(1, adapter.snapshot().unwrap());
+    viewport.command("view.isometric", &json!({})).unwrap();
+    viewport.command("select.filter", &json!({"filter":"body"})).unwrap();
+    viewport.begin_model(edit).unwrap();
+    viewport.select_model_inputs(762, Some("face")).unwrap();
+    let top = point(&viewport, Vec3::new(0., 0., 20.));
+    assert!(matches!(viewport.pick(top, Some(adapter.geometry_revision)), Some(Sel::Face { .. })), "thread picking overrides the body filter");
+    let second = modelling_face(&adapter, "Thread shaft", Vec3::new(0., -5., 19.));
+    viewport.select(Some(second.clone()), false);
+    let edit = viewport.model_edit(762).unwrap();
+    let edit = adapter.refresh_model(&edit, viewport.selection(), None).unwrap();
+    assert_eq!(edit.params["face"], json!([0., -5., 19.]));
+    assert_eq!(edit.params["length"], "4 mm");
+    let preview = adapter.prepare_model(&edit, edit.params.clone(), false).unwrap();
+    viewport.update_model(edit).unwrap();
+    viewport.publish_model(762, &preview).unwrap();
+    viewport.cancel_model();
+    assert!(adapter.session.model.state().threads.is_empty());
+    assert_eq!(adapter.session.doc.features.len(), 1, "canceling the preview leaves the document untouched");
+}
+
+#[test]
+fn modelling_thread_cosmetic_creation_and_length_edit_are_atomic_and_undoable() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.cylinder", json!({"radius":5,"height":20,"body_name":"Thread shaft"})).unwrap();
+    let face = modelling_face(&adapter, "Thread shaft", Vec3::new(5., 0., 1.));
+    let edit = adapter.begin_model(763, Some("solid.thread"), None, &[face]).unwrap();
+    let volume = modelling_volume(&adapter);
+    modelling_commit(&mut adapter, &edit, edit.params.clone());
+    let feature = adapter.session.doc.features.last().unwrap().id;
+    let state = adapter.session.model.state();
+    assert_eq!(state.threads.len(), 1);
+    assert_eq!(state.threads[0].designation, "M10");
+    assert!((state.threads[0].end - state.threads[0].start - 20.).abs() < 1e-6);
+    assert!((modelling_volume(&adapter) - volume).abs() < 1e-8);
+    let edit = adapter.begin_model(764, None, Some(feature), &[]).unwrap();
+    assert_eq!(edit.params["extent"], "full");
+    let stored_face = edit.params["face"].clone();
+    let edit = adapter.refresh_model(&edit, &[], None).unwrap();
+    assert_eq!(edit.params["face"], stored_face, "ordinary inspection preserves the stored face until explicit reselection");
+    let mut params = edit.params.clone();
+    params["extent"] = json!("length");
+    params["length"] = json!("4 mm");
+    params["hand"] = json!("left");
+    modelling_commit(&mut adapter, &edit, params);
+    let state = adapter.session.model.state();
+    assert!((state.threads[0].end - state.threads[0].start - 4.).abs() < 1e-6);
+    assert_eq!(state.threads[0].hand, solidcraft_engine::doc::thread_forms::ThreadHand::Left);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((adapter.session.model.state().threads[0].end - adapter.session.model.state().threads[0].start - 20.).abs() < 1e-6);
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!(adapter.session.model.state().threads.is_empty());
+    adapter.execute("edit.redo", json!({})).unwrap();
+    assert_eq!(modelling_roundtrip(&adapter).session.model.state().threads.len(), 1);
+}
+
+#[test]
+fn modelling_thread_rejects_planar_faces_and_invalid_lengths_without_changing_history() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.cylinder", json!({"radius":5,"height":20,"body_name":"Thread shaft"})).unwrap();
+    let document = adapter.session.doc.to_json();
+    let history = adapter.session.undo.len();
+    let face = modelling_face(&adapter, "Thread shaft", Vec3::new(0., 0., 20.));
+    let edit = adapter.begin_model(765, Some("solid.thread"), None, &[face]).unwrap();
+    assert!(adapter.prepare_model(&edit, edit.params.clone(), true).is_err());
+    let face = modelling_face(&adapter, "Thread shaft", Vec3::new(5., 0., 1.));
+    let edit = adapter.begin_model(766, Some("solid.thread"), None, &[face]).unwrap();
+    for length in [json!("0 mm"), json!("-1 mm"), json!("4 deg"), json!(""), Value::Null, json!(false)] {
+        let mut params = edit.params.clone();
+        params["extent"] = json!("length");
+        params["length"] = length.clone();
+        assert!(adapter.prepare_model(&edit, params, true).is_err(), "invalid length {length}");
+    }
+    assert_eq!(adapter.session.doc.to_json(), document);
+    assert_eq!(adapter.session.undo.len(), history);
+}
+
+#[test]
+fn modelling_thread_modeled_partial_creation_cuts_geometry_and_undo_restores_shaft() {
+    let mut adapter = SessionAdapter::new();
+    adapter.execute("solid.cylinder", json!({"radius":3,"height":8,"body_name":"Thread shaft"})).unwrap();
+    let face = modelling_face(&adapter, "Thread shaft", Vec3::new(3., 0., 0.5));
+    let edit = adapter.begin_model(767, Some("solid.thread"), None, &[face]).unwrap();
+    let mut params = edit.params.clone();
+    params["designation"] = json!("M6");
+    params["modeled"] = json!(true);
+    params["extent"] = json!("length");
+    params["length"] = json!("2 mm");
+    let volume = modelling_volume(&adapter);
+    modelling_commit(&mut adapter, &edit, params);
+    assert!(modelling_volume(&adapter) < volume - 1., "the modeled thread removes the helical groove");
+    assert!(matches!(&adapter.session.doc.features.last().unwrap().kind, FeatureKind::Thread { modeled: true, length: Some(_), .. }));
+    adapter.execute("edit.undo", json!({})).unwrap();
+    assert!((modelling_volume(&adapter) - volume).abs() < 1e-8);
+}
+
 fn assembly_accept(adapter: &mut SessionAdapter, operation: &str, params: Value, selection: &[Sel]) -> Value {
     let edit = adapter.begin_model(800, Some(operation), None, selection).unwrap();
     let history = adapter.session.undo.len();

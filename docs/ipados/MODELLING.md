@@ -24,6 +24,7 @@ parameters the handlers actually read rather than assuming schema completeness.
 | 7B Revolve | `solid.revolve`: sketch/profile, axis, angle, operation, targets | Sketch/world axes and the native axis choices provided by the form; basic angular extent and explicit Boolean targets. |
 | 7B Shell | `solid.shell`: faces, thickness, direction, body | Selected removal faces, inside/outside/both wall direction, original thickness editing. |
 | 7B Hole | `solid.hole`: sketch, diameter, depth, targets, `type:simple` | Real sketch points/circle centres, blind depth or Through All and explicit drilled bodies. No fabricated specialised hole variants. |
+| Thread | `solid.thread`: face, designation, modeled, hand, extent, length | Cylindrical face selected before opening the tool or picked in the viewport; automatic size or an explicit designation, cosmetic or modeled geometry, handedness and full-face or specified length. |
 | 7B Boolean | `solid.combine`: target, tools, operation, keep_tools | Join/union, cut/difference and intersect; target and tool roles explicit; retain/consume choice visible. |
 | 7B Patterns | `solid.pattern.rectangular`, `solid.pattern.circular`, `solid.pattern.path` | Explicit body-copy or feature-replay source mode; rectangular count/spacing/direction, circular count/angle/axis, path count/spacing/ordered curves/orientation. |
 | 7B Mirror | `solid.mirror`: bodies or features, plane | Explicit body-copy or feature-replay source mode about supported plane choices. |
@@ -53,6 +54,14 @@ the original `PatternKind::Path` and updates its native nested fields, without
 recreating the feature. Through All holes omit `depth` on creation or set the
 native optional depth to `null` on edit. Extrusion stores the existing native
 extent flag. No new persisted platform field is introduced.
+
+Choose **Model > Thread**, then pick a cylindrical shaft or hole wall near the
+end where the thread should start. A blank size uses the engine's automatic
+metric size; explicit designations use the forms documented in [Threads](../threads.md).
+Turn on **Model thread geometry** to cut a real helical groove. The default is
+a cosmetic annotation. **Specified length** reveals a length expression;
+**Full face** ignores that inactive value. Preview, Apply, Cancel and Undo use
+the same native modelling transaction as the other tools.
 
 Known upstream restrictions include unsupported G2 fillet corners where the
 kernel reports that limitation, curved sections lofted to an apex, incompatible
@@ -426,6 +435,14 @@ expressions, target/reference relationships, suppression and document metadata.
 Saving final tessellation alone is not used as document persistence.
 
 ## Verification and integration
+
+Thread adapter regressions use the `modelling_thread_` filter in the session
+crate. They cover source picking, preview isolation, cancellation, cosmetic and
+modeled creation, invalid inputs, timeline editing, persistence and Undo/Redo.
+The bridge's `render_proof OUTPUT.png --thread` example captures a real M10
+left-hand partial thread before preview, during preview, after Apply and after
+Undo through the shared GPU renderer. These captures run on macOS and do not
+verify the native UIKit form or physical iPad input.
 
 `cargo +1.95.0 test --profile ci -p solidcraft-ipados-bridge --lib -- --test-threads=1`
 passed all **19 bridge tests** on 2026-10-28, including four modelling cases:
