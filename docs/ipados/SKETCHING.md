@@ -179,9 +179,13 @@ The **Line** button starts the line tool on its first press. Press it again whil
 Line, Three-point Arc or Fit-point Spline is active to open those choices, using
 the same interaction as Rectangle. The parent button stays highlighted for each
 variant. Returning to Line from another tool family starts the default line tool.
-Lines have no endpoint or toolbar Finish chain button. Choose **Select** to stop
-drawing, leaving committed lines and the sketch open. Choose Line again to start
-a new chain. Splines retain the toolbar's `tool.finish_chain` completion.
+After drawing a line, **Apply** and **Cancel last line** appear beside its endpoint.
+Apply finishes the chain through `tool.finish_chain`, keeping its lines and the
+sketch open. Cancel last line uses `edit.undo` to remove only the newest segment,
+keeping earlier lines. Either action leaves Line ready to start a new chain;
+Redo can restore the cancelled segment. Controls stay clear of the endpoint and
+hide during drawing, navigation and evaluation. Choose **Select** to stop drawing.
+Splines retain the toolbar's `tool.finish_chain` completion.
 
 **Circle** uses the same first-press/second-press interaction. Its default remains
 Centre Diameter Circle: place the centre and then a point on the circumference.
@@ -193,12 +197,12 @@ aids; the three-point command retains supported point references. Construction,
 Cancel and Undo/Redo use the existing sketch controls.
 
 DEBUG `--line-finish-check` draws two lines through synthetic Pencil samples,
-checks that both Finish chain buttons are absent and taps Select, verifies both
-lines and the open sketch remain, then draws another line and stops it through
-Select again. It writes
-`line-finish-check.json` and `line-finish-ready.png`, `line-finish-finished.png`
-and `line-finish-toolbar-finished.png` in Documents. Physical input
-delivery requires a separate manual check.
+checks both endpoint controls and their hit targets, and applies the chain without
+changing its geometry. It draws a third line, cancels just that segment, verifies
+Redo/Undo and stops through Select. Repeated Cancel activation must not remove an
+earlier line. It writes `line-finish-check.json` and `line-finish-ready.png`,
+`line-finish-applied.png`, `line-finish-cancelled.png` and `line-finish-finished.png`
+in Documents. Physical input delivery requires a separate manual check.
 
 ## Capability inventory at the checked-out upstream revision
 

@@ -1,0 +1,26 @@
+{
+  "en": {
+    "ui.ipados.sketch.cancel_last_line": "Cancel last line"
+  },
+  "ar": {
+    "ui.ipados.sketch.cancel_last_line": "إلغاء الخط الأخير"
+  },
+  "de": {
+    "ui.ipados.sketch.cancel_last_line": "Letzte Linie verwerfen"
+  },
+  "he": {
+    "ui.ipados.sketch.cancel_last_line": "ביטול הקו האחרון"
+  },
+  "ja": {
+    "ui.ipados.sketch.cancel_last_line": "最後の線分を取り消す"
+  },
+  "ko": {
+    "ui.ipados.sketch.cancel_last_line": "마지막 선 취소"
+  },
+  "vi": {
+    "ui.ipados.sketch.cancel_last_line": "Hủy đoạn thẳng cuối"
+  },
+  "zh": {
+    "ui.ipados.sketch.cancel_last_line": "取消最后一条线段"
+  }
+}

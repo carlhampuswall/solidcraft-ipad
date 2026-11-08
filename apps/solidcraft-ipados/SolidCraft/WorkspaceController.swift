@@ -83,6 +83,20 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
     private lazy var sketchToolsButton = WorkspaceButton(SketchText.text("draw"), action: {})
     private lazy var finishSketchButton = WorkspaceButton(SketchText.text("finish"), prominent: true) { [weak self] in self?.performSketchHeaderAction() }
     private lazy var finishChainButton = WorkspaceButton(SketchText.text("finish_chain")) { [weak self] in self?.finishSketchChain() }
+    private lazy var endpointApplyButton = WorkspaceButton(WorkspaceStyle.text("apply"), prominent: true) { [weak self] in
+        self?.performEndpointAction(cancel: false)
+    }
+    private lazy var endpointCancelButton = WorkspaceButton(SketchText.text("cancel_last_line")) { [weak self] in
+        self?.performEndpointAction(cancel: true)
+    }
+    private lazy var endpointActions: UIStackView = {
+        let row = UIStackView(arrangedSubviews: [endpointApplyButton, endpointCancelButton])
+        row.axis = .horizontal; row.spacing = 8; row.distribution = .fillEqually
+        row.accessibilityIdentifier = "sketch-endpoint-actions"
+        row.isHidden = true
+        return row
+    }()
+    private var endpointActionInFlight = false
     private lazy var documentActionsButton = WorkspaceButton(ProjectText.text("title")) { [weak self] in self?.showProjects() }
     private lazy var homeButton = WorkspaceButton(WorkspaceStyle.text("home")) { [weak self] in
         guard let self else { return }
@@ -512,6 +526,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             let projectionChanged = self.sketchInput?.projection != value?.projection
             let constructionChanged = self.sketchInput?.construction != value?.construction
             self.sketchInput = value; self.updateStatus(); self.rebuildMenus()
+            if value?.finish_chain_at == nil { self.endpointActionInFlight = false }
+            self.layoutEndpointActions()
             if constructionChanged || projectionChanged { self.updateAvailability() }
             if projectionChanged { self.rebuildInspector(); self.view.setNeedsLayout() }
         }
@@ -541,6 +557,13 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         modelValueButton.isHidden = true
         WorkspaceStyle.floatingSurface(modelValueButton)
         workspace.insertSubview(modelValueButton, aboveSubview: canvas)
+        endpointApplyButton.artwork("finish", compact: true)
+        endpointApplyButton.accessibilityIdentifier = "sketch-endpoint-finish"
+        endpointApplyButton.accessibilityHint = SketchText.text("finish_chain")
+        endpointCancelButton.artwork("close", compact: true)
+        endpointCancelButton.configuration?.baseForegroundColor = WorkspaceStyle.error
+        endpointCancelButton.accessibilityIdentifier = "sketch-endpoint-cancel"
+        workspace.insertSubview(endpointActions, aboveSubview: canvas)
         session.onModelValue = { [weak self] value in
             guard let self else { return }
             self.modelValue = self.acceptsModelValueFrame ? value : nil
@@ -2639,6 +2662,42 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         }
     }
 
+    private func layoutEndpointActions() {
+        guard active, state?.sketch != nil, state?.active_tool == "sketch.line",
+              !numericEditing, !modellingEditing, !endpointActionInFlight, pending.isEmpty,
+              !session.toolActivityInFlight, presentedViewController == nil,
+              let position = sketchInput?.finish_chain_at, position.count == 2, position.allSatisfy(\.isFinite),
+              canvas.isUserInteractionEnabled else { endpointActions.isHidden = true; return }
+        let anchor = CGPoint(x: canvas.frame.minX + position[0], y: canvas.frame.minY + position[1])
+        let safe = workspace.convert(view.safeAreaLayoutGuide.layoutFrame, from: view)
+        let bounds = WorkspaceLayout.chromeBounds(safeArea: safe, viewport: canvas.frame, useBottomSafeArea: useBottomSafeArea)
+            .intersection(canvas.frame).insetBy(dx: 8, dy: 8)
+        let obstacles = [top, railScroll, navigationScroll, historyActions, featureHistory, browserButton, viewButton,
+                         settingsButton, status, browserPanel, inspectorPanel]
+            .filter { !$0.isHidden }.map { $0.frame.insetBy(dx: -6, dy: -6) }
+        guard bounds.contains(anchor), let frame = ModelValuePlacement.resolve(anchor: anchor,
+            size: CGSize(width: 96, height: 44), bounds: bounds, obstacles: obstacles) else {
+            endpointActions.isHidden = true; return
+        }
+        endpointActions.frame = frame
+        endpointCancelButton.isEnabled = state?.can_undo == true
+        endpointActions.isHidden = false
+    }
+
+    private func performEndpointAction(cancel: Bool) {
+        layoutEndpointActions()
+        guard !endpointActions.isHidden, !cancel || endpointCancelButton.isEnabled else { return }
+        endpointActionInFlight = true; endpointActions.isHidden = true
+        historyActivation = nil
+        canvas.cancelInput(); failure = nil; lastOperationFeedback = []
+        // Each line is already one engine history entry. Undo removes only the
+        // newest segment; finishing a chain changes no committed geometry.
+        session.command(cancel ? "edit.undo" : "tool.finish_chain") { [weak self] result in
+            guard let self else { return }
+            if case .failure = result { self.endpointActionInFlight = false; self.layoutEndpointActions() }
+        }
+    }
+
     private func showExtrudeResults(from source: UIView) {
         guard presentedViewController == nil, source.window != nil, let form = modellingInspector,
               form.handleEntryEnabled, let field = form.fields.first(where: { $0.key == "operation" }),
@@ -4068,6 +4127,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
             constructionButton.accessibilityHint = SketchText.text("construction_mode_help")
         }
         layoutModelValue()
+        layoutEndpointActions()
         updateAdditionalQuickTools()
     }
 
@@ -4659,7 +4719,7 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
                                navHeight: contentHeight(navigationActions, width: available.navigation.width))
         if canvas.frame != resolved.canvas {
             canvas.cancelInput(); modelValue = nil; modelValueButton.isHidden = true
-            sketchInput = nil
+            sketchInput = nil; endpointActions.isHidden = true
         }
         layout = resolved
         top.frame = resolved.topBar; status.frame = resolved.status; canvas.frame = resolved.canvas
@@ -4716,8 +4776,8 @@ final class FoundationController: UIViewController, UITableViewDataSource, UITab
         inspectorScroll.frame = inspectorPanel.content.bounds
         browserPanel.accessibilityViewIsModal = compact && browserOpen
         inspectorPanel.accessibilityViewIsModal = sketchInput?.projection == nil && compact && inspectorOpen
-        let modelControls: [UIView] = [modellingInspector?.resultButton, modelValueButton].compactMap { $0 }
-        workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, settingsButton, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, canvas, inspectorPanel, featureHistory, status]
+        let modelControls: [UIView] = [modellingInspector?.resultButton, modelValueButton, endpointActions].compactMap { $0 }
+        workspace.accessibilityElements = resolved.floating ? [top, browserButton, contextualRail == nil ? railScroll : extrusionRailScroll, browserPanel, navigationScroll, inspectorPanel] + modelControls + [canvas, historyActions, settingsButton, featureHistory, status] : [top, railScroll, browserPanel, modelValueButton, endpointActions, canvas, inspectorPanel, featureHistory, status]
         if resetChromeOffsets {
             // Reparenting the same controls changes scroll content dimensions.
             // Discard the old text-toolbar offsets once, after the new frames
@@ -5337,27 +5397,59 @@ private extension FoundationController {
                 return
             }
             tap([-20, -10, 0]) {
+                if !self.endpointActions.isHidden { issues.append("Controls appeared before the first line") }
                 tap([0, 10, 0]) {
                     tap([25, 10, 0]) {
-                        wait({ self.pending.isEmpty && self.state?.sketch?.curves.count == 2 }) {
+                        wait({ !self.endpointActions.isHidden && self.pending.isEmpty && self.state?.sketch?.curves.count == 2 }) {
                             if !self.finishChainButton.isHidden { issues.append("Line still shows toolbar Finish chain") }
-                            if self.workspace.subviews.contains(where: { $0.accessibilityIdentifier == "sketch-endpoint-finish" }) {
-                                issues.append("Line still has an endpoint Finish chain button")
+                            self.endpointActions.layoutIfNeeded()
+                            for button in [self.endpointApplyButton, self.endpointCancelButton] {
+                                let center = button.convert(CGPoint(x: button.bounds.midX, y: button.bounds.midY), to: self.workspace)
+                                if button.bounds.width < 44 || button.bounds.height < 44 || button.configuration?.image == nil {
+                                    issues.append("Endpoint control lost its artwork or touch target")
+                                }
+                                if self.workspace.hitTest(center, with: nil) !== button { issues.append("Endpoint control cannot receive taps") }
                             }
+                            if let position = self.sketchInput?.finish_chain_at {
+                                let endpoint = CGPoint(x: self.canvas.frame.minX + position[0], y: self.canvas.frame.minY + position[1])
+                                if self.endpointActions.frame.contains(endpoint) { issues.append("Controls cover the endpoint") }
+                                if hypot(self.endpointActions.center.x - endpoint.x, self.endpointActions.center.y - endpoint.y) > 120 {
+                                    issues.append("Controls too far from endpoint")
+                                }
+                            } else { issues.append("Missing endpoint projection") }
                             capture("ready")
-                            self.selectButton.sendActions(for: .touchUpInside)
-                            wait({ self.state?.active_tool == "select" && self.sketchInput?.finish_chain_at == nil && self.pending.isEmpty }) {
-                                if self.state?.sketch?.curves.count != 2 || self.state?.sketch == nil { issues.append("Select changed geometry or closed the sketch") }
-                                capture("finished")
-                                self.setTool("sketch.line")
-                                wait({ self.state?.active_tool == "sketch.line" && self.pending.isEmpty }) {
-                                    tap([-25, 20, 0]) {
-                                        tap([-10, 25, 0]) {
-                                            wait({ self.pending.isEmpty && self.state?.sketch?.curves.count == 3 }) {
-                                                self.selectButton.sendActions(for: .touchUpInside)
-                                                wait({ self.state?.active_tool == "select" && self.pending.isEmpty }) {
-                                                    if self.state?.sketch?.curves.count != 3 { issues.append("Stopping another line changed geometry") }
-                                                    capture("toolbar-finished"); report()
+                            self.endpointApplyButton.sendActions(for: .touchUpInside)
+                            wait({ self.sketchInput?.finish_chain_at == nil && self.pending.isEmpty }) {
+                                if !self.endpointActions.isHidden || self.state?.sketch?.curves.count != 2 || self.state?.active_tool != "sketch.line" {
+                                    issues.append("Apply changed lines or left the line tool")
+                                }
+                                capture("applied")
+                                tap([-25, 20, 0]) {
+                                    tap([-10, 25, 0]) {
+                                        wait({ !self.endpointActions.isHidden && self.pending.isEmpty && self.state?.sketch?.curves.count == 3 }) {
+                                            self.endpointCancelButton.sendActions(for: .touchUpInside)
+                                            self.endpointCancelButton.sendActions(for: .touchUpInside)
+                                            wait({ self.state?.sketch?.curves.count == 2 && self.pending.isEmpty && self.sketchInput?.finish_chain_at == nil }) {
+                                                if !self.endpointActions.isHidden || self.state?.active_tool != "sketch.line" {
+                                                    issues.append("Cancel left controls visible or closed the line tool")
+                                                }
+                                                capture("cancelled")
+                                                self.session.command("edit.redo") { result in
+                                                    if case .failure(let error) = result { report(error.description); return }
+                                                    wait({ self.state?.sketch?.curves.count == 3 && self.pending.isEmpty }) {
+                                                        self.session.command("edit.undo") { result in
+                                                            if case .failure(let error) = result { report(error.description); return }
+                                                            wait({ self.state?.sketch?.curves.count == 2 && self.pending.isEmpty }) {
+                                                                self.selectButton.sendActions(for: .touchUpInside)
+                                                                wait({ self.state?.active_tool == "select" && self.pending.isEmpty }) {
+                                                                    if self.state?.sketch?.curves.count != 2 || !self.endpointActions.isHidden {
+                                                                        issues.append("Select changed lines or retained endpoint controls")
+                                                                    }
+                                                                    capture("finished"); report()
+                                                                }
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }

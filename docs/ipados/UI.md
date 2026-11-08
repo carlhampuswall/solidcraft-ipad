@@ -102,8 +102,11 @@ replaces these with Line, Rectangle, Circle, Trim and overflow tools. Line group
 the Line, Three-point Arc and Fit-point Spline tools. Circle groups Centre Diameter,
 2-Point and 3-Point Circle. Pressing Line, Rectangle or Circle
 starts its default tool; pressing it again while any of its variants is active
-opens its choices. Finish chain appears only for splines. Choose Select to stop
-drawing lines. A labelled **Finish sketch** button occupies its own row in the
+opens its choices. Toolbar Finish chain appears only for splines. Lines show
+**Apply** and **Cancel last line** beside the last endpoint: Apply keeps the chain;
+Cancel undoes only the latest segment. Both leave Line ready for a new chain and
+keep the sketch open. Choose Select to stop drawing lines.
+A labelled **Finish sketch** button occupies its own row in the
 document header, outside the scrolling rail. Cancelling a segment retains its
 icon-only presentation after state refreshes and plane-picker cancellation.
 Constraints, dimensions and construction appear
